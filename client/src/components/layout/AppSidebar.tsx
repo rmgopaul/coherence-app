@@ -14,6 +14,7 @@ import {
   BarChart3,
   MessageSquareText,
   Settings,
+  Users,
   type LucideIcon,
 } from "lucide-react";
 import { useAuth } from "@/_core/hooks/useAuth";
@@ -343,6 +344,25 @@ export function AppSidebar() {
 
       <SidebarFooter className="group-data-[collapsible=icon]:px-1">
         <SidebarMenu>
+          {/* Phase E (2026-04-28) — Contacts overlay launcher.
+              Dispatches a custom event the AppShell listens for so
+              the sidebar doesn't need to wire a context provider. */}
+          <SidebarMenuItem>
+            <SidebarMenuButton asChild tooltip="Contacts (press c)">
+              <button
+                type="button"
+                onClick={() =>
+                  window.dispatchEvent(new CustomEvent("contacts:open"))
+                }
+              >
+                <Users className="size-4" />
+                <span>Contacts</span>
+                <kbd className="ml-auto flex size-4 items-center justify-center rounded border bg-muted text-[10px] font-mono">
+                  c
+                </kbd>
+              </button>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
           <SidebarMenuItem>
             <SidebarMenuButton
               asChild

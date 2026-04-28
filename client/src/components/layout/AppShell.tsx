@@ -6,10 +6,14 @@ import { Separator } from "@/components/ui/separator";
 import { Button } from "@/components/ui/button";
 import { useTheme } from "@/contexts/ThemeContext";
 import { useLocation } from "wouter";
-import { useMemo, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Search, Moon, Sun } from "lucide-react";
 import { ScrollToTop } from "./ScrollToTop";
 import { OnlineIndicator } from "./OnlineIndicator";
+// Phase E (2026-04-28) — Personal contacts overlay (slide-in Sheet
+// triggered by the "c" keyboard shortcut + the sidebar Contacts
+// link). Lives in AppShell so any route can open it.
+import { ContactsOverlay } from "@/features/contacts/ContactsOverlay";
 
 interface AppShellProps {
   children: ReactNode;
@@ -45,6 +49,44 @@ export function AppShell({ children }: AppShellProps) {
     () => ROUTE_TITLES[location] ?? "",
     [location]
   );
+
+  // Phase E (2026-04-28) — Contacts overlay open/close state.
+  // The `c` shortcut toggles it (skipped when typing in an input or
+  // when a modifier is held — `Cmd+C` etc. should keep their
+  // default copy behavior).
+  const [contactsOpen, setContactsOpen] = useState(false);
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.key !== "c" && e.key !== "C") return;
+      const target = e.target as HTMLElement | null;
+      if (!target) return;
+      const tag = target.tagName;
+      if (
+        tag === "INPUT" ||
+        tag === "TEXTAREA" ||
+        tag === "SELECT" ||
+        target.isContentEditable
+      ) {
+        return;
+      }
+      e.preventDefault();
+      setContactsOpen((prev) => !prev);
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  // Cross-component open requests (sidebar link, future palette
+  // entry, etc.) dispatch a custom event we listen for here. Keeps
+  // AppSidebar from needing a portal/context wrapper.
+  useEffect(() => {
+    function onOpenRequest() {
+      setContactsOpen(true);
+    }
+    window.addEventListener("contacts:open", onOpenRequest);
+    return () => window.removeEventListener("contacts:open", onOpenRequest);
+  }, []);
 
   return (
     <SidebarProvider>
@@ -106,6 +148,7 @@ export function AppShell({ children }: AppShellProps) {
       </SidebarInset>
       <CommandPalette />
       <KeyboardShortcuts />
+      <ContactsOverlay open={contactsOpen} onOpenChange={setContactsOpen} />
     </SidebarProvider>
   );
 }
