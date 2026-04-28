@@ -2132,13 +2132,15 @@ export default function SolarRecDashboard() {
   }, [datasetSummariesQuery.data]);
   const saveRemoteDashboardState = solarRecTrpc.solarRecDashboard.saveState.useMutation();
   const getRemoteDataset = solarRecTrpc.solarRecDashboard.getDataset.useMutation();
-  // Single-roundtrip batch read of a whole dataset (manifest + every
-  // source's assembled payload). Used by cold-cache hydration to avoid
-  // the per-chunk fan-out that turns 18-dataset loads into 2000+ tRPC
-  // calls. Falls back to per-key getDataset if the batch endpoint
-  // errors or returns nothing usable.
-  const getRemoteDatasetAssembled =
-    solarRecTrpc.solarRecDashboard.getDatasetAssembled.useMutation();
+  // Task 5.14 PR-5 (2026-04-27): the previous batched cold-cache
+  // path (`getDatasetAssembled` mutation) is gone. Cold hydration
+  // now always takes the per-key `getRemoteDataset` route below
+  // (manifest → per-source chunks) so the only dataset payload
+  // that crosses the wire on cold mount is the chunk-sized one
+  // the legacy save path already produces. Eliminates the 50–150
+  // MB single-response memory bombs that crashed Chrome tabs in
+  // the 2026-04-26 OOM events. Server-side procedure removal +
+  // dead-code sweep ships in PR-6.
   const saveRemoteDataset = solarRecTrpc.solarRecDashboard.saveDataset.useMutation();
   // Atomic read-merge-write for the convertedReads manifest. Used in place
   // of saveRemoteDataset when key === "convertedReads" so server-managed
@@ -2424,8 +2426,6 @@ export default function SolarRecDashboard() {
   saveRemoteDashboardStateRef.current = saveRemoteDashboardState;
   const getRemoteDatasetRef = useRef(getRemoteDataset);
   getRemoteDatasetRef.current = getRemoteDataset;
-  const getRemoteDatasetAssembledRef = useRef(getRemoteDatasetAssembled);
-  getRemoteDatasetAssembledRef.current = getRemoteDatasetAssembled;
   const saveRemoteDatasetRef = useRef(saveRemoteDataset);
   saveRemoteDatasetRef.current = saveRemoteDataset;
   const syncConvertedReadsUserSourcesRef = useRef(syncConvertedReadsUserSources);
@@ -5166,50 +5166,29 @@ export default function SolarRecDashboard() {
           const debug = isSolarRecDebugEnabled();
           const t0 = debug ? performance.now() : 0;
           try {
-            // The direct row-table hydration path (PR #107,
-            // `getDatasetRowsFromSrDs`) was disabled 2026-04-26 after
-            // browser-tab OOMs on the JSON.parse of 50-150 MB row
-            // responses. Until server-side gzip + per-batch artifact
-            // caching ships, every dataset goes straight to the
-            // chunked-batch path below — which is bounded by chunk
-            // size and was working pre-#107.
+            // Task 5.14 PR-5 (2026-04-27): the previous "next-best
+            // path" — the single-roundtrip batch endpoint
+            // `getDatasetAssembled` — is gone. It used to fetch a
+            // dataset's manifest + every source's payload in one
+            // tRPC call, but the assembled response could grow to
+            // 50–150 MB on populated scopes (the convertedReads
+            // multi-source manifest, transferHistory's accumulated
+            // GATS history) which blew up Chrome tabs on JSON.parse.
+            // Cold hydration now always takes the per-key route
+            // below: load the top-level manifest, then fetch each
+            // source's chunk-sized payload with bounded
+            // concurrency. The wire payload per round-trip is
+            // capped by `REMOTE_DATASET_CHUNK_CHAR_LIMIT` (250 KB)
+            // so memory stays bounded and the JSON.parse path
+            // never has more than a chunk in flight at a time.
             //
-            // Next-best path: the single-roundtrip batch endpoint
-            // (`getDatasetAssembled`). It collapses the entire dataset's
-            // chunk-fetch fan-out (manifest + every source's chunks)
-            // into one tRPC call. Fall back to the per-key fetch path
-            // if the endpoint errors or returns nothing usable —
-            // preserves correctness on legacy data and during partial
-            // rollouts.
+            // Server-side procedure removal + the dead chunked-CSV
+            // reassembly helper land in PR-6 once we're sure no
+            // other client surface calls into it.
             let datasetPayload: string | null = null;
             let topChunkKeys: string[] = [];
-            let assembledSources: Map<string, string> | null = null;
 
-            try {
-              const batched = await withRetry(
-                () =>
-                  getRemoteDatasetAssembledRef.current.mutateAsync({
-                    datasetKey: rawKey,
-                  }),
-                3,
-                250
-              );
-              if (batched?.topPayload) {
-                datasetPayload = batched.topPayload;
-                if (Array.isArray(batched.sources)) {
-                  assembledSources = new Map();
-                  for (const entry of batched.sources) {
-                    if (entry && typeof entry.storageKey === "string") {
-                      assembledSources.set(entry.storageKey, entry.payload ?? "");
-                    }
-                  }
-                }
-              }
-            } catch {
-              // Fall through to the per-key path below.
-            }
-
-            if (datasetPayload === null) {
+            {
               const loadedPayload = await loadPayloadByKey(rawKey);
               if (!loadedPayload?.payload) {
                 if (debug) {
@@ -5227,9 +5206,9 @@ export default function SolarRecDashboard() {
             const sourceManifest = parseRemoteSourceManifestPayload(datasetPayload);
             if (sourceManifest) {
               // Per-source: prefer the batch-assembled payload (cheap
-              // map lookup); fall back to per-key fetch only if that
-              // source wasn't in the batch result. Parsing still runs
-              // in parallel so we don't block on the slowest CSV.
+              // map lookup); fall back to per-key fetch for every
+              // source. Parsing still runs in parallel so we don't
+              // block on the slowest CSV.
               const sourcePayloads = await mapWithBoundedConcurrency(
                 sourceManifest.sources,
                 REMOTE_READ_CONCURRENCY,
@@ -5237,15 +5216,10 @@ export default function SolarRecDashboard() {
                   if (cancelled) return null;
                   let sourcePayloadText: string | null = null;
                   let sourceChunkKeys: string[] = [];
-                  if (assembledSources?.has(source.storageKey)) {
-                    sourcePayloadText =
-                      assembledSources.get(source.storageKey) ?? null;
-                  } else {
-                    const sourcePayload = await loadPayloadByKey(source.storageKey);
-                    if (!sourcePayload?.payload) return null;
-                    sourcePayloadText = sourcePayload.payload;
-                    sourceChunkKeys = sourcePayload.chunkKeys;
-                  }
+                  const sourcePayload = await loadPayloadByKey(source.storageKey);
+                  if (!sourcePayload?.payload) return null;
+                  sourcePayloadText = sourcePayload.payload;
+                  sourceChunkKeys = sourcePayload.chunkKeys;
                   if (!sourcePayloadText) return null;
                   const parsed = await parseSourcePayloadForDataset(rawKey, source, sourcePayloadText);
                   if (!parsed) return null;
