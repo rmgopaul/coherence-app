@@ -86,7 +86,6 @@ import type {
   CompliantSourceEntry,
   CompliantSourceEvidence,
   CompliantSourceTableRow,
-  ConvertedReadInputRow,
   CsvDataset,
   GenerationBaseline,
   MonitoringDetailsRecord,
@@ -369,85 +368,91 @@ export default memo(function PerformanceRatioTab(props: PerformanceRatioTabProps
   }, [portalMonitoringCandidates]);
 
   // -------------------------------------------------------------------------
-  // Parse + normalize the converted-reads CSV into the input-row shape
-  // -------------------------------------------------------------------------
-  const convertedReadRows = useMemo<ConvertedReadInputRow[]>(
-    () =>
-      (convertedReads?.rows ?? []).map((row, index) => {
-        const monitoring = clean(row.monitoring);
-        const monitoringSystemId = clean(row.monitoring_system_id);
-        const monitoringSystemName = clean(row.monitoring_system_name);
-        const readDateRaw = clean(row.read_date);
-        return {
-          key: `converted-${index}`,
-          monitoring,
-          monitoringNormalized: normalizeMonitoringMatch(monitoring),
-          monitoringSystemId,
-          monitoringSystemIdNormalized: normalizeSystemIdMatch(monitoringSystemId),
-          monitoringSystemName,
-          monitoringSystemNameNormalized:
-            normalizeSystemNameMatch(monitoringSystemName),
-          lifetimeReadWh: parseEnergyToWh(
-            row.lifetime_meter_read_wh,
-            "lifetime_meter_read_wh",
-            "wh",
-          ),
-          readDate: parseDate(readDateRaw),
-          readDateRaw,
-        };
-      }),
-    [convertedReads],
-  );
-
-  // -------------------------------------------------------------------------
-  // Join reads → matched candidates → computed ratios
-  // -------------------------------------------------------------------------
+  // Single-pass parse + match + compute. Reads each raw convertedReads
+  // row, normalizes inline, and either skips (invalid / unmatched) or
+  // pushes one PerformanceRatioRow per matched candidate. Replaces a
+  // prior two-stage path that built a 700k-element normalized array
+  // first, then iterated it again — that doubled peak memory on the
+  // dashboard's largest scope and was the most likely source of the
+  // tab's frequent crashes on machines with limited heap.
+  //
+  // `convertedReads` is read through `useDeferredValue` so React
+  // schedules the recomputation as a transition. Subsequent
+  // dataset-state churn (auto-persist, monitoring batch refresh)
+  // doesn't block the UI thread on a fresh full pass.
+  const deferredConvertedReads = useDeferredValue(convertedReads);
   const performanceRatioResult = useMemo(() => {
     const rows: PerformanceRatioRow[] = [];
     let matchedConvertedReads = 0;
     let unmatchedConvertedReads = 0;
     let invalidConvertedReads = 0;
+    let convertedReadCount = 0;
 
-    convertedReadRows.forEach((readRow) => {
+    const rawRows = deferredConvertedReads?.rows ?? [];
+    for (let index = 0; index < rawRows.length; index += 1) {
+      convertedReadCount += 1;
+      const row = rawRows[index]!;
+      const monitoring = clean(row.monitoring);
+      const monitoringNormalized = normalizeMonitoringMatch(monitoring);
+      const lifetimeReadWh = parseEnergyToWh(
+        row.lifetime_meter_read_wh,
+        "lifetime_meter_read_wh",
+        "wh",
+      );
+      const monitoringSystemId = clean(row.monitoring_system_id);
+      const monitoringSystemIdNormalized = normalizeSystemIdMatch(monitoringSystemId);
+      const monitoringSystemName = clean(row.monitoring_system_name);
+      const monitoringSystemNameNormalized = normalizeSystemNameMatch(monitoringSystemName);
+
       if (
-        !readRow.monitoringNormalized ||
-        readRow.lifetimeReadWh === null ||
-        (!readRow.monitoringSystemIdNormalized &&
-          !readRow.monitoringSystemNameNormalized)
+        !monitoringNormalized ||
+        lifetimeReadWh === null ||
+        (!monitoringSystemIdNormalized && !monitoringSystemNameNormalized)
       ) {
         invalidConvertedReads += 1;
-        return;
+        continue;
       }
 
+      const readDateRaw = clean(row.read_date);
+      const readDate = parseDate(readDateRaw);
+      const readKey = `converted-${index}`;
+
       const bothMatches =
-        readRow.monitoringSystemIdNormalized &&
-        readRow.monitoringSystemNameNormalized
+        monitoringSystemIdNormalized && monitoringSystemNameNormalized
           ? performanceRatioMatchIndexes.byMonitoringAndIdAndName.get(
-              `${readRow.monitoringNormalized}__${readRow.monitoringSystemIdNormalized}__${readRow.monitoringSystemNameNormalized}`,
-            ) ?? new Set<string>()
-          : new Set<string>();
+              `${monitoringNormalized}__${monitoringSystemIdNormalized}__${monitoringSystemNameNormalized}`,
+            ) ?? null
+          : null;
 
-      const idMatches = readRow.monitoringSystemIdNormalized
+      const idMatches = monitoringSystemIdNormalized
         ? performanceRatioMatchIndexes.byMonitoringAndId.get(
-            `${readRow.monitoringNormalized}__${readRow.monitoringSystemIdNormalized}`,
-          ) ?? new Set<string>()
-        : new Set<string>();
+            `${monitoringNormalized}__${monitoringSystemIdNormalized}`,
+          ) ?? null
+        : null;
 
-      const nameMatches = readRow.monitoringSystemNameNormalized
+      const nameMatches = monitoringSystemNameNormalized
         ? performanceRatioMatchIndexes.byMonitoringAndName.get(
-            `${readRow.monitoringNormalized}__${readRow.monitoringSystemNameNormalized}`,
-          ) ?? new Set<string>()
-        : new Set<string>();
+            `${monitoringNormalized}__${monitoringSystemNameNormalized}`,
+          ) ?? null
+        : null;
 
-      const matchedCandidateKeys = new Set<string>([
-        ...Array.from(bothMatches.values()),
-        ...Array.from(idMatches.values()),
-        ...Array.from(nameMatches.values()),
-      ]);
+      if (
+        (!bothMatches || bothMatches.size === 0) &&
+        (!idMatches || idMatches.size === 0) &&
+        (!nameMatches || nameMatches.size === 0)
+      ) {
+        unmatchedConvertedReads += 1;
+        continue;
+      }
+
+      const matchedCandidateKeys = new Set<string>();
+      bothMatches?.forEach((k) => matchedCandidateKeys.add(k));
+      idMatches?.forEach((k) => matchedCandidateKeys.add(k));
+      nameMatches?.forEach((k) => matchedCandidateKeys.add(k));
 
       if (matchedCandidateKeys.size === 0) {
         unmatchedConvertedReads += 1;
-        return;
+        continue;
       }
       matchedConvertedReads += 1;
 
@@ -475,15 +480,15 @@ export default memo(function PerformanceRatioTab(props: PerformanceRatioTabProps
           candidate.system.trackingSystemRefId,
         );
         const productionDeltaWh =
-          readRow.lifetimeReadWh !== null && baselineValueWh !== null
-            ? readRow.lifetimeReadWh - baselineValueWh
+          lifetimeReadWh !== null && baselineValueWh !== null
+            ? lifetimeReadWh - baselineValueWh
             : null;
         const expectedProductionWh =
-          baselineDate && readRow.readDate && annualProfile
+          baselineDate && readDate && annualProfile
             ? calculateExpectedWhForRange(
                 annualProfile.monthlyKwh,
                 baselineDate,
-                readRow.readDate,
+                readDate,
               )
             : null;
         const performanceRatioPercent =
@@ -493,24 +498,23 @@ export default memo(function PerformanceRatioTab(props: PerformanceRatioTabProps
             ? (productionDeltaWh / expectedProductionWh) * 100
             : null;
 
-        const matchType: PerformanceRatioMatchType = bothMatches.has(
-          candidateKey,
-        )
-          ? "Monitoring + System ID + System Name"
-          : idMatches.has(candidateKey)
-            ? "Monitoring + System ID"
-            : "Monitoring + System Name";
+        const matchType: PerformanceRatioMatchType =
+          bothMatches && bothMatches.has(candidateKey)
+            ? "Monitoring + System ID + System Name"
+            : idMatches && idMatches.has(candidateKey)
+              ? "Monitoring + System ID"
+              : "Monitoring + System Name";
 
         rows.push({
-          key: `${readRow.key}-${candidateKey}-${rows.length + 1}`,
-          convertedReadKey: readRow.key,
+          key: `${readKey}-${candidateKey}-${rows.length + 1}`,
+          convertedReadKey: readKey,
           matchType,
-          monitoring: readRow.monitoring,
-          monitoringSystemId: readRow.monitoringSystemId,
-          monitoringSystemName: readRow.monitoringSystemName,
-          readDate: readRow.readDate,
-          readDateRaw: readRow.readDateRaw,
-          lifetimeReadWh: readRow.lifetimeReadWh,
+          monitoring,
+          monitoringSystemId,
+          monitoringSystemName,
+          readDate,
+          readDateRaw,
+          lifetimeReadWh,
           trackingSystemRefId: candidate.system.trackingSystemRefId,
           systemId: candidate.system.systemId,
           stateApplicationRefId: candidate.system.stateApplicationRefId,
@@ -537,7 +541,7 @@ export default memo(function PerformanceRatioTab(props: PerformanceRatioTabProps
           contractValue: resolveContractValueAmount(candidate.system),
         });
       });
-    });
+    }
 
     rows.sort((a, b) => {
       const aTime = a.readDate?.getTime() ?? Number.NEGATIVE_INFINITY;
@@ -554,7 +558,7 @@ export default memo(function PerformanceRatioTab(props: PerformanceRatioTabProps
 
     return {
       rows,
-      convertedReadCount: convertedReadRows.length,
+      convertedReadCount,
       matchedConvertedReads,
       unmatchedConvertedReads,
       invalidConvertedReads,
@@ -563,7 +567,7 @@ export default memo(function PerformanceRatioTab(props: PerformanceRatioTabProps
     abpAcSizeKwByApplicationId,
     abpPart2VerificationDateByApplicationId,
     annualProductionByTrackingId,
-    convertedReadRows,
+    deferredConvertedReads,
     generatorDateOnlineByTrackingId,
     generationBaselineByTrackingId,
     performanceRatioMatchIndexes,
