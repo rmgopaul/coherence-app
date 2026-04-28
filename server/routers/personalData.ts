@@ -77,6 +77,9 @@ import {
   getTopSignalsForUser,
   listNoteLinks,
   listNotes,
+  // Task 10.3 (2026-04-28): reverse-link rendering on the dashboard.
+  listNotesForExternal,
+  countNoteLinksByExternalIds,
   listProductionReadings,
   listSupplementDefinitions,
   listSupplementLogs,
@@ -1869,6 +1872,74 @@ export const notesRouter = router({
       });
 
       return { success: true, noteId };
+    }),
+
+  /**
+   * Task 10.3 (2026-04-28) — reverse-link lookup. Given an external
+   * productivity object, return the notes that link to it.
+   *
+   * Powers the dashboard's "📎 N linked notes" badge on Todoist
+   * task rows + Calendar event cards. The forward direction
+   * (note → external) is created by the Notebook→Todoist flow
+   * (Task 4.6) and the equivalent calendar handoff; this proc
+   * closes the loop.
+   *
+   * `seriesId` / `occurrenceStartIso` are optional — when omitted,
+   * matches any link with the supplied (linkType, externalId),
+   * which is what the dashboard wants for "any note touching this
+   * task / this event."
+   */
+  listForExternal: protectedProcedure
+    .input(
+      z.object({
+        linkType: z
+          .enum(["todoist_task", "google_calendar_event"]),
+        externalId: z.string().min(1).max(255),
+        seriesId: z.string().max(255).optional(),
+        occurrenceStartIso: z.string().max(64).optional(),
+        limit: z.number().int().min(1).max(200).optional(),
+      })
+    )
+    .query(async ({ ctx, input }) => {
+      const notes = await listNotesForExternal(
+        ctx.user.id,
+        input.linkType,
+        input.externalId,
+        {
+          limit: input.limit,
+          seriesId: input.seriesId,
+          occurrenceStartIso: input.occurrenceStartIso,
+        }
+      );
+      return { notes };
+    }),
+
+  /**
+   * Task 10.3 (2026-04-28) — batch reverse-link counts. Returns
+   * `Record<externalId, count>` so the dashboard can render badges
+   * for ~30-50 rows per render in one round-trip.
+   *
+   * Empty `externalIds` → empty result. Caller-supplied IDs are
+   * deduped + capped at 500 server-side.
+   */
+  countLinksByExternalIds: protectedProcedure
+    .input(
+      z.object({
+        linkType: z
+          .enum(["todoist_task", "google_calendar_event"]),
+        externalIds: z.array(z.string().min(1).max(255)).max(500),
+      })
+    )
+    .query(async ({ ctx, input }) => {
+      if (input.externalIds.length === 0) {
+        return { counts: {} as Record<string, number> };
+      }
+      const counts = await countNoteLinksByExternalIds(
+        ctx.user.id,
+        input.linkType,
+        input.externalIds
+      );
+      return { counts };
     }),
 });
 

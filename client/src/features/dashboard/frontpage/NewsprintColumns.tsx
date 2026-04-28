@@ -11,6 +11,11 @@
  * Spec: handoff/web-spec.md §"NewsprintColumns.tsx"
  */
 import type { CalendarEvent, TodoistTask, GmailWaitingOnItem } from "../types";
+// Task 10.3 (2026-04-28): "📎 N linked notes" badge for calendar
+// events that have notes attached via the Notebook→Calendar handoff.
+import { LinkedNotesBadge } from "./LinkedNotesBadge";
+import { trpc } from "@/lib/trpc";
+import { useMemo } from "react";
 import {
   daysAgoLabel,
   eventLocationLabel,
@@ -42,6 +47,19 @@ function TodayColumn({ events }: { events: CalendarEvent[] }) {
     })
     .slice(0, 6);
 
+  // Task 10.3: batched note-count query so the 📎 badge renders
+  // without N separate listForExternal calls per event in the
+  // column. One round-trip serves the whole list.
+  const eventIds = useMemo(
+    () => upcoming.map((e) => e.id ?? "").filter(Boolean),
+    [upcoming]
+  );
+  const noteCountsQuery = trpc.notes.countLinksByExternalIds.useQuery(
+    { linkType: "google_calendar_event" as const, externalIds: eventIds },
+    { enabled: eventIds.length > 0, staleTime: 60_000 }
+  );
+  const noteCountsByEventId = noteCountsQuery.data?.counts ?? {};
+
   return (
     <section className="fp-col">
       <header className="fp-col__head">
@@ -70,6 +88,16 @@ function TodayColumn({ events }: { events: CalendarEvent[] }) {
                 </span>
                 {loc && (
                   <span className="fp-row__meta mono-label">{loc}</span>
+                )}
+                {/* Task 10.3: 📎 N linked notes badge — only renders
+                    when the count is > 0 and the event has a stable
+                    id (synthetic-id rows skip the lookup). */}
+                {event.id && (
+                  <LinkedNotesBadge
+                    linkType="google_calendar_event"
+                    externalId={event.id}
+                    count={noteCountsByEventId[event.id]}
+                  />
                 )}
               </li>
             );
