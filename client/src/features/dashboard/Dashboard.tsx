@@ -1,24 +1,16 @@
 /**
- * Dashboard — route switcher.
+ * Dashboard — front-page layout (post-Phase-B).
  *
- * Behaviour:
- * - If `VITE_FRONT_PAGE_ENABLED` is truthy, render the new front-page
- *   layout (`FrontPageDashboard`).
- * - Otherwise render the legacy dashboard unchanged.
- *
- * The legacy view also stays reachable at `/dashboard-legacy` for 60
- * days after flipping default-on. See `handoff/web-spec.md`.
+ * Renders `FrontPageDashboard` directly. The legacy view (kept
+ * behind a `VITE_FRONT_PAGE_ENABLED` feature flag during the Phase B
+ * rollout) was retired on 2026-04-28 once the team confirmed nobody
+ * was hitting `/dashboard-legacy` anymore. The flag, the legacy
+ * file, and the legacy route in `App.tsx` were all removed in the
+ * same change. See `docs/execution-plan.md` Phase E backlog
+ * "Retire `DashboardLegacy.tsx`".
  */
-import DashboardLegacy from "./DashboardLegacy";
 import FrontPageDashboard from "./FrontPageDashboard";
 
-const FRONT_PAGE_ENABLED =
-  import.meta.env.VITE_FRONT_PAGE_ENABLED === "true" ||
-  import.meta.env.VITE_FRONT_PAGE_ENABLED === "1";
-
 export default function Dashboard() {
-  if (FRONT_PAGE_ENABLED) {
-    return <FrontPageDashboard />;
-  }
-  return <DashboardLegacy />;
+  return <FrontPageDashboard />;
 }

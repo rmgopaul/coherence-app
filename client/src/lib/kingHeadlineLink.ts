@@ -9,7 +9,7 @@
  *
  *   1. `taskId`  → `https://todoist.com/app/task/<id>`
  *      The Todoist web app accepts a bare task ID at this path; same
- *      pattern used by `DashboardLegacy.tsx` and the river feed.
+ *      pattern used by the river feed.
  *   2. `eventId` → matched event's `htmlLink` from `calendarEvents`
  *      The hero already has the upcoming-events list as a prop, so we
  *      reuse it instead of round-tripping a separate fetch. Google
