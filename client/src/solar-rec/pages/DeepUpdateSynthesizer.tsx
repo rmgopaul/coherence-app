@@ -37,6 +37,7 @@ type DeepUpdateRemoteReportPayload = {
   sheetName: string;
   headers: string[];
   rows: Array<Record<string, unknown>>;
+  uploadedAt?: number;
 };
 
 function isDeepUpdateReportKey(value: string): value is DeepUpdateReportKey {
@@ -59,6 +60,7 @@ function normalizeDeepUpdateReport(
         sheetName?: unknown;
         headers?: unknown;
         rows?: unknown;
+        uploadedAt?: unknown;
       }
     | null
     | undefined
@@ -79,6 +81,9 @@ function normalizeDeepUpdateReport(
       }
       return normalized;
     }),
+    // Pre-timestamp uploads (legacy IDB / cloud rows written before
+    // this field existed) get 0 so any fresh upload wins on merge.
+    uploadedAt: typeof value.uploadedAt === "number" && Number.isFinite(value.uploadedAt) ? value.uploadedAt : 0,
   };
 }
 
@@ -144,6 +149,7 @@ function serializeReportForRemote(report: DeepUpdateReportData): string {
     sheetName: report.sheetName,
     headers: report.headers,
     rows: report.rows,
+    uploadedAt: report.uploadedAt,
   };
   return JSON.stringify(payload);
 }
@@ -422,8 +428,19 @@ export default function DeepUpdateSynthesizer() {
             if (Object.keys(current).length === 0) return loaded;
             const merged = { ...current };
             for (const [key, value] of Object.entries(loaded)) {
-              if (!merged[key as DeepUpdateReportKey] && value) {
-                merged[key as DeepUpdateReportKey] = value;
+              if (!value) continue;
+              const reportKey = key as DeepUpdateReportKey;
+              const existing = merged[reportKey];
+              // Prefer whichever upload was parsed more recently. The
+              // old logic kept whatever was in IndexedDB and ignored
+              // cloud entirely if a key was already loaded — which
+              // silently kept stale browser-cached uploads alive even
+              // when a teammate (or the same user, on a different
+              // device) had pushed a newer file to cloud sync. Legacy
+              // entries with no timestamp default to 0, so any
+              // timestamped upload wins.
+              if (!existing || value.uploadedAt > existing.uploadedAt) {
+                merged[reportKey] = value;
               }
             }
             return filterReportsToActive(merged);
@@ -730,6 +747,9 @@ export default function DeepUpdateSynthesizer() {
                       {uploaded ? (
                         <p className="text-xs text-slate-500">
                           Loaded: {uploaded.fileName} ({uploaded.rows.length.toLocaleString()} rows, sheet: {uploaded.sheetName})
+                          {uploaded.uploadedAt > 0
+                            ? ` · parsed ${new Date(uploaded.uploadedAt).toLocaleString()}`
+                            : " · parsed before timestamps were tracked (re-upload to refresh)"}
                         </p>
                       ) : (
                         <p className="text-xs text-slate-500">No file uploaded yet.</p>

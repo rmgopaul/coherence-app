@@ -16,6 +16,12 @@ export type DeepUpdateReportData = {
   sheetName: string;
   headers: string[];
   rows: Array<Record<string, string>>;
+  // Epoch ms when this file was parsed in the browser. Used by the
+  // dual IDB/cloud hydration to prefer the newer copy when both
+  // layers hold a value for the same key — older logic always
+  // preferred IDB, which silently kept stale uploads alive across
+  // sessions.
+  uploadedAt: number;
 };
 
 type CalcStepValue = number | null;
@@ -391,6 +397,7 @@ export async function parseDeepUpdateReportFile(file: File, key: DeepUpdateRepor
     sheetName,
     headers,
     rows,
+    uploadedAt: Date.now(),
   };
 }
 
