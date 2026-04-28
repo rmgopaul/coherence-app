@@ -3,7 +3,13 @@
  *
  * Extracted from SolarRecDashboard.tsx (2026-04-14). Phase 7 of the
  * god-component decomposition. Owns:
- *   - 2 useMemos (dataQualityFreshness, dataQualityUnmatched)
+ *   - 1 useMemo (dataQualityFreshness)
+ *   - 1 tRPC query (`getDashboardDataQualityReconciliation`,
+ *     introduced by Task 5.14 PR-4 to replace the prior
+ *     `dataQualityUnmatched` useMemo that walked
+ *     `datasets.deliveryScheduleBase.rows` +
+ *     `datasets.convertedReads.rows` to compute the same set
+ *     difference)
  *   - dataset freshness badges + cross-reference reconciliation
  *
  * `dataHealthSummary` and `part2FilterAudit` STAY in the parent
@@ -29,21 +35,25 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import {
-  formatNumber,
-  toPercentValue,
-} from "@/solar-rec-dashboard/lib/helpers";
+import { formatNumber } from "@/solar-rec-dashboard/lib/helpers";
 import type {
   CsvDataset,
   DatasetKey,
 } from "@/solar-rec-dashboard/state/types";
+import { solarRecTrpc } from "@/solar-rec/solarRecTrpc";
 
 // ---------------------------------------------------------------------------
 // Props
 // ---------------------------------------------------------------------------
 
 export interface DataQualityTabProps {
-  /** Full dataset bag — drives both the freshness table and the reconciliation. */
+  /**
+   * Full dataset bag — drives the freshness table only. The
+   * reconciliation moved server-side in Task 5.14 PR-4 and no
+   * longer reads `datasets[k].rows`. Task 5.14 PR-5 will drop
+   * this prop entirely once the parent's in-memory state goes
+   * away.
+   */
   datasets: Partial<Record<DatasetKey, CsvDataset>>;
   /**
    * PR-7 (data-flow series): server-side summaries from
@@ -70,6 +80,13 @@ export interface DataQualityTabProps {
       }
     >
   >;
+  /**
+   * Gates the reconciliation query so it only fires when the
+   * Data Quality tab is the active tab. Mirrors the pattern
+   * from the other Task 5.13 + 5.14 tab migrations (Trends,
+   * AppPipeline, etc.).
+   */
+  isActive: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -90,7 +107,31 @@ const DATASET_LABELS: Record<string, string> = {
 };
 
 export default memo(function DataQualityTab(props: DataQualityTabProps) {
-  const { datasets, datasetSummariesByKey } = props;
+  const { datasets, datasetSummariesByKey, isActive } = props;
+
+  // Task 5.14 PR-4: reconciliation moved server-side. The query
+  // only fires when the user is on this tab; cached server-side via
+  // `solarRecComputedArtifacts` keyed on the
+  // (deliveryScheduleBase batch, convertedReads batch) input
+  // version hash.
+  const reconciliationQuery =
+    solarRecTrpc.solarRecDashboard.getDashboardDataQualityReconciliation.useQuery(
+      undefined,
+      {
+        enabled: isActive,
+        staleTime: 60_000,
+      }
+    );
+  const dataQualityUnmatched = useMemo(
+    () => ({
+      inScheduleNotMonitoring:
+        reconciliationQuery.data?.inScheduleNotMonitoring ?? [],
+      inMonitoringNotSchedule:
+        reconciliationQuery.data?.inMonitoringNotSchedule ?? [],
+      matchedPercent: reconciliationQuery.data?.matchedPercent ?? null,
+    }),
+    [reconciliationQuery.data]
+  );
 
   const dataQualityFreshness = useMemo(() => {
     const now = new Date();
@@ -131,40 +172,6 @@ export default memo(function DataQualityTab(props: DataQualityTabProps) {
       };
     });
   }, [datasets, datasetSummariesByKey]);
-
-  const dataQualityUnmatched = useMemo(() => {
-    const scheduleIds = new Set<string>();
-    const monitoringIds = new Set<string>();
-
-    // Phase 1a: the Delivery Tracker / Performance Eval obligations now come
-    // from deliveryScheduleBase (Schedule B scrape), so we reconcile tracking
-    // IDs against that dataset instead of the removed recDeliverySchedules.
-    (datasets.deliveryScheduleBase?.rows ?? []).forEach((row) => {
-      const id = row.tracking_system_ref_id || row.system_id || "";
-      if (id) scheduleIds.add(id.toLowerCase());
-    });
-
-    (datasets.convertedReads?.rows ?? []).forEach((row) => {
-      const id = row.monitoring_system_id || "";
-      if (id) monitoringIds.add(id.toLowerCase());
-    });
-
-    const inScheduleNotMonitoring = Array.from(scheduleIds).filter(
-      (id) => !monitoringIds.has(id),
-    );
-    const inMonitoringNotSchedule = Array.from(monitoringIds).filter(
-      (id) => !scheduleIds.has(id),
-    );
-    const combined = new Set(
-      Array.from(scheduleIds).concat(Array.from(monitoringIds)),
-    );
-    const totalUnique = combined.size;
-    const matched =
-      totalUnique - inScheduleNotMonitoring.length - inMonitoringNotSchedule.length;
-    const matchedPercent = toPercentValue(matched, totalUnique);
-
-    return { inScheduleNotMonitoring, inMonitoringNotSchedule, matchedPercent };
-  }, [datasets.deliveryScheduleBase, datasets.convertedReads]);
 
   return (
     <div className="space-y-4 mt-4">
