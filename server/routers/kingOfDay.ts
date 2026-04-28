@@ -1,14 +1,22 @@
 /**
- * King of the Day — Phase C
+ * King of the Day — Phase C + Task 10.2 extensions (2026-04-28)
  *
  * `get`   — returns the persisted headline for (user, dateKey) or
- *           auto-selects, persists, and returns.
+ *           auto-selects, persists, and returns. Auto-unpins a
+ *           `manual` king whose Todoist task has been completed
+ *           (Task 10.2) before falling through to re-select.
  * `pin`   — upserts a `manual` row (replaces any `auto` pick).
  * `unpin` — deletes the row; next `.get()` re-runs the selector.
  *
- * The rules-based selector (`selectKingOfDay`) looks at overdue
- * Todoist tasks, today's P1s, and the first calendar event of the
- * day. Simplified from the spec — no business-hours or attachment
+ * The rules-based selector (`selectKingOfDay`) considers:
+ *
+ *   - Overdue Todoist tasks      — score 100 + priority + days
+ *   - Today's P1 / P2 Todoist    — score 80 / 60
+ *   - Pinned DropDock items      — score 50  (Task 10.2)
+ *   - Waiting-on Gmail >7d       — score 35  (Task 10.2)
+ *   - First calendar event       — score 40 (only if no others)
+ *
+ * Simplified from the spec — no business-hours or attachment
  * heuristics — and the AI layer from the spec is deferred behind
  * a feature flag (`SMART_KING_AI_ENABLED`, currently unused).
  *
@@ -21,14 +29,18 @@ import {
   upsertKingOfDay,
   deleteKingOfDay,
   getIntegrationByProvider,
+  listDockItems,
 } from "../db";
-import type { UserKingOfDay } from "../../drizzle/schema";
+import type { UserKingOfDay, DockItem } from "../../drizzle/schema";
 import { getValidGoogleToken } from "../helpers/tokenRefresh";
 import {
   getTodoistTasks,
   type TodoistTask,
 } from "../services/integrations/todoist";
-import { getGoogleCalendarEvents } from "../services/integrations/google";
+import {
+  getGmailWaitingOn,
+  getGoogleCalendarEvents,
+} from "../services/integrations/google";
 import {
   aiSelectKingOfDay,
   extractAnthropicAuth,
@@ -72,6 +84,90 @@ function daysOverdue(task: TodoistTask, now: Date = new Date()): number {
     (today.getTime() - due.getTime()) / 86_400_000
   );
   return Math.max(0, diffDays);
+}
+
+/* ------------------------------------------------------------------ */
+/*  Task 10.2 helpers — pure, exposed for tests                        */
+/* ------------------------------------------------------------------ */
+
+const WAITING_ON_AGE_THRESHOLD_DAYS = 7;
+const WAITING_ON_AGE_THRESHOLD_MS =
+  WAITING_ON_AGE_THRESHOLD_DAYS * 86_400_000;
+
+/**
+ * Friendly title for a pinned dock item. Prefers the stored title;
+ * falls back to a host-prefixed slug of the URL so the king never
+ * displays a bare 80-char URL on the hero.
+ */
+export function dockItemKingTitle(item: DockItem): string {
+  const trimmedTitle = item.title?.trim();
+  if (trimmedTitle) return trimmedTitle;
+  try {
+    const url = new URL(item.url);
+    const path = url.pathname === "/" ? "" : url.pathname;
+    return `${url.host}${path}`.slice(0, 80);
+  } catch {
+    return item.url.slice(0, 80);
+  }
+}
+
+/**
+ * Parse a Gmail Date header (RFC 5322) and return ms-since-epoch.
+ * Returns `null` for unparseable values so the waiting-on filter
+ * can skip those rows defensively rather than crashing the whole
+ * candidate-source step.
+ */
+export function parseEmailSentDateMs(value: string | null | undefined): number | null {
+  if (!value) return null;
+  const ms = Date.parse(value);
+  if (Number.isNaN(ms)) return null;
+  return ms;
+}
+
+/**
+ * `true` if the waiting-on row's last-sent date is more than 7 days
+ * before `now`. Returns `false` for unparseable dates so we don't
+ * accidentally promote rows where Gmail didn't ship a Date header.
+ */
+export function isWaitingOnOlderThanThreshold(
+  row: { date?: string | null | undefined },
+  now: Date = new Date()
+): boolean {
+  const sentMs = parseEmailSentDateMs(row.date);
+  if (sentMs === null) return false;
+  const ageMs = now.getTime() - sentMs;
+  return ageMs > WAITING_ON_AGE_THRESHOLD_MS;
+}
+
+/**
+ * Compute `Math.floor((now - sentMs) / 86_400_000)` for display.
+ * Public so the candidate-builder can reuse the same age math the
+ * threshold check uses.
+ */
+export function waitingOnAgeDays(
+  row: { date?: string | null | undefined },
+  now: Date = new Date()
+): number {
+  const sentMs = parseEmailSentDateMs(row.date);
+  if (sentMs === null) return 0;
+  return Math.max(0, Math.floor((now.getTime() - sentMs) / 86_400_000));
+}
+
+/**
+ * `true` if the king's Todoist task ID still appears in the user's
+ * active-tasks list. `false` means the task was completed or
+ * deleted — both reasons to auto-unpin the king.
+ *
+ * Defensive on shape: if `taskId` is null/empty we return `true`
+ * (nothing to unpin), and the active list itself is matched by
+ * exact id string.
+ */
+export function isTodoistTaskStillActive(
+  taskId: string | null | undefined,
+  activeTasks: ReadonlyArray<{ id: string }>
+): boolean {
+  if (!taskId) return true;
+  return activeTasks.some((t) => t.id === taskId);
 }
 
 interface Candidate {
@@ -137,6 +233,57 @@ async function selectKingOfDay(
     }
   } catch (err) {
     console.warn("[kingOfDay] Todoist selector step failed:", err);
+  }
+
+  // --- Pinned DropDock items (Task 10.2 · score 50) ---
+  // The user's deliberate "I want to come back to this" signal —
+  // weighted between today's P2 (60) and the calendar-event fallback
+  // (40) so a pinned chip beats a meeting prep but never beats a
+  // P1 / overdue task. Read directly from the DB; no token-refresh
+  // dance needed.
+  try {
+    const dockRows = await listDockItems(userId);
+    for (const item of dockRows) {
+      if (!item.pinnedAt) continue;
+      candidates.push({
+        title: dockItemKingTitle(item),
+        reason: `pinned in dock · ${item.source}`,
+        taskId: null,
+        eventId: null,
+        score: 50,
+      });
+    }
+  } catch (err) {
+    console.warn("[kingOfDay] DropDock candidate step failed:", err);
+  }
+
+  // --- Waiting-on Gmail threads >7d old (Task 10.2 · score 35) ---
+  // Below the calendar fallback in priority — when nothing else is
+  // ahead, an ancient unanswered thread is still a more useful
+  // headline than the next meeting, but it shouldn't routinely
+  // displace P-tagged tasks.
+  try {
+    const accessToken = await getValidGoogleToken(userId);
+    const waitingOn = await getGmailWaitingOn(accessToken, 50);
+    const now = new Date();
+    for (const row of waitingOn) {
+      if (!isWaitingOnOlderThanThreshold(row, now)) continue;
+      const ageDays = waitingOnAgeDays(row, now);
+      const subjectRaw = typeof row?.subject === "string" ? row.subject : "";
+      const subject = subjectRaw.trim() || "(no subject)";
+      candidates.push({
+        title: `Follow up: ${subject}`,
+        reason:
+          ageDays >= 14
+            ? `${ageDays} days waiting on response · nudge or close it out`
+            : `${ageDays} days waiting on response`,
+        taskId: null,
+        eventId: null,
+        score: 35,
+      });
+    }
+  } catch (err) {
+    console.warn("[kingOfDay] Gmail waiting-on candidate step failed:", err);
   }
 
   // --- Google Calendar (first event of the day if no stronger pick) ---
@@ -240,7 +387,34 @@ async function ensureKing(
   userId: number,
   dateKey: string
 ): Promise<UserKingOfDay | null> {
-  const existing = await getKingOfDay(userId, dateKey);
+  let existing = await getKingOfDay(userId, dateKey);
+
+  // Task 10.2 — auto-unpin a manual king whose Todoist task has been
+  // completed (or deleted). Without this, finishing the task you
+  // pinned this morning leaves the hero stuck on a check-marked
+  // headline until you remember to click Unpin. Limited to manual
+  // (= user-pinned) rows because auto-selected ones already
+  // re-derive on the next call. Best-effort: any failure of the
+  // Todoist fetch falls through to "leave the existing king alone."
+  if (existing && existing.source === "manual" && existing.taskId) {
+    const taskIdToCheck = existing.taskId;
+    try {
+      const integration = await getIntegrationByProvider(userId, "todoist");
+      if (integration?.accessToken) {
+        const activeTasks = await getTodoistTasks(integration.accessToken);
+        if (!isTodoistTaskStillActive(taskIdToCheck, activeTasks)) {
+          await deleteKingOfDay(userId, dateKey);
+          existing = null;
+        }
+      }
+    } catch (err) {
+      console.warn(
+        "[kingOfDay] auto-unpin task-completion check failed:",
+        err
+      );
+    }
+  }
+
   if (existing) return existing;
 
   const picked = await selectKingOfDay(userId, dateKey);
@@ -319,4 +493,15 @@ export const kingOfDayRouter = router({
 });
 
 // Exported for unit tests.
-export const __test__ = { selectKingOfDay, daysOverdue };
+export const __test__ = {
+  selectKingOfDay,
+  daysOverdue,
+  // Task 10.2 helpers (also re-exported from the module's public
+  // surface above, but routed through __test__ so test files only
+  // pull from one place).
+  dockItemKingTitle,
+  parseEmailSentDateMs,
+  isWaitingOnOlderThanThreshold,
+  waitingOnAgeDays,
+  isTodoistTaskStillActive,
+};
