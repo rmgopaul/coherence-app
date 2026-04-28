@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  King • Right — half-width companion to King • Left. See the left
+  widget's XML comment for context. Identical sizing constraints so
+  both halves match cell-for-cell when placed side-by-side.
+-->
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    android:description="@string/widget_king_right_description"
+    android:initialLayout="@layout/glance_default_loading_layout"
+    android:previewImage="@mipmap/ic_launcher"
+    android:minWidth="320dp"
+    android:minHeight="500dp"
+    android:minResizeWidth="280dp"
+    android:minResizeHeight="280dp"
+    android:maxResizeWidth="600dp"
+    android:maxResizeHeight="900dp"
+    android:resizeMode="horizontal|vertical"
+    android:targetCellWidth="7"
+    android:targetCellHeight="9"
+    android:updatePeriodMillis="1800000"
+    android:widgetCategory="home_screen" />

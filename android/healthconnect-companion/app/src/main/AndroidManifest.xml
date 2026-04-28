@@ -145,6 +145,44 @@
         android:name="android.appwidget.provider"
         android:resource="@xml/coherence_king_widget_info" />
     </receiver>
+
+    <!-- King • Left — half of the side-by-side King pair. Owns the
+         KoD hero + tasks + inbox + next event. Pair with King · Right
+         to fill the Z Fold inner display (Samsung One UI caps a
+         single widget at ~half the inner display, hence the split). -->
+    <receiver
+      android:name=".widget.CoherenceKingLeftWidgetReceiver"
+      android:enabled="true"
+      android:exported="true"
+      android:label="Coherence King · Left">
+      <intent-filter>
+        <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+      </intent-filter>
+      <intent-filter>
+        <action android:name="com.coherence.healthconnect.widget.king.left.ACTION_REFRESH" />
+      </intent-filter>
+      <meta-data
+        android:name="android.appwidget.provider"
+        android:resource="@xml/coherence_king_left_widget_info" />
+    </receiver>
+
+    <!-- King • Right — half of the side-by-side King pair. Owns
+         markets + news + sports. Pair with King · Left. -->
+    <receiver
+      android:name=".widget.CoherenceKingRightWidgetReceiver"
+      android:enabled="true"
+      android:exported="true"
+      android:label="Coherence King · Right">
+      <intent-filter>
+        <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+      </intent-filter>
+      <intent-filter>
+        <action android:name="com.coherence.healthconnect.widget.king.right.ACTION_REFRESH" />
+      </intent-filter>
+      <meta-data
+        android:name="android.appwidget.provider"
+        android:resource="@xml/coherence_king_right_widget_info" />
+    </receiver>
   </application>
 
 </manifest>
