@@ -413,6 +413,8 @@ export const solarRecDashboardRouter = t.router({
         };
       }
       return {
+        _runnerVersion: "data-flow-pr3" as const,
+        serverTimeMs: Date.now(),
         state: job.state,
         error: job.error,
         progress: job.progress,
@@ -1008,16 +1010,14 @@ export const solarRecDashboardRouter = t.router({
         });
         return {
           _checkpoint: "saveDataset-scope-v2",
-          _runnerVersion: "data-flow-pr2" as const,
-          success: true,
+          _runnerVersion: "data-flow-pr3" as const,
+          success: persistedToDatabase,
+          partial: !persistedToDatabase,
           key,
           persistedToDatabase,
           storageSynced: true,
-          // PR-2: surface the DB error so the client can show a real
-          // message instead of silently treating partial-success as
-          // OK. `getDatasetCloudStatuses` will independently report
-          // the dataset as not-recoverable until a re-ingest succeeds
-          // (see datasetCloudStatus.ts isChildKeyRecoverable).
+          // PR-1: surface the DB error and return success: false so the client
+          // can show a real message instead of silently treating partial-success as OK.
           dbError: persistError,
         };
       } catch (storageError) {
@@ -1038,8 +1038,9 @@ export const solarRecDashboardRouter = t.router({
           });
           return {
             _checkpoint: "saveDataset-scope-v2",
-            _runnerVersion: "data-flow-pr2" as const,
-            success: true,
+            _runnerVersion: "data-flow-pr3" as const,
+            success: false,
+            partial: true,
             key,
             persistedToDatabase,
             storageSynced: false,

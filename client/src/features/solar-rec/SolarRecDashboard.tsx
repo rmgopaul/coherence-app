@@ -2065,6 +2065,20 @@ export default function SolarRecDashboard() {
   const [lastDbErrors, setLastDbErrors] = useState<
     Partial<Record<DatasetKey, { message: string; at: number }>>
   >({});
+  // srDs sync-job issues. Pre-fix the 10min polling timeout fired
+  // a console.warn and cleared progress, so the Cloud Sync tile
+  // silently flipped to "synced" while the row-table population
+  // was still pending or had failed unobserved. This map captures
+  // both the timeout case and the explicit "failed" terminal state
+  // so the UI can show a real error and a retry button.
+  const [syncJobIssues, setSyncJobIssues] = useState<
+    Partial<
+      Record<
+        DatasetKey,
+        { kind: "timeout" | "failed"; jobId: string; message?: string; at: number }
+      >
+    >
+  >({});
   const [migratingLocalOnlyDatasets, setMigratingLocalOnlyDatasets] = useState(false);
   const [remoteSourceManifests, setRemoteSourceManifests] = useState<
     Partial<Record<DatasetKey, RemoteDatasetSourceManifestPayload>>
@@ -2285,6 +2299,17 @@ export default function SolarRecDashboard() {
         delete activeCoreDatasetSyncJobRef.current[key];
       }
 
+      // Clear any prior timeout/failure on success so the
+      // dataset card reverts to its normal badge state.
+      if (state === "done") {
+        setSyncJobIssues((previous) => {
+          if (!previous[key]) return previous;
+          const next = { ...previous };
+          delete next[key];
+          return next;
+        });
+      }
+
       const sid = scopeIdRef.current;
 
       if (state === "done") {
@@ -2419,8 +2444,22 @@ export default function SolarRecDashboard() {
               delete activeCoreDatasetSyncJobRef.current[key as DatasetKey];
             }
             setDatasetSyncProgressState(key as DatasetKey, undefined);
+            setSyncJobIssues((previous) => ({
+              ...previous,
+              [key as DatasetKey]: {
+                kind: "failed",
+                jobId,
+                message: status.error ?? "Server reported the sync job failed.",
+                at: Date.now(),
+              },
+            }));
+            setDatasetCloudSyncStatus((previous) =>
+              previous[key as DatasetKey] === "failed"
+                ? previous
+                : { ...previous, [key as DatasetKey]: "failed" }
+            );
             // eslint-disable-next-line no-console
-            console.warn(
+            console.error(
               `[solar-rec] srDs sync for ${key} failed:`,
               status.error
             );
@@ -2444,8 +2483,12 @@ export default function SolarRecDashboard() {
           delete activeCoreDatasetSyncJobRef.current[key as DatasetKey];
         }
         setDatasetSyncProgressState(key as DatasetKey, undefined);
+        setSyncJobIssues((previous) => ({
+          ...previous,
+          [key as DatasetKey]: { kind: "timeout", jobId, at: Date.now() },
+        }));
         // eslint-disable-next-line no-console
-        console.warn(
+        console.error(
           `[solar-rec] srDs sync for ${key} polling timed out after 10min`
         );
       })();
@@ -2814,8 +2857,20 @@ export default function SolarRecDashboard() {
             delete activeCoreDatasetSyncJobRef.current[key];
           }
           setDatasetSyncProgressState(key, undefined);
+          setSyncJobIssues((previous) => ({
+            ...previous,
+            [key]: {
+              kind: "failed",
+              jobId,
+              message: status.error ?? "Server reported the sync job failed.",
+              at: Date.now(),
+            },
+          }));
+          setDatasetCloudSyncStatus((previous) =>
+            previous[key] === "failed" ? previous : { ...previous, [key]: "failed" }
+          );
           // eslint-disable-next-line no-console
-          console.warn(`[solar-rec] srDs sync for ${key} failed:`, status.error);
+          console.error(`[solar-rec] srDs sync for ${key} failed:`, status.error);
           return;
         }
 
@@ -2831,8 +2886,12 @@ export default function SolarRecDashboard() {
         delete activeCoreDatasetSyncJobRef.current[key];
       }
       setDatasetSyncProgressState(key, undefined);
+      setSyncJobIssues((previous) => ({
+        ...previous,
+        [key]: { kind: "timeout", jobId, at: Date.now() },
+      }));
       // eslint-disable-next-line no-console
-      console.warn(`[solar-rec] srDs sync for ${key} did not finish before client polling timed out.`);
+      console.error(`[solar-rec] srDs sync for ${key} did not finish before client polling timed out.`);
     },
     [
       CORE_DATASET_SYNC_POLL_INTERVAL_MS,
@@ -3672,6 +3731,12 @@ export default function SolarRecDashboard() {
       delete next[key];
       return next;
     });
+    setSyncJobIssues((previous) => {
+      if (!previous[key]) return previous;
+      const next = { ...previous };
+      delete next[key];
+      return next;
+    });
     forcedRemoteDatasetSyncKeysRef.current.delete(key);
     delete activeCoreDatasetSyncJobRef.current[key];
   };
@@ -3685,6 +3750,7 @@ export default function SolarRecDashboard() {
     setForceSyncingDatasets({});
     setRemoteSourceManifests({});
     setLastDbErrors({});
+    setSyncJobIssues({});
     forcedRemoteDatasetSyncKeysRef.current.clear();
     activeCoreDatasetSyncJobRef.current = {};
     // meterReads state is now owned by MeterReadsTab; it resets on unmount.
@@ -7026,30 +7092,42 @@ const aiDataContext = useMemo(() => {
                   Rows: {formatNumber(part2FilterAudit.part2Rows)} Part II, {formatNumber(part2FilterAudit.excludedRows)} excluded
                 </p>
               </div>
-              <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 xl:col-span-2">
+              <div className={`rounded-md border px-3 py-2 xl:col-span-2 ${
+                Object.values(syncJobIssues).some(issue => issue.kind === "timeout" || issue.kind === "failed")
+                  ? "border-rose-300 bg-rose-50"
+                  : "border-slate-200 bg-slate-50"
+              }`}>
                 <p className="text-xs uppercase tracking-wide text-slate-500">Cloud Sync</p>
-                <p className="text-sm font-semibold text-slate-900">{dataHealthSummary.syncStatus}</p>
-                {activeDatasetSyncProgress ? (
-                  <div className="mt-2 space-y-1.5">
-                    <div className="flex items-center justify-between gap-3 text-xs text-slate-700">
-                      <span className="truncate font-medium">
-                        {DATASET_DEFINITIONS[activeDatasetSyncProgress.datasetKey].label}:{" "}
-                        {activeDatasetSyncProgress.progress.message}
-                      </span>
-                      <span>{formatNumber(activeDatasetSyncProgress.progress.percent, 0)}%</span>
-                    </div>
-                    <Progress
-                      value={activeDatasetSyncProgress.progress.percent}
-                      className="h-2 bg-sky-100"
-                    />
-                    {formatSyncProgressUnits(activeDatasetSyncProgress.progress) ? (
-                      <p className="text-[11px] text-slate-600">
-                        {formatSyncProgressUnits(activeDatasetSyncProgress.progress)}
-                      </p>
-                    ) : null}
+                
+                {Object.keys(datasetSyncProgress).length > 0 ? (
+                  <div className="mt-1">
+                    <p className="text-sm font-semibold text-slate-900">
+                      Syncing {Object.keys(datasetSyncProgress).length} dataset(s)...
+                    </p>
+                    <p className="mt-1 text-[11px] text-slate-600 truncate">
+                      {Object.keys(datasetSyncProgress).map(k => DATASET_DEFINITIONS[k as DatasetKey].label).join(", ")}
+                    </p>
+                    <button
+                      className="mt-1 text-xs font-medium text-sky-600 hover:text-sky-700 hover:underline"
+                      onClick={() => {
+                        setUploadsExpanded(true);
+                        // The container for dataset cards has id="dataset-cards" in this codebase.
+                        document.getElementById("dataset-cards")?.scrollIntoView({ behavior: "smooth" });
+                      }}
+                    >
+                      View progress &darr;
+                    </button>
                   </div>
-                ) : null}
-                {dataHealthSummary.staleDatasetLabels.length > 0 ? (
+                ) : Object.values(syncJobIssues).some(issue => issue.kind === "timeout" || issue.kind === "failed") ? (
+                  <div className="mt-1">
+                    <p className="text-sm font-semibold text-rose-900">Sync Attention Needed</p>
+                    <p className="mt-1 text-xs text-rose-800">Check alerts below.</p>
+                  </div>
+                ) : (
+                  <p className="text-sm font-semibold text-slate-900">{dataHealthSummary.syncStatus}</p>
+                )}
+
+                {dataHealthSummary.staleDatasetLabels.length > 0 && Object.keys(datasetSyncProgress).length === 0 ? (
                   <p className="mt-1 text-xs text-amber-800">
                     Stale: {dataHealthSummary.staleDatasetLabels.join(", ")}
                   </p>
@@ -7108,6 +7186,73 @@ const aiDataContext = useMemo(() => {
                         className="h-6 px-2 text-xs text-rose-900 hover:bg-rose-100"
                         onClick={() => {
                           setLastDbErrors((previous) => {
+                            if (!previous[key]) return previous;
+                            const next = { ...previous };
+                            delete next[key];
+                            return next;
+                          });
+                        }}
+                      >
+                        Dismiss
+                      </Button>
+                    </li>
+                  ))}
+              </ul>
+            </CardContent>
+          </Card>
+        ) : null}
+
+        {Object.keys(syncJobIssues).length > 0 ? (
+          <Card className="border-amber-300 bg-amber-50/80">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base text-amber-900 flex items-center gap-2">
+                <AlertCircle className="h-4 w-4" />
+                Row-table sync needs attention
+              </CardTitle>
+              <CardDescription className="text-amber-800">
+                The chunked-CSV blob is in cloud storage but the row-table population either failed or stopped reporting after 10 minutes. Until this clears, server-side aggregates (DeliveryTracker, Trends, etc.) will use stale rows.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="pt-0">
+              <ul className="space-y-1.5 text-sm">
+                {(Object.entries(syncJobIssues) as Array<[
+                  DatasetKey,
+                  { kind: "timeout" | "failed"; jobId: string; message?: string; at: number },
+                ]>)
+                  .sort((a, b) => b[1].at - a[1].at)
+                  .map(([key, info]) => (
+                    <li key={key} className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                      <span className="font-medium text-amber-900">
+                        {DATASET_DEFINITIONS[key].label}:
+                      </span>
+                      <span className="text-xs text-amber-800">
+                        {info.kind === "timeout"
+                          ? "Polling stopped after 10 min — job may still be running."
+                          : `Sync failed: ${(info.message ?? "").slice(0, 200)}`}
+                      </span>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-6 px-2 text-xs"
+                        onClick={() => {
+                          activeCoreDatasetSyncJobRef.current[key] = info.jobId;
+                          setSyncJobIssues((previous) => {
+                            if (!previous[key]) return previous;
+                            const next = { ...previous };
+                            delete next[key];
+                            return next;
+                          });
+                          void pollCoreDatasetSyncJob(key, info.jobId);
+                        }}
+                      >
+                        Resume polling
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 px-2 text-xs text-amber-900 hover:bg-amber-100"
+                        onClick={() => {
+                          setSyncJobIssues((previous) => {
                             if (!previous[key]) return previous;
                             const next = { ...previous };
                             delete next[key];
