@@ -3087,6 +3087,36 @@ export const solarRecDashboardRouter = t.router({
   }),
 
   /**
+   * Task 5.14 PR-4 (2026-04-27) — server-side reconciliation between
+   * `srDsDeliverySchedule.trackingSystemRefId` (or `systemId` fallback)
+   * and `srDsConvertedReads.monitoringSystemId`. Replaces the
+   * DataQualityTab's `dataQualityUnmatched` useMemo that walked
+   * `datasets.deliveryScheduleBase.rows` + `datasets.convertedReads.rows`
+   * to compute the same set difference.
+   *
+   * Cache key bundles both dataset batch IDs; sub-second recompute
+   * once invalidated. The match-rate scalar + the two mismatch
+   * lists (capped at 10 000 each for wire-payload safety) are
+   * everything the tab's reconciliation card needs.
+   */
+  getDashboardDataQualityReconciliation: requirePermission(
+    "solar-rec-dashboard",
+    "read"
+  ).query(async ({ ctx }) => {
+    const {
+      getOrBuildDataQualityReconciliation,
+      DATA_QUALITY_RECONCILIATION_RUNNER_VERSION,
+    } = await import("../services/solar/buildDataQualityReconciliation");
+
+    const result = await getOrBuildDataQualityReconciliation(ctx.scopeId);
+
+    return {
+      ...result,
+      _runnerVersion: DATA_QUALITY_RECONCILIATION_RUNNER_VERSION,
+    };
+  }),
+
+  /**
    * Task 5.13 PR-5 (2026-04-27) — server-side Application Pipeline
    * monthly aggregate. Replaces the parent's `pipelineMonthlyRows`
    * useMemo over `abpReport.rows` + `generatorDetails.rows` (with

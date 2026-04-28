@@ -7326,6 +7326,7 @@ const aiDataContext = useMemo(() => {
                 <DataQualityTabLazy
                   datasets={datasets}
                   datasetSummariesByKey={datasetSummariesByKey}
+                  isActive={activeTab === "data-quality"}
                 />
               </Suspense>
             </div>
