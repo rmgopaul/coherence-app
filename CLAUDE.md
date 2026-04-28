@@ -546,12 +546,13 @@ A checklist distilled from painful experience (see
 
 ---
 
-## Solar REC Dashboard data flow (canonical, post 2026-04-27 — Tasks 5.12 + 5.13 complete)
+## Solar REC Dashboard data flow (canonical, post 2026-04-27 — Tasks 5.12 + 5.13 + 5.14 complete)
 
-This section locks down the architecture established by PRs #120–#156
-(the data-flow series + Task 5.12 + Task 5.13). Read this before
-adding any new tRPC procedure that touches dashboard data, before
-changing how rows are loaded, or before extending `getSystemSnapshot`.
+This section locks down the architecture established by PRs #120–#175
+(the data-flow series + Task 5.12 + Task 5.13 + Task 5.14). Read this
+before adding any new tRPC procedure that touches dashboard data,
+before changing how rows are loaded, or before extending
+`getSystemSnapshot`.
 
 ### Source of truth per dataset
 
@@ -566,9 +567,14 @@ For every dataset:
 → **`srDs*` row tables are canonical.**
 → The chunked-CSV blob in `solarRecDashboardStorage` + S3 is a
   derived artifact (rebuilt on demand from rows; never authored
-  directly), kept only as a fallback for the dashboard's cold-cache
-  hydration path until that path itself is rewritten off the
-  legacy `getDatasetAssembled` procedure.
+  directly). The dashboard's cold-cache hydration reads it via the
+  per-key `getDataset` route (chunk-bounded by
+  `REMOTE_DATASET_CHUNK_CHAR_LIMIT = 250 KB`) — the legacy
+  `getDatasetAssembled` batch procedure was removed in Task 5.14
+  PR-6 (#175). The blob still backs `convertedReadsBridge.ts` +
+  `serverSideMigration.ts` + Schedule B import, and remains the
+  authoritative input for the per-key + chunk-pointer reassembly
+  path.
 → Active version is pinned by `solarRecActiveDatasetVersions`.
 → "Cloud verified" REQUIRES `solarRecDatasetSyncState.dbPersisted = true`
   (data-flow PR-2). Storage existence alone never qualifies.
@@ -594,15 +600,17 @@ Each maps 1:1 to a `srDs*` table in `drizzle/schemas/solar.ts`.
 | `getDatasetSummariesAll` | Counts + metadata for all 18 datasets | ~5 KB |
 | `getDatasetRowsPage` | One page of `srDs*` rows | ~30-300 KB |
 | `getDatasetCsv` | Server-built CSV from paginated reads | ≤25 MB |
-| `getDatasetAssembled` | **DEPRECATED** chunked-CSV reassembly. Last live caller is the dashboard's cold-cache hydration in `SolarRecDashboard.tsx`. Do NOT use in new code; reach for `getDatasetSummariesAll` (metadata) + `getDatasetRowsPage` / `getDatasetCsv` (row data) instead. | up to 50 MB |
+| `getDataset` (per-key chunk-pointer reader) | One chunk of a chunked-CSV blob | ≤250 KB per call |
 | `getDatasetCloudStatuses` | Recoverability per dataset | ~10 KB |
 | `debugDatasetPersistenceRaw` | Raw rows from every layer + verdict | ~2 KB |
 | `getDashboard<TabName>Aggregates` (DeliveryTracker / TrendDeliveryPace / TrendsProduction / ContractVintage / AppPipelineMonthly / AppPipelineCashFlow) | Per-tab aggregate result | ~10–500 KB |
 
-**No new tRPC response will ever exceed 1 MB uncompressed under
-normal use.** The 50–150 MB responses that caused the 2026-04-26
-Chrome tab OOM are eliminated everywhere except the deprecated
-`getDatasetAssembled` codepath.
+**No tRPC response in the dashboard data path exceeds 1 MB
+uncompressed.** The 50–150 MB responses that caused the 2026-04-26
+Chrome tab OOM are eliminated. The legacy `getDatasetAssembled`
+batch procedure (the only codepath that could exceed the cap) was
+removed in Task 5.14 PR-6 (#175); cold-cache hydration now always
+takes the per-key `getDataset` route, capped at 250 KB per chunk.
 
 ### Tabs migration — DONE
 
@@ -664,7 +672,7 @@ one sync job per scope.
   the chunked-CSV manifest for cases where the row-table verdict is
   `consistent` but the legacy hydration path looks wrong.
 - **`_runnerVersion`** appears on every saveDataset /
-  getDatasetAssembled / getDatasetCloudStatuses /
+  getDataset / getDatasetCloudStatuses /
   getDatasetSummariesAll / getDatasetRowsPage / getDatasetCsv /
   debugDatasetPersistenceRaw / getDashboard<TabName>Aggregates
   response. Verify it matches what you just deployed before
@@ -676,10 +684,10 @@ one sync job per scope.
    greater than 5,000 rows in memory** for wire-payload purposes.
    Use `loadDatasetRowsPage` for pagination or `loadDatasetRows`
    only when the result is consumed in-process by an aggregator
-   that itself returns a small result. The legacy
-   `getDatasetAssembled` is grandfathered until its sole remaining
-   caller (dashboard cold-cache hydration in `SolarRecDashboard.tsx`)
-   is rewritten off the in-memory `datasets[k].rows` state.
+   that itself returns a small result. The grandfather clause for
+   `getDatasetAssembled` is gone — the procedure was removed in
+   Task 5.14 PR-6 (#175). Cold-cache hydration now reads chunks via
+   the per-key `getDataset` route (250 KB cap per call).
 2. **No client tab is allowed to read `datasets[key].rows` or
    `datasets[key].rows.length` for ANY of the 18 dataset keys.** Use
    `getDatasetSummariesAll` for counts, `getDatasetRowsPage` /
