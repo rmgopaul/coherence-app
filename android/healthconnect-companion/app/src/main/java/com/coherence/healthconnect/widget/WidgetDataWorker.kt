@@ -68,18 +68,40 @@ class WidgetDataWorker(
 
   override suspend fun doWork(): Result {
     return try {
-      val data = fetchWidgetData()
-      WidgetDataStore.save(context, data)
-      // All four widget classes read from the same WidgetDataStore
-      // cache; we issue updateAll() against each so a single worker
-      // tick repaints whichever combination the user has placed.
-      // updateAll() is a no-op when no instance of a class is bound,
-      // so this is safe regardless of which widgets exist.
-      CoherenceDashboardWidget().updateAll(context)
-      CoherenceKingWidget().updateAll(context)
-      CoherenceKingLeftWidget().updateAll(context)
-      CoherenceKingRightWidget().updateAll(context)
-      Result.success()
+      val outcome = fetchWidgetData()
+      when (outcome) {
+        is FetchOutcome.AllFailed -> {
+          // Every network-bound fetch threw — almost always a
+          // transient connectivity drop (DNS / WiFi handoff / brief
+          // airplane mode). Don't save: clobbering the cache with
+          // empty fields wipes the previously-good data and the
+          // user sees a black widget until the next periodic tick
+          // ~30 minutes later. Just retry; the widgets keep
+          // displaying whatever they last had.
+          Log.w(
+            TAG,
+            "All widget fetches failed (likely transient network); skipping save and retrying. Sample: " +
+              outcome.firstException::class.java.simpleName +
+              " — " +
+              (outcome.firstException.message?.take(120) ?: ""),
+          )
+          if (runAttemptCount < 3) Result.retry() else Result.success()
+        }
+        is FetchOutcome.Ok -> {
+          WidgetDataStore.save(context, outcome.data)
+          // All four widget classes read from the same
+          // WidgetDataStore cache; we issue updateAll() against each
+          // so a single worker tick repaints whichever combination
+          // the user has placed. updateAll() is a no-op when no
+          // instance of a class is bound, so this is safe regardless
+          // of which widgets exist.
+          CoherenceDashboardWidget().updateAll(context)
+          CoherenceKingWidget().updateAll(context)
+          CoherenceKingLeftWidget().updateAll(context)
+          CoherenceKingRightWidget().updateAll(context)
+          Result.success()
+        }
+      }
     } catch (e: Exception) {
       Log.e(TAG, "Widget data fetch failed", e)
       // Save partial data with error
@@ -93,43 +115,76 @@ class WidgetDataWorker(
     }
   }
 
-  private suspend fun fetchWidgetData(): WidgetData {
+  /**
+   * Result of a widget-fetch run. Distinguishes "every network call
+   * failed" (probably transient — don't clobber the cache) from
+   * "got at least some data" (write the full payload as before).
+   */
+  private sealed class FetchOutcome {
+    data class Ok(val data: WidgetData) : FetchOutcome()
+    data class AllFailed(val firstException: Throwable) : FetchOutcome()
+  }
+
+  private suspend fun fetchWidgetData(): FetchOutcome {
     val app = context.applicationContext as CoherenceApplication
 
     val todayKey = LocalDate.now().format(DateTimeFormatter.ISO_LOCAL_DATE)
     val now = System.currentTimeMillis()
 
-    // Fetch all data sources in parallel-ish (coroutine sequential but fast)
-    val headlines = runCatching { fetchHeadlines(app) }.getOrDefault(emptyList())
-    val tickers = runCatching { fetchTickers(app) }.getOrDefault(emptyList())
-    val sports = runCatching { fetchSports(app) }.getOrDefault(emptyList())
-    val emails = runCatching { fetchEmails(app) }.getOrDefault(emptyList())
-    val tasks = runCatching { fetchTasks(app, todayKey) }.getOrDefault(emptyList())
-    // King · Left now renders multiple upcoming events; the rest of
-    // the widgets only need the next one. Fetch the full list once
-    // and let each widget take what it wants from the WidgetData
-    // cache. `nextEvent` stays as a convenience field for backward
-    // compat with the older widgets.
-    val upcomingEvents = runCatching { fetchUpcomingEvents(app) }.getOrDefault(emptyList())
+    // Run each fetch under runCatching so one provider's failure
+    // doesn't take the whole tick down. We keep the Result<T> objects
+    // (rather than collapsing to defaults) so we can distinguish a
+    // legitimate empty-but-online result from a network-error result
+    // and skip the save in the latter case.
+    val headlinesR = runCatching { fetchHeadlines(app) }
+    val tickersR = runCatching { fetchTickers(app) }
+    val sportsR = runCatching { fetchSports(app) }
+    val emailsR = runCatching { fetchEmails(app) }
+    val tasksR = runCatching { fetchTasks(app, todayKey) }
+    val upcomingEventsR = runCatching { fetchUpcomingEvents(app) }
+    val kingR = runCatching { fetchKingOfDay(app, todayKey) }
+
+    val networkResults = listOf(
+      headlinesR, tickersR, sportsR, emailsR, tasksR, upcomingEventsR, kingR,
+    )
+    val anySuccess = networkResults.any { it.isSuccess }
+    if (!anySuccess) {
+      val firstFailure = networkResults.firstNotNullOfOrNull { it.exceptionOrNull() }
+        ?: RuntimeException("all fetches failed")
+      return FetchOutcome.AllFailed(firstFailure)
+    }
+
+    val headlines = headlinesR.getOrDefault(emptyList())
+    val tickers = tickersR.getOrDefault(emptyList())
+    val sports = sportsR.getOrDefault(emptyList())
+    val emails = emailsR.getOrDefault(emptyList())
+    val tasks = tasksR.getOrDefault(emptyList())
+    // King · Left renders multiple upcoming events; the rest only
+    // need the next one. Fetch the full list once and let each widget
+    // take what it wants from the cached WidgetData. `nextEvent` is
+    // retained as a convenience field for backward compat.
+    val upcomingEvents = upcomingEventsR.getOrDefault(emptyList())
     val weather = runCatching { extractWeather(headlines) }.getOrNull()
-    val king = runCatching { fetchKingOfDay(app, todayKey) }.getOrNull()
+    val king = kingR.getOrNull()
 
     // Cache more rows than any single widget needs so King · Left
     // (which surfaces top 9 tasks / top 7 emails / top 4 events) has
     // enough material; smaller widgets just `.take(3)` from here.
-    return WidgetData(
-      headlines = headlines.take(15),
-      weatherSummary = weather,
-      tickers = tickers.take(20),
-      sports = sports.take(6),
-      emails = emails.take(10),
-      tasks = tasks.take(12),
-      nextEvent = upcomingEvents.firstOrNull(),
-      events = upcomingEvents.take(6),
-      kingOfDayTitle = king?.title,
-      kingOfDayReason = king?.reason,
-      kingOfDaySource = king?.source,
-      updatedAtMillis = now,
+    return FetchOutcome.Ok(
+      WidgetData(
+        headlines = headlines.take(15),
+        weatherSummary = weather,
+        tickers = tickers.take(20),
+        sports = sports.take(6),
+        emails = emails.take(10),
+        tasks = tasks.take(12),
+        nextEvent = upcomingEvents.firstOrNull(),
+        events = upcomingEvents.take(6),
+        kingOfDayTitle = king?.title,
+        kingOfDayReason = king?.reason,
+        kingOfDaySource = king?.source,
+        updatedAtMillis = now,
+      ),
     )
   }
 
