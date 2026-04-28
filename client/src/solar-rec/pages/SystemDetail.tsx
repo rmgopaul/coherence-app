@@ -199,6 +199,11 @@ function SystemDetailImpl() {
             invoiceStatus={data.invoiceStatus}
             onJump={() => setLocation("/solar-rec/early-payment")}
           />
+          <OwnershipSection
+            ownership={data.ownership}
+            registry={data.registry}
+            onJump={() => setLocation("/solar-rec/dashboard")}
+          />
           <p className="text-[10px] text-muted-foreground text-right font-mono">
             runner: {data._runnerVersion}
           </p>
@@ -1365,6 +1370,181 @@ function FieldWithSource({
         </p>
       )}
     </div>
+  );
+}
+
+function OwnershipSection({
+  ownership,
+  registry,
+  onJump,
+}: {
+  ownership: SystemDetailResponse["ownership"];
+  registry: SystemDetailResponse["registry"];
+  onJump: () => void;
+}) {
+  const trackingId = registry?.trackingSystemRefId ?? null;
+  const noData = ownership.count === 0;
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-start justify-between">
+          <div>
+            <CardTitle className="text-base flex items-center gap-2">
+              Ownership
+              {ownership.count > 0 && (
+                <Badge variant="outline" className="text-xs">
+                  {ownership.count} transfer
+                  {ownership.count === 1 ? "" : "s"}
+                </Badge>
+              )}
+            </CardTitle>
+            <CardDescription>
+              REC ownership transfers from GATS / MRETS, joined on the
+              system's tracking unit ID.
+            </CardDescription>
+          </div>
+          <Button variant="outline" size="sm" onClick={onJump}>
+            <ArrowUpRight className="h-3.5 w-3.5 mr-1" />
+            Open dashboard
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent>
+        {noData ? (
+          <NoData
+            primary={
+              trackingId
+                ? "No transfer history on file."
+                : "No tracking ID resolved for this system."
+            }
+            secondary={
+              trackingId
+                ? "Upload the latest Transfer History dataset to populate this section."
+                : "The Solar Applications row for this system is missing `tracking_system_ref_id` (or PJM_GATS / MRETS Unit ID Part 2). Without it, transfer rows can't be joined."
+            }
+          />
+        ) : (
+          <>
+            <dl className="grid grid-cols-2 md:grid-cols-4 gap-x-6 gap-y-3 text-sm">
+              <Field
+                label="Latest transfer"
+                value={ownership.latestTransferDate ?? "—"}
+              />
+              <Field
+                label="Total RECs transferred"
+                value={
+                  ownership.totalQuantityTransferred !== null
+                    ? formatNumber(ownership.totalQuantityTransferred, 0)
+                    : "—"
+                }
+              />
+              <Field
+                label="Distinct transferors"
+                value={ownership.uniqueTransferors.length.toString()}
+              />
+              <Field
+                label="Distinct transferees"
+                value={ownership.uniqueTransferees.length.toString()}
+              />
+            </dl>
+
+            {(ownership.uniqueTransferors.length > 0 ||
+              ownership.uniqueTransferees.length > 0) && (
+              <div className="mt-3 pt-3 border-t grid gap-3 md:grid-cols-2">
+                {ownership.uniqueTransferors.length > 0 && (
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">
+                      Transferors
+                    </p>
+                    <div className="flex flex-wrap gap-1">
+                      {ownership.uniqueTransferors.map((name) => (
+                        <Badge
+                          key={name}
+                          variant="secondary"
+                          className="text-xs font-normal"
+                        >
+                          {name}
+                        </Badge>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {ownership.uniqueTransferees.length > 0 && (
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">
+                      Transferees
+                    </p>
+                    <div className="flex flex-wrap gap-1">
+                      {ownership.uniqueTransferees.map((name) => (
+                        <Badge
+                          key={name}
+                          variant="secondary"
+                          className="text-xs font-normal"
+                        >
+                          {name}
+                        </Badge>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className="mt-3 pt-3 border-t">
+              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">
+                Recent transfers
+              </p>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Completion date</TableHead>
+                    <TableHead>Transferor</TableHead>
+                    <TableHead>Transferee</TableHead>
+                    <TableHead>Quantity</TableHead>
+                    <TableHead>Txn ID</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {ownership.transfers.map((t, i) => (
+                    <TableRow
+                      key={`${t.transactionId ?? "no-txn"}-${i}`}
+                    >
+                      <TableCell className="text-xs font-mono">
+                        {t.transferCompletionDate ?? "—"}
+                      </TableCell>
+                      <TableCell
+                        className="text-xs truncate max-w-[180px]"
+                        title={t.transferor ?? ""}
+                      >
+                        {t.transferor ?? "—"}
+                      </TableCell>
+                      <TableCell
+                        className="text-xs truncate max-w-[180px]"
+                        title={t.transferee ?? ""}
+                      >
+                        {t.transferee ?? "—"}
+                      </TableCell>
+                      <TableCell className="text-xs">
+                        {t.quantity !== null
+                          ? formatNumber(t.quantity, 0)
+                          : "—"}
+                      </TableCell>
+                      <TableCell
+                        className="text-xs font-mono truncate max-w-[140px]"
+                        title={t.transactionId ?? ""}
+                      >
+                        {t.transactionId ?? "—"}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          </>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 
