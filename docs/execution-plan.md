@@ -536,7 +536,7 @@ This task closes that gap end-to-end so the legacy chunked-CSV reassembly path c
 
 ---
 
-## Phase 6 — Pre-computed Correlations *(main)*
+## Phase 6 — Pre-computed Correlations *(main)* — ✅ Complete (2026-04-27)
 
 ### Task 6.1 — [B] Nightly correlation compute + dashboard surface
 - **Fix.**
@@ -550,7 +550,7 @@ Phase 6 can interleave with later phases.
 
 ---
 
-## Phase 7 — Monitoring Overview *(solar-rec)*
+## Phase 7 — Monitoring Overview *(solar-rec)* — ✅ Complete (2026-04-28)
 
 ### Task 7.1 — [B] `/solar-rec/monitoring-overview`
 Starts from the existing `MonitoringOverview.tsx` shell.
@@ -559,7 +559,7 @@ Starts from the existing `MonitoringOverview.tsx` shell.
 
 ---
 
-## Phase 8 — Unified `/solar-rec/jobs` Surface
+## Phase 8 — Unified `/solar-rec/jobs` Surface — ✅ Complete (2026-04-28)
 
 ### Task 8.1 — Job runner contract extraction
 Extract `runJobWithAtomicCounters<TInput, TResult>` into `server/services/core/jobRunner.ts`. Migrate all four runners. Bump each `_runnerVersion`.
@@ -569,7 +569,9 @@ Sidebar entry "Jobs" under solar-rec. Live + recent jobs across all four runners
 
 ---
 
-## Phase 9 — Portfolio Workbench *(solar-rec)*
+## Phase 9 — Portfolio Workbench *(solar-rec)* — ✅ Complete (2026-04-28)
+
+> Tasks 9.1 (system registry), 9.2 (saved ID worksets), 9.3 (workset selector + 5-page integration), 9.4 (system detail MVP), 9.5 PR-1..PR-6 (detail-page growth: meter reads → invoice status → address verification → REC value → ownership → monitoring history) all shipped. Detail page is feature-complete with 10 sections.
 
 **Canonical key.** Every surface in this phase keys off `CSG ID`. The Solar Applications dataset is the source of truth for what systems exist, their size, price, and contract status. ABP ID is stored as a secondary identifier where known, from the `ABP CSG-System Mapping` dataset.
 
@@ -601,9 +603,9 @@ One PR per added section: meter-read status → invoice status → address verif
 
 ---
 
-## Phase 10 — Dashboard as Composer *(main)*
+## Phase 10 — Dashboard as Composer *(main)* — ✅ Complete (2026-04-28)
 
-Can interleave with Phases 5–9.
+Can interleave with Phases 5–9. All four tasks shipped (10.1 SignalActions menu, 10.2 King-of-Day extended candidates, 10.3 reverse note-link rendering, 10.4 headline deep-link).
 
 ### Task 10.1 — Uniform signal-row action menu
 `<SignalActions row={...} />`: Drop to Dock · Pin as King · Create Todoist Task · Archive (Gmail) · Defer (Todoist). Wire into every feed cell.
@@ -619,22 +621,22 @@ OneThing headline becomes a link: Todoist web URL when `taskId`; Calendar deep-l
 
 ---
 
-## Phase E — Backlog (unscheduled)
+## Phase E — Backlog — ✅ Complete (2026-04-28, 12/12 shipped)
 
-Do not begin without explicit "do this next."
+All twelve backlog items shipped. Pull-request links + per-item summaries are in [execution-log.md](./execution-log.md).
 
-- AI Weekly Review (cron over `dailySnapshots`). Main.
-- Personal CRM overlay from Gmail/Calendar/dock. Main.
-- Mobile PWA shell. Main.
-- Feedback review dashboard. Main.
-- Dock item `dueAt` → reminders. Main.
-- Auto-archive dock items >30d not on canvas. Main.
-- Habit history bulk endpoint. Main.
-- Meter-read "Test Connection" probe. Solar-rec.
-- Supplements "Log all AM" batch. Main.
-- Cmd+C copies dock chip URL. Main.
-- Retire `DashboardLegacy.tsx`. Main.
-- Settings split into tabs — main Settings only; solar-rec Settings grows organically from Phase 5.
+- ✅ Retire `DashboardLegacy.tsx`. Main. (#209)
+- ✅ AI Weekly Review (cron over `dailySnapshots`). Main. (#210)
+- ✅ Auto-archive dock items >30d not on canvas. Main.
+- ✅ Cmd+C copies dock chip URL. Main. (#212)
+- ✅ Supplements "Log all AM" batch. Main. (#213)
+- ✅ Habit history bulk endpoint. Main. (#214)
+- ✅ Feedback review dashboard. Main. (#215)
+- ✅ Dock item `dueAt` → reminders. Main. (#216)
+- ✅ Meter-read "Test Connection" probe. Solar-rec. (#218)
+- ✅ Personal CRM overlay from Gmail/Calendar/dock. Main. (#220)
+- ✅ Mobile PWA shell. Main. (#223)
+- ✅ Settings split into tabs — main Settings only; solar-rec Settings grows organically from Phase 5. (#225)
 
 ---
 
