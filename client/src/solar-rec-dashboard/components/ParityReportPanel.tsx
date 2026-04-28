@@ -171,6 +171,7 @@ export default memo(function ParityReportPanel() {
             ) : (
               <span>
                 <strong>Parity verification</strong> — compare server-computed snapshot against local IndexedDB recompute.
+                <span className="ml-1 text-xs text-slate-500">(Only compares locally-loaded datasets. Datasets marked &ldquo;Tap tab to load&rdquo; are excluded.)</span>
               </span>
             )}
           </div>

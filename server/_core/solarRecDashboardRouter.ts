@@ -154,7 +154,7 @@ async function loadDashboardPayload(
       };
     }
   } catch (error) {
-    console.warn(
+    console.error(
       "[solarRec] DB read failed, falling back to storage:",
       error instanceof Error ? error.message : error
     );
@@ -1779,7 +1779,7 @@ export const solarRecDashboardRouter = t.router({
             appliedFileNames
           );
         } catch (markErr) {
-          console.warn(
+          console.error(
             `[applyScheduleBToDeliveryObligations] failed to mark rows applied for job ${job.id}:`,
             markErr
           );
@@ -1910,7 +1910,7 @@ export const solarRecDashboardRouter = t.router({
         // Non-fatal: fall back to S3. Log so a DB outage is visible in
         // server logs instead of a silent success that lies about
         // persistence state.
-        console.warn(
+        console.error(
           `[uploadDeliveryScheduleCsv] DB persist failed for user ${ctx.userId}:`,
           dbError
         );
@@ -1929,7 +1929,7 @@ export const solarRecDashboardRouter = t.router({
         if (!persistedToDatabase) {
           throw storageError;
         }
-        console.warn(
+        console.error(
           `[uploadDeliveryScheduleCsv] S3 sync failed for user ${ctx.userId} (DB persist OK):`,
           storageError
         );
