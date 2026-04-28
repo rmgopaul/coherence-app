@@ -37,6 +37,12 @@ fun WhoopWidget(
   error: String? = null,
   lastUpdatedMillis: Long? = null,
   onRetry: (() -> Unit)? = null,
+  // Dashboard tab passes `compact = true` so the WHOOP card stays a
+  // glanceable Recovery/Strain/Sleep/HRV row alongside the other
+  // dashboard widgets. Health tab passes `compact = false` so users
+  // who explicitly drill in see the full Sleep / Cardio / Activity
+  // detail grid below the headline row.
+  compact: Boolean = false,
 ) {
   WidgetShell(
     title = "WHOOP",
@@ -101,6 +107,11 @@ fun WhoopWidget(
           HeadlineMetric(value = "${hrv.toInt()} ms", label = "HRV")
         }
       }
+
+      // Detail grid is gated on `compact = false`. The Dashboard tab
+      // (compact mode) only shows the headline row above; the Health
+      // tab passes `compact = false` to surface the full breakdown.
+      if (compact) return@WidgetShell
 
       // Full detail grid for every other field WhoopSummary carries.
       // The user explicitly asked for "all available data" — grouped

@@ -298,6 +298,39 @@ export const marketDashboardRouter = (() => {
     return normalized.length > 0 ? normalized : [...DEFAULT_CRYPTO_SYMBOLS];
   }
 
+  // Mirror of `getDashboardMarketSymbols` from the web client's
+  // `lib/dashboardPreferences.ts`. Lets the server fall back to a
+  // user's saved tickers when the caller (Android, etc.) doesn't pass
+  // explicit symbols. Returns `null` lists rather than DEFAULT_*
+  // so the caller can chain `?? userSymbols.X` without short-
+  // circuiting on legitimate empty arrays.
+  function parseDashboardSymbolsFromWidgetLayout(
+    widgetLayout: string | null | undefined,
+  ): { stocks: string[] | undefined; crypto: string[] | undefined } {
+    if (!widgetLayout) return { stocks: undefined, crypto: undefined };
+    let parsed: Record<string, unknown> = {};
+    try {
+      const json = JSON.parse(widgetLayout);
+      if (json && typeof json === "object" && !Array.isArray(json)) {
+        parsed = json as Record<string, unknown>;
+      }
+    } catch {
+      return { stocks: undefined, crypto: undefined };
+    }
+    function extract(field: string): string[] | undefined {
+      const value = parsed[field];
+      if (!Array.isArray(value)) return undefined;
+      const list = value
+        .map((entry) => String(entry ?? "").trim())
+        .filter((entry) => entry.length > 0);
+      return list.length > 0 ? list : undefined;
+    }
+    return {
+      stocks: extract("dashboardMarketStockSymbols"),
+      crypto: extract("dashboardMarketCryptoSymbols"),
+    };
+  }
+
   async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, fallback: T): Promise<T> {
     let timeoutId: ReturnType<typeof setTimeout> | null = null;
     try {
@@ -320,11 +353,29 @@ export const marketDashboardRouter = (() => {
           cryptoSymbols: z.array(z.string().min(1).max(20)).max(30).optional(),
         }).optional()
       )
-      .query(async ({ input }) => {
+      .query(async ({ ctx, input }) => {
       const now = Date.now();
 
-      const stockSymbols = normalizeStockSymbols(input?.stockSymbols);
-      const cryptoSymbols = normalizeCryptoSymbols(input?.cryptoSymbols);
+      // Fall back to the user's saved tickers (stored in
+      // userPreferences.widgetLayout under
+      // `dashboardMarketStockSymbols` / `dashboardMarketCryptoSymbols`)
+      // when the caller doesn't pass explicit symbols. The Android
+      // client passes nothing, so without this lookup it'd see only
+      // the hardcoded DEFAULT_*_SYMBOLS while the web — which reads
+      // preferences locally and forwards them — sees the user's
+      // configured tickers. (User report 2026-04-27.)
+      const userPrefs =
+        !input?.stockSymbols && !input?.cryptoSymbols
+          ? await getUserPreferences(ctx.user.id).catch(() => null)
+          : null;
+      const userSymbols = parseDashboardSymbolsFromWidgetLayout(userPrefs?.widgetLayout ?? null);
+
+      const stockSymbols = normalizeStockSymbols(
+        input?.stockSymbols ?? userSymbols.stocks,
+      );
+      const cryptoSymbols = normalizeCryptoSymbols(
+        input?.cryptoSymbols ?? userSymbols.crypto,
+      );
       const combinedSymbols = Array.from(new Set([...stockSymbols, ...cryptoSymbols]));
       const symbolCacheKey = `stocks:${stockSymbols.join(",")}|crypto:${cryptoSymbols.join(",")}`;
 
