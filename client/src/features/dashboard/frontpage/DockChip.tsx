@@ -30,6 +30,7 @@ import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import {
   categorizeDockDueDate,
+  chipFallbackLabel,
   formatDockDueLabel,
   shouldCopyDockChipUrl,
   stripMarkdownLinks,
@@ -198,7 +199,8 @@ export const DockChip = forwardRef<HTMLAnchorElement, DockChipProps>(
             {SOURCE_LABEL[item.source as DockSource] ?? "LINK"}
           </span>
           <span className="fp-dock-chip__title">
-            {stripMarkdownLinks(item.title ?? "").trim() || item.url}
+            {stripMarkdownLinks(item.title ?? "").trim() ||
+              chipFallbackLabel(item.source as DockSource, item.url)}
           </span>
           <button
             type="button"
