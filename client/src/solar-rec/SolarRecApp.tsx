@@ -1,7 +1,6 @@
 import { Suspense, lazy, type ReactNode } from "react";
 import { Route, Switch, Redirect, Router } from "wouter";
 import { SidebarProvider, SidebarInset } from "@/components/ui/sidebar";
-import { Toaster } from "@/components/ui/sonner";
 import { useSolarRecAuth } from "./hooks/useSolarRecAuth";
 import SolarRecSidebar from "./components/SolarRecSidebar";
 import SolarRecLoginPage from "./SolarRecLoginPage";
@@ -359,14 +358,6 @@ export default function SolarRecApp() {
 
   return (
     <Router base="">
-      {/* Phase E (2026-04-28) — Toaster mount. Existing solar-rec
-          components (MeterReadConnectionProbe, PersistConfirmation,
-          TeamPermissions, WorksetSelector, ContractScanner) call
-          `toast` from sonner but no Toaster was mounted in this
-          bundle, so those toasts silently no-op'd. Adding the
-          mount here also lights up the PWA service-worker update
-          toast on the standalone solar-rec app. */}
-      <Toaster />
       <AuthenticatedApp />
     </Router>
   );
