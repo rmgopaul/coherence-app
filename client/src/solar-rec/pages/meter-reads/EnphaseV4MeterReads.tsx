@@ -11,7 +11,8 @@
  * window to compute lifetime kWh).
  */
 
-import { useState } from "react";
+import { useCallback, useState } from "react";
+import { MeterReadConnectionProbe } from "../../components/MeterReadConnectionProbe";
 import { PersistConfirmation, readMeterLifetimeKwh, readMeterName, readMeterStatus } from "../../components/PersistConfirmation";
 import { solarRecTrpc as trpc } from "../../solarRecTrpc";
 import { useSolarRecPermission } from "../../hooks/useSolarRecPermission";
@@ -46,6 +47,13 @@ export default function EnphaseV4MeterReads() {
     enabled: statusQuery.data?.connected === true,
     retry: false,
   });
+  // Phase E (2026-04-28) — Test Connection probe times the
+  // listSystemsQuery refetch as a lightweight credential check.
+  const probeFn = useCallback(async () => {
+    const r = await listSystemsQuery.refetch({ throwOnError: true });
+    return r.data?.systems?.length ?? 0;
+  }, [listSystemsQuery]);
+
   const snapshotMutation = trpc.enphaseV4.getProductionSnapshot.useMutation({
     onError: (err) => toast.error(err.message),
   });
@@ -121,6 +129,13 @@ export default function EnphaseV4MeterReads() {
             )}
           </CardDescription>
         </CardHeader>
+        <CardContent>
+          <MeterReadConnectionProbe
+            runProbe={probeFn}
+            sampleNoun="systems"
+            disabled={!statusQuery.data?.connected}
+          />
+        </CardContent>
       </Card>
 
       <Card>

@@ -5,7 +5,8 @@
  * and runs single-plant lifetime-kWh snapshots.
  */
 
-import { useState } from "react";
+import { useCallback, useState } from "react";
+import { MeterReadConnectionProbe } from "../../components/MeterReadConnectionProbe";
 import { PersistConfirmation, readMeterLifetimeKwh, readMeterName, readMeterStatus } from "../../components/PersistConfirmation";
 import { solarRecTrpc as trpc } from "../../solarRecTrpc";
 import { useSolarRecPermission } from "../../hooks/useSolarRecPermission";
@@ -40,6 +41,13 @@ export default function GrowattMeterReads() {
     enabled: statusQuery.data?.connected === true,
     retry: false,
   });
+  // Phase E (2026-04-28) — Test Connection probe times the
+  // listPlantsQuery refetch as a lightweight credential check.
+  const probeFn = useCallback(async () => {
+    const r = await listPlantsQuery.refetch({ throwOnError: true });
+    return r.data?.plants?.length ?? 0;
+  }, [listPlantsQuery]);
+
   const snapshotMutation = trpc.growatt.getProductionSnapshot.useMutation({
     onError: (err) => toast.error(err.message),
   });
@@ -91,6 +99,13 @@ export default function GrowattMeterReads() {
               : "Ask an admin to register a Growatt username + password in Settings → Credentials."}
           </CardDescription>
         </CardHeader>
+        <CardContent>
+          <MeterReadConnectionProbe
+            runProbe={probeFn}
+            sampleNoun="plants"
+            disabled={!statusQuery.data?.connected}
+          />
+        </CardContent>
       </Card>
 
       <Card>

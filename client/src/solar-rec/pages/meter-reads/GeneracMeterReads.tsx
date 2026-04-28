@@ -9,7 +9,8 @@
  * a snapshot against the vendor quota).
  */
 
-import { useState } from "react";
+import { useCallback, useState } from "react";
+import { MeterReadConnectionProbe } from "../../components/MeterReadConnectionProbe";
 import { PersistConfirmation, readMeterLifetimeKwh, readMeterName, readMeterStatus } from "../../components/PersistConfirmation";
 import { solarRecTrpc as trpc } from "../../solarRecTrpc";
 import { PermissionGate } from "../../components/PermissionGate";
@@ -46,6 +47,13 @@ function GeneracMeterReadsImpl() {
     enabled: statusQuery.data?.connected === true,
     retry: false,
   });
+  // Phase E (2026-04-28) — Test Connection probe times the
+  // listSystemsQuery refetch as a lightweight credential check.
+  const probeFn = useCallback(async () => {
+    const r = await listSystemsQuery.refetch({ throwOnError: true });
+    return r.data?.systems?.length ?? 0;
+  }, [listSystemsQuery]);
+
   const snapshotMutation = trpc.generac.getProductionSnapshot.useMutation({
     onError: (err) => toast.error(err.message),
   });
@@ -97,6 +105,13 @@ function GeneracMeterReadsImpl() {
               : "Ask an admin to register a Generac API key in Settings → Credentials."}
           </CardDescription>
         </CardHeader>
+        <CardContent>
+          <MeterReadConnectionProbe
+            runProbe={probeFn}
+            sampleNoun="systems"
+            disabled={!statusQuery.data?.connected}
+          />
+        </CardContent>
       </Card>
 
       <Card>
