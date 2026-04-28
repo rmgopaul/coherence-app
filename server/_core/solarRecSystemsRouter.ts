@@ -90,13 +90,14 @@ export const solarRecSystemsRouter = t.router({
         getLatestMeterReadsForCsgId,
         getInvoiceStatusForCsgId,
         getOwnershipForCsgId,
+        getMonitoringHistoryForCsgId,
       } = await import("../db");
 
       // Pull the registry first — its fields drive several
       // downstream join keys (trackingSystemRefId for Schedule B +
-      // meter reads + ownership, systemId for Schedule B,
-      // applicationId for ICC report). We then fan out the
-      // remaining reads in parallel.
+      // meter reads + ownership + monitoring history, systemId for
+      // Schedule B, applicationId for ICC report). We then fan out
+      // the remaining reads in parallel.
       const registry = await getSystemByCsgId(ctx.scopeId, input.csgId);
 
       const [
@@ -106,6 +107,7 @@ export const solarRecSystemsRouter = t.router({
         meterReads,
         invoiceStatus,
         ownership,
+        monitoringHistory,
       ] = await Promise.all([
         getLatestScanResultsByCsgIds(ctx.scopeId, [input.csgId]),
         getLatestDinScrapeForCsgId(ctx.scopeId, input.csgId),
@@ -132,6 +134,13 @@ export const solarRecSystemsRouter = t.router({
           preResolvedRegistry: registry,
           limit: 30,
         }),
+        // Task 9.5 PR-6 (2026-04-28): daily monitoring run history.
+        // Joins monitoringApiRuns via the same generation-entry
+        // chain as Meter Reads. Final detail-page section.
+        getMonitoringHistoryForCsgId(ctx.scopeId, input.csgId, {
+          preResolvedRegistry: registry,
+          limit: 30,
+        }),
       ]);
 
       const contractScan = contractScans[0] ?? null;
@@ -146,6 +155,7 @@ export const solarRecSystemsRouter = t.router({
         meterReads,
         invoiceStatus,
         ownership,
+        monitoringHistory,
       };
     }),
 
