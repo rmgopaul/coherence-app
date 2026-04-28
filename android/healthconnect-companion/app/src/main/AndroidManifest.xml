@@ -126,6 +126,25 @@
         android:name="android.appwidget.provider"
         android:resource="@xml/coherence_dashboard_widget_info" />
     </receiver>
+
+    <!-- King widget — Z Fold-sized variant. Same data pipeline as
+         CoherenceDashboardWidgetReceiver; just a different layout and
+         provider info (see coherence_king_widget_info.xml). -->
+    <receiver
+      android:name=".widget.CoherenceKingWidgetReceiver"
+      android:enabled="true"
+      android:exported="true"
+      android:label="Coherence King">
+      <intent-filter>
+        <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+      </intent-filter>
+      <intent-filter>
+        <action android:name="com.coherence.healthconnect.widget.king.ACTION_REFRESH" />
+      </intent-filter>
+      <meta-data
+        android:name="android.appwidget.provider"
+        android:resource="@xml/coherence_king_widget_info" />
+    </receiver>
   </application>
 
 </manifest>
