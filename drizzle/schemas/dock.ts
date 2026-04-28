@@ -56,6 +56,11 @@ export const dockItems = mysqlTable(
     // `listDockItems` query. The data sticks around so a future
     // "Show archived" toggle can resurface or restore them.
     archivedAt: timestamp("archivedAt"),
+    // Phase E (2026-04-28) — optional due date so a dock chip can
+    // double as a lightweight reminder. Null = the chip is just a
+    // bookmark; non-null = surface it on the dashboard "Upcoming"
+    // strip and visually escalate as the time approaches.
+    dueAt: timestamp("dueAt"),
   },
   (table) => ({
     userCreatedIdx: index("dock_items_user_created_idx").on(
@@ -72,6 +77,14 @@ export const dockItems = mysqlTable(
     // archive index is separate so single-user listings benefit
     // from both.
     archivedAtIdx: index("dock_items_archived_at_idx").on(table.archivedAt),
+    // Phase E (2026-04-28) — composite index for the "Upcoming"
+    // dashboard strip's `WHERE userId = ? AND dueAt IS NOT NULL
+    // ORDER BY dueAt ASC LIMIT N`. Listing under (userId, dueAt)
+    // keeps the lookup per-user without scanning the table.
+    userDueAtIdx: index("dock_items_user_due_idx").on(
+      table.userId,
+      table.dueAt
+    ),
   })
 );
 

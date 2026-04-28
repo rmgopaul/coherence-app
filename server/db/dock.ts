@@ -4,8 +4,8 @@
  * Backs the front-page DropDock chips. The dockRouter in
  * server/routers/personalData.ts wraps these with tRPC procedures.
  */
-import { and, desc, eq, sql, getDb, withDbRetry } from "./_core";
-import { isNull } from "drizzle-orm";
+import { and, asc, desc, eq, sql, getDb, withDbRetry } from "./_core";
+import { isNotNull, isNull } from "drizzle-orm";
 import { dockItems, type DockItem, type InsertDockItem } from "../../drizzle/schema";
 
 export type DockSource = "gmail" | "gcal" | "gsheet" | "todoist" | "url";
@@ -140,6 +140,79 @@ export async function archiveStaleDockItems(
     (result as unknown as { rowCount?: number }).rowCount ??
     0;
   return { affected };
+}
+
+/**
+ * Phase E (2026-04-28) — set or clear a dock item's optional due
+ * date. Pass `null` to clear, a Date to set. Scoped to the calling
+ * user (the where clause uses both id + userId so a malicious id
+ * for another user's chip is a no-op).
+ *
+ * Returns true when a row was updated, false when the id wasn't
+ * found (so the proc layer can surface a 404). Driver variance is
+ * handled the same way as `archiveStaleDockItems` and the feedback
+ * helper — read affectedRows, fall back to rowCount, default to 0.
+ */
+export async function setDockItemDueAt(
+  userId: number,
+  id: string,
+  dueAt: Date | null
+): Promise<boolean> {
+  const db = await getDb();
+  if (!db) return false;
+  const result = await withDbRetry("set dock item dueAt", async () =>
+    db
+      .update(dockItems)
+      .set({ dueAt })
+      .where(and(eq(dockItems.userId, userId), eq(dockItems.id, id)))
+  );
+  const affected =
+    (result as unknown as { affectedRows?: number; rowCount?: number })
+      .affectedRows ??
+    (result as unknown as { rowCount?: number }).rowCount ??
+    0;
+  return affected > 0;
+}
+
+/**
+ * Phase E (2026-04-28) — items the user wants reminded about.
+ *
+ * Selects rows where `dueAt IS NOT NULL` and `archivedAt IS NULL`,
+ * ordered by `dueAt ASC` so overdue items surface first followed
+ * by the next-due. The `windowHours` knob filters to "reminders
+ * roughly relevant right now" — a 36h window captures everything
+ * overdue (no lower bound) plus tomorrow's items but trims a chip
+ * with `dueAt = next month` from the dashboard strip. Pass `null`
+ * for `windowHours` to return every dated chip.
+ *
+ * NOTE: the cutoff is computed from the caller's `now` so the
+ * server's view of "soon" is deterministic and unit-testable.
+ */
+export async function listUpcomingDockItems(
+  userId: number,
+  opts: { windowHours?: number | null; now?: Date; limit?: number } = {}
+): Promise<DockItem[]> {
+  const db = await getDb();
+  if (!db) return [];
+  const limit = Math.max(1, Math.min(200, opts.limit ?? 50));
+  const baseConditions = [
+    eq(dockItems.userId, userId),
+    isNotNull(dockItems.dueAt),
+    isNull(dockItems.archivedAt),
+  ];
+  if (opts.windowHours != null && opts.windowHours > 0) {
+    const now = opts.now ?? new Date();
+    const cutoff = new Date(now.getTime() + opts.windowHours * 3_600_000);
+    baseConditions.push(sql`${dockItems.dueAt} <= ${cutoff}`);
+  }
+  return withDbRetry("list upcoming dock items", async () =>
+    db
+      .select()
+      .from(dockItems)
+      .where(and(...baseConditions))
+      .orderBy(asc(dockItems.dueAt))
+      .limit(limit)
+  );
 }
 
 /**

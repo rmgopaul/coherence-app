@@ -13,6 +13,7 @@ import { KingOfTheDayHero } from "@/components/dashboard/KingOfTheDayHero";
 import { Masthead } from "./frontpage/Masthead";
 import { DashboardViewsNav } from "./DashboardViewsNav";
 import { DropDock } from "./frontpage/DropDock";
+import { DockReminders } from "./frontpage/DockReminders";
 import { NewsprintColumns } from "./frontpage/NewsprintColumns";
 import { InboxPanel } from "./frontpage/InboxPanel";
 import { WireFeedsGrid } from "./frontpage/WireFeedsGrid";
@@ -79,6 +80,7 @@ export default function FrontPageDashboard() {
       <DashboardViewsNav />
 
       {!focusMode && <DropDock />}
+      {!focusMode && <DockReminders />}
 
       <main id="fp-main" tabIndex={-1}>
       <KingOfTheDayHero

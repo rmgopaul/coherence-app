@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   canonicalizeUrl,
+  categorizeDockDueDate,
   classifyUrl,
   extractMarkdownLink,
   extractUrlFromPaste,
+  formatDockDueLabel,
   hasSensitiveParams,
   shouldCopyDockChipUrl,
   stripMarkdownLinks,
@@ -398,5 +400,145 @@ describe("extractUrlFromPaste — markdown branch (Phase E)", () => {
     expect(extractUrlFromPaste("https://example.com/x")).toBe(
       "https://example.com/x"
     );
+  });
+});
+
+describe("categorizeDockDueDate", () => {
+  const NOW = new Date("2026-04-28T12:00:00Z");
+
+  it("returns 'none' when dueAt is null / undefined / empty", () => {
+    expect(categorizeDockDueDate(null, NOW)).toBe("none");
+    expect(categorizeDockDueDate(undefined, NOW)).toBe("none");
+    expect(categorizeDockDueDate("", NOW)).toBe("none");
+  });
+
+  it("returns 'none' when dueAt is not parseable", () => {
+    expect(categorizeDockDueDate("not-a-date", NOW)).toBe("none");
+  });
+
+  it("returns 'overdue' when dueAt is in the past", () => {
+    expect(
+      categorizeDockDueDate(new Date("2026-04-27T12:00:00Z"), NOW)
+    ).toBe("overdue");
+    // 1 second ago is still overdue.
+    expect(
+      categorizeDockDueDate(new Date(NOW.getTime() - 1_000), NOW)
+    ).toBe("overdue");
+  });
+
+  it("returns 'due-soon' for dueAt within the next 4 hours", () => {
+    expect(
+      categorizeDockDueDate(new Date(NOW.getTime() + 30 * 60_000), NOW)
+    ).toBe("due-soon");
+    expect(
+      categorizeDockDueDate(new Date(NOW.getTime() + 4 * 3_600_000), NOW)
+    ).toBe("due-soon");
+  });
+
+  it("returns 'upcoming' for dueAt 4–24 hours out", () => {
+    expect(
+      categorizeDockDueDate(new Date(NOW.getTime() + 5 * 3_600_000), NOW)
+    ).toBe("upcoming");
+    expect(
+      categorizeDockDueDate(new Date(NOW.getTime() + 24 * 3_600_000), NOW)
+    ).toBe("upcoming");
+  });
+
+  it("returns 'future' for dueAt beyond 24 hours out", () => {
+    expect(
+      categorizeDockDueDate(new Date(NOW.getTime() + 25 * 3_600_000), NOW)
+    ).toBe("future");
+    expect(
+      categorizeDockDueDate(new Date(NOW.getTime() + 30 * 86_400_000), NOW)
+    ).toBe("future");
+  });
+
+  it("accepts ISO strings (tRPC wire payload)", () => {
+    expect(
+      categorizeDockDueDate("2026-04-28T13:00:00Z", NOW)
+    ).toBe("due-soon");
+  });
+});
+
+describe("formatDockDueLabel", () => {
+  // 2026-04-28 is a Tuesday in UTC. Use local time semantics for
+  // weekday/month formatting — vitest pins TZ=America/Chicago, so
+  // 12:00 UTC is 07:00 local. We pick anchor times that read the
+  // same in CST/CDT to keep tests TZ-stable.
+  const NOW = new Date("2026-04-28T15:00:00Z"); // 10:00 CDT
+
+  it("returns empty string for null / undefined / unparseable", () => {
+    expect(formatDockDueLabel(null, NOW)).toBe("");
+    expect(formatDockDueLabel(undefined, NOW)).toBe("");
+    expect(formatDockDueLabel("not-a-date", NOW)).toBe("");
+  });
+
+  it("formats minutes-overdue", () => {
+    expect(
+      formatDockDueLabel(new Date(NOW.getTime() - 5 * 60_000), NOW)
+    ).toBe("5m overdue");
+  });
+
+  it("formats hours-overdue", () => {
+    expect(
+      formatDockDueLabel(new Date(NOW.getTime() - 3 * 3_600_000), NOW)
+    ).toBe("3h overdue");
+  });
+
+  it("formats days-overdue", () => {
+    expect(
+      formatDockDueLabel(new Date(NOW.getTime() - 2 * 86_400_000), NOW)
+    ).toBe("2d overdue");
+  });
+
+  it("formats minutes-away", () => {
+    expect(
+      formatDockDueLabel(new Date(NOW.getTime() + 38 * 60_000), NOW)
+    ).toBe("in 38m");
+  });
+
+  it("formats hours-away under 6h", () => {
+    expect(
+      formatDockDueLabel(new Date(NOW.getTime() + 5 * 3_600_000), NOW)
+    ).toBe("in 5h");
+  });
+
+  it("formats today + hour for >6h same-day", () => {
+    // NOW = 10:00 CDT; due = 22:00 CDT same day → "Today 10pm".
+    const due = new Date(NOW.getTime() + 12 * 3_600_000);
+    const label = formatDockDueLabel(due, NOW);
+    expect(label).toMatch(/^Today \d{1,2}(:\d{2})?(am|pm)$/);
+    expect(label.startsWith("Today")).toBe(true);
+  });
+
+  it("formats Tomorrow + hour", () => {
+    const due = new Date(NOW.getTime() + 25 * 3_600_000);
+    const label = formatDockDueLabel(due, NOW);
+    expect(label.startsWith("Tomorrow")).toBe(true);
+  });
+
+  it("formats day-of-week + hour for 2–6 days out", () => {
+    // 3 days out (Friday CDT). Day name + hour.
+    const due = new Date(NOW.getTime() + 3 * 86_400_000);
+    const label = formatDockDueLabel(due, NOW);
+    expect(label).toMatch(/^(Sun|Mon|Tue|Wed|Thu|Fri|Sat) /);
+  });
+
+  it("formats month + day for >6 days out", () => {
+    const due = new Date(NOW.getTime() + 30 * 86_400_000);
+    const label = formatDockDueLabel(due, NOW);
+    // Month + day-of-month, no time. Matches "May 28" etc.
+    expect(label).toMatch(
+      /^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{1,2}$/
+    );
+  });
+
+  it("preserves minutes when the hour-mark is non-round", () => {
+    // 28h30m later: lands on the next calendar day → "Tomorrow
+    // 2:30pm". The bucket varies with the time of day; the test
+    // only cares that the label rendered the non-round minute.
+    const due = new Date(NOW.getTime() + (28 * 60 + 30) * 60_000);
+    const label = formatDockDueLabel(due, NOW);
+    expect(label).toMatch(/\d{1,2}:\d{2}(am|pm)$/);
   });
 });
