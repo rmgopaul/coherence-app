@@ -272,11 +272,13 @@ fun DashboardScreen(viewModel: DashboardViewModel) {
         }
       }
 
-      // WHOOP
+      // WHOOP — compact on the dashboard. Full breakdown lives on
+      // the Health tab so the dashboard stays glanceable.
       if (!hiddenWidgets.contains("whoop")) {
         item {
           WhoopWidget(
             summary = whoop,
+            compact = true,
             isLoading = state.whoopState.isLoading(),
             error = state.whoopState.errorOrNull(),
             lastUpdatedMillis = state.whoopState.updatedAtOrNull(),

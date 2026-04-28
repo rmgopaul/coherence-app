@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
@@ -77,6 +78,11 @@ fun BottomNavBar(navController: NavController) {
   Surface(
     color = MaterialTheme.colorScheme.surface,
     tonalElevation = 3.dp,
+    // Pad above the system gesture / nav bar. Without this the
+    // Z Fold 7's bottom gesture pill sits on top of our icons; tapping
+    // the lower half of a tab triggers the system pill instead of
+    // navigation.
+    modifier = Modifier.navigationBarsPadding(),
   ) {
     LazyRow(
       modifier = Modifier
