@@ -1,0 +1,69 @@
+{
+  "name": "Coherence",
+  "short_name": "Coherence",
+  "description": "Personal productivity dashboard — tasks, calendar, gmail, notes, supplements, habits, health, and dock.",
+  "start_url": "/dashboard",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0a0a0a",
+  "theme_color": "#E8432A",
+  "icons": [
+    {
+      "src": "/logo-c-crown.png",
+      "type": "image/png",
+      "sizes": "192x192",
+      "purpose": "any"
+    },
+    {
+      "src": "/logo-c-crown.png",
+      "type": "image/png",
+      "sizes": "512x512",
+      "purpose": "any"
+    },
+    {
+      "src": "/logo-c-crown.png",
+      "type": "image/png",
+      "sizes": "192x192",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/logo-c-crown.png",
+      "type": "image/png",
+      "sizes": "512x512",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/apple-touch-icon.png",
+      "type": "image/png",
+      "sizes": "180x180",
+      "purpose": "any"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Dashboard",
+      "short_name": "Dashboard",
+      "url": "/dashboard",
+      "description": "Front-page broadsheet"
+    },
+    {
+      "name": "Habits",
+      "short_name": "Habits",
+      "url": "/habits",
+      "description": "Daily habit tracker"
+    },
+    {
+      "name": "Notes",
+      "short_name": "Notes",
+      "url": "/notes",
+      "description": "Notebook"
+    },
+    {
+      "name": "Solar REC",
+      "short_name": "Solar REC",
+      "url": "/solar-rec/",
+      "description": "Solar REC team dashboard"
+    }
+  ]
+}
