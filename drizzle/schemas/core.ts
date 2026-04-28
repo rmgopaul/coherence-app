@@ -500,6 +500,44 @@ export const dailyReflections = mysqlTable(
 export type DailyReflection = typeof dailyReflections.$inferSelect;
 export type InsertDailyReflection = typeof dailyReflections.$inferInsert;
 
+// AI-generated cross-domain insights — Anthropic joins the trailing
+// 90 days of supplements + habits + WHOOP + Samsung + reflections +
+// task completions and returns 3-5 plain-English correlations
+// ("on L-theanine days, your evening energy was +1.4"). Cached for
+// the day; user can also force a regenerate.
+export const userInsights = mysqlTable(
+  "userInsights",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    userId: int("userId").notNull(),
+    generatedAt: timestamp("generatedAt").defaultNow().notNull(),
+    dateKey: varchar("dateKey", { length: 10 }).notNull(), // dateKey of generation, for "1 per day" cache key
+    rangeStartKey: varchar("rangeStartKey", { length: 10 }).notNull(),
+    rangeEndKey: varchar("rangeEndKey", { length: 10 }).notNull(),
+    model: varchar("model", { length: 64 }).notNull(),
+    daysAnalyzed: int("daysAnalyzed").notNull(),
+    insightsJson: mediumtext("insightsJson").notNull(), // [{ title, body, confidence, evidence? }, ...]
+    promptVersion: varchar("promptVersion", { length: 32 }).notNull(),
+    status: mysqlEnum("status", ["ready", "failed"]).notNull(),
+    errorMessage: text("errorMessage"),
+    createdAt: timestamp("createdAt").defaultNow(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow(),
+  },
+  (table) => ({
+    userGeneratedIdx: index("user_insights_user_generated_idx").on(
+      table.userId,
+      table.generatedAt
+    ),
+    userDateIdx: uniqueIndex("user_insights_user_date_idx").on(
+      table.userId,
+      table.dateKey
+    ),
+  })
+);
+
+export type UserInsight = typeof userInsights.$inferSelect;
+export type InsertUserInsight = typeof userInsights.$inferInsert;
+
 // Raw Samsung payload archive for full datapoint retention.
 
 export const samsungSyncPayloads = mysqlTable(

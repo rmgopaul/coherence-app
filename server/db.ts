@@ -41,6 +41,7 @@ export * from "./db/systemOwnership";
 export * from "./db/systemMonitoringHistory";
 export * from "./db/weeklyReviews";
 export * from "./db/dailyReflections";
+export * from "./db/userInsights";
 export * from "./db/solarRecDatasets";
 export * from "./db/kingOfDay";
 export * from "./db/dock";

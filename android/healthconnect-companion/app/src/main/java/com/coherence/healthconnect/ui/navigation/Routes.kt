@@ -24,4 +24,6 @@ object Routes {
   // Daily Rituals — evening reflection journal + AI weekly review.
   const val REFLECTION = "reflection"
   const val WEEKLY_REVIEW = "weekly_review"
+  // Cross-domain Insights — AI correlations over the trailing 90 days.
+  const val INSIGHTS = "insights"
 }

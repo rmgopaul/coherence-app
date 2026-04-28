@@ -38,6 +38,7 @@ import com.coherence.healthconnect.ui.screens.DashboardScreen
 import com.coherence.healthconnect.ui.screens.DriveScreen
 import com.coherence.healthconnect.ui.screens.HabitsScreen
 import com.coherence.healthconnect.ui.screens.HealthScreen
+import com.coherence.healthconnect.ui.screens.InsightsScreen
 import com.coherence.healthconnect.ui.screens.MoreScreen
 import com.coherence.healthconnect.ui.screens.NotesScreen
 import com.coherence.healthconnect.ui.screens.ReflectionScreen
@@ -142,6 +143,7 @@ fun AppNavGraph() {
           viewModel = dashboardViewModel,
           onNavigateToReflection = { navController.navigate(Routes.REFLECTION) { launchSingleTop = true } },
           onNavigateToWeeklyReview = { navController.navigate(Routes.WEEKLY_REVIEW) { launchSingleTop = true } },
+          onNavigateToInsights = { navController.navigate(Routes.INSIGHTS) { launchSingleTop = true } },
         )
       }
 
@@ -187,6 +189,7 @@ fun AppNavGraph() {
           onNavigateToSettings = { navController.navigate(Routes.SETTINGS) { launchSingleTop = true } },
           onNavigateToReflection = { navController.navigate(Routes.REFLECTION) { launchSingleTop = true } },
           onNavigateToWeeklyReview = { navController.navigate(Routes.WEEKLY_REVIEW) { launchSingleTop = true } },
+          onNavigateToInsights = { navController.navigate(Routes.INSIGHTS) { launchSingleTop = true } },
         )
       }
 
@@ -202,6 +205,7 @@ fun AppNavGraph() {
       composable(Routes.SETTINGS) { SettingsScreen(onBack = { navController.popBackStack() }) }
       composable(Routes.REFLECTION) { ReflectionScreen(onBack = { navController.popBackStack() }) }
       composable(Routes.WEEKLY_REVIEW) { WeeklyReviewScreen(onBack = { navController.popBackStack() }) }
+      composable(Routes.INSIGHTS) { InsightsScreen(onBack = { navController.popBackStack() }) }
       }
 
       if (clockifyConnected) {
