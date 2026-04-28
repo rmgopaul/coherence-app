@@ -3,8 +3,14 @@
  * Drag to reposition; the parent <Canvas /> tracks pointer state and
  * commits the new x/y to the server on drop.
  */
+import { useEffect, type CSSProperties, type MouseEvent } from "react";
+import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
-import type { CSSProperties, MouseEvent } from "react";
+import {
+  chipFallbackLabel,
+  stripMarkdownLinks,
+  type DockSource,
+} from "@shared/dropdock.helpers";
 
 export type StickyColor = "paper" | "yellow" | "red" | "blue" | "black";
 
@@ -43,6 +49,31 @@ export function StickyNote({
   onCycleColor,
   onRemoveFromBoard,
 }: StickyNoteProps) {
+  const utils = trpc.useUtils();
+  // Self-heal: chips with no stored title trigger background
+  // enrichment so the sticky note shows the actual task / event /
+  // email subject instead of the friendly fallback. Same proc the
+  // DropDock chip uses; cache invalidation refreshes both
+  // surfaces in one pass.
+  const refreshTitle = trpc.dock.refreshTitle.useMutation({
+    onSuccess: (result) => {
+      if (result.refreshed) {
+        void utils.dock.list.invalidate();
+      }
+    },
+  });
+  const cleanedTitle = stripMarkdownLinks(sticky.title ?? "").trim();
+  const hasResolvedTitle = cleanedTitle.length > 0;
+  const refreshTitleMutate = refreshTitle.mutate;
+  useEffect(() => {
+    if (hasResolvedTitle) return;
+    refreshTitleMutate({ id: sticky.id });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mutation
+    // ref is stable; we want one fire per (id, has-title) flip.
+  }, [sticky.id, hasResolvedTitle]);
+
+  const displayTitle =
+    cleanedTitle || chipFallbackLabel(sticky.source as DockSource, sticky.url);
   const style: CSSProperties = {
     left: sticky.x,
     top: sticky.y,
@@ -84,7 +115,7 @@ export function StickyNote({
           ×
         </button>
       </div>
-      <h4 className="fp-sticky__title">{sticky.title ?? sticky.url}</h4>
+      <h4 className="fp-sticky__title">{displayTitle}</h4>
       <a
         href={sticky.url}
         target="_blank"

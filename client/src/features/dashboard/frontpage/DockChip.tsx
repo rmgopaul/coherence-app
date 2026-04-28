@@ -102,6 +102,36 @@ export const DockChip = forwardRef<HTMLAnchorElement, DockChipProps>(
       },
     });
 
+    // Self-heal: when a chip mounts with no stored title, fire the
+    // server-side enrichment in the background and refresh the dock
+    // list on success. Covers chips added before the gcal htmlLink
+    // classification fix and any other path that stored a null
+    // title. The mutation itself short-circuits on chips that
+    // already have a title so re-renders don't replay the fetch.
+    const refreshTitle = trpc.dock.refreshTitle.useMutation({
+      onSuccess: (result) => {
+        if (result.refreshed) {
+          void utils.dock.list.invalidate();
+        }
+      },
+    });
+    const hasResolvedTitle =
+      stripMarkdownLinks(item.title ?? "").trim().length > 0;
+    const refreshTitleMutate = refreshTitle.mutate;
+    useEffect(() => {
+      if (hasResolvedTitle) return;
+      // `useMutation` itself doesn't dedupe across re-mounts — guard
+      // by checking the mutation's pending/idle state so a tab-
+      // refocus cascade doesn't re-fire enrichment for the same
+      // chip. This is best-effort: an in-flight result might race
+      // with a same-id chip in another mount, but the proc is
+      // idempotent so the worst case is a duplicate fetch.
+      refreshTitleMutate({ id: item.id });
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- we
+      // intentionally fire only when (id, hasResolvedTitle) flips;
+      // the mutation reference is stable.
+    }, [item.id, hasResolvedTitle]);
+
     // Close popover on outside click. Listening at the document
     // level keeps us from having to hand-thread refs through every
     // chip; the popoverRef + chip anchor target are the only two

@@ -2405,6 +2405,187 @@ export const dataExportRouter = router({
     }),
 });
 
+/**
+ * Enrich a dock item — given source/url/meta, fetch the upstream
+ * source's display title and return it (or null if anything fails).
+ * Pure-IO; no side effects. Used by:
+ *   - `dock.getItemDetails` — called during the paste/drop flow
+ *   - `dock.refreshTitle` — called by chips that were stored without
+ *     a title (e.g. before the gcal-htmlLink classification fix
+ *     landed; or when SignalActions drops a Todoist task whose
+ *     content was null at the source row)
+ *
+ * Returns null on every defensive path — token missing, source
+ * unsupported, upstream HTTP failure, or upstream returns an empty
+ * value. Callers fall back to `chipFallbackLabel` for display.
+ */
+async function enrichDockTitle(
+  userId: number,
+  source: "gmail" | "gcal" | "gsheet" | "todoist" | "url",
+  url: string,
+  meta: Record<string, unknown> | null | undefined
+): Promise<string | null> {
+  const { stripMarkdownLinks } = await import("@shared/dropdock.helpers");
+  const cleanTitle = (raw: string | null | undefined): string | null => {
+    if (!raw) return null;
+    const stripped = stripMarkdownLinks(raw).trim();
+    return stripped.length > 0 ? stripped : null;
+  };
+
+  try {
+    if (source === "gmail") {
+      const googleIntegration = await getIntegrationByProvider(userId, "google");
+      if (!googleIntegration?.accessToken) return null;
+      const accessToken = await getValidGoogleToken(userId);
+
+      let messageId = meta?.messageId as string | undefined;
+      if (!messageId) {
+        try {
+          const urlObj = new URL(url);
+          const hash = urlObj.hash.startsWith("#")
+            ? urlObj.hash.slice(1)
+            : urlObj.hash;
+          const hashMessageId = hash.split("/").pop();
+          const queryMessageId = urlObj.searchParams.get("th");
+          messageId = queryMessageId || hashMessageId || undefined;
+        } catch {
+          messageId = undefined;
+        }
+      }
+      if (!messageId) return null;
+
+      const response = await fetch(
+        `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(messageId)}?format=metadata&metadataHeaders=Subject`,
+        { headers: { Authorization: `Bearer ${accessToken}` } }
+      );
+      if (!response.ok) return null;
+
+      const data = await response.json();
+      const subject = data.payload?.headers?.find(
+        (h: { name: string; value: string }) => h.name === "Subject"
+      )?.value;
+      return cleanTitle(subject);
+    }
+
+    if (source === "gcal") {
+      const googleIntegration = await getIntegrationByProvider(userId, "google");
+      if (!googleIntegration?.accessToken) return null;
+      const accessToken = await getValidGoogleToken(userId);
+
+      let eventId = meta?.eventId as string | undefined;
+      let calendarId = meta?.calendarId as string | undefined;
+
+      // Try `eid` from meta first (set by classifyUrl). For chips
+      // stored before the www.google.com/calendar host fix, meta
+      // could be empty — in that case try parsing `eid` directly
+      // off the URL as a defensive fallback.
+      let eid = meta?.eid as string | undefined;
+      if (!eventId && !eid) {
+        try {
+          const urlObj = new URL(url);
+          eid = urlObj.searchParams.get("eid") ?? undefined;
+        } catch {
+          eid = undefined;
+        }
+      }
+
+      if (!eventId && eid) {
+        // Decode base64 event ID. Format is "eventId calendarId"
+        // (calendarId absent when the event lives on the primary
+        // calendar). Non-primary calendars require the calendar id
+        // in the API URL or the fetch 404s.
+        try {
+          const decoded = Buffer.from(eid, "base64").toString("utf-8");
+          const parts = decoded.split(" ");
+          eventId = parts[0];
+          if (!calendarId && parts[1]) calendarId = parts[1];
+        } catch {
+          return null;
+        }
+      }
+      if (!eventId) return null;
+
+      const targetCalendar = calendarId ?? "primary";
+      const response = await fetch(
+        `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(targetCalendar)}/events/${encodeURIComponent(eventId)}`,
+        { headers: { Authorization: `Bearer ${accessToken}` } }
+      );
+      if (!response.ok) return null;
+
+      const event = await response.json();
+      return cleanTitle(event.summary);
+    }
+
+    if (source === "gsheet") {
+      const googleIntegration = await getIntegrationByProvider(userId, "google");
+      if (!googleIntegration?.accessToken) return null;
+      const accessToken = await getValidGoogleToken(userId);
+
+      const spreadsheetId =
+        (meta?.spreadsheetId as string | undefined) ??
+        (meta?.sheetId as string | undefined);
+      if (!spreadsheetId) return null;
+
+      const response = await fetch(
+        `https://www.googleapis.com/drive/v3/files/${spreadsheetId}?fields=name`,
+        { headers: { Authorization: `Bearer ${accessToken}` } }
+      );
+      if (!response.ok) return null;
+
+      const file = await response.json();
+      return cleanTitle(file.name);
+    }
+
+    if (source === "todoist") {
+      const todoistIntegration = await getIntegrationByProvider(userId, "todoist");
+      if (!todoistIntegration?.accessToken) return null;
+
+      let taskId = meta?.taskId as string | undefined;
+      if (!taskId) {
+        // First try the query-param shape (`?id=…` — matches
+        // SignalActions' `taskUrl: showTask?id=…`).
+        try {
+          const urlObj = new URL(url);
+          taskId = urlObj.searchParams.get("id") ?? undefined;
+        } catch {
+          taskId = undefined;
+        }
+      }
+      if (!taskId) {
+        // Fall through to the `/task/<id>` path-segment shape.
+        const taskMatch = url.match(/\/task\/([A-Za-z0-9_-]+)/);
+        taskId = taskMatch?.[1];
+      }
+      if (!taskId) return null;
+
+      const response = await fetch(
+        `https://api.todoist.com/api/v1/tasks/${encodeURIComponent(taskId)}`,
+        {
+          headers: { Authorization: `Bearer ${todoistIntegration.accessToken}` },
+        }
+      );
+
+      if (!response.ok) {
+        // Fallback: pull the full open-task list and find by id.
+        // Slow but covers cases where the v1 single-task endpoint
+        // returns 404 for a task the user CAN access.
+        const tasks = await getTodoistTasks(todoistIntegration.accessToken);
+        const task = tasks.find((t) => t.id === taskId);
+        return cleanTitle(task?.content);
+      }
+
+      const data = await response.json();
+      const task = data?.task ?? data;
+      return cleanTitle(task?.content);
+    }
+
+    return null;
+  } catch (error) {
+    console.error(`[Dock] enrichDockTitle ${source} failed:`, error);
+    return null;
+  }
+}
+
 export const dockRouter = router({
   getItemDetails: protectedProcedure
     .input(z.object({
@@ -2413,166 +2594,66 @@ export const dockRouter = router({
       meta: z.record(z.string(), z.any()).optional(),
     }))
     .mutation(async ({ ctx, input }) => {
-      // Phase E (2026-04-28) — return `{title: null}` instead of a
-      // generic placeholder string ("Email" / "Task" / "Calendar
-      // Event") when we can't resolve a real title. The chip render
-      // falls back to the URL in that case, which is far more useful
-      // than `TODO Task` everywhere. Apply `stripMarkdownLinks` to
-      // every successful title so a Todoist task content like
-      // "Read [sprint plan](https://docs.google.com/...)" surfaces
-      // as "Read sprint plan" in the chip.
-      const { stripMarkdownLinks } = await import("@shared/dropdock.helpers");
-      const cleanTitle = (raw: string | null | undefined): string | null => {
-        if (!raw) return null;
-        const stripped = stripMarkdownLinks(raw).trim();
-        return stripped.length > 0 ? stripped : null;
-      };
+      // Delegates to `enrichDockTitle` so the paste/drop flow and
+      // the self-heal `refreshTitle` flow share one enrichment
+      // implementation. Returns `{ title: null }` on every defensive
+      // path so the chip render falls back to `chipFallbackLabel`.
+      const title = await enrichDockTitle(
+        ctx.user.id,
+        input.source,
+        input.url,
+        input.meta ?? null
+      );
+      return { title };
+    }),
 
-      try {
-        if (input.source === "gmail") {
-          const googleIntegration = await getIntegrationByProvider(ctx.user.id, "google");
-          if (!googleIntegration?.accessToken) {
-            return { title: null };
-          }
-          const accessToken = await getValidGoogleToken(ctx.user.id);
-
-          // Extract message ID from parsed metadata or URL fallback.
-          let messageId = input.meta?.messageId as string | undefined;
-          if (!messageId) {
-            try {
-              const urlObj = new URL(input.url);
-              const hash = urlObj.hash.startsWith("#") ? urlObj.hash.slice(1) : urlObj.hash;
-              const hashMessageId = hash.split("/").pop();
-              const queryMessageId = urlObj.searchParams.get("th");
-              messageId = queryMessageId || hashMessageId || undefined;
-            } catch {
-              messageId = undefined;
-            }
-          }
-          if (!messageId) return { title: null };
-
-          // Fetch email details from Gmail API
-          const response = await fetch(
-            `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(messageId)}?format=metadata&metadataHeaders=Subject`,
-            { headers: { Authorization: `Bearer ${accessToken}` } }
-          );
-
-          if (!response.ok) return { title: null };
-
-          const data = await response.json();
-          const subject = data.payload?.headers?.find(
-            (h: { name: string; value: string }) => h.name === "Subject"
-          )?.value;
-
-          return { title: cleanTitle(subject) };
-        }
-
-        if (input.source === "gcal") {
-          const googleIntegration = await getIntegrationByProvider(ctx.user.id, "google");
-          if (!googleIntegration?.accessToken) {
-            return { title: null };
-          }
-          const accessToken = await getValidGoogleToken(ctx.user.id);
-
-          // Extract event ID from meta (already decoded in frontend) or eid parameter
-          let eventId = input.meta?.eventId as string | undefined;
-          let calendarId = input.meta?.calendarId as string | undefined;
-
-          if (!eventId) {
-            const eid = input.meta?.eid as string;
-            if (!eid) return { title: null };
-
-            // Decode base64 event ID. Format is "eventId calendarId"
-            // (calendarId absent when the event lives on the primary
-            // calendar). Non-primary calendars require the calendar
-            // id in the API URL or the fetch 404s.
-            try {
-              const decoded = Buffer.from(eid, "base64").toString("utf-8");
-              const parts = decoded.split(" ");
-              eventId = parts[0];
-              if (!calendarId && parts[1]) calendarId = parts[1];
-            } catch {
-              return { title: null };
-            }
-          }
-
-          if (!eventId) return { title: null };
-
-          // Fetch event details from Calendar API
-          const targetCalendar = calendarId ?? "primary";
-          const response = await fetch(
-            `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(targetCalendar)}/events/${encodeURIComponent(eventId)}`,
-            { headers: { Authorization: `Bearer ${accessToken}` } }
-          );
-
-          if (!response.ok) return { title: null };
-
-          const event = await response.json();
-          return { title: cleanTitle(event.summary) };
-        }
-
-        if (input.source === "gsheet") {
-          const googleIntegration = await getIntegrationByProvider(ctx.user.id, "google");
-          if (!googleIntegration?.accessToken) {
-            return { title: null };
-          }
-          const accessToken = await getValidGoogleToken(ctx.user.id);
-
-          const spreadsheetId =
-            (input.meta?.spreadsheetId as string | undefined) ??
-            (input.meta?.sheetId as string | undefined);
-          if (!spreadsheetId) return { title: null };
-
-          // Fetch spreadsheet details from Drive API
-          const response = await fetch(
-            `https://www.googleapis.com/drive/v3/files/${spreadsheetId}?fields=name`,
-            { headers: { Authorization: `Bearer ${accessToken}` } }
-          );
-
-          if (!response.ok) return { title: null };
-
-          const file = await response.json();
-          return { title: cleanTitle(file.name) };
-        }
-
-        if (input.source === "todoist") {
-          const todoistIntegration = await getIntegrationByProvider(ctx.user.id, "todoist");
-          if (!todoistIntegration?.accessToken) {
-            return { title: null };
-          }
-
-          let taskId = input.meta?.taskId as string | undefined;
-          if (!taskId) {
-            const taskMatch = input.url.match(/\/task\/([A-Za-z0-9_-]+)/);
-            taskId = taskMatch?.[1];
-          }
-          if (!taskId) return { title: null };
-
-          // Fetch task details from Todoist API (v1).
-          const response = await fetch(
-            `https://api.todoist.com/api/v1/tasks/${encodeURIComponent(taskId)}`,
-            { headers: { Authorization: `Bearer ${todoistIntegration.accessToken}` } }
-          );
-
-          if (!response.ok) {
-            // Fallback: pull the full open-task list and find by id.
-            // Slow but covers cases where the v1 single-task endpoint
-            // returns 404 for a task the user CAN access.
-            const tasks = await getTodoistTasks(todoistIntegration.accessToken);
-            const task = tasks.find((t) => t.id === taskId);
-            return { title: cleanTitle(task?.content) };
-          }
-
-          const data = await response.json();
-          const task = data?.task ?? data;
-          return { title: cleanTitle(task?.content) };
-        }
-
-        return { title: null };
-      } catch (error) {
-        console.error(`[Dock] Error fetching details for ${input.source}:`, error);
-        return { title: null };
+  /**
+   * Self-heal a dock chip whose stored title is null/empty. Loads
+   * the row, runs enrichment, and persists the resolved title (if
+   * any) so subsequent renders skip the round trip. Used by the
+   * client when a chip mounts with no title — typically because
+   * the chip was added before the gcal `htmlLink` URL classification
+   * fix landed, or before SignalActions started passing the title
+   * through.
+   *
+   * Returns the resolved title (or null when enrichment still
+   * fails). The client falls back to `chipFallbackLabel` either way.
+   *
+   * Idempotent — calling on a chip that already has a title is a
+   * no-op (we re-return the existing title without hitting the
+   * upstream API).
+   */
+  refreshTitle: protectedProcedure
+    .input(z.object({ id: z.string().min(1).max(64) }))
+    .mutation(async ({ ctx, input }) => {
+      const { getDockItemById, updateDockItemTitle } = await import(
+        "../db/dock"
+      );
+      const item = await getDockItemById(ctx.user.id, input.id);
+      if (!item) {
+        return { title: null, refreshed: false as const };
       }
+      // Already-titled chips short-circuit. The client checks
+      // `item.title` before calling, but a parallel paste might
+      // have populated the title between render and dispatch.
+      if (item.title?.trim()) {
+        return { title: item.title, refreshed: false as const };
+      }
+      const meta = item.meta ? parseDockMeta(item.meta) : null;
+      const title = await enrichDockTitle(
+        ctx.user.id,
+        item.source as "gmail" | "gcal" | "gsheet" | "todoist" | "url",
+        item.url,
+        meta
+      );
+      if (!title) {
+        return { title: null, refreshed: false as const };
+      }
+      const updated = await updateDockItemTitle(ctx.user.id, input.id, title);
+      return {
+        title,
+        refreshed: updated,
+      };
     }),
 
   // ---- Phase F3 — server-persisted DropDock chips ----------------------

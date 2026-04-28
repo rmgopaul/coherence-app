@@ -14,6 +14,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DragEvent as ReactDragEvent, MouseEvent as ReactMouseEvent } from "react";
 import { cn } from "@/lib/utils";
 import { trpc } from "@/lib/trpc";
+import {
+  chipFallbackLabel,
+  stripMarkdownLinks,
+  type DockSource,
+} from "@shared/dropdock.helpers";
 import { DashboardViewsNav } from "./DashboardViewsNav";
 import { StickyNote, type StickyData } from "./canvas/StickyNote";
 import {
@@ -251,26 +256,78 @@ export default function Canvas() {
           ) : (
             <div className="fp-canvas__dock-row">
               {dockOnly.map((it) => (
-                <button
+                <ShelfChip
                   key={it.id}
-                  type="button"
-                  className="fp-canvas__shelf-chip"
-                  draggable
+                  item={it}
                   onDragStart={onShelfDragStart(it.id)}
                   onClick={() => placeOnBoard(it.id)}
-                  title="Drag onto the board, or click to drop in the center"
-                >
-                  <span className="fp-canvas__shelf-src">{it.source.toUpperCase()}</span>
-                  <span className="fp-canvas__shelf-title">
-                    {it.title?.trim() || it.url}
-                  </span>
-                  <span className="fp-canvas__shelf-add">＋ drag · click</span>
-                </button>
+                />
               ))}
             </div>
           )}
         </section>
       </div>
     </div>
+  );
+}
+
+/**
+ * Shelf chip — a single dock-only chip rendered inside the
+ * Canvas's "DOCK · NOT ON BOARD" rail. Self-contained so it owns
+ * its own self-heal `useEffect`: chips with no resolved title
+ * (added before the gcal htmlLink classification fix, or with a
+ * source whose enrichment originally failed) trigger a background
+ * `dock.refreshTitle` call so the visible label upgrades from the
+ * generic source-fallback to the actual task / event / email
+ * subject as soon as the upstream API resolves.
+ */
+function ShelfChip({
+  item,
+  onDragStart,
+  onClick,
+}: {
+  item: {
+    id: string;
+    source: string;
+    url: string;
+    title: string | null;
+  };
+  onDragStart: (e: ReactDragEvent<HTMLButtonElement>) => void;
+  onClick: () => void;
+}) {
+  const utils = trpc.useUtils();
+  const refreshTitle = trpc.dock.refreshTitle.useMutation({
+    onSuccess: (result) => {
+      if (result.refreshed) {
+        void utils.dock.list.invalidate();
+      }
+    },
+  });
+  const cleanedTitle = stripMarkdownLinks(item.title ?? "").trim();
+  const hasResolvedTitle = cleanedTitle.length > 0;
+  const refreshTitleMutate = refreshTitle.mutate;
+  useEffect(() => {
+    if (hasResolvedTitle) return;
+    refreshTitleMutate({ id: item.id });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mutation
+    // ref is stable; we want one fire per (id, has-title) flip.
+  }, [item.id, hasResolvedTitle]);
+
+  const displayTitle =
+    cleanedTitle || chipFallbackLabel(item.source as DockSource, item.url);
+
+  return (
+    <button
+      type="button"
+      className="fp-canvas__shelf-chip"
+      draggable
+      onDragStart={onDragStart}
+      onClick={onClick}
+      title="Drag onto the board, or click to drop in the center"
+    >
+      <span className="fp-canvas__shelf-src">{item.source.toUpperCase()}</span>
+      <span className="fp-canvas__shelf-title">{displayTitle}</span>
+      <span className="fp-canvas__shelf-add">＋ drag · click</span>
+    </button>
   );
 }
