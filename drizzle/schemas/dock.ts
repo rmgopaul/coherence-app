@@ -50,6 +50,12 @@ export const dockItems = mysqlTable(
     color: varchar("color", { length: 16 }),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+    // Phase E (2026-04-28) — auto-archive sweep: items older than 30
+    // days that aren't pinned and aren't on the canvas (x/y null) get
+    // their archivedAt stamped, hiding them from the default
+    // `listDockItems` query. The data sticks around so a future
+    // "Show archived" toggle can resurface or restore them.
+    archivedAt: timestamp("archivedAt"),
   },
   (table) => ({
     userCreatedIdx: index("dock_items_user_created_idx").on(
@@ -60,6 +66,12 @@ export const dockItems = mysqlTable(
       table.userId,
       table.urlCanonical
     ),
+    // Phase E (2026-04-28) — index on (archivedAt) so the daily
+    // sweep's WHERE archivedAt IS NULL filter stays cheap as the
+    // table grows. Per-user filter still hits userCreatedIdx; the
+    // archive index is separate so single-user listings benefit
+    // from both.
+    archivedAtIdx: index("dock_items_archived_at_idx").on(table.archivedAt),
   })
 );
 
