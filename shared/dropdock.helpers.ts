@@ -10,7 +10,9 @@
  * mutation in server/routers/personalData.ts:
  *
  *   gmail   — mail.google.com (extracts hash messageId)
- *   gcal    — calendar.google.com (extracts ?eid)
+ *   gcal    — calendar.google.com OR www.google.com/calendar/...
+ *             (the latter is the format Google Calendar API's
+ *             `htmlLink` field returns; both extract `?eid`)
  *   gsheet  — docs.google.com/spreadsheets/
  *   todoist — todoist.com (extracts /showTask/<id> or /task/<id>)
  *   url     — anything else
@@ -162,8 +164,19 @@ export function classifyUrl(input: string): ClassifiedUrl {
     return { source: "gmail", url, urlCanonical, meta };
   }
 
-  // ---- Google Calendar: calendar.google.com/...?eid=<base64>
-  if (host === "calendar.google.com") {
+  // ---- Google Calendar
+  // Two URL shapes both classify as gcal:
+  //   1. calendar.google.com/...?eid=<base64> — the standard
+  //      "open calendar" deep link
+  //   2. www.google.com/calendar/event?eid=<base64> — the format
+  //      Google Calendar API's `htmlLink` field returns. Without
+  //      this branch, dropping a calendar event chip via paste
+  //      misses enrichment and the chip falls back to displaying
+  //      the raw URL.
+  const isGoogleCalendarHtmlLink =
+    (host === "www.google.com" || host === "google.com") &&
+    parsed.pathname.startsWith("/calendar");
+  if (host === "calendar.google.com" || isGoogleCalendarHtmlLink) {
     const eid = parsed.searchParams.get("eid");
     const meta: Record<string, string> = {};
     if (eid) meta.eid = eid;
@@ -224,6 +237,52 @@ export function extractMarkdownLink(
   const url = match[2].trim();
   if (!title || !url) return null;
   return { title, url };
+}
+
+/**
+ * Friendly fallback label for a dock chip when the title resolved
+ * to null (enrichment failed: token expired, source unrecognized,
+ * upstream API down, etc.).
+ *
+ * Background: the `getItemDetails` proc returns `{title: null}` on
+ * any unresolved-title path so the chip renderer can decide what to
+ * surface. Initially the chip rendered the raw URL on null, which
+ * gives the user something clickable but is awful to read on a
+ * 200-character calendar `htmlLink`. This helper picks a label from
+ * the source kind so a "Calendar event" beats a 200-char URL —
+ * still clickable, but readable in the chip strip.
+ *
+ * For unclassified URLs we try to extract host + first path segment
+ * since "host/path" is far more useful than the full query/hash
+ * tail. Falls back to a 60-char URL truncation if URL parsing
+ * itself fails.
+ *
+ * Pure. Exposed for testability.
+ */
+export function chipFallbackLabel(source: DockSource, url: string): string {
+  switch (source) {
+    case "gmail":
+      return "Gmail message";
+    case "gcal":
+      return "Calendar event";
+    case "gsheet":
+      return "Spreadsheet";
+    case "todoist":
+      return "Todoist task";
+    case "url":
+    default: {
+      try {
+        const u = new URL(url);
+        const path = u.pathname === "/" ? "" : u.pathname;
+        const composed = `${u.host}${path}`;
+        return composed.length > 60
+          ? `${composed.slice(0, 57)}…`
+          : composed;
+      } catch {
+        return url.length > 60 ? `${url.slice(0, 57)}…` : url;
+      }
+    }
+  }
 }
 
 /**

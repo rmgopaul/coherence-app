@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   canonicalizeUrl,
   categorizeDockDueDate,
+  chipFallbackLabel,
   classifyUrl,
   extractMarkdownLink,
   extractUrlFromPaste,
@@ -94,6 +95,33 @@ describe("classifyUrl", () => {
     expect(r.meta.eid).toBe("ZXZlbnRJZCBjYWxJZA");
   });
 
+  it("classifies the htmlLink format www.google.com/calendar/event", () => {
+    // The Google Calendar API's `htmlLink` field returns this URL
+    // shape, not the calendar.google.com host. Without this case
+    // dropping a calendar event chip via paste / drag misses
+    // enrichment and the chip falls back to the raw URL.
+    const r = classifyUrl(
+      "https://www.google.com/calendar/event?eid=ZXZlbnRJZCBjYWxJZA"
+    );
+    expect(r.source).toBe("gcal");
+    expect(r.meta.eid).toBe("ZXZlbnRJZCBjYWxJZA");
+  });
+
+  it("classifies the bare google.com/calendar host as gcal", () => {
+    const r = classifyUrl("https://google.com/calendar/event?eid=abc");
+    expect(r.source).toBe("gcal");
+    expect(r.meta.eid).toBe("abc");
+  });
+
+  it("does NOT classify www.google.com/search as gcal", () => {
+    // Defensive: only `/calendar` path-prefixed www.google.com URLs
+    // should classify as gcal — a vanilla google search URL must
+    // still fall through to source: url.
+    const r = classifyUrl("https://www.google.com/search?q=hello");
+    expect(r.source).toBe("url");
+    expect(r.meta).toEqual({});
+  });
+
   it("classifies Google Sheets and pulls the spreadsheet id", () => {
     const r = classifyUrl(
       "https://docs.google.com/spreadsheets/d/SHEET_ABC/edit#gid=0"
@@ -131,6 +159,58 @@ describe("classifyUrl", () => {
   it("returns source: url for empty input without throwing", () => {
     expect(classifyUrl("").source).toBe("url");
     expect(classifyUrl("").urlCanonical).toBe("");
+  });
+});
+
+describe("chipFallbackLabel", () => {
+  it("returns 'Gmail message' for gmail source", () => {
+    expect(chipFallbackLabel("gmail", "https://mail.google.com/x")).toBe(
+      "Gmail message"
+    );
+  });
+
+  it("returns 'Calendar event' for gcal source", () => {
+    expect(
+      chipFallbackLabel(
+        "gcal",
+        "https://www.google.com/calendar/event?eid=ZXZlbnRJZCBjYWxJZA"
+      )
+    ).toBe("Calendar event");
+  });
+
+  it("returns 'Spreadsheet' for gsheet source", () => {
+    expect(chipFallbackLabel("gsheet", "https://docs.google.com/x")).toBe(
+      "Spreadsheet"
+    );
+  });
+
+  it("returns 'Todoist task' for todoist source", () => {
+    expect(
+      chipFallbackLabel("todoist", "https://todoist.com/showTask?id=12345")
+    ).toBe("Todoist task");
+  });
+
+  it("falls back to host + path for url source", () => {
+    expect(
+      chipFallbackLabel("url", "https://news.ycombinator.com/item?id=1")
+    ).toBe("news.ycombinator.com/item");
+  });
+
+  it("trims a host-only URL's trailing slash", () => {
+    expect(chipFallbackLabel("url", "https://example.com/")).toBe(
+      "example.com"
+    );
+  });
+
+  it("truncates host+path beyond 60 chars with ellipsis", () => {
+    const url = `https://example.com/${"p".repeat(100)}`;
+    const result = chipFallbackLabel("url", url);
+    expect(result.length).toBeLessThanOrEqual(60);
+    expect(result.endsWith("…")).toBe(true);
+  });
+
+  it("falls back to truncated raw URL when URL parsing fails", () => {
+    expect(chipFallbackLabel("url", "not a real url")).toBe("not a real url");
   });
 });
 
