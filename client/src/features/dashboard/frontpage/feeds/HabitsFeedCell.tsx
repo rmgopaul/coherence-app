@@ -1,8 +1,9 @@
 /**
  * HabitsFeedCell — compact wire-feed for today's habit completion.
  *
- * Shows done/total + top streak. Editing (toggling completion) stays
- * on /dashboard-legacy.
+ * Shows done/total + top streak. Toggle UI lives on `/habits` (the
+ * standalone Habits page); this cell is a read-only summary that
+ * links there.
  */
 import { useMemo } from "react";
 import { trpc } from "@/lib/trpc";

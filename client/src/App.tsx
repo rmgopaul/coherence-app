@@ -14,7 +14,6 @@ import { AppShell } from "./components/layout/AppShell";
 
 const Home = lazy(() => import("@/features/dashboard/Home"));
 const Dashboard = lazy(() => import("@/features/dashboard/Dashboard"));
-const DashboardLegacy = lazy(() => import("@/features/dashboard/DashboardLegacy"));
 const OneThing = lazy(() => import("@/features/dashboard/OneThing"));
 const River = lazy(() => import("@/features/dashboard/River"));
 const Canvas = lazy(() => import("@/features/dashboard/Canvas"));
@@ -109,7 +108,6 @@ function AppRoutes() {
       <Route path={"/dashboard/river"} component={withRouteSuspense(River)} />
       <Route path={"/dashboard/canvas"} component={withRouteSuspense(Canvas)} />
       <Route path={"/dashboard/command"} component={withRouteSuspense(CommandDeck)} />
-      <Route path={"/dashboard-legacy"} component={withRouteSuspense(DashboardLegacy)} />
       {/* Task 5.5 (2026-04-26): legacy /solar-rec-dashboard URL retired
           in favor of /solar-rec/dashboard on the standalone Solar REC
           app. Wouter is client-side only — the redirect runs as soon as
