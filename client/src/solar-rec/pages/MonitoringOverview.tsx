@@ -17,7 +17,8 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
-import { Download, ArrowLeft } from "lucide-react";
+import { ArrowLeft, Download, Loader2, RefreshCw } from "lucide-react";
+import { toast } from "sonner";
 import { PermissionGate } from "../components/PermissionGate";
 
 // ── Helpers ─────────────────────────────────────────────────────────
@@ -82,6 +83,63 @@ function MonitoringOverviewImpl() {
     startDate,
     endDate,
   });
+
+  // Task 7.1 (2026-04-28): per-site daily overview. Server-side
+  // aggregator returns one row per (provider, connectionId, siteId)
+  // seen in the last 30 days with yesterday-status / 7d / 30d
+  // rollups + last error + last run.
+  const dailyOverviewQuery =
+    trpc.monitoring.getDailyOverview.useQuery(
+      {},
+      {
+        // The data refreshes once per scheduler run (~hourly). Stale-
+        // until-30-min keeps the page snappy if the user navigates
+        // away and back.
+        staleTime: 30 * 60_000,
+      }
+    );
+  const dailyOverviewSites = dailyOverviewQuery.data?.sites ?? [];
+  const failedSites = useMemo(
+    () =>
+      dailyOverviewSites.filter(
+        (s) =>
+          s.yesterdayStatus === "error" || s.yesterdayStatus === "no_data"
+      ),
+    [dailyOverviewSites]
+  );
+
+  // Task 7.1: "Re-run failed sites" derives unique
+  // (provider, connectionId) pairs from failed rows and triggers
+  // the existing `runAll` mutation with those filters. Coarser than
+  // a literal per-site re-run (the underlying executeMonitoringBatch
+  // doesn't take a per-site filter today) but ships the value
+  // without a server-side rewrite.
+  const runAllMutation = trpc.monitoring.runAll.useMutation({
+    onSuccess: (data) => {
+      toast.success(
+        `Re-run started for ${data.selectedProviders.length} provider${
+          data.selectedProviders.length === 1 ? "" : "s"
+        } / ${data.selectedCredentialIds.length} connection${
+          data.selectedCredentialIds.length === 1 ? "" : "s"
+        }. Check the Monitoring Dashboard for live progress.`
+      );
+    },
+    onError: (err) => {
+      toast.error(err.message ?? "Failed to start re-run");
+    },
+  });
+  const handleReRunFailed = () => {
+    if (failedSites.length === 0) return;
+    const providers = Array.from(new Set(failedSites.map((s) => s.provider)));
+    const credentialIds = Array.from(
+      new Set(
+        failedSites
+          .map((s) => s.connectionId)
+          .filter((id): id is string => typeof id === "string" && id.length > 0)
+      )
+    );
+    runAllMutation.mutate({ providers, credentialIds });
+  };
 
   const visibleDates = useMemo(
     () => (showLast7 ? dateKeys.slice(-7) : dateKeys),
@@ -417,6 +475,198 @@ function MonitoringOverviewImpl() {
           </CardContent>
         </Card>
       ))}
+
+      {/* Task 7.1 (2026-04-28): per-site detail with Re-run failed */}
+      <Card>
+        <CardHeader className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+          <div>
+            <CardTitle className="text-base">Per-site detail</CardTitle>
+            <CardDescription>
+              One row per site with yesterday's status, 7-day, and 30-day
+              rollups. "Re-run failed sites" triggers the same Run All
+              flow as the dashboard, filtered to the providers and
+              connections whose sites surfaced an error or no-data
+              yesterday.
+            </CardDescription>
+          </div>
+          <Button
+            size="sm"
+            onClick={handleReRunFailed}
+            disabled={failedSites.length === 0 || runAllMutation.isPending}
+            className="md:self-center"
+          >
+            {runAllMutation.isPending ? (
+              <Loader2 className="h-3 w-3 mr-2 animate-spin" />
+            ) : (
+              <RefreshCw className="h-3 w-3 mr-2" />
+            )}
+            Re-run failed sites
+            {failedSites.length > 0 ? ` (${failedSites.length})` : ""}
+          </Button>
+        </CardHeader>
+        <CardContent>
+          {dailyOverviewQuery.isLoading ? (
+            <p className="text-sm text-muted-foreground py-6 text-center">
+              <Loader2 className="inline-block h-3 w-3 animate-spin mr-1" />
+              Loading per-site detail…
+            </p>
+          ) : dailyOverviewQuery.error ? (
+            <p className="text-sm text-destructive py-6 text-center">
+              Couldn't load per-site overview ({dailyOverviewQuery.error.message}).
+            </p>
+          ) : dailyOverviewSites.length === 0 ? (
+            <p className="text-sm text-muted-foreground py-6 text-center">
+              No site activity in the last 30 days.
+            </p>
+          ) : (
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="min-w-[120px]">Provider</TableHead>
+                    <TableHead className="min-w-[180px]">Site</TableHead>
+                    <TableHead className="text-center min-w-[80px]">
+                      Yesterday
+                    </TableHead>
+                    <TableHead className="text-center min-w-[70px]">
+                      7d
+                    </TableHead>
+                    <TableHead className="text-center min-w-[70px]">
+                      30d
+                    </TableHead>
+                    <TableHead className="min-w-[100px]">Last run</TableHead>
+                    <TableHead className="min-w-[200px]">Last error</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {dailyOverviewSites.map((site) => {
+                    const compositeKey = `${site.provider}|${site.connectionId ?? ""}|${site.siteId}`;
+                    const yesterdayBadgeVariant =
+                      site.yesterdayStatus === "success"
+                        ? ("default" as const)
+                        : site.yesterdayStatus === "error"
+                          ? ("destructive" as const)
+                          : site.yesterdayStatus === "no_data"
+                            ? ("secondary" as const)
+                            : ("outline" as const);
+                    const last7Pct =
+                      site.last7Attempts > 0
+                        ? site.last7Successes / site.last7Attempts
+                        : null;
+                    const last30Pct =
+                      site.last30Attempts > 0
+                        ? site.last30Successes / site.last30Attempts
+                        : null;
+                    return (
+                      <TableRow key={compositeKey}>
+                        <TableCell className="text-xs">
+                          {site.provider}
+                        </TableCell>
+                        <TableCell className="text-xs">
+                          <div className="font-medium truncate max-w-[200px]">
+                            {site.siteName ?? site.siteId}
+                          </div>
+                          {site.siteName ? (
+                            <div className="text-[10px] text-muted-foreground font-mono truncate">
+                              {site.siteId}
+                            </div>
+                          ) : null}
+                        </TableCell>
+                        <TableCell className="text-center">
+                          {site.yesterdayStatus ? (
+                            <Badge
+                              variant={yesterdayBadgeVariant}
+                              className="text-[10px]"
+                            >
+                              {site.yesterdayStatus}
+                            </Badge>
+                          ) : (
+                            <span className="text-muted-foreground text-xs">
+                              —
+                            </span>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-center text-xs">
+                          {site.last7Attempts === 0 ? (
+                            <span className="text-muted-foreground">—</span>
+                          ) : (
+                            <span
+                              className={
+                                last7Pct === null
+                                  ? "text-muted-foreground"
+                                  : last7Pct >= 0.9
+                                    ? "text-emerald-600 dark:text-emerald-400"
+                                    : last7Pct >= 0.7
+                                      ? "text-amber-600 dark:text-amber-400"
+                                      : "text-red-600 dark:text-red-400"
+                              }
+                            >
+                              {site.last7Successes}/{site.last7Attempts}
+                            </span>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-center text-xs">
+                          {site.last30Attempts === 0 ? (
+                            <span className="text-muted-foreground">—</span>
+                          ) : (
+                            <span
+                              className={
+                                last30Pct === null
+                                  ? "text-muted-foreground"
+                                  : last30Pct >= 0.9
+                                    ? "text-emerald-600 dark:text-emerald-400"
+                                    : last30Pct >= 0.7
+                                      ? "text-amber-600 dark:text-amber-400"
+                                      : "text-red-600 dark:text-red-400"
+                              }
+                            >
+                              {site.last30Successes}/{site.last30Attempts}
+                            </span>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-xs">
+                          {site.lastRunAt ? (
+                            <div>
+                              <div>{site.lastRunAt}</div>
+                              {site.lastRunStatus &&
+                              site.lastRunStatus !== "success" ? (
+                                <div className="text-[10px] text-muted-foreground">
+                                  {site.lastRunStatus}
+                                </div>
+                              ) : null}
+                            </div>
+                          ) : (
+                            <span className="text-muted-foreground">—</span>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-xs">
+                          {site.lastErrorMessage ? (
+                            <div>
+                              <div
+                                className="truncate max-w-[260px]"
+                                title={site.lastErrorMessage}
+                              >
+                                {site.lastErrorMessage}
+                              </div>
+                              {site.lastErrorAt ? (
+                                <div className="text-[10px] text-muted-foreground">
+                                  {site.lastErrorAt}
+                                </div>
+                              ) : null}
+                            </div>
+                          ) : (
+                            <span className="text-muted-foreground">—</span>
+                          )}
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
     </div>
   );
 }

@@ -2177,6 +2177,57 @@ const monitoringRouter = t.router({
 
       return { ...overview, credentials };
     }),
+
+  /**
+   * Task 7.1 (2026-04-28). Per-site daily overview anchored at
+   * `dateKey` (defaults to today in America/Chicago, matching the
+   * project's dateKey convention). Returns one row per
+   * (provider, connectionId, siteId) triple seen in the last 30 days,
+   * with yesterday status / 7d / 30d rollups / last run / last error.
+   *
+   * Wired into MonitoringOverview.tsx as a per-site detail card below
+   * the existing per-connection daily-grid view. The
+   * "Re-run failed sites" button on that card derives unique
+   * (provider, connectionId) pairs from the failed rows and calls
+   * the existing `runAll` mutation filtered to those — coarser than
+   * a per-site re-run (the underlying `executeMonitoringBatch`
+   * doesn't take a per-site filter today) but ships the value
+   * without needing to thread a siteIdFilter through every provider
+   * adapter.
+   *
+   * Always returns `_runnerVersion` per the CLAUDE.md observability
+   * rule for solar-rec data-flow procedures.
+   */
+  getDailyOverview: solarRecViewerProcedure
+    .input(
+      z.object({
+        dateKey: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/)
+          .optional(),
+      })
+    )
+    .query(async ({ ctx, input }) => {
+      const {
+        getMonitoringDailyOverview,
+        MONITORING_DAILY_OVERVIEW_RUNNER_VERSION,
+      } = await import("../db");
+      const dateKey =
+        input.dateKey ??
+        new Intl.DateTimeFormat("en-CA", {
+          timeZone: "America/Chicago",
+          year: "numeric",
+          month: "2-digit",
+          day: "2-digit",
+        }).format(new Date());
+
+      const sites = await getMonitoringDailyOverview(ctx.scopeId, dateKey);
+      return {
+        _runnerVersion: MONITORING_DAILY_OVERVIEW_RUNNER_VERSION,
+        dateKey,
+        sites,
+      };
+    }),
 });
 
 // ---------------------------------------------------------------------------
