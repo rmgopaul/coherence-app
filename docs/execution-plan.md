@@ -490,6 +490,46 @@ This task creates row tables for the remaining 11 datasets and rewires their ing
 
 **Gate after 5.13.** Cold-load incognito tab memory peaks < 300 MB steady-state across all 18 datasets and 20 tabs. The hard-rules section in CLAUDE.md becomes CI-enforceable: a test scans for `\.rows\.length` and `\.rows\.forEach` on core dataset keys and fails if found.
 
+### Task 5.14 — Retire `getDatasetAssembled` + collapse the in-memory `datasets[k].rows` state
+
+**Why this exists.** Task 5.12 made every dataset row-backed and Task 5.13 moved every dashboard tab off raw rows, but the dashboard parent (`client/src/features/solar-rec/SolarRecDashboard.tsx`) still hydrates an in-memory `datasets: Partial<Record<DatasetKey, CsvDataset>>` state via the legacy `getDatasetAssembled` tRPC procedure (PR #157 documented this and marked the procedure deprecated). Three consumer surfaces still read from that state:
+
+  - The Step 1 upload UI ("X rows loaded" badge, file name display, multi-source list)
+  - The DataQualityTab reconciliation between `deliveryScheduleBase` and `convertedReads` (iterates rows to build mismatched-system sets)
+  - Various staleness checks + dataset-presence reads in the dashboard parent (`datasets[key]?.uploadedAt`, `datasets[key]?.rows.length`)
+
+This task closes that gap end-to-end so the legacy chunked-CSV reassembly path can be removed entirely.
+
+**Scope (does NOT include).** Out of scope for 5.14 — these stay where they are because they're orthogonal to the deprecation:
+
+  - The `_rawSourcesV1` manifest format (still used by `convertedReadsBridge.ts` + `syncConvertedReadsUserSources` mutation as the canonical multi-source aggregation envelope; renamed for clarity is acceptable, removal is not).
+  - The `solarRecDashboardStorage` table itself (still backs `saveDataset` writes + `serverSideMigration.ts` reads + Schedule B import storage).
+  - The server-side `parseChunkPointerPayload` helper in `server/routers/helpers/scheduleB.ts` (Schedule B import job runner uses it; that's an unrelated path).
+  - `getRemoteDataset` (per-key fallback mutation) — already used elsewhere (EarlyPayment, DeepUpdateSynthesizer); only the **batch** `getDatasetAssembled` is being retired.
+
+**Sub-PR cadence.** 6 sub-PRs, each independently shippable + low-blast-radius. The first 5 build up the replacement primitives; PR-6 is the actual deletion.
+
+  1. **PR-1 — Persist scalar `rowCount` + `fileName` + `sources` summary in IndexedDB.** The Step 1 upload UI today reads `dataset.rows.length` for the badge (line 7689), `dataset.fileName` for the display name (line 7722), and `dataset.sources` for the multi-append source list (lines 7729–7740). Add these as scalar fields on the `SerializedCsvDataset` IndexedDB schema (`client/src/solar-rec-dashboard/state/types.ts` + the IndexedDB serializer in `client/src/solar-rec-dashboard/lib/`) so the UI can render without holding the row array. Backfill on first read of any pre-PR-1 record (recompute `rowCount = rows.length` once at deserialization time, persist via the next save). No server changes; no behavioral change for users.
+  2. **PR-2 — Replace `loadedDatasetCount` + staleness check with `datasetSummariesByKey`.** Two local memos in `SolarRecDashboard.tsx`:
+     - line 6282: `datasets[key]?.rows.length` → `datasetSummariesByKey[key]?.rowCount`
+     - line 6286: `datasets[key]?.uploadedAt` → `datasetSummariesByKey[key]?.lastUpdated`
+     Both fields are already in the parent's existing `datasetSummariesQuery` data; this is a read-only swap. No new tRPC procedures.
+  3. **PR-3 — Step 1 upload UI reads from IndexedDB scalars (PR-1) instead of in-memory rows.** Replace `{dataset.rows.length} rows loaded` (line 7689) with `{dataset.rowCount} rows loaded`; replace any other `dataset.rows.length` reads in the upload-slot rendering loop. After this PR, the Step 1 UI is fully decoupled from the in-memory `rows` array. PR-1 must be merged + deployed first so the IndexedDB scalar is populated.
+  4. **PR-4 — DataQualityTab reconciliation reads paginated rows on demand.** The cross-reference between `deliveryScheduleBase` (tracking IDs) and `convertedReads` (monitoring system IDs) at `client/src/solar-rec-dashboard/components/DataQualityTab.tsx:142,147` iterates the parent's `datasets[k].rows` arrays. Replace with two `getDatasetRowsPage` infinite queries inside the tab (lazy, only fires when DataQualityTab is active), each accumulating the ID set into a stable `Set<string>` for the UI's reconciliation table. Drops the tab's dependency on the parent's `datasets` prop entirely. The `dataset` shape passed for the freshness table (lines 95–135) already migrated off `.rows`; PR-4 finishes the job.
+  5. **PR-5 — Drop `.rows` from the in-memory `datasets` state + remove the cold-cache hydration path that populates it.** With PR-1 through PR-4 shipped, no client surface reads `datasets[key].rows` anymore. Modify `CsvDataset`'s in-memory shape (`client/src/solar-rec-dashboard/state/types.ts`) to remove the `rows: CsvRow[]` field; rename to a metadata-only shape like `CsvDatasetMeta` if the type is reused elsewhere. Remove the `getRemoteDatasetAssembled` mutation declaration (line 2163) and the cold-cache hydration path that calls it (~line 5088–5225). Hydration becomes: load `getDatasetSummariesAll` (already present) + populate IndexedDB-cached metadata. The `datasets` state shrinks to `Partial<Record<DatasetKey, CsvDatasetMeta>>` — still useful for "dataset present?" checks but no longer holds rows.
+  6. **PR-6 — Delete the server-side `getDatasetAssembled` procedure + the client-only `parseChunkPointerPayload` helper.** With no remaining callers, remove the procedure body (~167 lines in `server/_core/solarRecDashboardRouter.ts`) and the corresponding client-side `parseChunkPointerPayload` definitions inside `SolarRecDashboard.tsx` (line 661 — the per-page copies in EarlyPayment + DeepUpdateSynthesizer stay because they parse the per-key `getDataset` response, which uses the same chunk-pointer format). Server-side `parseChunkPointerPayload` in `server/routers/helpers/scheduleB.ts` stays (Schedule B import uses it). `solarRecDashboardStorage` table stays. `_rawSourcesV1` manifest format stays.
+
+**Definition of Done per sub-PR.**
+
+  - **PR-1**: IndexedDB upgrade migration passes for fixtures with both old + new shapes; `tsc --noEmit --incremental false` clean; `vitest run` green.
+  - **PR-2**: Lint passes; `tsc` clean; manual smoke test confirms loaded-dataset count + stale-dataset list match the prior values for a known fixture.
+  - **PR-3**: Step 1 upload UI renders correctly for (a) a freshly uploaded dataset, (b) a multi-append dataset with `sources`, (c) a not-yet-uploaded dataset slot. No row-array reads in the upload slot's render path.
+  - **PR-4**: DataQualityTab loads on a scope with 5,000+ rows in `convertedReads` without OOM; reconciliation count matches the prior in-memory computation; `getDatasetRowsPage` page sizes stay under the 300 KB wire-payload contract.
+  - **PR-5**: Cold-load incognito → dashboard fully usable without ever calling `getDatasetAssembled`. Heap snapshot at "Step 1 visible + 0 tabs visited" peaks < 50 MB (down from 200+ MB on a multi-million-row scope today). All existing tabs continue to render.
+  - **PR-6**: `git grep getDatasetAssembled` returns zero matches in `client/` and zero non-deprecation matches in `server/`. Cold-load incognito works. Dev/prod deploy doesn't error.
+
+**Gate after 5.14.** The legacy chunked-CSV reassembly path is gone. Cold-load heap on a 1M-row scope holds steady < 50 MB while the dashboard is on Step 1, scaling only as the user opens individual tabs (each tab's aggregator returns ≤ 500 KB). The CLAUDE.md hard rule "no client tab is allowed to read `datasets[key].rows` for ANY dataset key" extends to the parent component itself — there's no `.rows` field anywhere in client-side state. The `getDatasetAssembled` deprecation comment in the data-flow section can be replaced with a "removed in PR-6 of Task 5.14" historical note.
+
 **Gate after Phase 5.** Main sidebar shows only personal features. Solar-rec sidebar respects per-user per-module permissions. A seeded `read`-only test user sees all data but cannot mutate anything. A seeded `edit` test user on a subset of modules sees only that subset. The permission matrix is editable by the scope owner from Settings. Lint from Task 4.1 reports zero cross-imports.
 
 ---
