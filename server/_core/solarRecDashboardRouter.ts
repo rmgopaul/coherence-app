@@ -47,7 +47,6 @@ import {
   getScheduleBImportJob,
   getScheduleBImportJobCounts,
   getSolarRecDashboardPayload,
-  getSolarRecDashboardPayloadsBatch,
   listAllUploadedScheduleBImportFiles,
   listScheduleBImportFileNames,
   listScheduleBImportResults,
@@ -182,62 +181,6 @@ async function loadDashboardPayload(
 }
 
 /**
- * Helper for `getDatasetAssembled`: given a list of chunkKeys whose
- * payloads we tried to batch-load from the DB (`fetched`), return the
- * payload for each key in input order, falling back to S3 individually
- * for any keys that weren't in the DB result.
- *
- * Used both for the top-level "manifest itself is chunked" case and
- * the per-source "source itself is chunked" case.
- */
-async function assembleFromFetchedOrFallback(
-  userId: number,
-  chunkKeys: string[],
-  fetched: Map<string, string>
-): Promise<string[]> {
-  const parts: string[] = new Array(chunkKeys.length);
-  const fallbackIndices: number[] = [];
-  chunkKeys.forEach((k, idx) => {
-    const part = fetched.get(`dataset:${k}`);
-    if (part === undefined) {
-      fallbackIndices.push(idx);
-      parts[idx] = "";
-    } else {
-      parts[idx] = part;
-    }
-  });
-
-  if (fallbackIndices.length > 0) {
-    const limit = 8;
-    for (let offset = 0; offset < fallbackIndices.length; offset += limit) {
-      const slice = fallbackIndices.slice(offset, offset + limit);
-      await Promise.all(
-        slice.map(async (idx) => {
-          const k = chunkKeys[idx]!;
-          const { key: scopePath, legacyKey: legacyPath } =
-            await buildDashboardStorageKeys(
-              userId,
-              `datasets/${k}.json`
-            );
-          const result = await loadDashboardPayload(
-            userId,
-            `dataset:${k}`,
-            scopePath,
-            legacyPath
-          );
-          if (result?.payload) {
-            parts[idx] = result.payload;
-            fetched.set(`dataset:${k}`, result.payload);
-          }
-        })
-      );
-    }
-  }
-
-  return parts;
-}
-
-/**
  * Maximum number of dataset-load operations that may run concurrently
  * on a single Node process. Chunked datasets cause chunk-storm
  * fan-outs (distinct keys, so single-flight dedupe doesn't collapse
@@ -267,46 +210,6 @@ function isHeapOverSoftLimit(): boolean {
   } catch {
     return false;
   }
-}
-
-const MAX_ASSEMBLED_SOURCE_PAYLOAD_BYTES = 5 * 1024 * 1024;
-const MAX_ASSEMBLED_SOURCE_CHUNK_KEYS = 32;
-
-type SourceManifestEntry = {
-  storageKey?: unknown;
-  chunkKeys?: unknown;
-  sizeBytes?: unknown;
-};
-
-function getSourceManifestSize(sourceManifest: {
-  sources: SourceManifestEntry[];
-}): {
-  sourceBytes: number;
-  chunkKeyCount: number;
-  shouldAssembleSources: boolean;
-} {
-  let sourceBytes = 0;
-  let chunkKeyCount = 0;
-
-  for (const source of sourceManifest.sources) {
-    if (
-      typeof source?.sizeBytes === "number" &&
-      Number.isFinite(source.sizeBytes)
-    ) {
-      sourceBytes += Math.max(0, source.sizeBytes);
-    }
-    if (Array.isArray(source?.chunkKeys)) {
-      chunkKeyCount += source.chunkKeys.length;
-    }
-  }
-
-  return {
-    sourceBytes,
-    chunkKeyCount,
-    shouldAssembleSources:
-      sourceBytes <= MAX_ASSEMBLED_SOURCE_PAYLOAD_BYTES &&
-      chunkKeyCount <= MAX_ASSEMBLED_SOURCE_CHUNK_KEYS,
-  };
 }
 
 async function loadDashboardPayloadSingleFlight(
@@ -630,216 +533,26 @@ export const solarRecDashboardRouter = t.router({
           loadDashboardPayload(storageUserId, dbStorageKey, key, legacyKey)
       );
     }),
-  /**
-   * Batch read of a dataset's manifest + all source payloads in a single
-   * tRPC roundtrip. Replaces the prior per-chunk fan-out (one tRPC call
-   * per source × N chunks each) that turned cold-cache hydration of an
-   * 18-dataset portfolio into 2000+ sequential round-trips.
-   *
-   * Server-side flow:
-   *   1. Read top-level payload (`dataset:{datasetKey}`).
-   *   2. If top-level is a chunk pointer, batch-fetch its chunks and
-   *      reassemble.
-   *   3. Parse top payload as a `_rawSourcesV1` source manifest.
-   *   4. Collect every source storageKey + every chunkKey into one
-   *      `WHERE storageKey IN (...)` query against
-   *      `solarRecDashboardStorage` (capped at 500 keys per query, see
-   *      `getSolarRecDashboardPayloadsBatch`).
-   *   5. Per source: if its payload is a chunk pointer, join its chunks
-   *      from the batch result; otherwise return the source payload
-   *      directly.
-   *   6. Fall back to S3 (per-key, bounded concurrency) for any keys
-   *      that weren't in the DB result — covers data written before
-   *      Task 1.2b's saveDataset scope-path migration that didn't yet
-   *      mirror writes to the database.
-   *
-   * **DEPRECATED 2026-04-27.** Tasks 5.12 + 5.13 closed the gap:
-   * every dataset is row-backed and every dashboard tab reads
-   * server-side aggregates. The only remaining caller is the
-   * dashboard's cold-cache hydration in `SolarRecDashboard.tsx`,
-   * which still populates the in-memory `datasets[k].rows` arrays
-   * because the Step 1 upload UI + DataQualityTab inspector + the
-   * Ask AI panels haven't yet been rewritten to source rows
-   * directly from `getDatasetRowsPage`. Do not call this
-   * procedure from new code. The follow-up workstream will:
-   *   1. Replace the Step 1 / DataQualityTab / Ask AI consumers
-   *      with `getDatasetSummariesAll` (metadata) +
-   *      `getDatasetRowsPage` (row detail) reads.
-   *   2. Drop the dashboard parent's `datasets` state.
-   *   3. Remove this procedure + the `parseChunkPointerPayload`
-   *      reassembly path it relies on.
-   */
-  getDatasetAssembled: requirePermission("solar-rec-dashboard", "read")
-    .input(
-      z.object({
-        datasetKey: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/),
-      })
-    )
-    .mutation(async ({ ctx, input }) => {
-      const { parseChunkPointerPayload } = await import("../routers/helpers/scheduleB");
-
-      const storageUserId = await resolveDatasetUserId(input.datasetKey, ctx.userId);
-      const { key: topKey, legacyKey: topLegacyKey } = await buildDashboardStorageKeys(
-        storageUserId,
-        `datasets/${input.datasetKey}.json`
-      );
-      const topDbStorageKey = `dataset:${input.datasetKey}`;
-
-      return dashboardLoadSemaphore.run(async () => {
-        if (isHeapOverSoftLimit()) {
-          throw new TRPCError({
-            code: "TOO_MANY_REQUESTS",
-            message: "Server heap pressure — retry in a moment",
-          });
-        }
-
-        // 1. Load top-level payload (manifest or direct data).
-        const topResult = await loadDashboardPayload(
-          storageUserId,
-          topDbStorageKey,
-          topKey,
-          topLegacyKey
-        );
-        if (!topResult?.payload) {
-          return {
-            _checkpoint: "getDatasetAssembled-v1",
-            _runnerVersion: "data-flow-pr1" as const,
-            datasetKey: input.datasetKey,
-            topPayload: null,
-            sources: null,
-          };
-        }
-
-        // 2. If top is a chunk pointer, reassemble.
-        let topPayload = topResult.payload;
-        const topPointerKeys = parseChunkPointerPayload(topPayload);
-        if (topPointerKeys && topPointerKeys.length > 0) {
-          const dbKeys = topPointerKeys.map((k) => `dataset:${k}`);
-          const fetched = await getSolarRecDashboardPayloadsBatch(storageUserId, dbKeys);
-          const parts = await assembleFromFetchedOrFallback(
-            storageUserId,
-            topPointerKeys,
-            fetched
-          );
-          topPayload = parts.join("");
-        }
-
-        // 3. Try parsing as a source manifest.
-        let sourceManifest:
-          | { _rawSourcesV1: true; sources: SourceManifestEntry[] }
-          | null = null;
-        try {
-          const parsed = JSON.parse(topPayload);
-          if (
-            parsed &&
-            typeof parsed === "object" &&
-            parsed._rawSourcesV1 === true &&
-            Array.isArray(parsed.sources)
-          ) {
-            sourceManifest = parsed;
-          }
-        } catch {
-          // Not a source manifest — return raw payload.
-        }
-
-        if (!sourceManifest) {
-          return {
-            _checkpoint: "getDatasetAssembled-v1",
-            _runnerVersion: "data-flow-pr1" as const,
-            datasetKey: input.datasetKey,
-            topPayload,
-            sources: null,
-          };
-        }
-
-        const sourceSize = getSourceManifestSize(sourceManifest);
-        if (!sourceSize.shouldAssembleSources) {
-          return {
-            _checkpoint: "getDatasetAssembled-v2",
-            _runnerVersion: "data-flow-pr1" as const,
-            datasetKey: input.datasetKey,
-            topPayload,
-            sources: null,
-            sourceAssemblySkipped: true as const,
-            sourceBytes: sourceSize.sourceBytes,
-            sourceChunkKeyCount: sourceSize.chunkKeyCount,
-            maxAssembledSourcePayloadBytes: MAX_ASSEMBLED_SOURCE_PAYLOAD_BYTES,
-            maxAssembledSourceChunkKeys: MAX_ASSEMBLED_SOURCE_CHUNK_KEYS,
-          };
-        }
-
-        // 4. Collect every source storageKey + every chunkKey. Many sources
-        // store their data behind a chunk pointer at `source.storageKey`,
-        // and the actual chunks live at the keys listed in `source.chunkKeys`.
-        // We need both — fetched in one batch.
-        const sourceStorageKeys: string[] = [];
-        const allChunkKeys: string[] = [];
-        for (const source of sourceManifest.sources) {
-          if (typeof source?.storageKey === "string") {
-            sourceStorageKeys.push(source.storageKey);
-          }
-          if (Array.isArray(source?.chunkKeys)) {
-            for (const k of source.chunkKeys) {
-              if (typeof k === "string") allChunkKeys.push(k);
-            }
-          }
-        }
-
-        const allKeys = Array.from(new Set([...sourceStorageKeys, ...allChunkKeys]));
-        const dbKeys = allKeys.map((k) => `dataset:${k}`);
-        const fetched = await getSolarRecDashboardPayloadsBatch(storageUserId, dbKeys);
-
-        // 5. Backfill any keys missing from the DB result via S3.
-        const missingKeys = allKeys.filter((k) => !fetched.has(`dataset:${k}`));
-        if (missingKeys.length > 0) {
-          const limit = 8;
-          for (let offset = 0; offset < missingKeys.length; offset += limit) {
-            const batch = missingKeys.slice(offset, offset + limit);
-            await Promise.all(
-              batch.map(async (k) => {
-                const { key: scopePath, legacyKey: legacyPath } =
-                  await buildDashboardStorageKeys(
-                    storageUserId,
-                    `datasets/${k}.json`
-                  );
-                const result = await loadDashboardPayload(
-                  storageUserId,
-                  `dataset:${k}`,
-                  scopePath,
-                  legacyPath
-                );
-                if (result?.payload) {
-                  fetched.set(`dataset:${k}`, result.payload);
-                }
-              })
-            );
-          }
-        }
-
-        // 6. Assemble each source's payload.
-        const sources = sourceManifest.sources.map((source) => {
-          const storageKey = typeof source?.storageKey === "string" ? source.storageKey : null;
-          if (!storageKey) {
-            return { storageKey: null, payload: "" };
-          }
-          const sourcePayload = fetched.get(`dataset:${storageKey}`) ?? "";
-          const innerChunkKeys = parseChunkPointerPayload(sourcePayload);
-          if (innerChunkKeys && innerChunkKeys.length > 0) {
-            const parts = innerChunkKeys.map((k) => fetched.get(`dataset:${k}`) ?? "");
-            return { storageKey, payload: parts.join("") };
-          }
-          return { storageKey, payload: sourcePayload };
-        });
-
-        return {
-          _checkpoint: "getDatasetAssembled-v1",
-          _runnerVersion: "data-flow-pr1" as const,
-          datasetKey: input.datasetKey,
-          topPayload,
-          sources,
-        };
-      });
-    }),
+  // Task 5.14 PR-6 (2026-04-27): `getDatasetAssembled` removed.
+  // The procedure was the legacy single-roundtrip batch endpoint that
+  // reassembled a dataset's manifest + every source payload into one
+  // tRPC response (up to 50–150 MB on populated scopes — root cause of
+  // the 2026-04-26 Chrome tab OOM events). Tasks 5.12 + 5.13 closed
+  // the gap by row-backing every dataset and migrating every tab to
+  // server-side aggregates; Task 5.14 PR-5 then removed the only
+  // remaining caller — the dashboard's cold-cache hydration —
+  // collapsing it onto the per-key `getDataset` route. With zero
+  // callers, the procedure body, its private helpers
+  // (`assembleFromFetchedOrFallback`, `getSourceManifestSize`,
+  // `MAX_ASSEMBLED_SOURCE_PAYLOAD_BYTES`,
+  // `MAX_ASSEMBLED_SOURCE_CHUNK_KEYS`, `SourceManifestEntry`), and
+  // every "_checkpoint: getDatasetAssembled-*" branch are deleted in
+  // this PR. `dashboardLoadSemaphore`, `isHeapOverSoftLimit`, and
+  // `loadDashboardPayloadSingleFlight` stay — `getDataset` and
+  // `getOrCreateRemoteDataset` still rely on them. The
+  // `solarRecDashboardStorage` table + `_rawSourcesV1` manifest format
+  // also stay (still authored by saveDataset, still read by
+  // getDataset's per-key path).
   // PR-8 (data-flow series, 2026-04-27): the dead `getDatasetRowsFromSrDs`
   // stub from the failed bulk row-hydration experiment (#107 / #111 /
   // #114) is removed here. Its replacement is the cursor-paginated
