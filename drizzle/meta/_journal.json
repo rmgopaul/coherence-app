@@ -351,6 +351,13 @@
       "when": 1777401289238,
       "tag": "0053_add_dock_due_at",
       "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "5",
+      "when": 1777403734289,
+      "tag": "0054_add_daily_reflections",
+      "breakpoints": true
     }
   ]
 }

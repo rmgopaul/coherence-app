@@ -51,7 +51,7 @@ fun GmailWidget(
       )
     } else if (messages.isEmpty()) {
       Text(
-        "No messages",
+        "Inbox zero. Nice.",
         style = MaterialTheme.typography.bodyMedium,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
       )

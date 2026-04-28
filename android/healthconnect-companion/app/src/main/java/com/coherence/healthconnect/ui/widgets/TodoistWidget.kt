@@ -110,7 +110,8 @@ fun TodoistWidget(
       )
     } else if (filteredTasks.isEmpty()) {
       Text(
-        if (filter == TaskFilter.TODAY) "No tasks due today!" else "No tasks",
+        if (filter == TaskFilter.TODAY) "Today's list is clear. Pick the next thing that matters."
+        else "No tasks here. Capture one when it shows up.",
         style = MaterialTheme.typography.bodyMedium,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
       )
