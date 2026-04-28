@@ -60,6 +60,62 @@ export const solarRecSystemsRouter = t.router({
    * from "system row found but field is null" so Phase 9 detail
    * panels can render an "unknown CSG ID" badge.
    */
+  /**
+   * Task 9.4 detail composer. Joins the registry record (Task 9.1)
+   * with the latest contract scan, DIN scrape, and Schedule B
+   * import data for one CSG ID. The four sections render
+   * independently — any of them can be `null` and the page renders
+   * a clear missing-data state.
+   *
+   * Cross-section reads run in parallel; total round-trip is
+   * dominated by the slowest of the three (contract / DIN /
+   * Schedule B). Targets the ≤1s page-load DoD from Task 9.4.
+   */
+  getDetailByCsgId: requirePermission("portfolio-workbench", "read")
+    .input(
+      z.object({
+        csgId: z
+          .string()
+          .trim()
+          .min(1, "csgId is required")
+          .max(64, "csgId too long"),
+      })
+    )
+    .query(async ({ ctx, input }) => {
+      const {
+        getSystemByCsgId,
+        getLatestScanResultsByCsgIds,
+        getLatestDinScrapeForCsgId,
+        getLatestScheduleBResultForSystem,
+      } = await import("../db");
+
+      // Pull the registry first — its fields drive the Schedule B
+      // join keys (trackingSystemRefId + systemId). We then fan
+      // out the three other reads in parallel.
+      const registry = await getSystemByCsgId(ctx.scopeId, input.csgId);
+
+      const [contractScans, dinScrape, scheduleBResult] = await Promise.all([
+        getLatestScanResultsByCsgIds(ctx.scopeId, [input.csgId]),
+        getLatestDinScrapeForCsgId(ctx.scopeId, input.csgId),
+        getLatestScheduleBResultForSystem(ctx.scopeId, {
+          csgId: input.csgId,
+          systemId: registry?.systemId ?? null,
+          trackingSystemRefId: registry?.trackingSystemRefId ?? null,
+        }),
+      ]);
+
+      const contractScan = contractScans[0] ?? null;
+
+      return {
+        _runnerVersion: SOLAR_REC_SYSTEMS_ROUTER_VERSION,
+        csgId: input.csgId,
+        registry,
+        contractScan,
+        dinScrape,
+        scheduleBResult,
+      };
+    }),
+
   getManyByCsgId: requirePermission("portfolio-workbench", "read")
     .input(
       z.object({
