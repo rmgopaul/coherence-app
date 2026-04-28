@@ -51,7 +51,9 @@ import {
   ArrowUpRight,
   CircleCheck,
   CircleAlert,
+  MapPin,
 } from "lucide-react";
+import { compareAddresses } from "@/lib/addressCompare";
 
 function formatRelativeTime(date: Date | null | undefined): string {
   if (!date) return "—";
@@ -180,6 +182,11 @@ function SystemDetailImpl() {
           <InvoiceStatusSection
             invoiceStatus={data.invoiceStatus}
             onJump={() => setLocation("/solar-rec/abp-invoice-settlement")}
+          />
+          <AddressSection
+            registry={data.registry}
+            contractScan={data.contractScan}
+            onJump={() => setLocation("/solar-rec/address-checker")}
           />
           <p className="text-[10px] text-muted-foreground text-right font-mono">
             runner: {data._runnerVersion}
@@ -949,6 +956,192 @@ function InvoiceStatusSection({
       </CardContent>
     </Card>
   );
+}
+
+function AddressSection({
+  registry,
+  contractScan,
+  onJump,
+}: {
+  registry: SystemDetailResponse["registry"];
+  contractScan: SystemDetailResponse["contractScan"];
+  onJump: () => void;
+}) {
+  const comparison = useMemo(
+    () =>
+      compareAddresses(
+        contractScan
+          ? {
+              mailingAddress1: contractScan.mailingAddress1,
+              mailingAddress2: contractScan.mailingAddress2,
+              cityStateZip: contractScan.cityStateZip,
+              payeeName: contractScan.payeeName,
+            }
+          : null,
+        registry
+          ? {
+              state: registry.state,
+              zipCode: registry.zipCode,
+              county: registry.county,
+            }
+          : null
+      ),
+    [contractScan, registry]
+  );
+
+  const overallLabel = useMemo(() => {
+    switch (comparison.overall) {
+      case "match":
+        return { text: "Sources agree", variant: "outline" as const };
+      case "mismatch":
+        return { text: "Mismatch detected", variant: "destructive" as const };
+      case "partial":
+        return { text: "Partial data", variant: "secondary" as const };
+      default:
+        return { text: "No address data", variant: "outline" as const };
+    }
+  }, [comparison.overall]);
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-start justify-between">
+          <div>
+            <CardTitle className="text-base flex items-center gap-2">
+              <MapPin className="h-4 w-4" />
+              Address
+              <Badge variant={overallLabel.variant} className="text-xs">
+                {overallLabel.text}
+              </Badge>
+            </CardTitle>
+            <CardDescription>
+              Mailing + service-location addresses on file. Cross-checks
+              the contract scan against Solar Applications. Run a USPS
+              verification via Address Checker for deliverability.
+            </CardDescription>
+          </div>
+          <Button variant="outline" size="sm" onClick={onJump}>
+            <ArrowUpRight className="h-3.5 w-3.5 mr-1" />
+            Address Checker
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent>
+        {comparison.overall === "none" ? (
+          <NoData
+            primary="No address data on file."
+            secondary="Run a contract scrape including this CSG ID and confirm Solar Applications has the system's state + zip."
+          />
+        ) : (
+          <div className="grid gap-4 md:grid-cols-2">
+            {/* Contract scan source */}
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">
+                Contract scan (mailing)
+              </p>
+              {!contractScan ? (
+                <p className="text-sm text-muted-foreground">
+                  No contract scan on file.
+                </p>
+              ) : (
+                <dl className="space-y-1 text-sm">
+                  <Field
+                    label="Payee"
+                    value={contractScan.payeeName ?? "—"}
+                  />
+                  <Field
+                    label="Address 1"
+                    value={contractScan.mailingAddress1 ?? "—"}
+                  />
+                  <Field
+                    label="Address 2"
+                    value={contractScan.mailingAddress2 ?? "—"}
+                  />
+                  <Field
+                    label="City, ST ZIP"
+                    value={contractScan.cityStateZip ?? "—"}
+                  />
+                  {(comparison.contractCity ||
+                    comparison.contractState ||
+                    comparison.contractZip) && (
+                    <p className="text-[10px] text-muted-foreground pt-1">
+                      Parsed: {comparison.contractCity ?? "?"} ·{" "}
+                      {comparison.contractState ?? "?"} ·{" "}
+                      {comparison.contractZip ?? "?"}
+                    </p>
+                  )}
+                </dl>
+              )}
+            </div>
+
+            {/* Solar Applications source */}
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">
+                Solar Applications (registry)
+              </p>
+              {!registry ? (
+                <p className="text-sm text-muted-foreground">
+                  No registry record.
+                </p>
+              ) : (
+                <dl className="space-y-1 text-sm">
+                  <Field label="County" value={registry.county ?? "—"} />
+                  <Field label="State" value={registry.state ?? "—"} />
+                  <Field label="ZIP" value={registry.zipCode ?? "—"} />
+                </dl>
+              )}
+            </div>
+
+            {/* Comparison rollup */}
+            {comparison.overall !== "partial" && (
+              <div className="md:col-span-2 pt-2 border-t">
+                <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">
+                  Cross-source check
+                </p>
+                <div className="grid grid-cols-2 gap-x-6 text-sm">
+                  <div className="flex items-center gap-2">
+                    {matchIcon(comparison.zipMatch)}
+                    <span className="text-muted-foreground">ZIP:</span>
+                    <span>{matchLabel(comparison.zipMatch)}</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {matchIcon(comparison.stateMatch)}
+                    <span className="text-muted-foreground">State:</span>
+                    <span>{matchLabel(comparison.stateMatch)}</span>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function matchIcon(status: ReturnType<typeof compareAddresses>["zipMatch"]) {
+  if (status === "match")
+    return <CircleCheck className="h-3.5 w-3.5 text-green-600" />;
+  if (status === "mismatch")
+    return <CircleAlert className="h-3.5 w-3.5 text-amber-600" />;
+  return <CircleAlert className="h-3.5 w-3.5 text-muted-foreground" />;
+}
+
+function matchLabel(
+  status: ReturnType<typeof compareAddresses>["zipMatch"]
+): string {
+  switch (status) {
+    case "match":
+      return "Matches";
+    case "mismatch":
+      return "Disagrees";
+    case "missing-a":
+      return "Contract scan missing";
+    case "missing-b":
+      return "Registry missing";
+    case "missing-both":
+      return "Both missing";
+  }
 }
 
 // ---------------------------------------------------------------------------
