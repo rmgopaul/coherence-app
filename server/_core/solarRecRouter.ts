@@ -1700,6 +1700,54 @@ const monitoringRouter = t.router({
       );
   }),
 
+  /**
+   * Read-only view of the cron-style monitoring scheduler. Returns the
+   * configured run hour, the configured day-of-month tokens (defaults
+   * `1, 12, 15, last`, override via `SOLAR_REC_MONITOR_DAYS`), whether
+   * today is a scheduled day, and the next scheduled date — so the
+   * MonitoringDashboard can show "today is/isn't a run day, next: …"
+   * without needing an admin to read env vars.
+   */
+  getSchedulerStatus: requirePermission("monitoring-overview", "read").query(
+    async () => {
+      const {
+        getScheduledHour,
+        getMonthlyScheduleTokens,
+        shouldRunMonthlyMonitoring,
+        nextScheduledDateKey,
+      } = await import("../solar/monitoringScheduler");
+      const { toDateKey } = await import("@shared/dateKey");
+      const dateKey = toDateKey(new Date(), "America/Chicago");
+      const tokens = getMonthlyScheduleTokens();
+      return {
+        configuredHour: getScheduledHour(),
+        configuredDays: tokens,
+        isDailyMode: tokens.includes("daily"),
+        todayDateKey: dateKey,
+        todayIsScheduledDay: shouldRunMonthlyMonitoring(dateKey),
+        nextScheduledDateKey: nextScheduledDateKey(dateKey),
+      };
+    }
+  ),
+
+  /**
+   * Manually fire the monitoring batch through the scheduler's exact code
+   * path, ignoring the day-of-month gate. Lets an admin verify the
+   * scheduled run end-to-end on demand without waiting until the next
+   * configured day. Functionally equivalent to `runAll` (no provider
+   * filter, no anchor-date override) but tagged with the user that
+   * triggered it AND surfaces `wouldRunNormally` so the response makes
+   * clear today's actual schedule status.
+   */
+  testScheduledRun: requirePermission("monitoring-overview", "edit").mutation(
+    async ({ ctx }) => {
+      const { startScheduledMonitoringBatchManually } = await import(
+        "../solar/monitoringScheduler"
+      );
+      return startScheduledMonitoringBatchManually(ctx.userId);
+    }
+  ),
+
   runAll: requirePermission("monitoring-overview", "edit")
     .input(
       z.object({
