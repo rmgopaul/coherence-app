@@ -16,7 +16,7 @@ import {
   type DeepUpdateSynthesisResult,
 } from "@/lib/deepUpdateSynth";
 import { toErrorMessage, formatPercent } from "@/lib/helpers";
-import { ArrowLeft, Download, Loader2, Upload } from "lucide-react";
+import { ArrowLeft, Database, Download, Loader2, Upload, AlertCircle } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { toast } from "sonner";
@@ -343,6 +343,12 @@ export default function DeepUpdateSynthesizer() {
   const [cloudSyncStatuses, setCloudSyncStatuses] = useState<
     Partial<Record<DeepUpdateReportKey, CloudSyncStatus>>
   >({});
+  // Save synthesis run state — distinct from the per-report
+  // upload sync. Lets the user persist the synthesized result
+  // (not just the inputs) under a dedicated `deepUpdateSynthesisRuns_<id>`
+  // storage key so a teammate can reload it later.
+  const [isSavingSynthesis, setIsSavingSynthesis] = useState(false);
+  const [synthesisDbError, setSynthesisDbError] = useState<string | null>(null);
   const getRemoteDataset = trpc.solarRecDashboard.getDataset.useMutation();
   const saveRemoteDataset = trpc.solarRecDashboard.saveDataset.useMutation();
   const getRemoteDatasetRef = useRef(getRemoteDataset);
@@ -491,6 +497,25 @@ export default function DeepUpdateSynthesizer() {
         const nextSignatures: Partial<Record<DeepUpdateReportKey, string>> = {};
         let warnedLargePayload = false;
 
+        // Wraps saveDataset.mutateAsync so a server-returned partial-
+        // success (storage write OK, DB write failed) throws like a
+        // network error would. Without this, `success: false` resolves
+        // the promise and the existing failed/synced state machine
+        // never sees the DB-side failure — which was the
+        // LOCAL-ONLY-NEVER-PERSISTS bug that surfaced as a green
+        // "synced" badge on data that wasn't actually recoverable.
+        // Compatible with both the legacy server contract (always
+        // `success: true`) and the post-PR2 contract (`success:
+        // persistedToDatabase`); the dbError check is the load-bearing
+        // bit either way.
+        const checkMutate = async (args: { key: string; payload: string }) => {
+          const res = await saveRemoteDatasetRef.current.mutateAsync(args);
+          if (res && res.success === false && res.dbError) {
+            throw new Error(`DB persistence failed: ${res.dbError}`);
+          }
+          return res;
+        };
+
         try {
           for (const report of REPORTS) {
             if (cancelled) return;
@@ -505,7 +530,7 @@ export default function DeepUpdateSynthesizer() {
                 [key]: { state: "syncing", chunksDone: 0, chunksTotal: 1 },
               }));
               try {
-                await saveRemoteDatasetRef.current.mutateAsync({ key: storageKey, payload: "" });
+                await checkMutate({ key: storageKey, payload: "" });
                 delete remoteReportSignaturesRef.current[key];
                 setCloudSyncStatuses((previous) => ({
                   ...previous,
@@ -553,7 +578,7 @@ export default function DeepUpdateSynthesizer() {
 
             try {
               if (chunks.length === 1) {
-                await saveRemoteDatasetRef.current.mutateAsync({ key: storageKey, payload });
+                await checkMutate({ key: storageKey, payload });
                 setCloudSyncStatuses((previous) => ({
                   ...previous,
                   [key]: { state: "syncing", chunksDone: 1, chunksTotal: 1 },
@@ -561,14 +586,14 @@ export default function DeepUpdateSynthesizer() {
               } else {
                 const chunkKeys = chunks.map((_, index) => buildRemoteChunkKey(key, index));
                 for (let index = 0; index < chunks.length; index += 1) {
-                  await saveRemoteDatasetRef.current.mutateAsync({ key: chunkKeys[index], payload: chunks[index] });
+                  await checkMutate({ key: chunkKeys[index], payload: chunks[index] });
                   const done = index + 1;
                   setCloudSyncStatuses((previous) => ({
                     ...previous,
                     [key]: { state: "syncing", chunksDone: done, chunksTotal: totalWrites },
                   }));
                 }
-                await saveRemoteDatasetRef.current.mutateAsync({
+                await checkMutate({
                   key: storageKey,
                   payload: buildChunkPointerPayload(chunkKeys),
                 });
@@ -592,7 +617,7 @@ export default function DeepUpdateSynthesizer() {
           }
 
           const activeKeys = REPORTS.map((report) => report.key).filter((key) => Boolean(reports[key]));
-          await saveRemoteDatasetRef.current.mutateAsync({
+          await checkMutate({
             key: DEEP_UPDATE_REMOTE_MANIFEST_KEY,
             payload: buildManifestPayload(activeKeys),
           });
@@ -601,9 +626,15 @@ export default function DeepUpdateSynthesizer() {
           if (!warnedLargePayload) {
             setStorageNotice(null);
           }
-        } catch {
+        } catch (err) {
           if (!cancelled) {
-            setStorageNotice("Could not sync Deep Update uploads to cloud storage.");
+            // Surface the actual error message so a partial-success
+            // (DB persistence failed) is visible, not a generic
+            // "Could not sync..." that obscures the root cause.
+            const msg = err instanceof Error ? err.message : String(err);
+            setStorageNotice(`Cloud sync failed: ${msg}`);
+            // eslint-disable-next-line no-console
+            console.error("[deepUpdate] cloud sync failed", err);
           }
         }
       })();
@@ -792,6 +823,35 @@ export default function DeepUpdateSynthesizer() {
       toast.error(message);
     } finally {
       setIsRunning(false);
+    }
+  };
+
+  // Persist the synthesized result itself (not just the inputs) so a
+  // teammate can reload the run later. Each click writes a fresh
+  // `deepUpdateSynthesisRuns_<timestamp>` storage key — non-
+  // destructive; previous runs stay accessible by their own keys.
+  const handleSaveSynthesisRun = async () => {
+    if (!result) return;
+    setIsSavingSynthesis(true);
+    setSynthesisDbError(null);
+    try {
+      const runId = Date.now().toString();
+      const payload = JSON.stringify(result);
+      const res = await saveRemoteDatasetRef.current.mutateAsync({
+        key: `deepUpdateSynthesisRuns_${runId}`,
+        payload,
+      });
+      if (res && res.success === false && res.dbError) {
+        setSynthesisDbError(res.dbError);
+        toast.error("Cloud DB persistence failed.");
+      } else {
+        toast.success("Synthesis run saved to cloud.");
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      toast.error(`Failed to save: ${message}`);
+    } finally {
+      setIsSavingSynthesis(false);
     }
   };
 
@@ -1027,7 +1087,24 @@ export default function DeepUpdateSynthesizer() {
                 <Download className="h-4 w-4 mr-2" />
                 Download Status Review CSV
               </Button>
+              <Button
+                variant="outline"
+                disabled={!result || isSavingSynthesis}
+                onClick={() => void handleSaveSynthesisRun()}
+              >
+                {isSavingSynthesis ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Database className="h-4 w-4 mr-2" />}
+                Save synthesis run
+              </Button>
             </div>
+            {synthesisDbError && (
+              <div className="mt-4 rounded-md border border-rose-300 bg-rose-50 p-3">
+                <div className="flex items-center gap-2 text-rose-900 font-semibold">
+                  <AlertCircle className="h-4 w-4" />
+                  Cloud DB persistence failed
+                </div>
+                <p className="mt-1 text-xs text-rose-800 break-all">{synthesisDbError}</p>
+              </div>
+            )}
           </CardContent>
         </Card>
 
