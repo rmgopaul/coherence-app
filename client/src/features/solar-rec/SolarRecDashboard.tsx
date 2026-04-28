@@ -6280,23 +6280,29 @@ export default function SolarRecDashboard() {
 
   const dataHealthSummary = useMemo(() => {
     const loadedDatasetKeys = (Object.keys(DATASET_DEFINITIONS) as DatasetKey[]).filter((key) => Boolean(datasets[key]));
-    // PR-6 (data-flow series): Total-Rows-Loaded prefers the
-    // server-side `rowCount` from `getDatasetSummariesAll` — it's
-    // accurate even before the browser has materialized the rows
-    // (cold-load + tap-to-load). Falls back to in-memory rows.length
-    // for datasets the server hasn't reported on yet (e.g., 11
-    // non-row-backed datasets where rowCount is null until PR-7).
+    // Task 5.14 PR-2 (2026-04-27): Total-Rows-Loaded reads the
+    // server-side `rowCount` from `getDatasetSummariesAll` for every
+    // dataset. The previous in-memory `rows.length` fallback existed
+    // for the 11 non-row-backed datasets that data-flow PR-6 couldn't
+    // cover — Task 5.12 (PRs 1–10) closed that gap, so the fallback
+    // is dead code and the swap to summaries-only is safe. During
+    // the brief initial-load window before `datasetSummariesQuery`
+    // returns, the count shows 0; once the query lands (within a
+    // second on a warm cache) it shows the real number.
     const totalRowsLoaded = (Object.keys(DATASET_DEFINITIONS) as DatasetKey[]).reduce(
-      (sum, key) => {
-        const serverRowCount = datasetSummariesByKey[key]?.rowCount;
-        if (typeof serverRowCount === "number" && serverRowCount > 0) {
-          return sum + serverRowCount;
-        }
-        return sum + (datasets[key]?.rows.length ?? 0);
-      },
+      (sum, key) => sum + (datasetSummariesByKey[key]?.rowCount ?? 0),
       0
     );
-    const staleDatasets = loadedDatasetKeys.filter((key) => isStaleUpload(datasets[key]?.uploadedAt));
+    // Task 5.14 PR-2: staleness reads the server-side `lastUpdated`
+    // (ISO string) instead of the in-memory `datasets[k].uploadedAt`.
+    // Both reach for the same value at steady state; the swap drops
+    // the dataHealthSummary's dependency on the row-array side of
+    // `datasets[k]`.
+    const staleDatasets = loadedDatasetKeys.filter((key) => {
+      const lastUpdatedRaw = datasetSummariesByKey[key]?.lastUpdated;
+      const lastUpdated = lastUpdatedRaw ? new Date(lastUpdatedRaw) : null;
+      return isStaleUpload(lastUpdated);
+    });
 
     // Header sync status rolls up serverDatasetCloudStatusByKey across
     // every loaded dataset. "Cloud sync incomplete (N)" whenever any
