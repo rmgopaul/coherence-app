@@ -169,6 +169,14 @@ function SystemDetailImpl() {
               setLocation("/solar-rec/dashboard?tab=delivery-tracker")
             }
           />
+          <MeterReadsSection
+            meterReads={data.meterReads}
+            onJump={(vendor) => {
+              const slug = vendorSlugFor(vendor);
+              if (slug) setLocation(`/solar-rec/meter-reads/${slug}`);
+              else setLocation("/solar-rec/monitoring");
+            }}
+          />
           <p className="text-[10px] text-muted-foreground text-right font-mono">
             runner: {data._runnerVersion}
           </p>
@@ -176,6 +184,43 @@ function SystemDetailImpl() {
       )}
     </div>
   );
+}
+
+/**
+ * Map a generation-entry "Online Monitoring" string to the `/solar-rec/
+ * meter-reads/<slug>` URL the vendor's manage page lives at. Returns
+ * `null` for unknown vendors — the section falls through to the
+ * Monitoring overview in that case. Names come from the
+ * `srDsGenerationEntry.onlineMonitoring` column which today is one of
+ * the 16 vendor labels seeded into Solar Applications. Update both
+ * sides when a new vendor adapter ships in Phase 5.
+ */
+function vendorSlugFor(vendor: string | null): string | null {
+  if (!vendor) return null;
+  const v = vendor.trim().toLowerCase();
+  if (!v) return null;
+  const direct: Record<string, string> = {
+    solaredge: "solaredge",
+    "enphase v4": "enphase-v4",
+    "enphase": "enphase-v4", // legacy spelling
+    apsystems: "apsystems",
+    hoymiles: "hoymiles",
+    fronius: "fronius",
+    generac: "generac",
+    goodwe: "goodwe",
+    solis: "solis",
+    locus: "locus",
+    growatt: "growatt",
+    solarlog: "solarlog",
+    "solar-log": "solarlog",
+    ekm: "ekm",
+    ennexos: "ennexos",
+    egauge: "egauge",
+    sunpower: "sunpower",
+    "tesla powerhub": "tesla-powerhub",
+    "tesla": "tesla-powerhub",
+  };
+  return direct[v] ?? null;
 }
 
 // ---------------------------------------------------------------------------
@@ -613,6 +658,133 @@ function ScheduleBSection({
                 </div>
               </div>
             )}
+          </>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function MeterReadsSection({
+  meterReads,
+  onJump,
+}: {
+  meterReads: SystemDetailResponse["meterReads"];
+  onJump: (vendor: string | null) => void;
+}) {
+  // The "delta last 7 days" stat: walk the most recent 7 reads and
+  // show the lifetime delta between first and last. Reads come back
+  // newest-first, so reverse the slice. Filters out rows with null
+  // lifetimeMeterReadWh — those are placeholder entries.
+  const recent7DayDelta = useMemo(() => {
+    const valid = meterReads.reads
+      .filter((r) => r.lifetimeMeterReadWh !== null)
+      .slice(0, 7);
+    if (valid.length < 2) return null;
+    const newest = valid[0].lifetimeMeterReadWh as number;
+    const oldest = valid[valid.length - 1].lifetimeMeterReadWh as number;
+    const delta = newest - oldest;
+    if (!Number.isFinite(delta) || delta < 0) return null;
+    return delta;
+  }, [meterReads.reads]);
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-start justify-between">
+          <div>
+            <CardTitle className="text-base">Meter reads</CardTitle>
+            <CardDescription>
+              Lifetime cumulative meter readings from the system's
+              monitoring vendor.
+            </CardDescription>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => onJump(meterReads.monitoringVendor)}
+            disabled={!meterReads.monitoringVendor && meterReads.reads.length === 0}
+          >
+            <ArrowUpRight className="h-3.5 w-3.5 mr-1" />
+            {meterReads.monitoringVendor
+              ? `Open ${meterReads.monitoringVendor}`
+              : "Monitoring"}
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent>
+        {meterReads.reads.length === 0 ? (
+          <NoData
+            primary="No meter reads on file."
+            secondary={
+              meterReads.monitoringVendor
+                ? `Vendor "${meterReads.monitoringVendor}" is configured but no readings have been ingested yet. Run today's monitoring batch.`
+                : "No monitoring vendor resolved for this system. Verify the Generation Entry dataset has a row matching this system's tracking ID."
+            }
+          />
+        ) : (
+          <>
+            <dl className="grid grid-cols-2 md:grid-cols-4 gap-x-6 gap-y-3 text-sm">
+              <Field
+                label="Vendor"
+                value={meterReads.monitoringVendor ?? "—"}
+              />
+              <Field
+                label="Vendor system ID"
+                value={meterReads.monitoringSystemId ?? "—"}
+              />
+              <Field
+                label="Latest reading"
+                value={
+                  meterReads.latestReadWh !== null
+                    ? `${formatNumber(meterReads.latestReadWh / 1000, 0)} kWh`
+                    : "—"
+                }
+              />
+              <Field
+                label="Latest read date"
+                value={meterReads.latestReadDate ?? "—"}
+              />
+              <Field
+                label="7-day delta"
+                value={
+                  recent7DayDelta !== null
+                    ? `${formatNumber(recent7DayDelta / 1000, 0)} kWh`
+                    : "—"
+                }
+              />
+              <Field
+                label="Reads on file"
+                value={`${meterReads.reads.length} (last 30)`}
+              />
+            </dl>
+            <div className="mt-3">
+              <p className="text-xs text-muted-foreground mb-1">
+                Recent readings
+              </p>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Date</TableHead>
+                    <TableHead>Lifetime kWh</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {meterReads.reads.slice(0, 7).map((r) => (
+                    <TableRow key={`${r.readDate}-${r.lifetimeMeterReadWh}`}>
+                      <TableCell className="text-xs font-mono">
+                        {r.readDate}
+                      </TableCell>
+                      <TableCell className="text-xs">
+                        {r.lifetimeMeterReadWh !== null
+                          ? formatNumber(r.lifetimeMeterReadWh / 1000, 0)
+                          : "—"}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
           </>
         )}
       </CardContent>

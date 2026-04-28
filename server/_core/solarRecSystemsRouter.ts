@@ -87,22 +87,32 @@ export const solarRecSystemsRouter = t.router({
         getLatestScanResultsByCsgIds,
         getLatestDinScrapeForCsgId,
         getLatestScheduleBResultForSystem,
+        getLatestMeterReadsForCsgId,
       } = await import("../db");
 
-      // Pull the registry first — its fields drive the Schedule B
-      // join keys (trackingSystemRefId + systemId). We then fan
-      // out the three other reads in parallel.
+      // Pull the registry first — its fields drive several
+      // downstream join keys (trackingSystemRefId + systemId for
+      // Schedule B + meter reads). We then fan out the four other
+      // reads in parallel.
       const registry = await getSystemByCsgId(ctx.scopeId, input.csgId);
 
-      const [contractScans, dinScrape, scheduleBResult] = await Promise.all([
-        getLatestScanResultsByCsgIds(ctx.scopeId, [input.csgId]),
-        getLatestDinScrapeForCsgId(ctx.scopeId, input.csgId),
-        getLatestScheduleBResultForSystem(ctx.scopeId, {
-          csgId: input.csgId,
-          systemId: registry?.systemId ?? null,
-          trackingSystemRefId: registry?.trackingSystemRefId ?? null,
-        }),
-      ]);
+      const [contractScans, dinScrape, scheduleBResult, meterReads] =
+        await Promise.all([
+          getLatestScanResultsByCsgIds(ctx.scopeId, [input.csgId]),
+          getLatestDinScrapeForCsgId(ctx.scopeId, input.csgId),
+          getLatestScheduleBResultForSystem(ctx.scopeId, {
+            csgId: input.csgId,
+            systemId: registry?.systemId ?? null,
+            trackingSystemRefId: registry?.trackingSystemRefId ?? null,
+          }),
+          // Task 9.5 PR-1 (2026-04-28): meter-read history. Pass
+          // the already-loaded registry through so the helper
+          // doesn't repeat the registry lookup.
+          getLatestMeterReadsForCsgId(ctx.scopeId, input.csgId, {
+            preResolvedRegistry: registry,
+            limit: 30,
+          }),
+        ]);
 
       const contractScan = contractScans[0] ?? null;
 
@@ -113,6 +123,7 @@ export const solarRecSystemsRouter = t.router({
         contractScan,
         dinScrape,
         scheduleBResult,
+        meterReads,
       };
     }),
 
