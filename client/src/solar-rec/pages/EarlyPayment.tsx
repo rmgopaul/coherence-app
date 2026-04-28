@@ -7,7 +7,12 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Textarea } from "@/components/ui/textarea";
+// Task 9.3 PR-2 (2026-04-28): the Manual CSG IDs textarea swaps in
+// `<WorksetSelector />` from PR-1 (#179). Stays controlled —
+// `manualCsgInput` continues to drive the `parseCsgIds` →
+// `selectedCsgIds` derivation and the localStorage persistence
+// (no shape change).
+import { WorksetSelector } from "@/solar-rec/components/WorksetSelector";
 import {
   buildInvoiceNumberToSystemIdMap,
   buildQuickBooksPaidUpfrontLedger,
@@ -1086,12 +1091,11 @@ export default function EarlyPayment() {
             </div>
 
             <div className="space-y-2 rounded-md border border-slate-200 p-3">
-              <Label htmlFor="manual-csg">Manual CSG IDs (one per line or comma-separated)</Label>
-              <Textarea
-                id="manual-csg"
+              <Label>Manual CSG IDs</Label>
+              <WorksetSelector
                 value={manualCsgInput}
-                onChange={(event) => setManualCsgInput(event.target.value)}
-                className="min-h-[112px]"
+                onChange={setManualCsgInput}
+                rows={4}
                 placeholder="177418, 7754, 12345"
               />
             </div>

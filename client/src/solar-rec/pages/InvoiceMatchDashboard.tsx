@@ -7,7 +7,11 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Textarea } from "@/components/ui/textarea";
+// Task 9.3 PR-2 (2026-04-28): textarea replaced by `<WorksetSelector />`
+// (canonical from PR-1 #179). Stays controlled — caller still owns
+// `csgLookupInput` so persistence + the existing `parseCsgIdsFromText`
+// derivation remain unchanged.
+import { WorksetSelector } from "@/solar-rec/components/WorksetSelector";
 import { clean, formatCurrency, downloadTextFile } from "@/lib/helpers";
 import { ArrowLeft, Download, Loader2, Trash2, Upload } from "lucide-react";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
@@ -909,16 +913,16 @@ export default function InvoiceMatchDashboard() {
           <CardContent className="space-y-4">
             <div className="grid gap-4 lg:grid-cols-2">
               <div className="space-y-2">
-                <Label htmlFor="csg-id-paste">Paste CSG IDs</Label>
-                <Textarea
-                  id="csg-id-paste"
+                <Label>CSG IDs</Label>
+                <WorksetSelector
                   value={csgLookupInput}
-                  onChange={(event) => setCsgLookupInput(event.target.value)}
+                  onChange={setCsgLookupInput}
                   placeholder={"Example:\n177418\n1689\n7754"}
-                  className="min-h-[130px]"
+                  rows={5}
                 />
                 <p className="text-xs text-slate-600">
-                  Accepts line breaks, commas, spaces, or semicolons.
+                  Paste line breaks / commas / spaces / semicolons, or
+                  load a saved workset.
                 </p>
               </div>
 
