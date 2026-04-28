@@ -94,7 +94,17 @@ export const MAX_REMOTE_STATE_LOG_BYTES = 120_000;
 export const MAX_REMOTE_STATE_PAYLOAD_CHARS = 180_000;
 export const REMOTE_LOG_ENTRY_LIMIT = 40;
 export const REMOTE_DATASET_CHUNK_CHAR_LIMIT = 250_000;
-export const MAX_REMOTE_DATASET_SYNC_ESTIMATED_CHARS = 3_000_000;
+// `MAX_REMOTE_DATASET_SYNC_ESTIMATED_CHARS = 3_000_000` was a 2026-04-
+// era pre-flight cap that flipped any dataset whose chunked-CSV
+// estimate exceeded 3 MB into a "Local-only sync — too large for
+// auto sync" dead-end (e.g. Schedule B at 3.0 MB, the appended
+// `convertedReads` blob). The cap was originally set when chunked
+// writes were hitting tRPC body-size errors, but the actual save
+// path chunks the payload at `REMOTE_DATASET_CHUNK_CHAR_LIMIT`
+// (250 KB) into serial `saveDataset` calls — no per-request size
+// limit to hit. Removed 2026-04-27 in the same PR that yanked the
+// false-positive "too large" notice. Don't reintroduce without a
+// concrete request-size failure to point at.
 export const REMOTE_LOG_SYNC_MAX_CHUNKS = 120;
 export const MAX_LOCAL_LOG_STORAGE_CHARS = 250_000;
 export const REMOTE_DATASET_KEY_MANIFEST = "dataset_manifest_v1";

@@ -162,7 +162,6 @@ import {
   MAX_REMOTE_STATE_LOG_BYTES,
   REMOTE_LOG_ENTRY_LIMIT,
   REMOTE_DATASET_CHUNK_CHAR_LIMIT,
-  MAX_REMOTE_DATASET_SYNC_ESTIMATED_CHARS,
   REMOTE_LOG_SYNC_MAX_CHUNKS,
   MAX_LOCAL_LOG_STORAGE_CHARS,
   REMOTE_DATASET_KEY_MANIFEST,
@@ -800,33 +799,6 @@ function serializeDatasetForRemote(dataset: CsvDataset): string {
     })),
   };
   return JSON.stringify(payload);
-}
-
-function estimateDatasetRemotePayloadChars(
-  dataset: CsvDataset,
-  hardLimit: number
-): number {
-  // Rough upper bound for CSV payload size without allocating the full payload string.
-  let total = 0;
-  total += dataset.fileName.length + 128;
-  total += dataset.headers.reduce((sum, header) => sum + header.length + 3, 0) + 2;
-
-  for (const row of dataset.rows) {
-    for (const header of dataset.headers) {
-      total += clean(row[header]).length + 3;
-    }
-    total += 2;
-    if (total > hardLimit) return total;
-  }
-
-  if (dataset.sources) {
-    for (const source of dataset.sources) {
-      total += source.fileName.length + 64;
-      if (total > hardLimit) return total;
-    }
-  }
-
-  return total;
 }
 
 function deserializeRemoteDatasetPayload(payload: string): CsvDataset | null {
@@ -5945,12 +5917,6 @@ export default function SolarRecDashboard() {
           }
 
           const baseSignature = `${dataset.fileName}|${dataset.uploadedAt.toISOString()}|${dataset.rows.length}|${dataset.sources?.length ?? 0}`;
-          const estimatedRemotePayloadChars = estimateDatasetRemotePayloadChars(
-            dataset,
-            MAX_REMOTE_DATASET_SYNC_ESTIMATED_CHARS
-          );
-          const shouldKeepLocalOnly =
-            !forceSyncRequested && estimatedRemotePayloadChars > MAX_REMOTE_DATASET_SYNC_ESTIMATED_CHARS;
           // 2026-04-12 fix: Always use the same signature regardless of
           // local-only status. The `local-only:` prefix caused a race where
           // force-synced data got a "normal" signature, then the next auto-sync
@@ -5959,32 +5925,30 @@ export default function SolarRecDashboard() {
           // clear path that wiped all chunk payloads.
           const syncSignature = baseSignature;
           nextSignatures[key] = syncSignature;
-          if (shouldKeepLocalOnly) {
-            nextLocalOnlyDatasets[key] = true;
-          }
+
+          // 2026-04-27 fix: removed the 3 MB pre-flight cap that used
+          // to flip large datasets (Schedule B at ~3 MB chunked-CSV
+          // size, the appended-monitoring `convertedReads` blob,
+          // etc.) into a "Local-only sync — too large for auto sync"
+          // dead-end. The cap was set when chunked-CSV writes were
+          // hitting tRPC body-size limits, but the actual save path
+          // below already chunks the payload at
+          // `REMOTE_DATASET_CHUNK_CHAR_LIMIT` (250 KB) into
+          // serial mutateAsync calls, so a 3 MB payload is just 12
+          // sequential 250 KB writes — no proxy/tRPC limit to hit.
+          // Post-Tasks 5.12 + 5.13 the canonical writes for
+          // Schedule B + convertedReads go through the row tables
+          // anyway, so the auto-sync chunked-CSV path is the legacy
+          // cache path, not the path holding the data hostage.
+          // `nextLocalOnlyDatasets` stays declared upstream for
+          // back-compat with the migration UI; it just stays empty
+          // now so no dataset gets parked in the "local-only" badge.
 
           if (remoteDatasetSignatureRef.current[key] === syncSignature) {
             if (forceSyncRequested) {
               forcedRemoteDatasetSyncKeysRef.current.delete(key);
               setForceSyncingDatasets((previous) => (previous[key] ? { ...previous, [key]: false } : previous));
               setStorageNotice(`${DATASET_DEFINITIONS[key].label} is already synced to cloud.`);
-            }
-            continue;
-          }
-
-          if (shouldKeepLocalOnly) {
-            // 2026-04-12 fix: NEVER write empty payloads to clear remote
-            // data. The previous code here wrote empty strings to the main
-            // key and all chunk keys, which destroyed force-synced data
-            // when the auto-sync timer fired after the force-sync flag
-            // was cleared. Stale cloud data is infinitely better than
-            // no cloud data. Users can Force Cloud Sync to update.
-            remoteDatasetSignatureRef.current[key] = syncSignature;
-            setDatasetCloudSyncBadge(key, undefined);
-            if (!previousSyncSignature || !remoteDatasetChunkKeysRef.current[key]?.length) {
-              setStorageNotice(
-                `${DATASET_DEFINITIONS[key].label} is too large for auto sync (${(estimatedRemotePayloadChars / 1_000_000).toFixed(1)} MB). Use Force Cloud Sync to update.`
-              );
             }
             continue;
           }
