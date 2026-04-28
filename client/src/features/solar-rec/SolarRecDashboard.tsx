@@ -650,6 +650,11 @@ function buildRemoteDatasetChunkKey(datasetKey: string, chunkIndex: number): str
   return `${datasetKey}_chunk_${String(chunkIndex).padStart(4, "0")}`;
 }
 
+function deriveDatasetKeyFromStorageKey(storageKey: string): DatasetKey | null {
+  const baseKey = storageKey.includes("_chunk_") ? storageKey.split("_chunk_")[0] : storageKey;
+  return baseKey in DATASET_DEFINITIONS ? (baseKey as DatasetKey) : null;
+}
+
 function buildChunkPointerPayload(chunkKeys: string[]): string {
   return JSON.stringify({
     _chunkedDataset: true,
@@ -2057,6 +2062,9 @@ export default function SolarRecDashboard() {
     Partial<Record<DatasetKey, DatasetSyncProgressState>>
   >({});
   const [forceSyncingDatasets, setForceSyncingDatasets] = useState<Partial<Record<DatasetKey, boolean>>>({});
+  const [lastDbErrors, setLastDbErrors] = useState<
+    Partial<Record<DatasetKey, { message: string; at: number }>>
+  >({});
   const [migratingLocalOnlyDatasets, setMigratingLocalOnlyDatasets] = useState(false);
   const [remoteSourceManifests, setRemoteSourceManifests] = useState<
     Partial<Record<DatasetKey, RemoteDatasetSourceManifestPayload>>
@@ -2141,7 +2149,37 @@ export default function SolarRecDashboard() {
   // MB single-response memory bombs that crashed Chrome tabs in
   // the 2026-04-26 OOM events. Server-side procedure removal +
   // dead-code sweep ships in PR-6.
-  const saveRemoteDataset = solarRecTrpc.solarRecDashboard.saveDataset.useMutation();
+  // Every saveDataset response is inspected here so the dbError
+  // field actually reaches the UI. Pre-fix the 35+ mutateAsync call
+  // sites discarded the response wholesale, which is the
+  // LOCAL-ONLY-NEVER-PERSISTS bug surfacing as a green badge.
+  // Hooking onSuccess at the mutation level avoids a mechanical
+  // refactor of every call site.
+  const saveRemoteDataset = solarRecTrpc.solarRecDashboard.saveDataset.useMutation({
+    onSuccess: (data, variables) => {
+      const datasetKey = deriveDatasetKeyFromStorageKey(variables.key);
+      if (!datasetKey) return;
+      if (data.persistedToDatabase === false && data.dbError) {
+        setLastDbErrors((previous) => ({
+          ...previous,
+          [datasetKey]: { message: data.dbError ?? "Unknown DB error", at: Date.now() },
+        }));
+        setDatasetCloudSyncStatus((previous) =>
+          previous[datasetKey] === "failed"
+            ? previous
+            : { ...previous, [datasetKey]: "failed" }
+        );
+        return;
+      }
+      // success — drop any stale dbError for this dataset.
+      setLastDbErrors((previous) => {
+        if (!previous[datasetKey]) return previous;
+        const next = { ...previous };
+        delete next[datasetKey];
+        return next;
+      });
+    },
+  });
   // Atomic read-merge-write for the convertedReads manifest. Used in place
   // of saveRemoteDataset when key === "convertedReads" so server-managed
   // sources (mon_batch_*, individual_*) survive dashboard auto-sync even
@@ -3628,6 +3666,12 @@ export default function SolarRecDashboard() {
     setDatasetSyncProgressState(key, undefined);
     setForceSyncingDatasets((previous) => ({ ...previous, [key]: false }));
     setRemoteSourceManifests((previous) => ({ ...previous, [key]: undefined }));
+    setLastDbErrors((previous) => {
+      if (!previous[key]) return previous;
+      const next = { ...previous };
+      delete next[key];
+      return next;
+    });
     forcedRemoteDatasetSyncKeysRef.current.delete(key);
     delete activeCoreDatasetSyncJobRef.current[key];
   };
@@ -3640,6 +3684,7 @@ export default function SolarRecDashboard() {
     setDatasetSyncProgress({});
     setForceSyncingDatasets({});
     setRemoteSourceManifests({});
+    setLastDbErrors({});
     forcedRemoteDatasetSyncKeysRef.current.clear();
     activeCoreDatasetSyncJobRef.current = {};
     // meterReads state is now owned by MeterReadsTab; it resets on unmount.
@@ -7026,6 +7071,56 @@ const aiDataContext = useMemo(() => {
                 {missingCoreDatasets.map((key) => DATASET_DEFINITIONS[key].label).join(", ")}.
               </CardDescription>
             </CardHeader>
+          </Card>
+        ) : null}
+
+        {Object.keys(lastDbErrors).length > 0 ? (
+          <Card className="border-rose-300 bg-rose-50/80">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base text-rose-900 flex items-center gap-2">
+                <AlertCircle className="h-4 w-4" />
+                Cloud DB persistence failed
+              </CardTitle>
+              <CardDescription className="text-rose-800">
+                The CSV blob saved to cloud storage but the row-table write failed. Until this clears the dataset will not appear in server-side aggregates and Cloud Verified will stay false. Click Force Cloud Sync on the dataset card to retry.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="pt-0">
+              <ul className="space-y-1.5 text-sm">
+                {(Object.entries(lastDbErrors) as Array<[
+                  DatasetKey,
+                  { message: string; at: number },
+                ]>)
+                  .sort((a, b) => b[1].at - a[1].at)
+                  .map(([key, info]) => (
+                    <li key={key} className="flex flex-wrap items-start gap-x-2 gap-y-0.5">
+                      <span className="font-medium text-rose-900">
+                        {DATASET_DEFINITIONS[key].label}:
+                      </span>
+                      <span className="font-mono text-xs text-rose-800 break-all">
+                        {info.message.length > 200
+                          ? `${info.message.slice(0, 200)}…`
+                          : info.message}
+                      </span>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 px-2 text-xs text-rose-900 hover:bg-rose-100"
+                        onClick={() => {
+                          setLastDbErrors((previous) => {
+                            if (!previous[key]) return previous;
+                            const next = { ...previous };
+                            delete next[key];
+                            return next;
+                          });
+                        }}
+                      >
+                        Dismiss
+                      </Button>
+                    </li>
+                  ))}
+              </ul>
+            </CardContent>
           </Card>
         ) : null}
 
