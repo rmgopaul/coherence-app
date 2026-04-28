@@ -8,6 +8,10 @@ import superjson from "superjson";
 import App from "./App";
 import { getLoginUrl } from "./const";
 import "./index.css";
+// Phase E (2026-04-28) — register the PWA service worker on boot.
+// No-ops in dev and on unsupported browsers; surfaces an "Update
+// available" toast when a new build reaches `installed`.
+import { registerServiceWorker } from "./lib/registerServiceWorker";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -114,3 +118,5 @@ createRoot(document.getElementById("root")!).render(
     </solarRecTrpc.Provider>
   </trpc.Provider>
 );
+
+registerServiceWorker();
