@@ -566,20 +566,70 @@ export async function deleteSupplementRestockEvent(userId: number, id: string) {
   });
 }
 
-// Running dose balance per definition = sum(quantityDelta).
-// purchased = +doses, opened/finished = -doses → straight SUM works.
+// Running dose balance per definition.
+//
+// The original implementation only summed `restockEvents.quantityDelta`,
+// which required the user to manually log every "opened" / "finished"
+// event for the balance to drop. In practice nobody does that — they
+// log daily intakes via the supplements adherence flow, which writes to
+// `supplementLogs`. So a 90-count multivitamin added on day 0 stayed
+// pinned at 90 forever even though the user took one every day.
+//
+// Fix: balance = SUM(restock deltas) − COUNT(intake logs taken on/after
+// the earliest restock event for that definition). The "earliest
+// restock event" anchor matters because we don't want years of pre-
+// tracking history to swallow today's bottle. One log = one capsule
+// (the unique index on `supplementLogs` is per (userId, dateKey,
+// definitionId), so a log row represents the day's intake regardless
+// of AM/PM timing).
+//
+// Manual `opened` / `finished` events with negative `quantityDelta` are
+// still respected — they reduce the SUM directly, on top of the
+// auto-decrement from intake logs. That covers cases like "I lost half
+// the bottle in transit" or "I finished what was left in one go."
 export async function getSupplementDoseBalances(userId: number) {
   const db = await getDb();
   if (!db) return [];
 
-  return withDbRetry("sum supplement dose balances", async () =>
-    db
-      .select({
-        definitionId: supplementRestockEvents.definitionId,
-        balance: sql<number>`COALESCE(SUM(${supplementRestockEvents.quantityDelta}), 0)`,
-      })
-      .from(supplementRestockEvents)
-      .where(eq(supplementRestockEvents.userId, userId))
-      .groupBy(supplementRestockEvents.definitionId)
+  const restockSummaries = await withDbRetry(
+    "sum supplement dose balances",
+    async () =>
+      db
+        .select({
+          definitionId: supplementRestockEvents.definitionId,
+          totalAdded: sql<number>`COALESCE(SUM(${supplementRestockEvents.quantityDelta}), 0)`,
+          firstAt: sql<Date>`MIN(${supplementRestockEvents.occurredAt})`,
+        })
+        .from(supplementRestockEvents)
+        .where(eq(supplementRestockEvents.userId, userId))
+        .groupBy(supplementRestockEvents.definitionId)
   );
+
+  const out: Array<{ definitionId: string | null; balance: number }> = [];
+  for (const row of restockSummaries) {
+    const totalAdded = Number(row.totalAdded) || 0;
+    let consumed = 0;
+    if (row.definitionId && row.firstAt) {
+      const [{ count }] = await withDbRetry(
+        "count supplement intake logs",
+        async () =>
+          db
+            .select({ count: sql<number>`COUNT(*)` })
+            .from(supplementLogs)
+            .where(
+              and(
+                eq(supplementLogs.userId, userId),
+                eq(supplementLogs.definitionId, row.definitionId!),
+                gte(supplementLogs.takenAt, row.firstAt as Date)
+              )
+            )
+      );
+      consumed = Number(count) || 0;
+    }
+    out.push({
+      definitionId: row.definitionId,
+      balance: totalAdded - consumed,
+    });
+  }
+  return out;
 }
