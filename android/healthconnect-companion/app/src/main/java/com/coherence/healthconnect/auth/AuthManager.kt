@@ -40,13 +40,40 @@ class AuthManager(private val context: Context) {
     .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
     .build()
 
-  private val prefs: SharedPreferences = EncryptedSharedPreferences.create(
-    context,
-    PREFS_FILE,
-    masterKey,
-    EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-    EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
-  )
+  // EncryptedSharedPreferences.create() can throw GeneralSecurityException
+  // / AEADBadTagException when the on-disk encrypted prefs and the
+  // Android Keystore master key get out of sync. The classic trigger
+  // is uninstall+reinstall: the Keystore master key sometimes
+  // survives the package wipe (it's tied to the keystore alias) but
+  // the encrypted file in /data/data/<pkg>/shared_prefs is gone, so
+  // Tink can't decrypt and crashes the app boot. The workaround is
+  // to wipe the prefs + master key and retry — the user is logged
+  // out, but the app survives. Catching is safer than crash-looping
+  // because the user has no way to recover without clearing storage.
+  private val prefs: SharedPreferences = run {
+    try {
+      buildEncryptedPrefs()
+    } catch (e: Throwable) {
+      Log.w(TAG, "EncryptedSharedPreferences create failed; resetting and retrying", e)
+      context.deleteSharedPreferences(PREFS_FILE)
+      runCatching {
+        val keystore = java.security.KeyStore.getInstance("AndroidKeyStore")
+        keystore.load(null)
+        // Default alias from `MasterKey.Builder` when no alias is set
+        keystore.deleteEntry("_androidx_security_master_key_")
+      }
+      buildEncryptedPrefs()
+    }
+  }
+
+  private fun buildEncryptedPrefs(): SharedPreferences =
+    EncryptedSharedPreferences.create(
+      context,
+      PREFS_FILE,
+      masterKey,
+      EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+      EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
+    )
 
   private val httpClient = OkHttpClient.Builder()
     .connectTimeout(10, TimeUnit.SECONDS)
