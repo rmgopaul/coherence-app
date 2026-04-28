@@ -88,15 +88,16 @@ export const solarRecSystemsRouter = t.router({
         getLatestDinScrapeForCsgId,
         getLatestScheduleBResultForSystem,
         getLatestMeterReadsForCsgId,
+        getInvoiceStatusForCsgId,
       } = await import("../db");
 
       // Pull the registry first — its fields drive several
       // downstream join keys (trackingSystemRefId + systemId for
-      // Schedule B + meter reads). We then fan out the four other
-      // reads in parallel.
+      // Schedule B + meter reads, applicationId for ICC report).
+      // We then fan out the five other reads in parallel.
       const registry = await getSystemByCsgId(ctx.scopeId, input.csgId);
 
-      const [contractScans, dinScrape, scheduleBResult, meterReads] =
+      const [contractScans, dinScrape, scheduleBResult, meterReads, invoiceStatus] =
         await Promise.all([
           getLatestScanResultsByCsgIds(ctx.scopeId, [input.csgId]),
           getLatestDinScrapeForCsgId(ctx.scopeId, input.csgId),
@@ -105,12 +106,16 @@ export const solarRecSystemsRouter = t.router({
             systemId: registry?.systemId ?? null,
             trackingSystemRefId: registry?.trackingSystemRefId ?? null,
           }),
-          // Task 9.5 PR-1 (2026-04-28): meter-read history. Pass
-          // the already-loaded registry through so the helper
-          // doesn't repeat the registry lookup.
+          // Task 9.5 PR-1 (2026-04-28): meter-read history.
           getLatestMeterReadsForCsgId(ctx.scopeId, input.csgId, {
             preResolvedRegistry: registry,
             limit: 30,
+          }),
+          // Task 9.5 PR-2 (2026-04-28): invoice status (utility
+          // invoices + ICC contract value).
+          getInvoiceStatusForCsgId(ctx.scopeId, input.csgId, {
+            preResolvedRegistry: registry,
+            limit: 12,
           }),
         ]);
 
@@ -124,6 +129,7 @@ export const solarRecSystemsRouter = t.router({
         dinScrape,
         scheduleBResult,
         meterReads,
+        invoiceStatus,
       };
     }),
 
