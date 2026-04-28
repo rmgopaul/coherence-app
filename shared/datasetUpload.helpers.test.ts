@@ -9,7 +9,9 @@
  */
 import { describe, expect, it } from "vitest";
 import {
+  computeUploadChunkPlan,
   DATASET_KEYS,
+  DATASET_UPLOAD_RAW_BYTES_PER_CHUNK,
   estimateRemainingMs,
   formatEstimatedRemaining,
   formatUploadProgress,
@@ -376,5 +378,78 @@ describe("formatEstimatedRemaining", () => {
     expect(formatEstimatedRemaining(2 * 60 * 60_000 + 30 * 60_000)).toBe(
       "2h 30m"
     );
+  });
+});
+
+describe("computeUploadChunkPlan", () => {
+  it("returns an empty plan for non-positive file size", () => {
+    expect(computeUploadChunkPlan(0)).toEqual({
+      totalChunks: 0,
+      rawBytesPerChunk: DATASET_UPLOAD_RAW_BYTES_PER_CHUNK,
+      chunks: [],
+    });
+    expect(computeUploadChunkPlan(-100)).toEqual({
+      totalChunks: 0,
+      rawBytesPerChunk: DATASET_UPLOAD_RAW_BYTES_PER_CHUNK,
+      chunks: [],
+    });
+  });
+
+  it("returns an empty plan for non-finite inputs (defensive)", () => {
+    expect(computeUploadChunkPlan(Number.NaN).chunks).toEqual([]);
+    expect(computeUploadChunkPlan(Number.POSITIVE_INFINITY).chunks).toEqual(
+      []
+    );
+    expect(computeUploadChunkPlan(100, 0).chunks).toEqual([]);
+    expect(computeUploadChunkPlan(100, Number.NaN).chunks).toEqual([]);
+  });
+
+  it("plans a single chunk for a file smaller than the chunk size", () => {
+    const plan = computeUploadChunkPlan(150_000);
+    expect(plan.totalChunks).toBe(1);
+    expect(plan.chunks).toHaveLength(1);
+    expect(plan.chunks[0]).toEqual({
+      chunkIndex: 0,
+      byteStart: 0,
+      byteEnd: 150_000,
+    });
+  });
+
+  it("plans an exact-multiple file as the right number of chunks", () => {
+    // 4 chunks of 240,000 bytes each = 960,000 byte file.
+    const plan = computeUploadChunkPlan(960_000);
+    expect(plan.totalChunks).toBe(4);
+    expect(plan.chunks).toHaveLength(4);
+    expect(plan.chunks[0].byteStart).toBe(0);
+    expect(plan.chunks[0].byteEnd).toBe(240_000);
+    expect(plan.chunks[3].byteEnd).toBe(960_000);
+  });
+
+  it("plans a not-quite-multiple file with a smaller trailing chunk", () => {
+    // 240_000 + 240_000 + 50_000 = 530_000.
+    const plan = computeUploadChunkPlan(530_000);
+    expect(plan.totalChunks).toBe(3);
+    expect(plan.chunks).toHaveLength(3);
+    expect(plan.chunks[0].byteEnd).toBe(240_000);
+    expect(plan.chunks[1].byteEnd).toBe(480_000);
+    expect(plan.chunks[2].byteEnd).toBe(530_000);
+  });
+
+  it("respects an injected rawBytesPerChunk for testing", () => {
+    const plan = computeUploadChunkPlan(100, 30);
+    expect(plan.totalChunks).toBe(4);
+    expect(plan.chunks.map((c) => c.byteEnd)).toEqual([30, 60, 90, 100]);
+  });
+
+  it("byte ranges are contiguous and cover the file exactly", () => {
+    const fileSize = 1_234_567;
+    const plan = computeUploadChunkPlan(fileSize);
+    let expectedStart = 0;
+    for (const chunk of plan.chunks) {
+      expect(chunk.byteStart).toBe(expectedStart);
+      expect(chunk.byteEnd).toBeGreaterThan(chunk.byteStart);
+      expectedStart = chunk.byteEnd;
+    }
+    expect(expectedStart).toBe(fileSize);
   });
 });
