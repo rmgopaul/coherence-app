@@ -105,18 +105,27 @@ class WidgetDataWorker(
     val sports = runCatching { fetchSports(app) }.getOrDefault(emptyList())
     val emails = runCatching { fetchEmails(app) }.getOrDefault(emptyList())
     val tasks = runCatching { fetchTasks(app, todayKey) }.getOrDefault(emptyList())
-    val nextEvent = runCatching { fetchNextEvent(app) }.getOrNull()
+    // King · Left now renders multiple upcoming events; the rest of
+    // the widgets only need the next one. Fetch the full list once
+    // and let each widget take what it wants from the WidgetData
+    // cache. `nextEvent` stays as a convenience field for backward
+    // compat with the older widgets.
+    val upcomingEvents = runCatching { fetchUpcomingEvents(app) }.getOrDefault(emptyList())
     val weather = runCatching { extractWeather(headlines) }.getOrNull()
     val king = runCatching { fetchKingOfDay(app, todayKey) }.getOrNull()
 
+    // Cache more rows than any single widget needs so King · Left
+    // (which surfaces top 9 tasks / top 7 emails / top 4 events) has
+    // enough material; smaller widgets just `.take(3)` from here.
     return WidgetData(
-      headlines = headlines.take(4),
+      headlines = headlines.take(15),
       weatherSummary = weather,
-      tickers = tickers.take(9),
-      sports = sports.take(3),
-      emails = emails.take(3),
-      tasks = tasks.take(3),
-      nextEvent = nextEvent,
+      tickers = tickers.take(20),
+      sports = sports.take(6),
+      emails = emails.take(10),
+      tasks = tasks.take(12),
+      nextEvent = upcomingEvents.firstOrNull(),
+      events = upcomingEvents.take(6),
       kingOfDayTitle = king?.title,
       kingOfDayReason = king?.reason,
       kingOfDaySource = king?.source,
@@ -216,23 +225,29 @@ class WidgetDataWorker(
     val todayTasks = allTasks
       .filter { t -> t.due != null && t.due.date <= todayKey }
       .sortedByDescending { it.priority }
-    return todayTasks.take(3).map { t ->
+    // Return the full filtered list — caller's `.take(N)` decides how
+    // many to display per widget.
+    return todayTasks.map { t ->
       WidgetTask(title = t.content.take(50), priority = t.priority)
     }
   }
 
-  private suspend fun fetchNextEvent(app: CoherenceApplication): WidgetCalendarEvent? {
-    val events = app.container.googleRepository.getCalendarEvents(daysAhead = 2, maxResults = 10)
+  /**
+   * All upcoming calendar events within the look-ahead window,
+   * sorted by start time. Smaller widgets call `.firstOrNull()` for
+   * a single next-event card; King · Left renders the first 4.
+   */
+  private suspend fun fetchUpcomingEvents(app: CoherenceApplication): List<WidgetCalendarEvent> {
+    val events = app.container.googleRepository.getCalendarEvents(daysAhead = 4, maxResults = 20)
     val now = System.currentTimeMillis()
-
     return events
       .mapNotNull { event ->
         val millis = parseEventMillis(event.start?.dateTime, event.start?.date) ?: return@mapNotNull null
         if (millis < now) return@mapNotNull null
         Triple(event, millis, formatEventTime(event.start?.dateTime, event.start?.date))
       }
-      .minByOrNull { it.second }
-      ?.let { (event, _, timeStr) ->
+      .sortedBy { it.second }
+      .map { (event, _, timeStr) ->
         WidgetCalendarEvent(
           title = (event.summary ?: "Untitled").take(40),
           time = timeStr,

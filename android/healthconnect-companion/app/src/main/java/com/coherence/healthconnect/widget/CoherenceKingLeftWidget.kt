@@ -119,8 +119,14 @@ private fun LeftContent(data: WidgetData) {
         Spacer(GlanceModifier.height(12.dp))
       }
 
-      if (data.nextEvent != null) {
-        NextEventSection(data.nextEvent)
+      // Multi-event list — Fold-inner left half has the room for
+      // up to 4 upcoming events, not just the next one. Falls back
+      // to the single `nextEvent` field on cached payloads from
+      // older app versions that didn't populate `events`.
+      val eventsToShow = if (data.events.isNotEmpty()) data.events
+      else listOfNotNull(data.nextEvent)
+      if (eventsToShow.isNotEmpty()) {
+        UpcomingEventsSection(eventsToShow)
         Spacer(GlanceModifier.height(12.dp))
       }
 
@@ -217,6 +223,55 @@ private fun KingOfDayHero(
   }
 }
 
+/**
+ * Renders up to 4 upcoming events stacked vertically. Each row uses
+ * a smaller rail/title than the original NextEventSection's hero
+ * styling so multiple events fit without exceeding the half-screen
+ * widget budget.
+ */
+@Composable
+private fun UpcomingEventsSection(events: List<WidgetCalendarEvent>) {
+  Column(modifier = GlanceModifier.fillMaxWidth()) {
+    Text(text = "UPCOMING", style = SectionTitle)
+    Spacer(GlanceModifier.height(4.dp))
+    events.take(4).forEach { event ->
+      Row(
+        modifier = GlanceModifier.fillMaxWidth().padding(vertical = 3.dp),
+        verticalAlignment = Alignment.CenterVertically,
+      ) {
+        Box(
+          modifier = GlanceModifier.size(3.dp, 24.dp).background(AccentYellow),
+        ) {}
+        Spacer(GlanceModifier.width(8.dp))
+        Column(modifier = GlanceModifier.defaultWeight()) {
+          Text(
+            text = event.title,
+            style = TextStyle(
+              color = TextPrimary,
+              fontSize = 13.sp,
+              fontWeight = FontWeight.Bold,
+            ),
+            maxLines = 1,
+          )
+          Row {
+            Text(
+              text = event.time.uppercase(Locale.getDefault()),
+              style = TextStyle(
+                color = AccentYellow,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold,
+              ),
+            )
+            if (event.location.isNotBlank()) {
+              Text(text = "  ${event.location}", style = Secondary, maxLines = 1)
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
 @Composable
 private fun NextEventSection(event: WidgetCalendarEvent) {
   Column(modifier = GlanceModifier.fillMaxWidth()) {
@@ -260,7 +315,7 @@ private fun TasksSection(tasks: List<WidgetTask>) {
   Column(modifier = GlanceModifier.fillMaxWidth()) {
     Text(text = "UP NEXT", style = SectionTitle)
     Spacer(GlanceModifier.height(4.dp))
-    tasks.take(6).forEach { task ->
+    tasks.take(9).forEach { task ->
       Row(
         modifier = GlanceModifier.fillMaxWidth().padding(vertical = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -283,7 +338,7 @@ private fun EmailsSection(emails: List<WidgetEmail>) {
   Column(modifier = GlanceModifier.fillMaxWidth()) {
     Text(text = "INBOX", style = SectionTitle)
     Spacer(GlanceModifier.height(4.dp))
-    emails.take(4).forEach { email ->
+    emails.take(7).forEach { email ->
       Row(
         modifier = GlanceModifier.fillMaxWidth().padding(vertical = 2.dp),
         verticalAlignment = Alignment.CenterVertically,

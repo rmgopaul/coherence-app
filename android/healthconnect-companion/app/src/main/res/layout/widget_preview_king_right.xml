@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Preview for King · Right. Trailing "RIGHT ▶" indicator + a
+  markets/news hint so the user can see at a glance this is the
+  RIGHT half of the pair.
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="#0E0D0A"
+    android:padding="12dp">
+  <LinearLayout
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:orientation="horizontal"
+      android:gravity="end|center_vertical">
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="KING · RIGHT half  "
+        android:textColor="#FFD84A"
+        android:textSize="12sp"
+        android:textStyle="bold" />
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="▶"
+        android:textColor="#FFD84A"
+        android:textSize="22sp"
+        android:textStyle="bold" />
+  </LinearLayout>
+  <TextView
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:text="← Pair with King · Left"
+      android:textColor="#8F8B78"
+      android:textSize="9sp"
+      android:textStyle="bold"
+      android:gravity="end"
+      android:layout_marginTop="4dp" />
+  <Space android:layout_width="match_parent" android:layout_height="8dp" />
+  <TextView
+      android:layout_width="wrap_content"
+      android:layout_height="wrap_content"
+      android:text="MARKETS"
+      android:textColor="#8F8B78"
+      android:textSize="9sp"
+      android:textStyle="bold" />
+  <LinearLayout
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:orientation="horizontal"
+      android:layout_marginTop="2dp">
+    <TextView
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:text="BTC\n+2.3%"
+        android:textColor="#66C266"
+        android:textSize="10sp"
+        android:textStyle="bold" />
+    <TextView
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:text="ETH\n−0.5%"
+        android:textColor="#FF5A47"
+        android:textSize="10sp"
+        android:textStyle="bold" />
+  </LinearLayout>
+  <Space android:layout_width="match_parent" android:layout_height="6dp" />
+  <TextView
+      android:layout_width="wrap_content"
+      android:layout_height="wrap_content"
+      android:text="• news · sports"
+      android:textColor="#C9C5B4"
+      android:textSize="9sp" />
+</LinearLayout>
