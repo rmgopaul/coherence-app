@@ -1,19 +1,17 @@
 /**
- * Task 5.4 vendor 13/16 — SolarEdge meter-reads on solar-rec.
+ * SolarEdge meter-reads on solar-rec.
  *
- * Team credential stores `{apiKey, baseUrl}`. SolarEdge uniquely
- * exposes three snapshot types — production, meter inventory, inverter
- * inventory — that the legacy meter-reads page surfaces. This page
- * keeps that distinction so fleet operators can hit each endpoint
- * without dropping back to the main app.
- *
- * Bulk multi-site CSV processing is deferred; the page runs single-
- * site snapshots only.
+ * Team credential stores `{apiKey, baseUrl}`; the credential row is
+ * also populated with the apiKey in the accessToken column so the
+ * Settings → Credentials badge reads "Connected" rather than the
+ * misleading "No Token". SolarEdge uniquely exposes three snapshot
+ * shapes — production, meter inventory, inverter inventory — and the
+ * legacy meter-reads page also supported CSV-driven bulk processing
+ * across one or all team profiles. This page restores that surface.
  */
 
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { MeterReadConnectionProbe } from "../../components/MeterReadConnectionProbe";
-import { PersistConfirmation } from "../../components/PersistConfirmation";
 import { solarRecTrpc as trpc } from "../../solarRecTrpc";
 import { useSolarRecPermission } from "../../hooks/useSolarRecPermission";
 import { Button } from "@/components/ui/button";
@@ -27,6 +25,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import { Progress } from "@/components/ui/progress";
 import {
   Table,
   TableBody,
@@ -42,20 +41,300 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Loader2, Play, RefreshCw } from "lucide-react";
+import {
+  Download,
+  Loader2,
+  Play,
+  RefreshCw,
+  Upload,
+  XCircle,
+} from "lucide-react";
 import { toast } from "sonner";
+import { parseCsvMatrix } from "@/lib/csvParsing";
+import { clean, downloadTextFile } from "@/lib/helpers";
 
 type SnapshotKind = "production" | "meter" | "inverter";
+type ConnectionScope = "active" | "all";
+
+type ProductionRow = {
+  siteId: string;
+  status: "Found" | "Not Found" | "Error";
+  matchedConnectionId: string | null;
+  matchedConnectionName: string | null;
+  checkedConnections: number;
+  foundInConnections: number;
+  siteName: string | null;
+  lifetimeKwh: number | null;
+  hourlyProductionKwh: number | null;
+  monthlyProductionKwh: number | null;
+  mtdProductionKwh: number | null;
+  previousCalendarMonthProductionKwh: number | null;
+  last12MonthsProductionKwh: number | null;
+  weeklyProductionKwh: number | null;
+  dailyProductionKwh: number | null;
+  anchorDate: string | null;
+  error: string | null;
+};
+
+type MeterRow = {
+  siteId: string;
+  status: "Found" | "Not Found" | "Error";
+  matchedConnectionId: string | null;
+  matchedConnectionName: string | null;
+  checkedConnections: number;
+  foundInConnections: number;
+  meterCount: number | null;
+  productionMeterCount: number | null;
+  consumptionMeterCount: number | null;
+  meterTypes: string[];
+  error: string | null;
+};
+
+type InverterRow = {
+  siteId: string;
+  status: "Found" | "Not Found" | "Error";
+  matchedConnectionId: string | null;
+  matchedConnectionName: string | null;
+  checkedConnections: number;
+  foundInConnections: number;
+  inverterCount: number | null;
+  invertersWithTelemetry: number | null;
+  inverterFailures: number | null;
+  inverterLatestPowerKw: number | null;
+  inverterLatestEnergyKwh: number | null;
+  firstTelemetryAt: string | null;
+  lastTelemetryAt: string | null;
+  error: string | null;
+};
+
+type BulkProgress = {
+  total: number;
+  processed: number;
+  found: number;
+  notFound: number;
+  errored: number;
+};
+
+const NUMBER_FORMATTER = new Intl.NumberFormat("en-US");
+const BULK_BATCH_ACTIVE = 200;
+const BULK_BATCH_ALL_PROFILES = 25;
+const SITE_ID_HEADER_KEYS = [
+  "siteid",
+  "site_id",
+  "site",
+  "site_number",
+  "id",
+  "csgid",
+  "csg_id",
+];
+
+function todayIso(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function chunkArray<T>(items: T[], size: number): T[][] {
+  if (size <= 0) return [items];
+  const chunks: T[][] = [];
+  for (let i = 0; i < items.length; i += size) {
+    chunks.push(items.slice(i, i + size));
+  }
+  return chunks;
+}
+
+function extractSiteIdsFromCsv(text: string): string[] {
+  const matrix = parseCsvMatrix(text);
+  if (matrix.length === 0) return [];
+  const headers = matrix[0].map((h) =>
+    clean(h).toLowerCase().replace(/\s+/g, "_")
+  );
+  const headerIndex = headers.findIndex((h) => SITE_ID_HEADER_KEYS.includes(h));
+
+  // Single-column layout — values may include the header cell as a row.
+  if (headers.length === 1) {
+    const collected = new Set<string>();
+    const headerVal = clean(matrix[0][0]);
+    if (
+      headerVal &&
+      !SITE_ID_HEADER_KEYS.includes(headers[0]) &&
+      !/[a-zA-Z]/.test(headerVal) === false
+        ? false
+        : headerVal && /^\d+$/.test(headerVal)
+    ) {
+      collected.add(headerVal);
+    }
+    for (let r = 1; r < matrix.length; r += 1) {
+      const v = clean(matrix[r][0]);
+      if (v) collected.add(v);
+    }
+    if (collected.size === 0 && headerVal) collected.add(headerVal);
+    return Array.from(collected);
+  }
+
+  if (headerIndex >= 0) {
+    const out = new Set<string>();
+    for (let r = 1; r < matrix.length; r += 1) {
+      const v = clean(matrix[r][headerIndex]);
+      if (v) out.add(v);
+    }
+    return Array.from(out);
+  }
+
+  // Fallback: take column 0 from data rows.
+  const out = new Set<string>();
+  for (let r = 1; r < matrix.length; r += 1) {
+    const v = clean(matrix[r][0]);
+    if (v) out.add(v);
+  }
+  return Array.from(out);
+}
+
+function csvEscape(value: unknown): string {
+  if (value === null || value === undefined) return "";
+  const str = String(value);
+  if (/[",\n\r]/.test(str)) return `"${str.replace(/"/g, '""')}"`;
+  return str;
+}
+
+function buildBulkCsv(
+  kind: SnapshotKind,
+  rows: ProductionRow[] | MeterRow[] | InverterRow[]
+): string {
+  if (kind === "production") {
+    const header = [
+      "site_id",
+      "status",
+      "matched_connection",
+      "site_name",
+      "anchor_date",
+      "lifetime_kwh",
+      "mtd_kwh",
+      "previous_month_kwh",
+      "last_12_months_kwh",
+      "monthly_kwh",
+      "weekly_kwh",
+      "daily_kwh",
+      "hourly_kwh",
+      "checked_connections",
+      "found_in_connections",
+      "error",
+    ].join(",");
+    const body = (rows as ProductionRow[])
+      .map((r) =>
+        [
+          r.siteId,
+          r.status,
+          r.matchedConnectionName ?? r.matchedConnectionId ?? "",
+          r.siteName ?? "",
+          r.anchorDate ?? "",
+          r.lifetimeKwh ?? "",
+          r.mtdProductionKwh ?? "",
+          r.previousCalendarMonthProductionKwh ?? "",
+          r.last12MonthsProductionKwh ?? "",
+          r.monthlyProductionKwh ?? "",
+          r.weeklyProductionKwh ?? "",
+          r.dailyProductionKwh ?? "",
+          r.hourlyProductionKwh ?? "",
+          r.checkedConnections,
+          r.foundInConnections,
+          r.error ?? "",
+        ]
+          .map(csvEscape)
+          .join(",")
+      )
+      .join("\n");
+    return `${header}\n${body}\n`;
+  }
+  if (kind === "meter") {
+    const header = [
+      "site_id",
+      "status",
+      "matched_connection",
+      "meter_count",
+      "production_meters",
+      "consumption_meters",
+      "meter_types",
+      "checked_connections",
+      "found_in_connections",
+      "error",
+    ].join(",");
+    const body = (rows as MeterRow[])
+      .map((r) =>
+        [
+          r.siteId,
+          r.status,
+          r.matchedConnectionName ?? r.matchedConnectionId ?? "",
+          r.meterCount ?? "",
+          r.productionMeterCount ?? "",
+          r.consumptionMeterCount ?? "",
+          r.meterTypes.join("|"),
+          r.checkedConnections,
+          r.foundInConnections,
+          r.error ?? "",
+        ]
+          .map(csvEscape)
+          .join(",")
+      )
+      .join("\n");
+    return `${header}\n${body}\n`;
+  }
+  const header = [
+    "site_id",
+    "status",
+    "matched_connection",
+    "inverter_count",
+    "inverters_with_telemetry",
+    "inverter_failures",
+    "latest_power_kw",
+    "latest_energy_kwh",
+    "first_telemetry_at",
+    "last_telemetry_at",
+    "checked_connections",
+    "found_in_connections",
+    "error",
+  ].join(",");
+  const body = (rows as InverterRow[])
+    .map((r) =>
+      [
+        r.siteId,
+        r.status,
+        r.matchedConnectionName ?? r.matchedConnectionId ?? "",
+        r.inverterCount ?? "",
+        r.invertersWithTelemetry ?? "",
+        r.inverterFailures ?? "",
+        r.inverterLatestPowerKw ?? "",
+        r.inverterLatestEnergyKwh ?? "",
+        r.firstTelemetryAt ?? "",
+        r.lastTelemetryAt ?? "",
+        r.checkedConnections,
+        r.foundInConnections,
+        r.error ?? "",
+      ]
+        .map(csvEscape)
+        .join(",")
+    )
+    .join("\n");
+  return `${header}\n${body}\n`;
+}
 
 export default function SolarEdgeMeterReads() {
   const { canEdit } = useSolarRecPermission("meter-reads");
   const statusQuery = trpc.solaredge.getStatus.useQuery(undefined, {
     retry: false,
   });
-  const listSitesQuery = trpc.solaredge.listSites.useQuery(undefined, {
-    enabled: statusQuery.data?.connected === true,
-    retry: false,
-  });
+
+  const [selectedConnectionId, setSelectedConnectionId] = useState<string>("");
+  const effectiveConnectionId =
+    selectedConnectionId ||
+    statusQuery.data?.activeConnectionId ||
+    "";
+
+  const listSitesQuery = trpc.solaredge.listSites.useQuery(
+    { connectionId: effectiveConnectionId || undefined },
+    {
+      enabled: statusQuery.data?.connected === true,
+      retry: false,
+    }
+  );
   // Phase E (2026-04-28) — Test Connection probe times the
   // listSitesQuery refetch as a lightweight credential check.
   const probeFn = useCallback(async () => {
@@ -63,10 +342,9 @@ export default function SolarEdgeMeterReads() {
     return r.data?.sites?.length ?? 0;
   }, [listSitesQuery]);
 
-  const productionMutation =
-    trpc.solaredge.getProductionSnapshot.useMutation({
-      onError: (err) => toast.error(err.message),
-    });
+  const productionMutation = trpc.solaredge.getProductionSnapshot.useMutation({
+    onError: (err) => toast.error(err.message),
+  });
   const meterMutation = trpc.solaredge.getMeterSnapshot.useMutation({
     onError: (err) => toast.error(err.message),
   });
@@ -74,9 +352,36 @@ export default function SolarEdgeMeterReads() {
     onError: (err) => toast.error(err.message),
   });
 
+  const productionBulk = trpc.solaredge.getProductionSnapshots.useMutation();
+  const meterBulk = trpc.solaredge.getMeterSnapshots.useMutation();
+  const inverterBulk = trpc.solaredge.getInverterSnapshots.useMutation();
+
+  // Single-site snapshot state.
   const [siteId, setSiteId] = useState("");
   const [anchorDate, setAnchorDate] = useState("");
   const [snapshotKind, setSnapshotKind] = useState<SnapshotKind>("production");
+
+  // Bulk processing state.
+  const [bulkKind, setBulkKind] = useState<SnapshotKind>("production");
+  const [bulkAnchorDate, setBulkAnchorDate] = useState(todayIso());
+  const [bulkSiteIds, setBulkSiteIds] = useState<string[]>([]);
+  const [bulkSourceFile, setBulkSourceFile] = useState<string | null>(null);
+  const [bulkScope, setBulkScope] = useState<ConnectionScope>("active");
+  const [bulkRows, setBulkRows] = useState<
+    ProductionRow[] | MeterRow[] | InverterRow[]
+  >([]);
+  const [bulkProgress, setBulkProgress] = useState<BulkProgress>({
+    total: 0,
+    processed: 0,
+    found: 0,
+    notFound: 0,
+    errored: 0,
+  });
+  const [bulkRunning, setBulkRunning] = useState(false);
+  const bulkCancelRef = useRef(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const connections = statusQuery.data?.connections ?? [];
 
   const activeMutation =
     snapshotKind === "production"
@@ -85,34 +390,183 @@ export default function SolarEdgeMeterReads() {
         ? meterMutation
         : inverterMutation;
 
-  const runSnapshot = () => {
+  const runSingleSnapshot = () => {
     const trimmed = siteId.trim();
     if (!trimmed) {
       toast.error("Enter a site ID");
       return;
     }
+    const connArg = effectiveConnectionId || undefined;
     if (snapshotKind === "production") {
       productionMutation.mutate({
         siteId: trimmed,
         anchorDate: anchorDate || undefined,
+        connectionId: connArg,
       });
     } else if (snapshotKind === "meter") {
-      meterMutation.mutate({ siteId: trimmed });
+      meterMutation.mutate({ siteId: trimmed, connectionId: connArg });
     } else {
       inverterMutation.mutate({
         siteId: trimmed,
         anchorDate: anchorDate || undefined,
+        connectionId: connArg,
       });
     }
   };
 
+  const handleCsvUpload = async (file: File | null) => {
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const ids = extractSiteIdsFromCsv(text);
+      if (ids.length === 0) {
+        toast.error("No site IDs found in CSV.");
+        setBulkSourceFile(file.name);
+        setBulkSiteIds([]);
+        return;
+      }
+      setBulkSourceFile(file.name);
+      setBulkSiteIds(ids);
+      setBulkRows([]);
+      setBulkProgress({
+        total: ids.length,
+        processed: 0,
+        found: 0,
+        notFound: 0,
+        errored: 0,
+      });
+      toast.success(`Imported ${NUMBER_FORMATTER.format(ids.length)} site IDs.`);
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : "Failed to read CSV file."
+      );
+    }
+  };
+
+  const cancelBulk = () => {
+    bulkCancelRef.current = true;
+  };
+
+  const runBulk = async () => {
+    if (!statusQuery.data?.connected) {
+      toast.error("Connect a SolarEdge credential before running bulk.");
+      return;
+    }
+    if (bulkSiteIds.length === 0) {
+      toast.error("Upload a CSV with site IDs first.");
+      return;
+    }
+    setBulkRunning(true);
+    bulkCancelRef.current = false;
+    setBulkRows([]);
+    setBulkProgress({
+      total: bulkSiteIds.length,
+      processed: 0,
+      found: 0,
+      notFound: 0,
+      errored: 0,
+    });
+
+    const batchSize =
+      bulkScope === "all" ? BULK_BATCH_ALL_PROFILES : BULK_BATCH_ACTIVE;
+    const chunks = chunkArray(bulkSiteIds, batchSize);
+    const collected: (ProductionRow | MeterRow | InverterRow)[] = [];
+    let processed = 0;
+    let found = 0;
+    let notFound = 0;
+    let errored = 0;
+
+    try {
+      for (const chunk of chunks) {
+        if (bulkCancelRef.current) break;
+        const baseInput = {
+          siteIds: chunk,
+          connectionScope: bulkScope,
+          connectionId: bulkScope === "active"
+            ? effectiveConnectionId || undefined
+            : undefined,
+        } as const;
+        let response: {
+          total: number;
+          found: number;
+          notFound: number;
+          errored: number;
+          rows: unknown[];
+        };
+        if (bulkKind === "production") {
+          response = await productionBulk.mutateAsync({
+            ...baseInput,
+            anchorDate: bulkAnchorDate || undefined,
+          });
+        } else if (bulkKind === "meter") {
+          response = await meterBulk.mutateAsync(baseInput);
+        } else {
+          response = await inverterBulk.mutateAsync({
+            ...baseInput,
+            anchorDate: bulkAnchorDate || undefined,
+          });
+        }
+        const typedRows = response.rows as (
+          | ProductionRow
+          | MeterRow
+          | InverterRow
+        )[];
+        collected.push(...typedRows);
+        processed += response.total;
+        found += response.found;
+        notFound += response.notFound;
+        errored += response.errored;
+        setBulkRows([...collected] as
+          | ProductionRow[]
+          | MeterRow[]
+          | InverterRow[]);
+        setBulkProgress({
+          total: bulkSiteIds.length,
+          processed,
+          found,
+          notFound,
+          errored,
+        });
+      }
+      if (bulkCancelRef.current) {
+        toast.info(
+          `Cancelled. Processed ${NUMBER_FORMATTER.format(processed)}/${NUMBER_FORMATTER.format(bulkSiteIds.length)}.`
+        );
+      } else {
+        toast.success(
+          `Done. ${NUMBER_FORMATTER.format(found)} found, ${NUMBER_FORMATTER.format(notFound)} not found, ${NUMBER_FORMATTER.format(errored)} errored.`
+        );
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Bulk run failed.");
+    } finally {
+      setBulkRunning(false);
+      bulkCancelRef.current = false;
+    }
+  };
+
+  const downloadResults = () => {
+    if (bulkRows.length === 0) {
+      toast.error("Nothing to export yet.");
+      return;
+    }
+    const csv = buildBulkCsv(bulkKind, bulkRows);
+    const stamp = new Date().toISOString().slice(0, 10);
+    downloadTextFile(`solaredge-${bulkKind}-${stamp}.csv`, csv);
+  };
+
+  const progressPct = useMemo(() => {
+    if (bulkProgress.total === 0) return 0;
+    return Math.round((bulkProgress.processed / bulkProgress.total) * 100);
+  }, [bulkProgress]);
+
   return (
-    <div className="max-w-4xl mx-auto p-6 space-y-4">
+    <div className="max-w-6xl mx-auto p-6 space-y-4">
       <div>
         <h1 className="text-xl font-semibold">SolarEdge</h1>
         <p className="text-sm text-muted-foreground">
-          Run meter reads against the team&rsquo;s SolarEdge credential.
-          Manage API key in Solar REC Settings → Credentials.
+          Run meter reads against the team&rsquo;s SolarEdge credentials.
+          Manage API keys in Solar REC Settings → Credentials.
         </p>
       </div>
 
@@ -134,12 +588,37 @@ export default function SolarEdgeMeterReads() {
               : "Ask an admin to register a SolarEdge API key in Settings → Credentials."}
           </CardDescription>
         </CardHeader>
-        <CardContent>
+        <CardContent className="space-y-3">
           <MeterReadConnectionProbe
             runProbe={probeFn}
             sampleNoun="sites"
             disabled={!statusQuery.data?.connected}
           />
+          {connections.length > 1 && (
+            <div className="space-y-1 max-w-md">
+              <Label htmlFor="solaredge-connection">
+                Active API profile (single-site + active-scope bulk)
+              </Label>
+              <Select
+                value={effectiveConnectionId}
+                onValueChange={(v) => setSelectedConnectionId(v)}
+              >
+                <SelectTrigger id="solaredge-connection">
+                  <SelectValue placeholder="Select profile" />
+                </SelectTrigger>
+                <SelectContent>
+                  {connections.map((c) => (
+                    <SelectItem key={c.id} value={c.id}>
+                      {c.name ?? c.id}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                Bulk runs can sweep all profiles; see scope selector below.
+              </p>
+            </div>
+          )}
         </CardContent>
       </Card>
 
@@ -149,14 +628,16 @@ export default function SolarEdgeMeterReads() {
             <div>
               <CardTitle className="text-base">Sites</CardTitle>
               <CardDescription>
-                Discover sites on the connected SolarEdge account.
+                Discover sites on the active SolarEdge profile.
               </CardDescription>
             </div>
             <Button
               variant="outline"
               size="sm"
               onClick={() => listSitesQuery.refetch()}
-              disabled={!statusQuery.data?.connected || listSitesQuery.isFetching}
+              disabled={
+                !statusQuery.data?.connected || listSitesQuery.isFetching
+              }
             >
               {listSitesQuery.isFetching ? (
                 <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
@@ -185,7 +666,7 @@ export default function SolarEdgeMeterReads() {
               No sites returned by SolarEdge.
             </p>
           ) : (
-            <div className="overflow-x-auto">
+            <div className="overflow-x-auto max-h-72">
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -197,7 +678,12 @@ export default function SolarEdgeMeterReads() {
                   {listSitesQuery.data?.sites.map((s) => (
                     <TableRow key={s.siteId}>
                       <TableCell className="font-mono text-xs">
-                        {s.siteId}
+                        <button
+                          className="hover:underline"
+                          onClick={() => setSiteId(s.siteId)}
+                        >
+                          {s.siteId}
+                        </button>
                       </TableCell>
                       <TableCell>{s.siteName ?? "—"}</TableCell>
                     </TableRow>
@@ -211,11 +697,11 @@ export default function SolarEdgeMeterReads() {
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Snapshot</CardTitle>
+          <CardTitle className="text-base">Single-site snapshot</CardTitle>
           <CardDescription>
-            Run a single-site SolarEdge snapshot. Production gives lifetime
-            kWh; meter inventory lists production/consumption meters;
-            inverter snapshot reports the latest inverter telemetry.
+            Production gives lifetime + period kWh; meter inventory lists
+            production/consumption meters; inverter snapshot reports the
+            latest inverter telemetry.
             {!canEdit && (
               <span className="ml-1 text-amber-700">
                 You have read-only access; running a snapshot requires{" "}
@@ -265,7 +751,7 @@ export default function SolarEdgeMeterReads() {
             </div>
           </div>
           <Button
-            onClick={runSnapshot}
+            onClick={runSingleSnapshot}
             disabled={
               !canEdit ||
               !siteId.trim() ||
@@ -282,13 +768,205 @@ export default function SolarEdgeMeterReads() {
           </Button>
 
           {snapshotKind === "production" && productionMutation.data && (
-            <SnapshotResultPanel data={productionMutation.data} />
+            <ProductionResultPanel data={productionMutation.data} />
           )}
           {snapshotKind === "meter" && meterMutation.data && (
             <MeterResultPanel data={meterMutation.data} />
           )}
           {snapshotKind === "inverter" && inverterMutation.data && (
             <InverterResultPanel data={inverterMutation.data} />
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Bulk processing</CardTitle>
+          <CardDescription>
+            Upload a CSV of site IDs and pull production, meter, or inverter
+            snapshots for each. Switch the connection scope to sweep every
+            registered profile.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+            <div className="space-y-1 md:col-span-2">
+              <Label>Site IDs CSV</Label>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={bulkRunning}
+                >
+                  <Upload className="h-4 w-4 mr-2" />
+                  Upload CSV
+                </Button>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".csv,text/csv"
+                  className="hidden"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0] ?? null;
+                    handleCsvUpload(f);
+                    if (e.target) e.target.value = "";
+                  }}
+                />
+                <span className="text-xs text-muted-foreground truncate">
+                  {bulkSourceFile
+                    ? `${bulkSourceFile} — ${NUMBER_FORMATTER.format(bulkSiteIds.length)} IDs`
+                    : "Header row optional. Recognized columns: site_id, site, csg_id, id."}
+                </span>
+              </div>
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="bulk-kind">Data type</Label>
+              <Select
+                value={bulkKind}
+                onValueChange={(v) => {
+                  setBulkKind(v as SnapshotKind);
+                  setBulkRows([]);
+                  setBulkProgress({
+                    total: bulkSiteIds.length,
+                    processed: 0,
+                    found: 0,
+                    notFound: 0,
+                    errored: 0,
+                  });
+                }}
+                disabled={bulkRunning}
+              >
+                <SelectTrigger id="bulk-kind">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="production">Production</SelectItem>
+                  <SelectItem value="meter">Meter inventory</SelectItem>
+                  <SelectItem value="inverter">Inverter snapshot</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="bulk-scope">Connection scope</Label>
+              <Select
+                value={bulkScope}
+                onValueChange={(v) => setBulkScope(v as ConnectionScope)}
+                disabled={bulkRunning}
+              >
+                <SelectTrigger id="bulk-scope">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="active">Active profile only</SelectItem>
+                  <SelectItem value="all">All saved profiles</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+
+          {bulkKind !== "meter" && (
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <div className="space-y-1">
+                <Label htmlFor="bulk-anchor">Anchor date</Label>
+                <Input
+                  id="bulk-anchor"
+                  type="date"
+                  value={bulkAnchorDate}
+                  onChange={(e) => setBulkAnchorDate(e.target.value)}
+                  disabled={bulkRunning}
+                />
+              </div>
+              <div className="flex items-end gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  type="button"
+                  disabled={bulkRunning}
+                  onClick={() => setBulkAnchorDate(todayIso())}
+                >
+                  Today
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  type="button"
+                  disabled={bulkRunning}
+                  onClick={() => {
+                    const d = new Date();
+                    d.setDate(1);
+                    d.setMonth(d.getMonth());
+                    setBulkAnchorDate(d.toISOString().slice(0, 10));
+                  }}
+                >
+                  MTD start
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  type="button"
+                  disabled={bulkRunning}
+                  onClick={() => {
+                    const d = new Date();
+                    d.setMonth(d.getMonth(), 0);
+                    setBulkAnchorDate(d.toISOString().slice(0, 10));
+                  }}
+                >
+                  Last day of prev month
+                </Button>
+              </div>
+            </div>
+          )}
+
+          <div className="flex items-center gap-2 flex-wrap">
+            {!bulkRunning ? (
+              <Button
+                onClick={runBulk}
+                disabled={
+                  !canEdit ||
+                  bulkSiteIds.length === 0 ||
+                  !statusQuery.data?.connected
+                }
+              >
+                <Play className="h-4 w-4 mr-2" />
+                Run bulk ({NUMBER_FORMATTER.format(bulkSiteIds.length)})
+              </Button>
+            ) : (
+              <Button variant="destructive" onClick={cancelBulk}>
+                <XCircle className="h-4 w-4 mr-2" />
+                Cancel
+              </Button>
+            )}
+            <Button
+              variant="outline"
+              onClick={downloadResults}
+              disabled={bulkRows.length === 0}
+            >
+              <Download className="h-4 w-4 mr-2" />
+              Download results CSV
+            </Button>
+            {bulkProgress.total > 0 && (
+              <span className="text-xs text-muted-foreground">
+                {NUMBER_FORMATTER.format(bulkProgress.processed)}/
+                {NUMBER_FORMATTER.format(bulkProgress.total)} —{" "}
+                <span className="text-emerald-700">
+                  {NUMBER_FORMATTER.format(bulkProgress.found)} found
+                </span>
+                ,{" "}
+                <span>
+                  {NUMBER_FORMATTER.format(bulkProgress.notFound)} not found
+                </span>
+                ,{" "}
+                <span className="text-destructive">
+                  {NUMBER_FORMATTER.format(bulkProgress.errored)} errored
+                </span>
+              </span>
+            )}
+          </div>
+          {bulkRunning && <Progress value={progressPct} className="h-2" />}
+
+          {bulkRows.length > 0 && (
+            <BulkResultsTable kind={bulkKind} rows={bulkRows} />
           )}
         </CardContent>
       </Card>
@@ -312,7 +990,7 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
-function SnapshotResultPanel({
+function ProductionResultPanel({
   data,
 }: {
   data: { status: string; lifetimeKwh?: number | null; error?: string | null };
@@ -421,6 +1099,161 @@ function InverterResultPanel({
           <span className="font-medium">Error:</span> {data.error}
         </p>
       )}
+    </div>
+  );
+}
+
+function BulkResultsTable({
+  kind,
+  rows,
+}: {
+  kind: SnapshotKind;
+  rows: ProductionRow[] | MeterRow[] | InverterRow[];
+}) {
+  if (kind === "production") {
+    return (
+      <div className="overflow-x-auto max-h-[500px] border rounded-md">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Site ID</TableHead>
+              <TableHead>Status</TableHead>
+              <TableHead>Profile</TableHead>
+              <TableHead>Lifetime kWh</TableHead>
+              <TableHead>MTD kWh</TableHead>
+              <TableHead>Prev month kWh</TableHead>
+              <TableHead>Last 12 mo kWh</TableHead>
+              <TableHead>Error</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {(rows as ProductionRow[]).map((r) => (
+              <TableRow key={`${r.siteId}-${r.matchedConnectionId ?? "x"}`}>
+                <TableCell className="font-mono text-xs">{r.siteId}</TableCell>
+                <TableCell>
+                  <StatusBadge status={r.status} />
+                </TableCell>
+                <TableCell className="text-xs">
+                  {r.matchedConnectionName ?? r.matchedConnectionId ?? "—"}
+                </TableCell>
+                <TableCell>
+                  {r.lifetimeKwh !== null
+                    ? r.lifetimeKwh.toLocaleString()
+                    : "—"}
+                </TableCell>
+                <TableCell>
+                  {r.mtdProductionKwh !== null
+                    ? r.mtdProductionKwh.toLocaleString()
+                    : "—"}
+                </TableCell>
+                <TableCell>
+                  {r.previousCalendarMonthProductionKwh !== null
+                    ? r.previousCalendarMonthProductionKwh.toLocaleString()
+                    : "—"}
+                </TableCell>
+                <TableCell>
+                  {r.last12MonthsProductionKwh !== null
+                    ? r.last12MonthsProductionKwh.toLocaleString()
+                    : "—"}
+                </TableCell>
+                <TableCell className="text-xs text-destructive">
+                  {r.error ?? ""}
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </div>
+    );
+  }
+  if (kind === "meter") {
+    return (
+      <div className="overflow-x-auto max-h-[500px] border rounded-md">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Site ID</TableHead>
+              <TableHead>Status</TableHead>
+              <TableHead>Profile</TableHead>
+              <TableHead>Meters</TableHead>
+              <TableHead>Production</TableHead>
+              <TableHead>Consumption</TableHead>
+              <TableHead>Types</TableHead>
+              <TableHead>Error</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {(rows as MeterRow[]).map((r) => (
+              <TableRow key={`${r.siteId}-${r.matchedConnectionId ?? "x"}`}>
+                <TableCell className="font-mono text-xs">{r.siteId}</TableCell>
+                <TableCell>
+                  <StatusBadge status={r.status} />
+                </TableCell>
+                <TableCell className="text-xs">
+                  {r.matchedConnectionName ?? r.matchedConnectionId ?? "—"}
+                </TableCell>
+                <TableCell>{r.meterCount ?? "—"}</TableCell>
+                <TableCell>{r.productionMeterCount ?? "—"}</TableCell>
+                <TableCell>{r.consumptionMeterCount ?? "—"}</TableCell>
+                <TableCell className="text-xs">
+                  {r.meterTypes.join(", ")}
+                </TableCell>
+                <TableCell className="text-xs text-destructive">
+                  {r.error ?? ""}
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </div>
+    );
+  }
+  return (
+    <div className="overflow-x-auto max-h-[500px] border rounded-md">
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead>Site ID</TableHead>
+            <TableHead>Status</TableHead>
+            <TableHead>Profile</TableHead>
+            <TableHead>Inverters</TableHead>
+            <TableHead>Telemetry</TableHead>
+            <TableHead>Failures</TableHead>
+            <TableHead>Latest power kW</TableHead>
+            <TableHead>Latest energy kWh</TableHead>
+            <TableHead>Error</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {(rows as InverterRow[]).map((r) => (
+            <TableRow key={`${r.siteId}-${r.matchedConnectionId ?? "x"}`}>
+              <TableCell className="font-mono text-xs">{r.siteId}</TableCell>
+              <TableCell>
+                <StatusBadge status={r.status} />
+              </TableCell>
+              <TableCell className="text-xs">
+                {r.matchedConnectionName ?? r.matchedConnectionId ?? "—"}
+              </TableCell>
+              <TableCell>{r.inverterCount ?? "—"}</TableCell>
+              <TableCell>{r.invertersWithTelemetry ?? "—"}</TableCell>
+              <TableCell>{r.inverterFailures ?? "—"}</TableCell>
+              <TableCell>
+                {r.inverterLatestPowerKw !== null
+                  ? r.inverterLatestPowerKw.toLocaleString()
+                  : "—"}
+              </TableCell>
+              <TableCell>
+                {r.inverterLatestEnergyKwh !== null
+                  ? r.inverterLatestEnergyKwh.toLocaleString()
+                  : "—"}
+              </TableCell>
+              <TableCell className="text-xs text-destructive">
+                {r.error ?? ""}
+              </TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
     </div>
   );
 }

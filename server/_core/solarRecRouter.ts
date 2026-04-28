@@ -400,6 +400,14 @@ function normalizeCredentialConnectInput(input: {
     delete metadata.accessToken;
   }
 
+  if (provider === "solaredge") {
+    accessToken =
+      accessToken ?? toNonEmptyString(metadata.apiKey) ?? undefined;
+    if (accessToken && !toNonEmptyString(metadata.apiKey)) {
+      metadata.apiKey = accessToken;
+    }
+  }
+
   return {
     accessToken,
     refreshToken,
@@ -4025,29 +4033,58 @@ function parseSolarEdgeTeamMetadata(
   }
 }
 
-async function resolveSolarEdgeTeamContext(
-  scopeId: string
-): Promise<SolarEdgeTeamContext> {
-  void scopeId;
+type SolarEdgeCredentialRow = {
+  id: string;
+  connectionName: string | null;
+  context: SolarEdgeTeamContext;
+};
+
+async function loadSolarEdgeCredentialRows(): Promise<SolarEdgeCredentialRow[]> {
   const { getSolarRecTeamCredentialsByProvider } = await import("../db");
   const credentials =
     await getSolarRecTeamCredentialsByProvider("solaredge");
+  const out: SolarEdgeCredentialRow[] = [];
   for (const cred of credentials) {
     const parsed = parseSolarEdgeTeamMetadata(cred.metadata);
     if (parsed) {
-      return { ...parsed, credentialId: cred.id };
+      out.push({
+        id: cred.id,
+        connectionName: cred.connectionName ?? null,
+        context: { ...parsed, credentialId: cred.id },
+      });
+      continue;
     }
-    // Fall back to top-level accessToken column for admins who pasted
-    // the API key via the generic accessToken field.
     const fallbackKey = cred.accessToken?.trim();
     if (fallbackKey) {
-      return {
-        apiKey: fallbackKey,
-        baseUrl: null,
-        credentialId: cred.id,
-      };
+      out.push({
+        id: cred.id,
+        connectionName: cred.connectionName ?? null,
+        context: {
+          apiKey: fallbackKey,
+          baseUrl: null,
+          credentialId: cred.id,
+        },
+      });
     }
   }
+  return out;
+}
+
+async function resolveSolarEdgeTeamContext(
+  scopeId: string,
+  connectionId?: string | null
+): Promise<SolarEdgeTeamContext> {
+  void scopeId;
+  const rows = await loadSolarEdgeCredentialRows();
+  if (connectionId) {
+    const match = rows.find((row) => row.id === connectionId);
+    if (match) return match.context;
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: "Selected SolarEdge connection not found.",
+    });
+  }
+  if (rows.length > 0) return rows[0].context;
   throw new TRPCError({
     code: "PRECONDITION_FAILED",
     message:
@@ -4055,30 +4092,185 @@ async function resolveSolarEdgeTeamContext(
   });
 }
 
+type SolarEdgeBulkProductionRow = {
+  siteId: string;
+  status: "Found" | "Not Found" | "Error";
+  matchedConnectionId: string | null;
+  matchedConnectionName: string | null;
+  checkedConnections: number;
+  foundInConnections: number;
+  siteName: string | null;
+  lifetimeKwh: number | null;
+  hourlyProductionKwh: number | null;
+  monthlyProductionKwh: number | null;
+  mtdProductionKwh: number | null;
+  previousCalendarMonthProductionKwh: number | null;
+  last12MonthsProductionKwh: number | null;
+  weeklyProductionKwh: number | null;
+  dailyProductionKwh: number | null;
+  anchorDate: string | null;
+  error: string | null;
+};
+
+type SolarEdgeBulkMeterRow = {
+  siteId: string;
+  status: "Found" | "Not Found" | "Error";
+  matchedConnectionId: string | null;
+  matchedConnectionName: string | null;
+  checkedConnections: number;
+  foundInConnections: number;
+  meterCount: number | null;
+  productionMeterCount: number | null;
+  consumptionMeterCount: number | null;
+  meterTypes: string[];
+  error: string | null;
+};
+
+type SolarEdgeBulkInverterRow = {
+  siteId: string;
+  status: "Found" | "Not Found" | "Error";
+  matchedConnectionId: string | null;
+  matchedConnectionName: string | null;
+  checkedConnections: number;
+  foundInConnections: number;
+  inverterCount: number | null;
+  invertersWithTelemetry: number | null;
+  inverterFailures: number | null;
+  inverterLatestPowerKw: number | null;
+  inverterLatestEnergyKwh: number | null;
+  firstTelemetryAt: string | null;
+  lastTelemetryAt: string | null;
+  error: string | null;
+};
+
+function selectSolarEdgeContexts(
+  rows: SolarEdgeCredentialRow[],
+  scope: "active" | "all",
+  connectionId?: string | null
+): SolarEdgeCredentialRow[] {
+  if (scope === "all") return rows;
+  if (connectionId) {
+    const match = rows.find((row) => row.id === connectionId);
+    if (match) return [match];
+  }
+  return rows.length > 0 ? [rows[0]] : [];
+}
+
+async function runSolarEdgeBulk<T extends { status: "Found" | "Not Found" | "Error"; error: string | null }>(
+  rows: SolarEdgeCredentialRow[],
+  siteIds: string[],
+  scope: "active" | "all",
+  connectionId: string | null | undefined,
+  fetchOne: (
+    row: SolarEdgeCredentialRow,
+    siteId: string
+  ) => Promise<T>,
+  toBulk: (
+    siteId: string,
+    matched: SolarEdgeCredentialRow | null,
+    payload: T | null,
+    err: string | null,
+    checkedConnections: number,
+    foundInConnections: number
+  ) => unknown
+): Promise<{
+  total: number;
+  found: number;
+  notFound: number;
+  errored: number;
+  rows: unknown[];
+}> {
+  const candidates = selectSolarEdgeContexts(rows, scope, connectionId);
+  if (candidates.length === 0) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: "No SolarEdge team credential available.",
+    });
+  }
+  const { mapWithConcurrency } = await import("../services/core/concurrency");
+  const out: unknown[] = [];
+  let found = 0;
+  let notFound = 0;
+  let errored = 0;
+  const results = await mapWithConcurrency(
+    siteIds,
+    4,
+    async (siteId: string) => {
+      let matched: SolarEdgeCredentialRow | null = null;
+      let lastError: string | null = null;
+      let lastPayload: T | null = null;
+      let foundIn = 0;
+      let checked = 0;
+      for (const row of candidates) {
+        checked += 1;
+        try {
+          const payload = await fetchOne(row, siteId);
+          lastPayload = payload;
+          if (payload.status === "Found") {
+            matched = row;
+            foundIn += 1;
+            if (scope === "active") break;
+          } else if (payload.status === "Error") {
+            lastError = payload.error;
+          }
+        } catch (err) {
+          lastError = err instanceof Error ? err.message : String(err);
+        }
+      }
+      const finalStatus: "Found" | "Not Found" | "Error" =
+        matched !== null
+          ? "Found"
+          : lastError
+            ? "Error"
+            : "Not Found";
+      return toBulk(siteId, matched, lastPayload, lastError, checked, foundIn);
+    }
+  );
+  for (const row of results) {
+    out.push(row);
+    const status = (row as { status: string }).status;
+    if (status === "Found") found += 1;
+    else if (status === "Not Found") notFound += 1;
+    else errored += 1;
+  }
+  return { total: siteIds.length, found, notFound, errored, rows: out };
+}
+
+const SOLAREDGE_BULK_MAX = 200;
+const solaredgeBulkInputBase = z.object({
+  siteIds: z.array(z.string().min(1)).min(1).max(SOLAREDGE_BULK_MAX),
+  connectionId: z.string().optional(),
+  connectionScope: z.enum(["active", "all"]).optional(),
+});
+
 const solaredgeRouter = t.router({
   getStatus: requirePermission("meter-reads", "read").query(async () => {
+    const rows = await loadSolarEdgeCredentialRows();
     const { getSolarRecTeamCredentialsByProvider } = await import("../db");
     const credentials =
       await getSolarRecTeamCredentialsByProvider("solaredge");
-    const active = credentials.find(
-      (cred) =>
-        parseSolarEdgeTeamMetadata(cred.metadata) !== null ||
-        (cred.accessToken?.trim().length ?? 0) > 0
-    );
     return {
-      connected: !!active,
+      connected: rows.length > 0,
       connectionCount: credentials.length,
-      activeConnectionId: active?.id ?? null,
+      activeConnectionId: rows[0]?.id ?? null,
+      connections: rows.map((row) => ({
+        id: row.id,
+        name: row.connectionName,
+        baseUrl: row.context.baseUrl,
+      })),
     };
   }),
 
-  listSites: requirePermission("meter-reads", "read").query(
-    async ({ ctx }) => {
+  listSites: requirePermission("meter-reads", "read")
+    .input(z.object({ connectionId: z.string().optional() }).optional())
+    .query(async ({ ctx, input }) => {
       const { listSites } = await import("../services/solar/solarEdge");
-      const context = await resolveSolarEdgeTeamContext(ctx.scopeId);
+      const context = await resolveSolarEdgeTeamContext(
+        ctx.scopeId,
+        input?.connectionId
+      );
       return listSites({ apiKey: context.apiKey, baseUrl: context.baseUrl });
-    }
-  ),
+    }),
 
   getProductionSnapshot: requirePermission("meter-reads", "edit")
     .input(
@@ -4088,13 +4280,17 @@ const solaredgeRouter = t.router({
           .string()
           .regex(/^\d{4}-\d{2}-\d{2}$/)
           .optional(),
+        connectionId: z.string().optional(),
       })
     )
     .mutation(async ({ ctx, input }) => {
       const { getSiteProductionSnapshot } = await import(
         "../services/solar/solarEdge"
       );
-      const context = await resolveSolarEdgeTeamContext(ctx.scopeId);
+      const context = await resolveSolarEdgeTeamContext(
+        ctx.scopeId,
+        input.connectionId
+      );
       return getSiteProductionSnapshot(
         { apiKey: context.apiKey, baseUrl: context.baseUrl },
         input.siteId.trim(),
@@ -4103,12 +4299,20 @@ const solaredgeRouter = t.router({
     }),
 
   getMeterSnapshot: requirePermission("meter-reads", "edit")
-    .input(z.object({ siteId: z.string().min(1) }))
+    .input(
+      z.object({
+        siteId: z.string().min(1),
+        connectionId: z.string().optional(),
+      })
+    )
     .mutation(async ({ ctx, input }) => {
       const { getSiteMeterSnapshot } = await import(
         "../services/solar/solarEdge"
       );
-      const context = await resolveSolarEdgeTeamContext(ctx.scopeId);
+      const context = await resolveSolarEdgeTeamContext(
+        ctx.scopeId,
+        input.connectionId
+      );
       return getSiteMeterSnapshot(
         { apiKey: context.apiKey, baseUrl: context.baseUrl },
         input.siteId.trim()
@@ -4123,17 +4327,164 @@ const solaredgeRouter = t.router({
           .string()
           .regex(/^\d{4}-\d{2}-\d{2}$/)
           .optional(),
+        connectionId: z.string().optional(),
       })
     )
     .mutation(async ({ ctx, input }) => {
       const { getSiteInverterSnapshot } = await import(
         "../services/solar/solarEdge"
       );
-      const context = await resolveSolarEdgeTeamContext(ctx.scopeId);
+      const context = await resolveSolarEdgeTeamContext(
+        ctx.scopeId,
+        input.connectionId
+      );
       return getSiteInverterSnapshot(
         { apiKey: context.apiKey, baseUrl: context.baseUrl },
         input.siteId.trim(),
         input.anchorDate
+      );
+    }),
+
+  getProductionSnapshots: requirePermission("meter-reads", "edit")
+    .input(
+      solaredgeBulkInputBase.extend({
+        anchorDate: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/)
+          .optional(),
+      })
+    )
+    .mutation(async ({ input }) => {
+      const { getSiteProductionSnapshot } = await import(
+        "../services/solar/solarEdge"
+      );
+      const rows = await loadSolarEdgeCredentialRows();
+      const scope = input.connectionScope ?? "active";
+      return runSolarEdgeBulk(
+        rows,
+        input.siteIds.map((s) => s.trim()).filter(Boolean),
+        scope,
+        input.connectionId,
+        async (row, siteId) =>
+          getSiteProductionSnapshot(
+            { apiKey: row.context.apiKey, baseUrl: row.context.baseUrl },
+            siteId,
+            input.anchorDate
+          ),
+        (siteId, matched, payload, err, checkedConnections, foundInConnections): SolarEdgeBulkProductionRow => ({
+          siteId,
+          status:
+            matched !== null
+              ? "Found"
+              : err
+                ? "Error"
+                : "Not Found",
+          matchedConnectionId: matched?.id ?? null,
+          matchedConnectionName: matched?.connectionName ?? null,
+          checkedConnections,
+          foundInConnections,
+          siteName: payload?.name ?? null,
+          lifetimeKwh: payload?.lifetimeKwh ?? null,
+          hourlyProductionKwh: payload?.hourlyProductionKwh ?? null,
+          monthlyProductionKwh: payload?.monthlyProductionKwh ?? null,
+          mtdProductionKwh: payload?.mtdProductionKwh ?? null,
+          previousCalendarMonthProductionKwh:
+            payload?.previousCalendarMonthProductionKwh ?? null,
+          last12MonthsProductionKwh: payload?.last12MonthsProductionKwh ?? null,
+          weeklyProductionKwh: payload?.weeklyProductionKwh ?? null,
+          dailyProductionKwh: payload?.dailyProductionKwh ?? null,
+          anchorDate: payload?.anchorDate ?? input.anchorDate ?? null,
+          error: err,
+        })
+      );
+    }),
+
+  getMeterSnapshots: requirePermission("meter-reads", "edit")
+    .input(solaredgeBulkInputBase)
+    .mutation(async ({ input }) => {
+      const { getSiteMeterSnapshot } = await import(
+        "../services/solar/solarEdge"
+      );
+      const rows = await loadSolarEdgeCredentialRows();
+      const scope = input.connectionScope ?? "active";
+      return runSolarEdgeBulk(
+        rows,
+        input.siteIds.map((s) => s.trim()).filter(Boolean),
+        scope,
+        input.connectionId,
+        async (row, siteId) =>
+          getSiteMeterSnapshot(
+            { apiKey: row.context.apiKey, baseUrl: row.context.baseUrl },
+            siteId
+          ),
+        (siteId, matched, payload, err, checkedConnections, foundInConnections): SolarEdgeBulkMeterRow => ({
+          siteId,
+          status:
+            matched !== null
+              ? "Found"
+              : err
+                ? "Error"
+                : "Not Found",
+          matchedConnectionId: matched?.id ?? null,
+          matchedConnectionName: matched?.connectionName ?? null,
+          checkedConnections,
+          foundInConnections,
+          meterCount: payload?.meterCount ?? null,
+          productionMeterCount: payload?.productionMeters ?? null,
+          consumptionMeterCount: payload?.consumptionMeters ?? null,
+          meterTypes: payload?.meterTypes ?? [],
+          error: err,
+        })
+      );
+    }),
+
+  getInverterSnapshots: requirePermission("meter-reads", "edit")
+    .input(
+      solaredgeBulkInputBase.extend({
+        anchorDate: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/)
+          .optional(),
+      })
+    )
+    .mutation(async ({ input }) => {
+      const { getSiteInverterSnapshot } = await import(
+        "../services/solar/solarEdge"
+      );
+      const rows = await loadSolarEdgeCredentialRows();
+      const scope = input.connectionScope ?? "active";
+      return runSolarEdgeBulk(
+        rows,
+        input.siteIds.map((s) => s.trim()).filter(Boolean),
+        scope,
+        input.connectionId,
+        async (row, siteId) =>
+          getSiteInverterSnapshot(
+            { apiKey: row.context.apiKey, baseUrl: row.context.baseUrl },
+            siteId,
+            input.anchorDate
+          ),
+        (siteId, matched, payload, err, checkedConnections, foundInConnections): SolarEdgeBulkInverterRow => ({
+          siteId,
+          status:
+            matched !== null
+              ? "Found"
+              : err
+                ? "Error"
+                : "Not Found",
+          matchedConnectionId: matched?.id ?? null,
+          matchedConnectionName: matched?.connectionName ?? null,
+          checkedConnections,
+          foundInConnections,
+          inverterCount: payload?.inverterCount ?? null,
+          invertersWithTelemetry: payload?.invertersWithTelemetry ?? null,
+          inverterFailures: payload?.inverterFailures ?? null,
+          inverterLatestPowerKw: payload?.inverterLatestPowerKw ?? null,
+          inverterLatestEnergyKwh: payload?.inverterLatestEnergyKwh ?? null,
+          firstTelemetryAt: payload?.firstTelemetryAt ?? null,
+          lastTelemetryAt: payload?.lastTelemetryAt ?? null,
+          error: err,
+        })
       );
     }),
 });
