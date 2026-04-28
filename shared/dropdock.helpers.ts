@@ -242,6 +242,61 @@ export function stripMarkdownLinks(text: string): string {
 }
 
 /**
+ * Phase E (2026-04-28) — Cmd+C / Ctrl+C handler for the focused
+ * dock chip.
+ *
+ * Default browser behavior on a focused `<a>` is "copy the
+ * selection," and a chip's selection at rest is empty — so Cmd+C
+ * silently does nothing. The intuitive expectation (per the Phase
+ * E backlog: "Cmd+C copies dock chip URL") is that pressing the
+ * shortcut while a chip is focused puts the chip's URL on the
+ * clipboard, ready to paste somewhere.
+ *
+ * This helper computes whether the keydown qualifies as a
+ * "URL copy intent." Returns `true` when:
+ *   - The key is `c` (case-insensitive — `C` while shift is held
+ *     would be the Capital-C shortcut, which we still honor)
+ *   - Exactly one of `metaKey` / `ctrlKey` is held (covers macOS
+ *     Cmd+C and Windows / Linux Ctrl+C)
+ *   - No `altKey` (Option+C is a unicode-input combo)
+ *   - The user does NOT have non-empty text selected within the
+ *     chip — that's the "I want to copy a label fragment" intent
+ *     and we shouldn't hijack it
+ *
+ * `getSelection` defaults to `window.getSelection` but is
+ * injectable for tests (jsdom-free unit tests use a stub).
+ *
+ * Pure — exposed for testability.
+ */
+export interface DockChipCopyEvent {
+  key: string;
+  metaKey: boolean;
+  ctrlKey: boolean;
+  altKey: boolean;
+  shiftKey?: boolean;
+}
+
+export function shouldCopyDockChipUrl(
+  event: DockChipCopyEvent,
+  getSelection: () => string | null = () =>
+    typeof window !== "undefined" && typeof window.getSelection === "function"
+      ? (window.getSelection()?.toString() ?? "")
+      : ""
+): boolean {
+  if (event.altKey) return false;
+  if (event.key !== "c" && event.key !== "C") return false;
+  // XOR: exactly one of meta/ctrl, not both, not neither.
+  const modifierExclusive =
+    Boolean(event.metaKey) !== Boolean(event.ctrlKey);
+  if (!modifierExclusive) return false;
+  // Don't hijack when the user has actively selected text — they
+  // want the default "copy selection" behavior.
+  const selected = getSelection();
+  if (selected && selected.trim().length > 0) return false;
+  return true;
+}
+
+/**
  * Given a clipboard-paste or drag-drop payload, extract the most
  * URL-looking string. Drops handlers receive a DataTransfer that may
  * contain `text/uri-list`, `text/plain`, or `application/json` — try

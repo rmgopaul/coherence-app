@@ -5,6 +5,7 @@ import {
   extractMarkdownLink,
   extractUrlFromPaste,
   hasSensitiveParams,
+  shouldCopyDockChipUrl,
   stripMarkdownLinks,
 } from "./dropdock.helpers";
 
@@ -268,6 +269,107 @@ describe("stripMarkdownLinks (Phase E)", () => {
     expect(stripMarkdownLinks(null)).toBe("");
     // @ts-expect-error — purposely-wrong input
     expect(stripMarkdownLinks(undefined)).toBe("");
+  });
+});
+
+describe("shouldCopyDockChipUrl (Phase E)", () => {
+  const noSelection = () => "";
+  const withSelection = (text: string) => () => text;
+
+  it("returns true for Cmd+C with no selection (macOS)", () => {
+    expect(
+      shouldCopyDockChipUrl(
+        { key: "c", metaKey: true, ctrlKey: false, altKey: false },
+        noSelection
+      )
+    ).toBe(true);
+  });
+
+  it("returns true for Ctrl+C with no selection (Windows / Linux)", () => {
+    expect(
+      shouldCopyDockChipUrl(
+        { key: "c", metaKey: false, ctrlKey: true, altKey: false },
+        noSelection
+      )
+    ).toBe(true);
+  });
+
+  it("accepts uppercase C (shift held)", () => {
+    expect(
+      shouldCopyDockChipUrl(
+        { key: "C", metaKey: true, ctrlKey: false, altKey: false, shiftKey: true },
+        noSelection
+      )
+    ).toBe(true);
+  });
+
+  it("returns false when alt is held (Option+C is unicode input)", () => {
+    expect(
+      shouldCopyDockChipUrl(
+        { key: "c", metaKey: true, ctrlKey: false, altKey: true },
+        noSelection
+      )
+    ).toBe(false);
+  });
+
+  it("returns false when both meta and ctrl are held (ambiguous)", () => {
+    expect(
+      shouldCopyDockChipUrl(
+        { key: "c", metaKey: true, ctrlKey: true, altKey: false },
+        noSelection
+      )
+    ).toBe(false);
+  });
+
+  it("returns false when no modifier is held (plain `c`)", () => {
+    expect(
+      shouldCopyDockChipUrl(
+        { key: "c", metaKey: false, ctrlKey: false, altKey: false },
+        noSelection
+      )
+    ).toBe(false);
+  });
+
+  it("returns false for non-c keys", () => {
+    expect(
+      shouldCopyDockChipUrl(
+        { key: "v", metaKey: true, ctrlKey: false, altKey: false },
+        noSelection
+      )
+    ).toBe(false);
+    expect(
+      shouldCopyDockChipUrl(
+        { key: "Enter", metaKey: true, ctrlKey: false, altKey: false },
+        noSelection
+      )
+    ).toBe(false);
+  });
+
+  it("returns false when the user has actively selected text (default copy wins)", () => {
+    expect(
+      shouldCopyDockChipUrl(
+        { key: "c", metaKey: true, ctrlKey: false, altKey: false },
+        withSelection("some highlighted text")
+      )
+    ).toBe(false);
+  });
+
+  it("treats whitespace-only selection as 'no selection'", () => {
+    expect(
+      shouldCopyDockChipUrl(
+        { key: "c", metaKey: true, ctrlKey: false, altKey: false },
+        withSelection("   \n  ")
+      )
+    ).toBe(true);
+  });
+
+  it("treats null selection as 'no selection'", () => {
+    expect(
+      shouldCopyDockChipUrl(
+        { key: "c", metaKey: true, ctrlKey: false, altKey: false },
+        () => null
+      )
+    ).toBe(true);
   });
 });
 
