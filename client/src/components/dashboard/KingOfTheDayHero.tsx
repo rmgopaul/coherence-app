@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { CalendarEvent, TodoistTask } from "@/features/dashboard/types";
 import type { DailyBrief } from "@/lib/dailyBrief";
+import { resolveKingHeadlineHref } from "@/lib/kingHeadlineLink";
 import "./king-of-the-day.css";
 
 /* ------------------------------------------------------------------ */
@@ -250,6 +251,17 @@ export function KingOfTheDayHero({
   }, [kingOfDay, dailyBrief, todayTasks]);
   const isPinned = kingOfDay?.source === "manual";
   const source = kingOfDay?.source ?? null;
+
+  // Task 10.4 (2026-04-28): when the king resolves to a Todoist task
+  // or a Calendar event in the dashboard's lookahead window, the
+  // headline becomes a deep link. Pure helper keeps the resolution
+  // logic out of the React render path; falls back to plain text
+  // when no URL is available so the hero never renders a broken
+  // link.
+  const headlineHref = useMemo(
+    () => resolveKingHeadlineHref(kingOfDay, calendarEvents),
+    [kingOfDay, calendarEvents]
+  );
   // Regenerate only makes sense for picks the selector produced
   // (auto = rules, ai = LLM). A manual pin already has the × on the
   // PINNED badge for the same "clear it" effect.
@@ -425,7 +437,25 @@ export function KingOfTheDayHero({
             userSelect: "none",
           }}
         >
-          <span className="kotd-highlight text-black">{headline}</span>
+          {headlineHref ? (
+            <a
+              href={headlineHref}
+              target="_blank"
+              rel="noopener noreferrer"
+              // Task 10.4: deep link to the source (Todoist task /
+              // Calendar event). Stop click-bubbling so the
+              // surrounding h1's right-click-to-pin and long-press-
+              // to-pin gestures are preserved — a tap opens the
+              // source, but right-click + long-press still pin a
+              // different headline.
+              onClick={(e) => e.stopPropagation()}
+              className="kotd-highlight text-black no-underline hover:underline"
+            >
+              {headline}
+            </a>
+          ) : (
+            <span className="kotd-highlight text-black">{headline}</span>
+          )}
         </h1>
         {secondOutcomeTitle && (
           <p className="kotd-display mt-4 text-[clamp(1.25rem,2.2vw,2rem)] text-white/45">
