@@ -57,6 +57,8 @@ import {
 import { kingOfDayRouter } from "./routers/kingOfDay";
 import { weatherRouter } from "./routers/weather";
 import { newsRouter } from "./routers/news";
+// Phase E (2026-04-28): AI Weekly Review.
+import { weeklyReviewRouter } from "./routers/weeklyReview";
 
 // ---------------------------------------------------------------------------
 // App Router — thin composition of all sub-routers
@@ -111,6 +113,7 @@ export const appRouter = router({
   kingOfDay: kingOfDayRouter,
   weather: weatherRouter,
   news: newsRouter,
+  weeklyReview: weeklyReviewRouter,
 });
 
 export type AppRouter = typeof appRouter;

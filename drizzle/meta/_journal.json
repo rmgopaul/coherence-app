@@ -330,6 +330,13 @@
       "when": 1777337728347,
       "tag": "0050_add_id_worksets",
       "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "5",
+      "when": 1777351144054,
+      "tag": "0051_add_weekly_reviews",
+      "breakpoints": true
     }
   ]
 }

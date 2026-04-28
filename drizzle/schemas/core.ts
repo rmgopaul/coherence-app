@@ -602,3 +602,65 @@ export const gmailWaitingOnCache = mysqlTable(
 export type GmailWaitingOnCache = typeof gmailWaitingOnCache.$inferSelect;
 export type InsertGmailWaitingOnCache =
   typeof gmailWaitingOnCache.$inferInsert;
+
+// ---------------------------------------------------------------------------
+// Phase E (2026-04-28) — AI Weekly Review.
+//
+// One row per (user, ISO week). Generated weekly by the nightly
+// scheduler (Monday early morning) by feeding the prior 7 daily
+// snapshots to an LLM and parsing a structured response. Surfaced
+// on the dashboard as a "review of last week" card with the
+// headline + content markdown.
+//
+// `weekKey` uses ISO week format ("2026-W17") so the unique index
+// gives natural sortability + matches the existing dateKey
+// conventions in `shared/dateKey.ts`. `weekStartDateKey` /
+// `weekEndDateKey` are the Monday/Sunday of that week, useful for
+// joining back to dailySnapshots without re-parsing the weekKey.
+//
+// `status` enum:
+//   - `pending`       — row created but no LLM call yet
+//   - `ready`         — review generated successfully
+//   - `insufficient`  — fewer than 3 days of snapshots in the
+//                        window; nothing meaningful to summarize
+//   - `failed`        — LLM call or parse error; `errorMessage` set
+// ---------------------------------------------------------------------------
+
+export const weeklyReviews = mysqlTable(
+  "weeklyReviews",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    userId: int("userId").notNull(),
+    weekKey: varchar("weekKey", { length: 10 }).notNull(),
+    weekStartDateKey: varchar("weekStartDateKey", { length: 10 }).notNull(),
+    weekEndDateKey: varchar("weekEndDateKey", { length: 10 }).notNull(),
+    status: varchar("status", { length: 16 }).default("pending").notNull(),
+    headline: varchar("headline", { length: 280 }),
+    contentMarkdown: mediumtext("contentMarkdown"),
+    /** Stringified JSON snapshot of derived metrics — e.g. sleep avg,
+     *  recovery avg, supplements adherence, todoist completed count.
+     *  Stored so the UI can render trend chips without re-parsing the
+     *  raw daily snapshots. */
+    metricsJson: text("metricsJson"),
+    model: varchar("model", { length: 64 }),
+    daysWithData: int("daysWithData").default(0).notNull(),
+    generatedAt: timestamp("generatedAt"),
+    errorMessage: text("errorMessage"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    userWeekIdx: uniqueIndex("weekly_reviews_user_week_idx").on(
+      table.userId,
+      table.weekKey
+    ),
+    userGeneratedIdx: index("weekly_reviews_user_generated_idx").on(
+      table.userId,
+      table.generatedAt
+    ),
+    statusIdx: index("weekly_reviews_status_idx").on(table.status),
+  })
+);
+
+export type WeeklyReview = typeof weeklyReviews.$inferSelect;
+export type InsertWeeklyReview = typeof weeklyReviews.$inferInsert;
