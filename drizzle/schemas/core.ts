@@ -63,6 +63,59 @@ export const dailyHealthMetrics = mysqlTable(
 export type DailyHealthMetric = typeof dailyHealthMetrics.$inferSelect;
 export type InsertDailyHealthMetric = typeof dailyHealthMetrics.$inferInsert;
 
+/**
+ * Pre-computed correlation results for `(supplement × metric × window)`.
+ *
+ * Task 6.1 (2026-04-27) — populated by the nightly snapshot after the
+ * per-user `dailyHealthMetrics` upsert. Each row is one slice of
+ * supplement signal: how much an active-and-locked supplement
+ * appears to move a chosen metric (recoveryScore, sleepHours,
+ * dayStrain, hrvMs) across a chosen window (30 or 90 days).
+ *
+ * Stores Cohen's d (effect size) and Pearson r (logged 0/1 vs
+ * value) — same statistics as the on-demand correlation tRPC
+ * procedure. The dashboard surfaces the top |cohensD| rows with
+ * `insufficientData = false` (≥ MIN_GROUP_SIZE samples in BOTH
+ * groups). `lagDays` defaults to 0; lagged variants are explored
+ * via the existing on-demand procedure.
+ *
+ * Unique on (userId, supplementId, metric, windowDays, lagDays) so
+ * the nightly job idempotently overwrites the previous result.
+ */
+export const supplementCorrelations = mysqlTable(
+  "supplementCorrelations",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    userId: int("userId").notNull(),
+    supplementId: varchar("supplementId", { length: 64 }).notNull(),
+    metric: varchar("metric", { length: 32 }).notNull(),
+    windowDays: int("windowDays").notNull(),
+    lagDays: int("lagDays").default(0).notNull(),
+    computedAt: timestamp("computedAt").defaultNow().notNull(),
+    cohensD: double("cohensD"),
+    pearsonR: double("pearsonR"),
+    onN: int("onN").notNull(),
+    offN: int("offN").notNull(),
+    onMean: double("onMean"),
+    offMean: double("offMean"),
+    insufficientData: boolean("insufficientData").default(true).notNull(),
+  },
+  (table) => ({
+    userIdx: index("supplement_correlations_user_idx").on(table.userId),
+    uniqueSliceIdx: uniqueIndex("supplement_correlations_unique_slice_idx").on(
+      table.userId,
+      table.supplementId,
+      table.metric,
+      table.windowDays,
+      table.lagDays
+    ),
+  })
+);
+
+export type SupplementCorrelation = typeof supplementCorrelations.$inferSelect;
+export type InsertSupplementCorrelation =
+  typeof supplementCorrelations.$inferInsert;
+
 // Ad-hoc supplement logs entered from dashboard.
 
 export const supplementLogs = mysqlTable(

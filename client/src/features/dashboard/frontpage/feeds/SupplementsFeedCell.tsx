@@ -1,14 +1,27 @@
 /**
- * SupplementsFeedCell — compact wire-feed for today's supplement logging.
+ * SupplementsFeedCell — compact wire-feed for the supplements module.
  *
- * Shows `logged/scheduled` count and a sparse tick row of the most
- * recent logs. Editing stays on /dashboard-legacy.
+ * After Task 6.1 (2026-04-27) the primary content is the top
+ * correlation signals (supplement → metric effect sizes) computed
+ * nightly into `supplementCorrelations`. Until those land — fresh
+ * install, brand-new supplement, or insufficient-data ladders —
+ * the cell falls back to the previous adherence display
+ * (`logged/scheduled` + recent logs) so the cell still has
+ * something to say.
  */
 import { useMemo } from "react";
 import { trpc } from "@/lib/trpc";
 import { formatTodayKey } from "@shared/dateKey";
 
 const FIVE_MIN = 5 * 60_000;
+
+/** Map raw metric keys to short labels; metric is one of 4 strings. */
+const METRIC_LABEL: Record<string, string> = {
+  recoveryScore: "Recovery",
+  sleepHours: "Sleep",
+  dayStrain: "Strain",
+  hrvMs: "HRV",
+};
 
 /**
  * Some supplement logs store the dose as "3G" (value + unit baked in)
@@ -26,6 +39,14 @@ function formatDose(dose?: string | null, doseUnit?: string | null): string {
   return `${d} ${u}`;
 }
 
+/** Cohen's d → human label. ±0.2 small, ±0.5 medium, ±0.8 large. */
+function effectLabel(d: number | null): string {
+  if (d === null || !Number.isFinite(d)) return "—";
+  const sign = d >= 0 ? "+" : "−";
+  const mag = Math.abs(d);
+  return `${sign}${mag.toFixed(2)}d`;
+}
+
 interface Props {
   updatedLabel: string;
 }
@@ -41,9 +62,17 @@ export function SupplementsFeedCell({ updatedLabel }: Props) {
     { dateKey: todayKey },
     { refetchInterval: FIVE_MIN }
   );
+  // Task 6.1: top signals from the nightly correlation pre-compute.
+  // Refetch interval is generous because the pre-compute only changes
+  // once per night.
+  const { data: topSignals } = trpc.supplements.getTopSignals.useQuery(
+    { limit: 4 },
+    { refetchInterval: 30 * 60_000 }
+  );
 
   const scheduled = definitions?.length ?? 0;
   const loggedToday = logs?.length ?? 0;
+  const hasSignals = (topSignals?.length ?? 0) > 0;
 
   const recent = useMemo(() => (logs ?? []).slice(0, 3), [logs]);
 
@@ -87,7 +116,28 @@ export function SupplementsFeedCell({ updatedLabel }: Props) {
             </span>
           </div>
         </div>
-        {recent.length > 0 ? (
+        {hasSignals ? (
+          <ul className="wire-list">
+            {topSignals!.map((signal) => (
+              <li
+                key={`${signal.supplementId}:${signal.metric}:${signal.windowDays}`}
+                className="wire-list__row"
+                title={`${signal.metric} over ${signal.windowDays}d, n=${signal.onN}/${signal.offN}`}
+              >
+                <span className="mono-label">
+                  {String(signal.supplementName ?? signal.supplementId).slice(
+                    0,
+                    18
+                  )}
+                </span>
+                <span className="wire-list__val mono-label">
+                  {METRIC_LABEL[signal.metric] ?? signal.metric}{" "}
+                  {effectLabel(signal.cohensD)}
+                </span>
+              </li>
+            ))}
+          </ul>
+        ) : recent.length > 0 ? (
           <ul className="wire-list">
             {recent.map((log) => (
               <li key={log.id} className="wire-list__row">

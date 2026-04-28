@@ -19,6 +19,7 @@ export * from "./db/conversations";
 export * from "./db/notes";
 export * from "./db/metrics";
 export * from "./db/supplements";
+export * from "./db/supplementCorrelations";
 export * from "./db/habits";
 export * from "./db/sleep";
 export * from "./db/engagement";
