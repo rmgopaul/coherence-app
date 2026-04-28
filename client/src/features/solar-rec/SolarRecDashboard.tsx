@@ -2184,7 +2184,13 @@ export default function SolarRecDashboard() {
     onSuccess: (data, variables) => {
       const datasetKey = deriveDatasetKeyFromStorageKey(variables.key);
       if (!datasetKey) return;
-      if (data.persistedToDatabase === false && data.dbError) {
+      // Read the post-PR2 server contract: when DB persist fails, the
+      // server returns `partial: true` plus a non-null dbError. Fall
+      // back to the legacy `persistedToDatabase === false` check so a
+      // cached pre-PR2 response shape doesn't slip through unflagged.
+      const isPartialFailure =
+        data.partial === true || data.persistedToDatabase === false;
+      if (isPartialFailure && data.dbError) {
         setLastDbErrors((previous) => ({
           ...previous,
           [datasetKey]: { message: data.dbError ?? "Unknown DB error", at: Date.now() },
