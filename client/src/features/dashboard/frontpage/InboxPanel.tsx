@@ -23,6 +23,9 @@ import { useMemo } from "react";
 import { trpc } from "@/lib/trpc";
 import type { GmailMessage } from "../types";
 import { buildInboxRow, type InboxRowData } from "./inbox.helpers";
+// Task 10.1 (2026-04-28): uniform per-row action menu replacing
+// the old single-button "mark as read" affordance.
+import { SignalActions } from "./SignalActions";
 
 interface InboxPanelProps {
   messages: GmailMessage[];
@@ -151,6 +154,21 @@ function InboxRow({
       >
         ×
       </button>
+      {/* Task 10.1: cross-cutting actions (Drop to Dock / Pin as
+          King / Create Todoist Task / Archive). The row's existing
+          × keeps "Mark as read" because it's the most-used action
+          and the menu would otherwise add a click. */}
+      <SignalActions
+        row={{
+          kind: "gmail",
+          messageId: row.id,
+          subject: row.subject,
+          threadUrl: href,
+          sender: row.fromName,
+        }}
+        triggerClassName="fp-inbox-row__menu"
+        ariaLabel={`Actions for: ${row.subject}`}
+      />
     </li>
   );
 }

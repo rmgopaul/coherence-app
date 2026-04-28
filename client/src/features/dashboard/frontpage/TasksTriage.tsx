@@ -23,6 +23,8 @@ import {
   projectLabel,
   splitTriageBands,
 } from "./triage.helpers";
+// Task 10.1 (2026-04-28): cross-cutting per-row action menu.
+import { SignalActions } from "./SignalActions";
 
 interface TasksTriageProps {
   tasks: {
@@ -91,6 +93,20 @@ function Band({
               <span className={`fp-triage-row__pri fp-triage-row__pri--${priorityLabel(task).toLowerCase()}`}>
                 {priorityLabel(task)}
               </span>
+              {/* Task 10.1: cross-cutting actions (Drop to Dock /
+                  Pin as King / Defer to tomorrow). The bx button
+                  keeps "Mark complete" because it's the most-used
+                  action and the menu would otherwise add a click. */}
+              <SignalActions
+                row={{
+                  kind: "todoist",
+                  taskId: task.id,
+                  content: task.content,
+                  taskUrl: `https://todoist.com/showTask?id=${encodeURIComponent(task.id)}`,
+                }}
+                triggerClassName="fp-triage-row__menu"
+                ariaLabel={`Actions for: ${task.content}`}
+              />
             </li>
           );
         })}

@@ -44,12 +44,16 @@ import {
   getTodoistCompletedTasks,
   createTodoistTask,
   completeTodoistTask,
+  // Task 10.1 (2026-04-28): defer wired into the SignalActions menu.
+  deferTodoistTask,
 } from "../services/integrations/todoist";
 import {
   getGoogleCalendarEvents,
   getGmailMessages,
   getGmailWaitingOn,
   markGmailMessageAsRead,
+  // Task 10.1 (2026-04-28): archive wired into the SignalActions menu.
+  archiveGmailMessage,
   getGoogleDriveFiles,
   createGoogleSpreadsheet,
   searchGoogleDrive,
@@ -353,6 +357,33 @@ export const todoistRouter = router({
         throw new Error("Todoist not connected");
       }
       await completeTodoistTask(integration.accessToken, input.taskId);
+      return { success: true };
+    }),
+  /**
+   * Task 10.1 (2026-04-28) — defer a Todoist task by setting a new
+   * `due_string`. Wired by the SignalActions menu's "Defer" entry.
+   * Default `tomorrow` is sensible for the dashboard's overdue band.
+   * Accepts any natural-language string Todoist understands
+   * ("tomorrow", "next mon", "in 3 days") so future UI affordances
+   * can offer specific options without changing the proc.
+   */
+  deferTask: protectedProcedure
+    .input(
+      z.object({
+        taskId: z.string().min(1),
+        dueString: z.string().min(1).max(64).default("tomorrow"),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const integration = await getIntegrationByProvider(ctx.user.id, "todoist");
+      if (!integration?.accessToken) {
+        throw new Error("Todoist not connected");
+      }
+      await deferTodoistTask(
+        integration.accessToken,
+        input.taskId,
+        input.dueString
+      );
       return { success: true };
     }),
   createTaskFromEmail: protectedProcedure
@@ -979,6 +1010,18 @@ export const googleRouter = router({
     .mutation(async ({ ctx, input }) => {
       const accessToken = await getValidGoogleToken(ctx.user.id);
       await markGmailMessageAsRead(accessToken, input.messageId);
+      return { success: true };
+    }),
+  /**
+   * Task 10.1 (2026-04-28) — archive a Gmail message (removes the
+   * INBOX label; thread stays in All Mail). Wired by the
+   * SignalActions menu's "Archive" entry on Gmail rows.
+   */
+  archiveGmail: protectedProcedure
+    .input(z.object({ messageId: z.string().min(1) }))
+    .mutation(async ({ ctx, input }) => {
+      const accessToken = await getValidGoogleToken(ctx.user.id);
+      await archiveGmailMessage(accessToken, input.messageId);
       return { success: true };
     }),
   getDriveFiles: protectedProcedure.query(async ({ ctx }) => {

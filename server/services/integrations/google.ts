@@ -244,6 +244,43 @@ export async function getGmailWaitingOn(accessToken: string, maxResults = 25): P
     .slice(0, cappedTotal);
 }
 
+/**
+ * Archive a Gmail thread/message by removing the INBOX label.
+ * "Archive" in Gmail's data model = INBOX label removed but the
+ * thread stays in All Mail. The same /modify endpoint that
+ * `markGmailMessageAsRead` uses, just with a different label.
+ *
+ * Task 10.1 (2026-04-28) — wired up by the SignalActions menu so
+ * Gmail rows can be archived from the dashboard without leaving
+ * the page.
+ */
+export async function archiveGmailMessage(
+  accessToken: string,
+  messageId: string
+): Promise<void> {
+  const response = await fetch(
+    `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(messageId)}/modify`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        removeLabelIds: ["INBOX"],
+      }),
+      signal: AbortSignal.timeout(15_000),
+    }
+  );
+
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => "");
+    throw new Error(
+      `Failed to archive email: ${response.status} ${response.statusText}${errorText ? ` - ${errorText}` : ""}`
+    );
+  }
+}
+
 export async function markGmailMessageAsRead(accessToken: string, messageId: string): Promise<void> {
   const response = await fetch(
     `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(messageId)}/modify`,
