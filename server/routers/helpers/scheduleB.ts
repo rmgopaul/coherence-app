@@ -11,6 +11,17 @@ import {
 export const SCHEDULE_B_UPLOAD_TMP_ROOT = path.resolve(process.cwd(), ".schedule_b_uploads");
 export const SCHEDULE_B_UPLOAD_ID_PATTERN = /^[a-zA-Z0-9_-]{8,128}$/;
 export const SCHEDULE_B_UPLOAD_CHUNK_BASE64_LIMIT = 320_000;
+
+// Phase 1 (server-side dashboard refactor) — sibling temp root for
+// dataset-upload jobs. Same shape as the Schedule B path so the
+// existing operational tooling (cleanup crons, disk-usage probes)
+// can target both.
+export const DATASET_UPLOAD_TMP_ROOT = path.resolve(
+  process.cwd(),
+  ".dataset_uploads"
+);
+export const DATASET_UPLOAD_ID_PATTERN = /^[a-zA-Z0-9_-]{8,128}$/;
+export const DATASET_UPLOAD_CHUNK_BASE64_LIMIT = 320_000;
 const SCHEDULE_B_INVALID_FILENAME_CHARS = /[<>:"/\\|?*\x00-\x1F]/g;
 const SCHEDULE_B_CHUNK_KEY_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
 

@@ -4214,4 +4214,296 @@ export const solarRecDashboardRouter = t.router({
       const hash = await computeFinancialsHash(input.scopeId);
       return { inputVersionHash: hash };
     }),
+
+  // ── Phase 1: server-side dataset upload (IndexedDB-removal refactor) ──
+  //
+  // The five procs below replace the legacy chunked-base64
+  // `saveDataset` write path one dataset at a time (Phase 4). The
+  // upload flow is:
+  //   1. Client calls `startDatasetUpload` → server creates a job
+  //      row with status=queued, returns jobId + uploadId.
+  //   2. Client base64-chunks the CSV and POSTs each chunk via
+  //      `uploadDatasetChunk`. The chunks reassemble on disk
+  //      under `DATASET_UPLOAD_TMP_ROOT`.
+  //   3. After the last chunk, client calls `finalizeDatasetUpload`
+  //      → server transitions the job to "uploading" → spawns the
+  //      runner (fire-and-forget) → returns immediately.
+  //   4. Client polls `getDatasetUploadStatus` until the status is
+  //      terminal. The runner stream-parses, writes rows, updates
+  //      counters, and activates the new batch.
+  //   5. UI invalidates the relevant dashboard queries on success.
+  //
+  // Phase 1 ships parsers for ONE dataset (`contractedDate`).
+  // Other datasets fail fast with a clear "Phase 4 work" error
+  // message, so the legacy path remains the supported route for
+  // them until Phase 4 lands.
+
+  startDatasetUpload: requirePermission("solar-rec-dashboard", "edit")
+    .input(
+      z.object({
+        datasetKey: z.string().min(1).max(64),
+        fileName: z.string().min(1).max(500),
+        fileSize: z.number().int().min(1).max(500 * 1024 * 1024),
+        totalChunks: z.number().int().min(1).max(2000),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { isDatasetKey } = await import(
+        "../../shared/datasetUpload.helpers"
+      );
+      if (!isDatasetKey(input.datasetKey)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `Unknown dataset key: ${input.datasetKey}`,
+        });
+      }
+      const { insertDatasetUploadJob } = await import(
+        "../db/datasetUploadJobs"
+      );
+      const jobId = nanoid();
+      const uploadId = nanoid();
+      await insertDatasetUploadJob({
+        id: jobId,
+        scopeId: ctx.scopeId,
+        initiatedByUserId: ctx.userId,
+        datasetKey: input.datasetKey,
+        fileName: input.fileName,
+        fileSizeBytes: input.fileSize,
+        uploadId,
+        uploadedChunks: 0,
+        totalChunks: input.totalChunks,
+        storageKey: `tmp:${uploadId}`,
+        status: "queued",
+        rowsParsed: 0,
+        rowsWritten: 0,
+      });
+      return { jobId, uploadId, _runnerVersion: "phase-1-v1" };
+    }),
+
+  uploadDatasetChunk: requirePermission("solar-rec-dashboard", "edit")
+    .input(
+      z.object({
+        jobId: z.string().min(1).max(64),
+        uploadId: z.string().regex(/^[a-zA-Z0-9_-]{8,128}$/),
+        chunkIndex: z.number().int().min(0),
+        totalChunks: z.number().int().min(1).max(2000),
+        chunkBase64: z.string().min(1).max(320_000),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { getDatasetUploadJob, updateDatasetUploadJob } = await import(
+        "../db/datasetUploadJobs"
+      );
+      const { DATASET_UPLOAD_TMP_ROOT } = await import(
+        "../routers/helpers/scheduleB"
+      );
+      const job = await getDatasetUploadJob(ctx.scopeId, input.jobId);
+      if (!job) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Dataset upload job not found.",
+        });
+      }
+      if (job.uploadId !== input.uploadId) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Upload session id mismatch.",
+        });
+      }
+      if (job.status !== "queued" && job.status !== "uploading") {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `Cannot upload chunk: job is ${job.status}.`,
+        });
+      }
+
+      const tempDir = path.join(
+        DATASET_UPLOAD_TMP_ROOT,
+        ctx.scopeId,
+        job.id
+      );
+      await mkdir(tempDir, { recursive: true });
+      const tempPath = path.join(tempDir, `${input.uploadId}.csv`);
+
+      const expectedChunkIndex = job.uploadedChunks ?? 0;
+      if (input.chunkIndex < expectedChunkIndex) {
+        // Idempotent retry — client lost the response and is re-
+        // sending. Acknowledge without re-writing.
+        return {
+          uploadedChunks: expectedChunkIndex,
+          totalChunks: input.totalChunks,
+          status: job.status,
+          skipped: true as const,
+        };
+      }
+      if (input.chunkIndex > expectedChunkIndex) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `Out-of-order chunk for job ${job.id}. Expected ${expectedChunkIndex}, got ${input.chunkIndex}.`,
+        });
+      }
+
+      const buf = Buffer.from(input.chunkBase64, "base64");
+      if (input.chunkIndex === 0) {
+        await writeFile(tempPath, buf);
+      } else {
+        await appendFile(tempPath, buf);
+      }
+
+      const newUploadedChunks = input.chunkIndex + 1;
+      await updateDatasetUploadJob(ctx.scopeId, job.id, {
+        status: "uploading",
+        uploadedChunks: newUploadedChunks,
+        totalChunks: input.totalChunks,
+        storageKey: tempPath,
+      });
+
+      return {
+        uploadedChunks: newUploadedChunks,
+        totalChunks: input.totalChunks,
+        status: "uploading" as const,
+        skipped: false as const,
+      };
+    }),
+
+  finalizeDatasetUpload: requirePermission("solar-rec-dashboard", "edit")
+    .input(z.object({ jobId: z.string().min(1).max(64) }))
+    .mutation(async ({ ctx, input }) => {
+      const { getDatasetUploadJob } = await import(
+        "../db/datasetUploadJobs"
+      );
+      const { runDatasetUploadJob } = await import(
+        "../services/core/datasetUploadJobRunner"
+      );
+      const job = await getDatasetUploadJob(ctx.scopeId, input.jobId);
+      if (!job) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Dataset upload job not found.",
+        });
+      }
+      if (job.status !== "uploading") {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `Cannot finalize: job is ${job.status}, not uploading.`,
+        });
+      }
+      if (
+        job.totalChunks != null &&
+        job.uploadedChunks < job.totalChunks
+      ) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `Cannot finalize: ${job.uploadedChunks} of ${job.totalChunks} chunks uploaded.`,
+        });
+      }
+      // Spawn fire-and-forget. Errors are persisted to the job row
+      // by the runner itself; the catch here is just to prevent
+      // unhandled rejections from bubbling to the process logger.
+      void runDatasetUploadJob({ scopeId: ctx.scopeId, jobId: job.id }).catch(
+        (err) => {
+          // eslint-disable-next-line no-console
+          console.error(
+            `[datasetUploadRunner] job ${job.id} threw outside the catch path:`,
+            err
+          );
+        }
+      );
+      return { jobId: job.id, status: "running" as const };
+    }),
+
+  getDatasetUploadStatus: requirePermission("solar-rec-dashboard", "read")
+    .input(z.object({ jobId: z.string().min(1).max(64) }))
+    .query(async ({ ctx, input }) => {
+      const {
+        getDatasetUploadJob,
+        listDatasetUploadJobErrors,
+      } = await import("../db/datasetUploadJobs");
+      const job = await getDatasetUploadJob(ctx.scopeId, input.jobId);
+      if (!job) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Dataset upload job not found.",
+        });
+      }
+      // Only fetch the error list when relevant — saves a query for
+      // every poll while a happy job is uploading/parsing.
+      const errors =
+        job.status === "failed" ||
+        ((job.rowsParsed ?? 0) > (job.rowsWritten ?? 0))
+          ? await listDatasetUploadJobErrors(job.id, { limit: 50 })
+          : [];
+      return {
+        _runnerVersion: "phase-1-v1",
+        job: {
+          id: job.id,
+          datasetKey: job.datasetKey,
+          fileName: job.fileName,
+          fileSizeBytes: job.fileSizeBytes,
+          status: job.status,
+          totalChunks: job.totalChunks,
+          uploadedChunks: job.uploadedChunks,
+          totalRows: job.totalRows,
+          rowsParsed: job.rowsParsed,
+          rowsWritten: job.rowsWritten,
+          errorMessage: job.errorMessage,
+          batchId: job.batchId,
+          startedAt: job.startedAt
+            ? job.startedAt.toISOString()
+            : null,
+          completedAt: job.completedAt
+            ? job.completedAt.toISOString()
+            : null,
+          createdAt: job.createdAt
+            ? job.createdAt.toISOString()
+            : null,
+          updatedAt: job.updatedAt
+            ? job.updatedAt.toISOString()
+            : null,
+        },
+        errors: errors.map((e) => ({
+          id: e.id,
+          rowIndex: e.rowIndex,
+          errorMessage: e.errorMessage,
+          createdAt: e.createdAt
+            ? e.createdAt.toISOString()
+            : null,
+        })),
+      };
+    }),
+
+  listDatasetUploadJobs: requirePermission("solar-rec-dashboard", "read")
+    .input(
+      z
+        .object({
+          datasetKey: z.string().min(1).max(64).optional(),
+          limit: z.number().int().min(1).max(200).optional(),
+        })
+        .optional()
+    )
+    .query(async ({ ctx, input }) => {
+      const { listDatasetUploadJobs } = await import(
+        "../db/datasetUploadJobs"
+      );
+      const jobs = await listDatasetUploadJobs(ctx.scopeId, {
+        datasetKey: input?.datasetKey,
+        limit: input?.limit,
+      });
+      return {
+        _runnerVersion: "phase-1-v1",
+        jobs: jobs.map((j) => ({
+          id: j.id,
+          datasetKey: j.datasetKey,
+          fileName: j.fileName,
+          status: j.status,
+          totalRows: j.totalRows,
+          rowsWritten: j.rowsWritten,
+          startedAt: j.startedAt ? j.startedAt.toISOString() : null,
+          completedAt: j.completedAt
+            ? j.completedAt.toISOString()
+            : null,
+          createdAt: j.createdAt ? j.createdAt.toISOString() : null,
+        })),
+      };
+    }),
 });
