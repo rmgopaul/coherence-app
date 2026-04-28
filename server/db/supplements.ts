@@ -37,6 +37,41 @@ type SupplementDefinitionUpdateInput = {
   isLocked?: boolean;
 };
 
+/**
+ * Phase E (2026-04-28) — pure filter for the "Log all AM/PM" batch.
+ *
+ * Given the user's definitions list, today's logs, and a target
+ * timing, return the definitions eligible for logging (active +
+ * matching timing + no existing log today). Pure — exposed for
+ * testability so the eligibility rules are verifiable without
+ * spinning up MySQL.
+ */
+export function selectUnloggedDefinitionsForTiming<
+  D extends {
+    id: string;
+    isActive: boolean;
+    timing: string;
+  },
+  L extends {
+    timing: string;
+    definitionId: string | null;
+  },
+>(
+  definitions: readonly D[],
+  todaysLogs: readonly L[],
+  timing: "am" | "pm"
+): D[] {
+  const candidates = definitions.filter(
+    (def) => def.isActive && def.timing === timing
+  );
+  const alreadyLoggedIds = new Set(
+    todaysLogs
+      .filter((log) => log.timing === timing && log.definitionId)
+      .map((log) => log.definitionId as string)
+  );
+  return candidates.filter((def) => !alreadyLoggedIds.has(def.id));
+}
+
 export async function listSupplementLogs(userId: number, dateKey?: string, limit = 100) {
   const db = await getDb();
   if (!db) return [];

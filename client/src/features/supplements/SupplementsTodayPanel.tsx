@@ -57,10 +57,36 @@ export function SupplementsTodayPanel({
   const addLog = trpc.supplements.addLog.useMutation();
   const deleteLog = trpc.supplements.deleteLog.useMutation();
   const setLock = trpc.supplements.setDefinitionLock.useMutation();
+  // Phase E (2026-04-28) — "Log all AM/PM" batch. Server skips
+  // any supplement already logged today (idempotent), so a
+  // double-click is safe.
+  const logAllForTiming = trpc.supplements.logAllForTiming.useMutation();
 
   const todaysLogs = logs.filter((l) => l.dateKey === today);
   const amLogs = todaysLogs.filter((l) => l.timing === "am");
   const pmLogs = todaysLogs.filter((l) => l.timing === "pm");
+
+  async function logAll(timing: "am" | "pm") {
+    try {
+      const result = await logAllForTiming.mutateAsync({ timing });
+      if (result.logged === 0 && result.skipped === 0) {
+        toast.info(`No ${timing.toUpperCase()} supplements to log.`);
+      } else if (result.logged === 0) {
+        toast.info(`All ${timing.toUpperCase()} supplements already logged.`);
+      } else {
+        const skipMsg =
+          result.skipped > 0
+            ? ` (${result.skipped} already logged)`
+            : "";
+        toast.success(
+          `Logged ${result.logged} ${timing.toUpperCase()} supplement${result.logged === 1 ? "" : "s"}${skipMsg}`
+        );
+      }
+      onChanged();
+    } catch (error) {
+      toast.error(toErrorMessage(error));
+    }
+  }
 
   async function submitDraft() {
     if (!draft.name.trim() || !draft.dose.trim()) {
@@ -158,6 +184,11 @@ export function SupplementsTodayPanel({
           todaysLogs={amLogs}
           onToggleLock={toggleLock}
           onDeleteLog={removeLog}
+          onLogAll={() => logAll("am")}
+          logAllPending={
+            logAllForTiming.isPending &&
+            logAllForTiming.variables?.timing === "am"
+          }
         />
         <TimingColumn
           title="Evening"
@@ -166,6 +197,11 @@ export function SupplementsTodayPanel({
           todaysLogs={pmLogs}
           onToggleLock={toggleLock}
           onDeleteLog={removeLog}
+          onLogAll={() => logAll("pm")}
+          logAllPending={
+            logAllForTiming.isPending &&
+            logAllForTiming.variables?.timing === "pm"
+          }
         />
       </div>
     </div>
@@ -179,6 +215,8 @@ interface TimingColumnProps {
   todaysLogs: readonly SupplementLog[];
   onToggleLock: (definitionId: string, isLocked: boolean) => void;
   onDeleteLog: (id: string) => void;
+  onLogAll: () => void;
+  logAllPending: boolean;
 }
 
 function TimingColumn({
@@ -188,14 +226,47 @@ function TimingColumn({
   todaysLogs,
   onToggleLock,
   onDeleteLog,
+  onLogAll,
+  logAllPending,
 }: TimingColumnProps) {
   const timingDefinitions = definitions.filter(
     (d) => d.isActive && d.timing === timing
   );
+  // Phase E (2026-04-28) — disable "Log all" when there are no
+  // active supplements for this timing OR every active one already
+  // has a today's log. The proc would no-op in those cases anyway,
+  // but disabling the button avoids a "nothing to log" toast for
+  // a user who clicked nothing.
+  const loggedDefinitionIds = new Set(
+    todaysLogs
+      .filter((log) => log.definitionId !== null)
+      .map((log) => log.definitionId)
+  );
+  const unloggedCount = timingDefinitions.filter(
+    (def) => !loggedDefinitionIds.has(def.id)
+  ).length;
   return (
     <Card>
-      <CardHeader className="pb-2">
+      <CardHeader className="pb-2 flex flex-row items-center justify-between">
         <CardTitle className="text-sm">{title}</CardTitle>
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-7 px-2 text-xs"
+          onClick={onLogAll}
+          disabled={logAllPending || unloggedCount === 0}
+          title={
+            unloggedCount === 0
+              ? `All ${title.toLowerCase()} supplements already logged today`
+              : `Log all ${unloggedCount} unlogged ${title.toLowerCase()} supplements`
+          }
+        >
+          {logAllPending
+            ? "Logging…"
+            : unloggedCount === 0
+              ? "All logged"
+              : `Log all (${unloggedCount})`}
+        </Button>
       </CardHeader>
       <CardContent className="space-y-3">
         <section className="space-y-1">
