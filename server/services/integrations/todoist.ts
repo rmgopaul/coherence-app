@@ -406,6 +406,35 @@ export async function completeTodoistTask(accessToken: string, taskId: string): 
   }
 }
 
+/**
+ * Task 10.1 (2026-04-28) — defer a Todoist task by setting a new
+ * `due_string`. Uses POST /tasks/{id} with `{ due_string }` per the
+ * REST API. Natural-language strings ("tomorrow", "next mon", "in
+ * 3 days") work directly; Todoist parses them server-side.
+ */
+export async function deferTodoistTask(
+  accessToken: string,
+  taskId: string,
+  dueString: string
+): Promise<void> {
+  const response = await fetch(`${TODOIST_API_BASE}/tasks/${taskId}`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ due_string: dueString }),
+    signal: AbortSignal.timeout(15_000),
+  });
+
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(
+      `Todoist API error: ${response.status} ${response.statusText}${text ? ` - ${text}` : ""}`
+    );
+  }
+}
+
 async function fetchCompletedFromByCompletionDate(
   accessToken: string,
   start: Date,
