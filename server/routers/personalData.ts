@@ -2616,6 +2616,16 @@ export const dockRouter = router({
    * fix landed, or before SignalActions started passing the title
    * through.
    *
+   * Re-classification step (the actual fix for the original
+   * regression). Chips added BEFORE the htmlLink classification
+   * fix have `source: "url"` and empty meta in the DB even though
+   * the URL itself is a Calendar event link. We re-run
+   * `classifyUrl(item.url)` first and use the freshly-classified
+   * source + meta for enrichment. When the new source is more
+   * specific than the stored one (e.g. "url" → "gcal"), we also
+   * update the stored source so the chip's badge label/color
+   * upgrades on the next render.
+   *
    * Returns the resolved title (or null when enrichment still
    * fails). The client falls back to `chipFallbackLabel` either way.
    *
@@ -2626,6 +2636,7 @@ export const dockRouter = router({
   refreshTitle: protectedProcedure
     .input(z.object({ id: z.string().min(1).max(64) }))
     .mutation(async ({ ctx, input }) => {
+      const { classifyUrl } = await import("@shared/dropdock.helpers");
       const { getDockItemById, updateDockItemTitle } = await import(
         "../db/dock"
       );
@@ -2639,17 +2650,61 @@ export const dockRouter = router({
       if (item.title?.trim()) {
         return { title: item.title, refreshed: false as const };
       }
-      const meta = item.meta ? parseDockMeta(item.meta) : null;
+
+      // Re-classify the stored URL with the current `classifyUrl`.
+      // Pre-fix chips have `source: "url"` and empty meta even
+      // when the URL is actually a Calendar / Todoist link — the
+      // current classifier knows about all the URL shapes the
+      // pre-fix one missed (most importantly
+      // www.google.com/calendar/event?eid=...).
+      const reclassified = classifyUrl(item.url);
+      const storedMeta = item.meta ? parseDockMeta(item.meta) : null;
+      // Prefer the re-classified source when it's more specific
+      // than the stored one. An "url" stored source is the
+      // generic catchall — any other source classification beats
+      // it. When the stored source is already specific (gmail /
+      // gcal / etc.), keep it.
+      const useReclassifiedSource =
+        reclassified.source !== "url" && item.source === "url";
+      const effectiveSource = useReclassifiedSource
+        ? reclassified.source
+        : (item.source as "gmail" | "gcal" | "gsheet" | "todoist" | "url");
+      // Merge metas, preferring the re-classified one's keys when
+      // they fill in fields the stored meta is missing. Don't
+      // discard stored meta keys (they may include manually-added
+      // fields like calendarId).
+      const effectiveMeta: Record<string, string> = {
+        ...(reclassified.meta ?? {}),
+        ...(storedMeta ?? {}),
+      };
+
       const title = await enrichDockTitle(
         ctx.user.id,
-        item.source as "gmail" | "gcal" | "gsheet" | "todoist" | "url",
+        effectiveSource,
         item.url,
-        meta
+        effectiveMeta
       );
       if (!title) {
         return { title: null, refreshed: false as const };
       }
-      const updated = await updateDockItemTitle(ctx.user.id, input.id, title);
+      // Persist the corrected source + merged meta alongside the
+      // title when the re-classification produced a more specific
+      // source. Otherwise just write the title.
+      const updateOpts = useReclassifiedSource
+        ? {
+            source: reclassified.source,
+            meta:
+              Object.keys(effectiveMeta).length > 0
+                ? JSON.stringify(effectiveMeta)
+                : null,
+          }
+        : {};
+      const updated = await updateDockItemTitle(
+        ctx.user.id,
+        input.id,
+        title,
+        updateOpts
+      );
       return {
         title,
         refreshed: updated,
