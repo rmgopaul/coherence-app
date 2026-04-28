@@ -1553,3 +1553,104 @@ export const idWorksets = mysqlTable(
 
 export type IdWorkset = typeof idWorksets.$inferSelect;
 export type InsertIdWorkset = typeof idWorksets.$inferInsert;
+
+// ────────────────────────────────────────────────────────────────────
+// Server-side dashboard upload — Phase 1 of the IndexedDB-removal
+// refactor (docs/server-side-dashboard-refactor.md).
+//
+// `datasetUploadJobs` tracks one upload-and-parse-and-write run per
+// CSV file. Chunks come in via the chunked-base64-tRPC pattern (same
+// as Schedule B PDFs in `scheduleBImportFiles`) and reassemble into
+// a temp file at `storageKey`. The runner stream-parses the file and
+// writes typed rows directly into `srDs*` tables, bumping
+// `rowsParsed` + `rowsWritten` atomically along the way.
+//
+// Status state machine:
+//   queued    — row created, no chunks uploaded yet
+//   uploading — chunks streaming in
+//   parsing   — runner is stream-parsing the reassembled CSV
+//   writing   — runner is batching rows into srDs* (overlap with parsing)
+//   done      — completedAt stamped, batchId became the active version
+//   failed    — errorMessage set; row preserved for diagnostic
+//
+// Per-row errors persist to `datasetUploadJobErrors` so a parser
+// failure on row 4,217 of a 32k-row Solar Apps file doesn't abort
+// the whole job — it logs and keeps going.
+// ────────────────────────────────────────────────────────────────────
+
+export const datasetUploadJobs = mysqlTable(
+  "datasetUploadJobs",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    scopeId: varchar("scopeId", { length: 64 }).notNull(),
+    initiatedByUserId: int("initiatedByUserId").notNull(),
+    // Which dataset (`solarApplications`, `abpReport`, …) this
+    // upload targets. Validated against the registry on insert.
+    datasetKey: varchar("datasetKey", { length: 64 }).notNull(),
+    fileName: varchar("fileName", { length: 500 }).notNull(),
+    fileSizeBytes: int("fileSizeBytes"),
+    // Ephemeral upload session id; matches `tmp:<uploadId>` storage
+    // keys during the chunked upload. Discarded after assembly.
+    uploadId: varchar("uploadId", { length: 64 }),
+    uploadedChunks: int("uploadedChunks").default(0).notNull(),
+    totalChunks: int("totalChunks"),
+    // `tmp:<uploadId>` while uploading; the absolute temp path
+    // (under DATASET_UPLOAD_TMP_ROOT) once assembled.
+    storageKey: varchar("storageKey", { length: 512 }),
+    status: varchar("status", { length: 32 }).default("queued").notNull(),
+    totalRows: int("totalRows"),
+    rowsParsed: int("rowsParsed").default(0).notNull(),
+    rowsWritten: int("rowsWritten").default(0).notNull(),
+    errorMessage: text("errorMessage"),
+    // The batch id written into the per-dataset srDs* table for
+    // every row in this upload. After completion, this becomes the
+    // active version in `solarRecActiveDatasetVersions`.
+    batchId: varchar("batchId", { length: 64 }),
+    startedAt: timestamp("startedAt"),
+    completedAt: timestamp("completedAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    scopeStatusIdx: index("dataset_upload_jobs_scope_status_idx").on(
+      table.scopeId,
+      table.status
+    ),
+    scopeDatasetCreatedIdx: index(
+      "dataset_upload_jobs_scope_dataset_created_idx"
+    ).on(table.scopeId, table.datasetKey, table.createdAt),
+    scopeCreatedIdx: index("dataset_upload_jobs_scope_created_idx").on(
+      table.scopeId,
+      table.createdAt
+    ),
+  })
+);
+
+export type DatasetUploadJob = typeof datasetUploadJobs.$inferSelect;
+export type InsertDatasetUploadJob = typeof datasetUploadJobs.$inferInsert;
+
+export const datasetUploadJobErrors = mysqlTable(
+  "datasetUploadJobErrors",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    jobId: varchar("jobId", { length: 64 }).notNull(),
+    // Zero-based row index in the source CSV (header row excluded).
+    // Null when the error happened before any row was reached
+    // (file-level parse error, unknown dataset, etc.).
+    rowIndex: int("rowIndex"),
+    errorMessage: text("errorMessage").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    jobIdx: index("dataset_upload_job_errors_job_idx").on(table.jobId),
+    jobCreatedIdx: index("dataset_upload_job_errors_job_created_idx").on(
+      table.jobId,
+      table.createdAt
+    ),
+  })
+);
+
+export type DatasetUploadJobError =
+  typeof datasetUploadJobErrors.$inferSelect;
+export type InsertDatasetUploadJobError =
+  typeof datasetUploadJobErrors.$inferInsert;
