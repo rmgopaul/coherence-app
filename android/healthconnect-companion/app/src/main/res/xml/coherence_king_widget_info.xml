@@ -1,40 +1,45 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  King Widget — sized to fill the Galaxy Z Fold 7's inner display.
+  King Widget — fullscreen on the Galaxy Z Fold 7's inner display.
 
-  The Fold 7 inner display is 1968×2184 px @ 420 dpi (~750×832 dp).
-  After the status bar, gesture bar, page indicators and launcher
-  padding, the usable widget canvas is roughly 700×740 dp. We size
-  the widget min/target so a placement always lands at full-screen
-  on the inner display.
+  Sizing notes from `dumpsys appwidget` on a real Z Fold 7 home
+  screen: Samsung One UI's inner-display launcher uses a 7-column
+  grid where each column is ~75 dp, putting the maximum widget width
+  at ~525 dp (not the raw 750 dp screen width). An earlier attempt
+  with minWidth=700 dp exceeded the grid; the launcher silently
+  capped the widget at ~half-screen because it couldn't satisfy the
+  min, and the resize handle wouldn't grow past that cap either.
 
-  - minWidth/minHeight: hard floor — the launcher won't allow a
-    placement smaller than this. Set at 700×700 so even a half-grid
-    placement still claims the full canvas.
-  - targetCellWidth/Height: how many launcher grid cells to occupy
-    on first placement. We ask for 8×8 so the widget snaps to
-    full-size on first drop regardless of the launcher's cell
-    geometry (Samsung One UI's inner-display home grid varies with
-    density).
-  - maxResizeWidth/Height: bounds the resize handles. 900 dp covers
-    the largest expansions any current launcher supports on the Fold
-    inner display.
-  - minResize stays generous so power users can manually shrink the
-    widget back to phone-sized cells if they want it on the cover
-    display too.
+  This iteration:
+  - minWidth/minHeight 200 dp — small enough that ANY launcher grid
+    can satisfy the min, so the launcher stops silently down-sizing.
+  - targetCellWidth/Height 12 — well beyond any realistic launcher
+    grid, so the launcher grants its maximum cell allocation on
+    first drop (the user only has to drag corner-to-corner once).
+  - maxResizeWidth/Height 1500 dp — well beyond any inner-display
+    width so the resize handle reaches the screen edge regardless
+    of which launcher grid the user has configured.
+  - minResizeWidth/Height 200 dp — lets a power user shrink back to
+    phone-cell size if they want a small variant on the cover
+    display.
+
+  Combined with `SizeMode.Exact` in `CoherenceKingWidget`, the Glance
+  composable now paints at whatever pixel size the launcher hands
+  over, so the layout fills the canvas instead of getting clipped
+  inside a fixed-size box.
 -->
 <appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
     android:description="@string/widget_king_description"
     android:initialLayout="@layout/glance_default_loading_layout"
     android:previewImage="@mipmap/ic_launcher"
-    android:minWidth="700dp"
-    android:minHeight="700dp"
-    android:minResizeWidth="380dp"
-    android:minResizeHeight="380dp"
-    android:maxResizeWidth="900dp"
-    android:maxResizeHeight="900dp"
+    android:minWidth="200dp"
+    android:minHeight="200dp"
+    android:minResizeWidth="200dp"
+    android:minResizeHeight="200dp"
+    android:maxResizeWidth="1500dp"
+    android:maxResizeHeight="1500dp"
     android:resizeMode="horizontal|vertical"
-    android:targetCellWidth="8"
-    android:targetCellHeight="8"
+    android:targetCellWidth="12"
+    android:targetCellHeight="12"
     android:updatePeriodMillis="1800000"
     android:widgetCategory="home_screen" />

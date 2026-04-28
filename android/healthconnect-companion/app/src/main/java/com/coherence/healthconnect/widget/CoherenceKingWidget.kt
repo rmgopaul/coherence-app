@@ -59,10 +59,15 @@ import java.util.Locale
  */
 class CoherenceKingWidget : GlanceAppWidget() {
 
-  // Single-size mode is fine — the Fold's inner display is the only
-  // intended target and we don't want the OS picking a smaller
-  // breakpoint that breaks the 2-column layout.
-  override val sizeMode: SizeMode = SizeMode.Single
+  // Exact size mode — Glance paints at whatever pixel size the
+  // launcher allocates rather than a single fixed footprint. Required
+  // for the resize handles to actually grow the rendered widget on
+  // launchers like Samsung One UI that pass progressive size hints
+  // during a drag. With SizeMode.Single the composable was committed
+  // at a fixed footprint and the resize handle visually clipped
+  // instead of expanding the canvas (the user's "stuck at half"
+  // symptom on the Fold inner display).
+  override val sizeMode: SizeMode = SizeMode.Exact
 
   override suspend fun provideGlance(context: Context, id: GlanceId) {
     val data = WidgetDataStore.load(context)
