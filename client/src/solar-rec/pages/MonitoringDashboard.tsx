@@ -1,5 +1,6 @@
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { solarRecTrpc as trpc } from "../solarRecTrpc";
+import { toast } from "sonner";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -12,6 +13,7 @@ import {
 } from "@/components/ui/dialog";
 import {
   Activity,
+  Database,
   Play,
   Search,
   Download,
@@ -857,6 +859,16 @@ function MonitoringDashboardImpl() {
   const healthQuery = trpc.monitoring.getHealthSummary.useQuery();
   const overviewStatsQuery = trpc.monitoring.getOverviewStats.useQuery();
   const providersQuery = trpc.monitoring.getConfiguredProviders.useQuery();
+  // Poll the convertedReads dataset summary so the user can see when
+  // the batch's auto-save (via convertedReadsBridge) actually
+  // updated the dataset. Without this indicator the bridge writes
+  // are invisible — there's no UI confirmation that a run touched
+  // the manifest, which is what the user expects when running an
+  // ad-hoc batch from this page.
+  const convertedReadsSummaryQuery = trpc.solarRecDashboard.getDatasetSummariesAll.useQuery(
+    undefined,
+    { refetchInterval: 10_000 }
+  );
   const credentialsQuery = trpc.monitoring.getConfiguredCredentials.useQuery(undefined, {
     enabled: isOperator,
   });
@@ -876,8 +888,21 @@ function MonitoringDashboardImpl() {
       if (showSystemPerformance) gridPageQuery.refetch();
       healthQuery.refetch();
       overviewStatsQuery.refetch();
+      // The convertedReads bridge writes server-side per-provider
+      // (see server/solar/monitoring.service.ts:executeMonitoringBatch).
+      // Refetch the dataset summary so the lastSavedAt indicator
+      // updates immediately rather than waiting for the next 10s
+      // poll, and surface a toast confirming auto-save.
+      convertedReadsSummaryQuery.refetch();
+      if (data.status === "completed") {
+        toast.success(
+          `Batch complete · auto-saved to Converted Reads (sites: ${data.totalSites ?? 0}).`
+        );
+      } else if (data.status === "failed") {
+        toast.error("Batch failed — see batch status for details.");
+      }
     }
-  }, [batchStatusQuery.data, gridPageQuery, healthQuery, overviewStatsQuery, showSystemPerformance]);
+  }, [batchStatusQuery.data, gridPageQuery, healthQuery, overviewStatsQuery, showSystemPerformance, convertedReadsSummaryQuery]);
 
   const runAllMutation = trpc.monitoring.runAll.useMutation({
     onSuccess: (data) => {
@@ -909,6 +934,13 @@ function MonitoringDashboardImpl() {
   });
 
   const isRunning = !!activeBatchId || runAllMutation.isPending;
+
+  const convertedReadsLastSavedAt = useMemo(() => {
+    const summary = convertedReadsSummaryQuery.data?.summaries.find(
+      (entry) => entry.datasetKey === "convertedReads"
+    );
+    return summary?.lastUpdated ? new Date(summary.lastUpdated) : null;
+  }, [convertedReadsSummaryQuery.data]);
 
   const dates = useMemo(() => getDatesInRange(startDate, endDate), [startDate, endDate]);
   const providerOptions = useMemo(() => {
@@ -1052,6 +1084,22 @@ function MonitoringDashboardImpl() {
             </>
           )}
         </div>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2 rounded-md border border-emerald-200 bg-emerald-50/50 px-3 py-2 text-xs text-emerald-900">
+        <Database className="h-3.5 w-3.5" />
+        <span className="font-medium">Auto-saves to Converted Reads.</span>
+        <span className="text-emerald-700">
+          Last update:{" "}
+          {convertedReadsSummaryQuery.isLoading
+            ? "…"
+            : convertedReadsLastSavedAt
+              ? convertedReadsLastSavedAt.toLocaleString()
+              : "never"}
+        </span>
+        <span className="ml-auto text-[11px] text-emerald-700">
+          Re-running the same batch in one day adds 0 new rows — the bridge dedupes by site, date, and lifetime kWh.
+        </span>
       </div>
 
       {isOperator && providerOptions.length > 0 && (
