@@ -32,6 +32,7 @@ import { solarRecDinScrapeRouter } from "./solarRecDinScrapeRouter";
 import { solarRecJobsRouter } from "./solarRecJobsRouter";
 import { solarRecSystemsRouter } from "./solarRecSystemsRouter";
 import { solarRecWorksetsRouter } from "./solarRecWorksetsRouter";
+import { sanitizeApiKey as solarEdgeSanitizeApiKey } from "../services/solar/solarEdge";
 
 // ---------------------------------------------------------------------------
 // Context — `createSolarRecContext` stays here because `_core/index.ts`
@@ -401,8 +402,18 @@ function normalizeCredentialConnectInput(input: {
   }
 
   if (provider === "solaredge") {
+    // Strip zero-width / BOM chars that survive `.trim()` so a paste
+    // from the SolarEdge admin portal cannot break URL-encoded auth.
+    const apiKeyMeta = toNonEmptyString(metadata.apiKey);
+    const sanitizedFromMeta = apiKeyMeta
+      ? solarEdgeSanitizeApiKey(apiKeyMeta)
+      : null;
+    if (sanitizedFromMeta) metadata.apiKey = sanitizedFromMeta;
+    const sanitizedFromAccessToken = accessToken
+      ? solarEdgeSanitizeApiKey(accessToken)
+      : null;
     accessToken =
-      accessToken ?? toNonEmptyString(metadata.apiKey) ?? undefined;
+      sanitizedFromAccessToken || sanitizedFromMeta || accessToken;
     if (accessToken && !toNonEmptyString(metadata.apiKey)) {
       metadata.apiKey = accessToken;
     }
@@ -4015,13 +4026,13 @@ function parseSolarEdgeTeamMetadata(
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw);
-    const apiKey =
-      typeof parsed?.apiKey === "string" && parsed.apiKey.trim().length > 0
-        ? parsed.apiKey.trim()
-        : null;
-    if (!apiKey) return null;
+    const sanitized =
+      typeof parsed?.apiKey === "string"
+        ? solarEdgeSanitizeApiKey(parsed.apiKey)
+        : "";
+    if (!sanitized) return null;
     return {
-      apiKey,
+      apiKey: sanitized,
       baseUrl:
         typeof parsed?.baseUrl === "string" && parsed.baseUrl.trim().length > 0
           ? parsed.baseUrl.trim()
@@ -4054,7 +4065,7 @@ async function loadSolarEdgeCredentialRows(): Promise<SolarEdgeCredentialRow[]> 
       });
       continue;
     }
-    const fallbackKey = cred.accessToken?.trim();
+    const fallbackKey = solarEdgeSanitizeApiKey(cred.accessToken ?? "");
     if (fallbackKey) {
       out.push({
         id: cred.id,
@@ -4260,6 +4271,73 @@ const solaredgeRouter = t.router({
       })),
     };
   }),
+
+  // Returns a fingerprint of every stored SolarEdge credential and the
+  // outcome of a `/sites/list` probe — surfaces the SolarEdge response
+  // body verbatim so an admin can tell "valid key, account API access
+  // not enabled" apart from "we corrupted the key in storage".
+  debugCredential: requirePermission("meter-reads", "edit")
+    .input(z.object({ connectionId: z.string().optional() }).optional())
+    .mutation(async ({ ctx, input }) => {
+      void ctx;
+      const rows = await loadSolarEdgeCredentialRows();
+      const target = input?.connectionId
+        ? rows.find((r) => r.id === input.connectionId)
+        : rows[0];
+      if (!target) {
+        return {
+          ok: false as const,
+          reason: "no-credential" as const,
+          message:
+            "No SolarEdge credential is registered for this scope.",
+          connections: rows.length,
+        };
+      }
+      const apiKey = target.context.apiKey;
+      const codepoints = Array.from(apiKey).map((c) => c.charCodeAt(0));
+      const hasNonAscii = codepoints.some((c) => c > 0x7e || c < 0x20);
+      const fingerprint = {
+        connectionId: target.id,
+        connectionName: target.connectionName,
+        apiKeyLength: apiKey.length,
+        apiKeyPreview:
+          apiKey.length <= 8
+            ? "***"
+            : `${apiKey.slice(0, 4)}…${apiKey.slice(-4)}`,
+        apiKeyHasNonAscii: hasNonAscii,
+        baseUrlOverride: target.context.baseUrl,
+      };
+      const { listSites, SOLAR_EDGE_DEFAULT_BASE_URL } = await import(
+        "../services/solar/solarEdge"
+      );
+      try {
+        const probe = await listSites({
+          apiKey: target.context.apiKey,
+          baseUrl: target.context.baseUrl,
+        });
+        return {
+          ok: true as const,
+          fingerprint,
+          effectiveBaseUrl:
+            target.context.baseUrl ?? SOLAR_EDGE_DEFAULT_BASE_URL,
+          siteCount: probe.sites.length,
+          sample: probe.sites.slice(0, 3).map((s) => ({
+            siteId: s.siteId,
+            siteName: s.siteName,
+          })),
+        };
+      } catch (err) {
+        return {
+          ok: false as const,
+          reason: "probe-failed" as const,
+          fingerprint,
+          effectiveBaseUrl:
+            target.context.baseUrl ?? SOLAR_EDGE_DEFAULT_BASE_URL,
+          message:
+            err instanceof Error ? err.message : "Unknown probe error.",
+        };
+      }
+    }),
 
   listSites: requirePermission("meter-reads", "read")
     .input(z.object({ connectionId: z.string().optional() }).optional())

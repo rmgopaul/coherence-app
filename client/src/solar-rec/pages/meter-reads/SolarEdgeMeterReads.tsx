@@ -355,6 +355,7 @@ export default function SolarEdgeMeterReads() {
   const productionBulk = trpc.solaredge.getProductionSnapshots.useMutation();
   const meterBulk = trpc.solaredge.getMeterSnapshots.useMutation();
   const inverterBulk = trpc.solaredge.getInverterSnapshots.useMutation();
+  const debugCredential = trpc.solaredge.debugCredential.useMutation();
 
   // Single-site snapshot state.
   const [siteId, setSiteId] = useState("");
@@ -619,6 +620,40 @@ export default function SolarEdgeMeterReads() {
               </p>
             </div>
           )}
+          <div className="flex items-start gap-3 flex-wrap">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() =>
+                debugCredential.mutate({
+                  connectionId: effectiveConnectionId || undefined,
+                })
+              }
+              disabled={
+                !statusQuery.data?.connected || debugCredential.isPending
+              }
+            >
+              {debugCredential.isPending ? (
+                <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+              ) : null}
+              Diagnose credential
+            </Button>
+            {debugCredential.data && (
+              <DiagnoseResult data={debugCredential.data} />
+            )}
+            {debugCredential.error && (
+              <span className="text-xs text-destructive">
+                {debugCredential.error.message}
+              </span>
+            )}
+          </div>
+          <p className="text-xs text-muted-foreground">
+            If diagnose returns a 403 with a clean key fingerprint, the most
+            common cause is that <strong>API access</strong> isn&rsquo;t
+            enabled on the SolarEdge account: log into solaredge.com → Admin →
+            Site Access → API Access tab → accept the terms and (re)generate
+            the API key.
+          </p>
         </CardContent>
       </Card>
 
@@ -970,6 +1005,65 @@ export default function SolarEdgeMeterReads() {
           )}
         </CardContent>
       </Card>
+    </div>
+  );
+}
+
+type DiagnoseFingerprint = {
+  connectionId: string;
+  connectionName: string | null;
+  apiKeyLength: number;
+  apiKeyPreview: string;
+  apiKeyHasNonAscii: boolean;
+  baseUrlOverride: string | null;
+};
+type DiagnoseData =
+  | { ok: true; fingerprint: DiagnoseFingerprint; effectiveBaseUrl: string; siteCount: number; sample: Array<{ siteId: string; siteName: string | null }> }
+  | { ok: false; reason: "no-credential"; message: string; connections: number }
+  | { ok: false; reason: "probe-failed"; fingerprint: DiagnoseFingerprint; effectiveBaseUrl: string; message: string };
+
+function DiagnoseResult({ data }: { data: DiagnoseData }) {
+  if (data.ok) {
+    return (
+      <div className="text-xs rounded-md border bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-900 p-2 space-y-0.5 max-w-xl">
+        <p className="font-medium text-emerald-900 dark:text-emerald-200">
+          Probe succeeded — {data.siteCount.toLocaleString()} site
+          {data.siteCount === 1 ? "" : "s"} returned.
+        </p>
+        <p>
+          Key fingerprint: <code>{data.fingerprint.apiKeyPreview}</code> (length{" "}
+          {data.fingerprint.apiKeyLength}
+          {data.fingerprint.apiKeyHasNonAscii ? ", non-ASCII present" : ""})
+        </p>
+        <p>
+          Base URL: <code>{data.effectiveBaseUrl}</code>
+        </p>
+      </div>
+    );
+  }
+  if (data.reason === "no-credential") {
+    return (
+      <div className="text-xs rounded-md border bg-muted/40 p-2 max-w-xl">
+        {data.message}
+      </div>
+    );
+  }
+  return (
+    <div className="text-xs rounded-md border bg-amber-50 dark:bg-amber-950/40 border-amber-200 dark:border-amber-900 p-2 space-y-0.5 max-w-xl">
+      <p className="font-medium text-amber-900 dark:text-amber-200">
+        Probe failed.
+      </p>
+      <p>
+        Key fingerprint: <code>{data.fingerprint.apiKeyPreview}</code> (length{" "}
+        {data.fingerprint.apiKeyLength}
+        {data.fingerprint.apiKeyHasNonAscii ? ", non-ASCII present" : ""})
+      </p>
+      <p>
+        Base URL: <code>{data.effectiveBaseUrl}</code>
+      </p>
+      <p className="text-amber-900 dark:text-amber-200 break-all">
+        {data.message}
+      </p>
     </div>
   );
 }
