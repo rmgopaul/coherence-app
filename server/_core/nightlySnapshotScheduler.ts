@@ -68,6 +68,21 @@ async function runNightlySnapshot(dateKey: string): Promise<void> {
   } catch (error) {
     console.error("[Nightly Snapshot] Failed to prune gmail waiting-on cache:", error);
   }
+
+  // Phase E (2026-04-28) — auto-archive dock items older than 30
+  // days that aren't pinned and aren't on the canvas. Hides them
+  // from the default `listDockItems` query without deleting the
+  // data — `archivedAt` is set, not the row removed, so a future
+  // "Show archived" toggle can resurface them.
+  try {
+    const { archiveStaleDockItems } = await import("../db");
+    const result = await archiveStaleDockItems({ ageDays: 30 });
+    console.log(
+      `[Nightly Snapshot] Auto-archived ${result.affected} dock item(s) older than 30 days`
+    );
+  } catch (error) {
+    console.error("[Nightly Snapshot] Failed to auto-archive dock items:", error);
+  }
 }
 
 /**
