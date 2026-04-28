@@ -467,6 +467,39 @@ export const dailySnapshots = mysqlTable(
 export type DailySnapshot = typeof dailySnapshots.$inferSelect;
 export type InsertDailySnapshot = typeof dailySnapshots.$inferInsert;
 
+// Daily reflection — the user's nightly close-the-day journal entry.
+// Distinct from `dailySnapshots` (which is a system-captured snapshot
+// of integrations) because this is *user-authored* qualitative data.
+// Single row per (userId, dateKey); upsert semantics on save.
+//
+// Fuels:
+//   - Trends correlations (energy 1-10 series joined to recovery /
+//     supplements / habit completion)
+//   - Weekly review (the prose summary GPT draws on)
+//   - King of the Day seeding (tomorrow's one thing → next morning's
+//     KoD candidate)
+export const dailyReflections = mysqlTable(
+  "dailyReflections",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    userId: int("userId").notNull(),
+    dateKey: varchar("dateKey", { length: 10 }).notNull(),
+    energyLevel: int("energyLevel"), // 1-10 self-rated scale
+    wentWell: text("wentWell"),
+    didntGo: text("didntGo"),
+    tomorrowOneThing: text("tomorrowOneThing"),
+    capturedAt: timestamp("capturedAt").defaultNow().notNull(),
+    createdAt: timestamp("createdAt").defaultNow(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow(),
+  },
+  (table) => ({
+    userDateIdx: uniqueIndex("daily_reflections_user_date_idx").on(table.userId, table.dateKey),
+  })
+);
+
+export type DailyReflection = typeof dailyReflections.$inferSelect;
+export type InsertDailyReflection = typeof dailyReflections.$inferInsert;
+
 // Raw Samsung payload archive for full datapoint retention.
 
 export const samsungSyncPayloads = mysqlTable(

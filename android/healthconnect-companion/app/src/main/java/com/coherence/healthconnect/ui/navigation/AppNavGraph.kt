@@ -40,9 +40,11 @@ import com.coherence.healthconnect.ui.screens.HabitsScreen
 import com.coherence.healthconnect.ui.screens.HealthScreen
 import com.coherence.healthconnect.ui.screens.MoreScreen
 import com.coherence.healthconnect.ui.screens.NotesScreen
+import com.coherence.healthconnect.ui.screens.ReflectionScreen
 import com.coherence.healthconnect.ui.screens.SettingsScreen
 import com.coherence.healthconnect.ui.screens.SupplementsScreen
 import com.coherence.healthconnect.ui.screens.TasksScreen
+import com.coherence.healthconnect.ui.screens.WeeklyReviewScreen
 import com.coherence.healthconnect.ui.widgets.ClockifyTimerStrip
 import kotlinx.coroutines.delay
 
@@ -135,7 +137,13 @@ fun AppNavGraph() {
         exitTransition = { tabExit },
         popEnterTransition = { tabEnter },
         popExitTransition = { tabExit },
-      ) { DashboardScreen(viewModel = dashboardViewModel) }
+      ) {
+        DashboardScreen(
+          viewModel = dashboardViewModel,
+          onNavigateToReflection = { navController.navigate(Routes.REFLECTION) { launchSingleTop = true } },
+          onNavigateToWeeklyReview = { navController.navigate(Routes.WEEKLY_REVIEW) { launchSingleTop = true } },
+        )
+      }
 
       composable(
         route = Routes.TASKS,
@@ -177,6 +185,8 @@ fun AppNavGraph() {
           onNavigateToDrive = { navController.navigate(Routes.DRIVE) { launchSingleTop = true } },
           onNavigateToClockify = { navController.navigate(Routes.CLOCKIFY) { launchSingleTop = true } },
           onNavigateToSettings = { navController.navigate(Routes.SETTINGS) { launchSingleTop = true } },
+          onNavigateToReflection = { navController.navigate(Routes.REFLECTION) { launchSingleTop = true } },
+          onNavigateToWeeklyReview = { navController.navigate(Routes.WEEKLY_REVIEW) { launchSingleTop = true } },
         )
       }
 
@@ -190,6 +200,8 @@ fun AppNavGraph() {
       composable(Routes.DRIVE) { DriveScreen(onBack = { navController.popBackStack() }) }
       composable(Routes.CLOCKIFY) { ClockifyScreen(onBack = { navController.popBackStack() }) }
       composable(Routes.SETTINGS) { SettingsScreen(onBack = { navController.popBackStack() }) }
+      composable(Routes.REFLECTION) { ReflectionScreen(onBack = { navController.popBackStack() }) }
+      composable(Routes.WEEKLY_REVIEW) { WeeklyReviewScreen(onBack = { navController.popBackStack() }) }
       }
 
       if (clockifyConnected) {

@@ -59,6 +59,8 @@ import { weatherRouter } from "./routers/weather";
 import { newsRouter } from "./routers/news";
 // Phase E (2026-04-28): AI Weekly Review.
 import { weeklyReviewRouter } from "./routers/weeklyReview";
+// Daily Rituals (2026-04-28) — evening reflection journal.
+import { reflectionsRouter } from "./routers/reflections";
 
 // ---------------------------------------------------------------------------
 // App Router — thin composition of all sub-routers
@@ -114,6 +116,7 @@ export const appRouter = router({
   weather: weatherRouter,
   news: newsRouter,
   weeklyReview: weeklyReviewRouter,
+  reflections: reflectionsRouter,
 });
 
 export type AppRouter = typeof appRouter;

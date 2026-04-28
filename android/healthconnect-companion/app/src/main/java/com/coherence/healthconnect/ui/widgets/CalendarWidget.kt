@@ -47,7 +47,7 @@ fun CalendarWidget(
       )
     } else if (events.isEmpty()) {
       Text(
-        "No upcoming events",
+        "Nothing on the calendar — protect the white space.",
         style = MaterialTheme.typography.bodyMedium,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
       )

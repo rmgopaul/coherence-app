@@ -54,6 +54,8 @@ import com.coherence.healthconnect.ui.widgets.HabitsWidget
 import com.coherence.healthconnect.ui.widgets.HealthWidget
 import com.coherence.healthconnect.ui.widgets.HeroStats
 import com.coherence.healthconnect.ui.widgets.MarketHeadlinesWidget
+import com.coherence.healthconnect.ui.widgets.MorningBriefingWidget
+import com.coherence.healthconnect.ui.widgets.NudgesWidget
 import com.coherence.healthconnect.ui.widgets.SportsWidget
 import com.coherence.healthconnect.ui.widgets.SupplementsWidget
 import com.coherence.healthconnect.ui.widgets.SuggestedActionsWidget
@@ -69,7 +71,11 @@ import kotlinx.coroutines.isActive
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun DashboardScreen(viewModel: DashboardViewModel) {
+fun DashboardScreen(
+  viewModel: DashboardViewModel,
+  onNavigateToReflection: () -> Unit = {},
+  onNavigateToWeeklyReview: () -> Unit = {},
+) {
   val app = LocalApp.current
   val state by viewModel.state.collectAsState()
   val preferences by app.container.appPreferencesRepository.preferences.collectAsState(initial = AppPreferences())
@@ -120,6 +126,23 @@ fun DashboardScreen(viewModel: DashboardViewModel) {
     } catch (_: Throwable) {
       // Keep previous KoD on transient fetch error rather than
       // dropping back to the heuristic mid-session.
+    }
+  }
+
+  // Whether the user already saved tonight's reflection. Drives the
+  // evening reflection CTA in MorningBriefingWidget and the
+  // "close the day" nudge in NudgesWidget. Polling the server on
+  // dashboard entry is cheap (one row by (userId, dateKey)) and
+  // means the CTA disappears the moment the user saves.
+  var hasReflectionToday by remember { mutableStateOf(false) }
+  LaunchedEffect(today, state.isRefreshing) {
+    try {
+      val response = app.container.trpcClient.query("reflections.getToday")
+      val obj = response as? JsonObject
+      hasReflectionToday = obj?.get("reflection") is JsonObject
+    } catch (_: Throwable) {
+      // Leave previous value alone on transient error — better to
+      // miss a CTA than to flash one inappropriately.
     }
   }
 
@@ -184,6 +207,42 @@ fun DashboardScreen(viewModel: DashboardViewModel) {
           kingOfDayTitle = kingOfDayTitle,
           kingOfDayReason = kingOfDayReason,
         )
+      }
+
+      // Morning briefing — time-aware glanceable summary that surfaces
+      // the evening reflection CTA after 5pm and the weekly-review CTA
+      // on Sundays. Reads existing dashboard state; no new fetches.
+      if (!hiddenWidgets.contains("morning_briefing")) {
+        item {
+          MorningBriefingWidget(
+            tasks = tasks,
+            events = events,
+            whoop = whoop,
+            health = health,
+            market = marketData,
+            hasReflectionToday = hasReflectionToday,
+            onOpenReflection = onNavigateToReflection,
+            onOpenWeeklyReview = onNavigateToWeeklyReview,
+          )
+        }
+      }
+
+      // Smart nudges — 0-3 client-side rules (low recovery, low
+      // energy, email backlog, evening reflection prompt). Renders
+      // nothing on a healthy day, which is the desired behavior.
+      if (!hiddenWidgets.contains("nudges")) {
+        item {
+          NudgesWidget(
+            whoop = whoop,
+            health = health,
+            emails = emails,
+            tasks = tasks,
+            hasReflectionToday = hasReflectionToday,
+            onOpenReflection = onNavigateToReflection,
+            onOpenTasks = {}, // Tasks tab is bottom-nav; nudge is informational here.
+            onOpenEmail = {}, // Gmail widget already on dashboard; nudge is informational.
+          )
+        }
       }
 
       // Phase G — focus mode collapses everything below the hero to

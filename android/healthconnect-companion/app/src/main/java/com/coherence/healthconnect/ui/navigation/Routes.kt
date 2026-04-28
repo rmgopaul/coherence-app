@@ -21,4 +21,7 @@ object Routes {
   const val DRIVE = "drive"
   const val CLOCKIFY = "clockify"
   const val SETTINGS = "settings"
+  // Daily Rituals — evening reflection journal + AI weekly review.
+  const val REFLECTION = "reflection"
+  const val WEEKLY_REVIEW = "weekly_review"
 }
