@@ -1088,6 +1088,81 @@ export async function listScheduleBImportResults(
   });
 }
 
+/**
+ * Task 9.4 (2026-04-28) — find the most recent successful Schedule B
+ * import result that maps to a given system.
+ *
+ * Schedule B results don't have a `csgId` column — rows are keyed by
+ * `gatsId` (GATS Unit ID) and `designatedSystemId`. We try three
+ * matchers and keep the most recently scanned hit:
+ *
+ *   1. `gatsId === trackingSystemRefId` — the documented join.
+ *   2. `designatedSystemId === systemId` — used by some PDF layouts
+ *      where GATS isn't yet assigned.
+ *   3. `fileName === "csg-portal/schedule-b-{csgId}.pdf"` — only
+ *      applies to rows sourced from the CSG portal runner. Lets the
+ *      detail page surface a result even before the GATS data has
+ *      caught up to the scrape.
+ *
+ * Returns `null` if no match exists. Skips rows with `error IS NOT
+ * NULL`. The detail page renders a separate failure indicator from
+ * a different code path when the latest matching row had an error.
+ */
+export async function getLatestScheduleBResultForSystem(
+  scopeId: string,
+  match: {
+    csgId: string;
+    systemId?: string | null;
+    trackingSystemRefId?: string | null;
+  }
+): Promise<typeof scheduleBImportResults.$inferSelect | null> {
+  const csgId = match.csgId.trim();
+  const systemId = match.systemId?.trim() || null;
+  const trackingId = match.trackingSystemRefId?.trim() || null;
+  if (!csgId && !systemId && !trackingId) return null;
+
+  const db = await getDb();
+  if (!db) return null;
+  const ensured = await ensureScheduleBImportTables();
+  if (!ensured) return null;
+
+  const csgFileName = csgId ? `csg-portal/schedule-b-${csgId}.pdf` : null;
+
+  return withDbRetry("get latest schedule b for system", async () => {
+    // Build a single OR over the available matchers. Putting all
+    // candidates in one query keeps it to one round-trip — the
+    // alternative was three serial selects with a JS-side fold.
+    const { or } = await import("drizzle-orm");
+    const matchers: ReturnType<typeof eq>[] = [];
+    if (trackingId) {
+      matchers.push(eq(scheduleBImportResults.gatsId, trackingId));
+    }
+    if (systemId) {
+      matchers.push(
+        eq(scheduleBImportResults.designatedSystemId, systemId)
+      );
+    }
+    if (csgFileName) {
+      matchers.push(eq(scheduleBImportResults.fileName, csgFileName));
+    }
+    if (matchers.length === 0) return null;
+
+    const rows = await db
+      .select()
+      .from(scheduleBImportResults)
+      .where(
+        and(
+          eq(scheduleBImportResults.scopeId, scopeId),
+          sql`${scheduleBImportResults.error} IS NULL`,
+          or(...matchers)
+        )
+      )
+      .orderBy(desc(scheduleBImportResults.scannedAt))
+      .limit(1);
+    return rows[0] ?? null;
+  });
+}
+
 export async function getAllScheduleBImportResults(jobId: string) {
   const db = await getDb();
   if (!db) return [];

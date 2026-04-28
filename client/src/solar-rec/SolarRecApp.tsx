@@ -66,6 +66,10 @@ const InvoiceMatchDashboard = lazy(
 // surfaces live + recent runs across all four job runners.
 // Module key `jobs` (already in MODULES). Read-only page.
 const JobsIndex = lazy(() => import("./pages/JobsIndex"));
+// Task 9.4 (2026-04-28): system detail page MVP — one page per CSG ID
+// composing the registry record + latest contract scan + DIN scrape
+// + Schedule B import result. Module key `portfolio-workbench`.
+const SystemDetail = lazy(() => import("./pages/SystemDetail"));
 
 // Meter read pages (existing, reused from main app)
 // Task 5.4 vendor 13/16 — SolarEdge migrated to solar-rec-native page
@@ -238,6 +242,9 @@ function AuthenticatedApp() {
                 <PermissionGate moduleKey="jobs">
                   <JobsIndex />
                 </PermissionGate>
+              </Route>
+              <Route path="/solar-rec/system/:csgId">
+                <SystemDetail />
               </Route>
 
               {/* Meter read pages */}

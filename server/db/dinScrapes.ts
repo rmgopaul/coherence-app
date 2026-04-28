@@ -366,6 +366,72 @@ export async function listDinScrapeDinsForJob(
   });
 }
 
+/**
+ * Task 9.4 (2026-04-28) — fetch the latest DIN scrape result + dins
+ * for one CSG ID across the entire scope. Used by the system detail
+ * page to populate the DINs section without surfacing the job-level
+ * model.
+ *
+ * Returns `{ result, dins }`:
+ *   - `result` is the most-recent successful (`error IS NULL`) site
+ *     result for this CSG ID, regardless of which job produced it.
+ *     `null` if the CSG ID has never been scraped successfully.
+ *   - `dins` is every DIN row attached to that result. Order:
+ *     inverters first, then meters, then unknown — within a group,
+ *     rawMatch order from the runner. The detail page renders a
+ *     bulleted list per group so the order matters.
+ *
+ * Failed scrapes (`error IS NOT NULL`) are skipped here. The detail
+ * page surfaces them via a separate "last attempt failed" badge —
+ * out of scope for the MVP. Callers wanting both should use the
+ * raw `dinScrapeResults` table.
+ */
+export async function getLatestDinScrapeForCsgId(
+  scopeId: string,
+  csgId: string
+): Promise<{
+  result: typeof dinScrapeResults.$inferSelect | null;
+  dins: (typeof dinScrapeDins.$inferSelect)[];
+}> {
+  const trimmed = csgId.trim();
+  if (!trimmed) return { result: null, dins: [] };
+  const db = await getDb();
+  if (!db) return { result: null, dins: [] };
+
+  return withDbRetry("get latest din scrape for csgId", async () => {
+    const [latestResult] = await db
+      .select()
+      .from(dinScrapeResults)
+      .where(
+        and(
+          eq(dinScrapeResults.scopeId, scopeId),
+          eq(dinScrapeResults.csgId, trimmed),
+          sql`${dinScrapeResults.error} IS NULL`
+        )
+      )
+      .orderBy(desc(dinScrapeResults.scannedAt))
+      .limit(1);
+
+    if (!latestResult) return { result: null, dins: [] };
+
+    // Fetch the dins for this exact (jobId, csgId). The
+    // `dinScrapeDins` `(jobId, csgId, dinValue)` unique index keeps
+    // this small even on the biggest sites.
+    const dins = await db
+      .select()
+      .from(dinScrapeDins)
+      .where(
+        and(
+          eq(dinScrapeDins.jobId, latestResult.jobId),
+          eq(dinScrapeDins.csgId, trimmed)
+        )
+      )
+      .orderBy(asc(dinScrapeDins.sourceType), asc(dinScrapeDins.dinValue));
+
+    return { result: latestResult, dins };
+  });
+}
+
 export async function getAllDinScrapeDinsForJob(jobId: string) {
   const db = await getDb();
   if (!db) return [];
