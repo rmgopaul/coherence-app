@@ -23,6 +23,7 @@ export default defineConfig({
       "client/src/features/supplements/**/*.test.ts",
       "client/src/features/habits/**/*.test.ts",
       "client/src/features/health/**/*.test.ts",
+      "client/src/features/settings/**/*.test.ts",
       "client/src/lib/**/*.test.ts",
       "shared/**/*.test.ts",
     ],

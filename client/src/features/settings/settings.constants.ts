@@ -58,3 +58,50 @@ export const HABIT_COLOR_OPTIONS = [
   "rose",
   "amber",
 ];
+
+/**
+ * Phase E (2026-04-28) — top-level tabs on the Settings page.
+ *
+ * The page used to be a single 2,500-line scroll. Tabs group the
+ * 13 sections by intent so the top of the page is no longer a wall
+ * of section headers. Order here = order rendered in the TabsList.
+ *
+ * Each tab id is also the URL hash fragment (`/settings#profile`,
+ * `/settings#integrations`) so deep links + page refreshes keep
+ * the user on the same tab.
+ */
+export const SETTINGS_TABS = [
+  { id: "profile", label: "Profile" },
+  { id: "tracking", label: "Tracking" },
+  { id: "integrations", label: "Integrations" },
+  { id: "ai", label: "AI" },
+  { id: "oauth", label: "OAuth" },
+  { id: "data", label: "Data" },
+] as const;
+
+export type SettingsTabId = (typeof SETTINGS_TABS)[number]["id"];
+
+export const SETTINGS_DEFAULT_TAB: SettingsTabId = "profile";
+
+/**
+ * Maps each Settings section key to the tab it lives under. The
+ * keys here are short identifiers; the actual section render
+ * call sites pass them to the `showSection` helper alongside the
+ * existing keyword string used by the search bar.
+ */
+export const SETTINGS_SECTION_TAB: Record<string, SettingsTabId> = {
+  dataExport: "data",
+  profile: "profile",
+  appearance: "profile",
+  twoFactor: "profile",
+  supplements: "tracking",
+  habits: "tracking",
+  todoist: "integrations",
+  timeTracking: "integrations",
+  google: "integrations",
+  fitness: "integrations",
+  openai: "ai",
+  anthropic: "ai",
+  oauth: "oauth",
+  engagement: "data",
+};

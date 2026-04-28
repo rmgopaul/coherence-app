@@ -8,6 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Switch } from "@/components/ui/switch";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { trpc } from "@/lib/trpc";
 import {
   DASHBOARD_HEADER_TOOL_BUTTON_OPTIONS,
@@ -44,13 +45,21 @@ import {
   ANTHROPIC_MODELS,
   TODOIST_DEFAULT_OPTIONS,
   HABIT_COLOR_OPTIONS,
+  // Phase E (2026-04-28) — top-level tabs.
+  SETTINGS_TABS,
+  SETTINGS_DEFAULT_TAB,
+  SETTINGS_SECTION_TAB,
+  type SettingsTabId,
 } from "./settings.constants";
 import {
   type SupplementEditorState,
   type SupplementBottleScanSummary,
   type SupplementBottleScanBatch,
 } from "./settings.types";
-import { parseOptionalNonNegativeNumber } from "./settings.helpers";
+import {
+  parseOptionalNonNegativeNumber,
+  parseSettingsTabFromHash,
+} from "./settings.helpers";
 import { toLocalDateKey } from "@/lib/helpers";
 
 export default function Settings() {
@@ -71,6 +80,21 @@ export default function Settings() {
   const [whoopClientSecret, setWhoopClientSecret] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [settingsSearch, setSettingsSearch] = useState("");
+  // Phase E (2026-04-28) — active settings tab. Seeded from the
+  // URL hash so deep links like `/settings#integrations` open on
+  // the right tab. Hash is updated via history.replaceState on
+  // tab change so refreshing the page keeps the user put.
+  const [activeTab, setActiveTab] = useState<SettingsTabId>(() =>
+    typeof window !== "undefined"
+      ? parseSettingsTabFromHash(window.location.hash)
+      : SETTINGS_DEFAULT_TAB
+  );
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const desired = `#${activeTab}`;
+    if (window.location.hash === desired) return;
+    window.history.replaceState({}, "", desired);
+  }, [activeTab]);
   const [selectedThemeMode, setSelectedThemeMode] = useState<"light" | "dark">(theme);
   const [hiddenDashboardButtons, setHiddenDashboardButtons] = useState<DashboardHeaderToolButtonKey[]>([]);
   const [marketStockSymbolsInput, setMarketStockSymbolsInput] = useState("");
@@ -1008,8 +1032,25 @@ export default function Settings() {
   };
 
   const searchLower = settingsSearch.toLowerCase().trim();
+  const isSearching = searchLower.length > 0;
   const sectionVisible = (keywords: string) =>
     !searchLower || keywords.toLowerCase().includes(searchLower);
+  /**
+   * Phase E (2026-04-28) — section gate combining the existing
+   * keyword search with the active-tab membership. Each section
+   * passes a stable key from `SETTINGS_SECTION_TAB`. When the user
+   * is searching we render every matching section in a single
+   * column (the original behavior); when no search is active we
+   * only render sections that belong to the active tab.
+   */
+  const showSection = (
+    sectionKey: keyof typeof SETTINGS_SECTION_TAB,
+    keywords: string
+  ): boolean => {
+    if (!sectionVisible(keywords)) return false;
+    if (isSearching) return true;
+    return SETTINGS_SECTION_TAB[sectionKey] === activeTab;
+  };
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 dark:from-slate-950 dark:via-slate-900 dark:to-blue-950">
@@ -1025,7 +1066,7 @@ export default function Settings() {
       </header>
 
       <main className="container max-w-4xl mx-auto px-4 py-8">
-        <div className="mb-6">
+        <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
           <Input
             placeholder="Search settings..."
             value={settingsSearch}
@@ -1033,8 +1074,26 @@ export default function Settings() {
             className="max-w-sm"
           />
         </div>
+        {/* Phase E (2026-04-28) — top-level Tabs nav. Hidden while
+            the user is searching; in that case the original flat
+            scroll surfaces every matching section at once. */}
+        {!isSearching && (
+          <Tabs
+            value={activeTab}
+            onValueChange={(v) => setActiveTab(v as SettingsTabId)}
+            className="mb-6"
+          >
+            <TabsList className="flex flex-wrap">
+              {SETTINGS_TABS.map((tab) => (
+                <TabsTrigger key={tab.id} value={tab.id}>
+                  {tab.label}
+                </TabsTrigger>
+              ))}
+            </TabsList>
+          </Tabs>
+        )}
         <div className="flex flex-col gap-8">
-          {sectionVisible("data export json csv download") && (
+          {showSection("dataExport", "data export json csv download") && (
           <div>
             <h2 className="text-xl font-semibold text-slate-900 mb-4">Data Export</h2>
             <Card>
@@ -1060,9 +1119,11 @@ export default function Settings() {
           </div>
           )}
 
-          <TwoFactorSettings />
+          {showSection("twoFactor", "two factor 2fa security authenticator") && (
+            <TwoFactorSettings />
+          )}
 
-          {sectionVisible("profile display name greeting") && (
+          {showSection("profile", "profile display name greeting") && (
           <div>
             <h2 className="text-xl font-semibold text-slate-900 mb-4">Profile</h2>
             <Card>
@@ -1091,7 +1152,7 @@ export default function Settings() {
           </div>
           )}
 
-          {sectionVisible("appearance theme dark light mode buttons dashboard") && (
+          {showSection("appearance", "appearance theme dark light mode buttons dashboard") && (
           <div>
             <h2 className="text-xl font-semibold text-slate-900 mb-4">Appearance</h2>
             <div className="space-y-4">
@@ -1208,7 +1269,7 @@ export default function Settings() {
           </div>
           )}
 
-          {sectionVisible("supplements protocol dose timing") && (
+          {showSection("supplements", "supplements protocol dose timing") && (
           <div style={{ order: 9999 }}>
             <h2 className="text-xl font-semibold text-slate-900 mb-4">Supplements</h2>
             <Card>
@@ -1636,7 +1697,7 @@ export default function Settings() {
           )}
 
           {/* Todoist Integration */}
-          {sectionVisible("todoist tasks integration token") && (
+          {showSection("todoist", "todoist tasks integration token") && (
           <div>
             <h2 className="text-xl font-semibold text-slate-900 mb-4">Todoist Integration</h2>
             <Card>
@@ -1745,7 +1806,7 @@ export default function Settings() {
           )}
 
           {/* Clockify Integration */}
-          {sectionVisible("time tracking clockify api key workspace") && (
+          {showSection("timeTracking", "time tracking clockify api key workspace") && (
           <div>
             <h2 className="text-xl font-semibold text-slate-900 mb-4">Time Tracking</h2>
             <Card>
@@ -1856,7 +1917,7 @@ export default function Settings() {
           )}
 
           {/* OpenAI API Key */}
-          {sectionVisible("openai chatgpt api key model gpt") && (
+          {showSection("openai", "openai chatgpt api key model gpt") && (
           <div>
             <h2 className="text-xl font-semibold text-slate-900 mb-4">OpenAI Configuration</h2>
             <Card>
@@ -1945,7 +2006,7 @@ export default function Settings() {
           )}
 
           {/* Anthropic API Key */}
-          {sectionVisible("anthropic claude api key model") && (
+          {showSection("anthropic", "anthropic claude api key model") && (
           <div>
             <h2 className="text-xl font-semibold text-slate-900 mb-4">Anthropic Configuration</h2>
             <Card>
@@ -2034,7 +2095,7 @@ export default function Settings() {
           )}
 
           {/* OAuth Credentials Configuration */}
-          {sectionVisible("oauth credentials google whoop client id secret") && (
+          {showSection("oauth", "oauth credentials google whoop client id secret") && (
           <div>
             <h2 className="text-xl font-semibold text-slate-900 mb-4">OAuth Credentials</h2>
             <p className="text-sm text-slate-600 mb-4">
@@ -2137,7 +2198,7 @@ export default function Settings() {
           )}
 
           {/* Google Integration */}
-          {sectionVisible("google calendar gmail services connect") && (
+          {showSection("google", "google calendar gmail services connect") && (
           <div>
             <h2 className="text-xl font-semibold text-slate-900 mb-4">Google Services</h2>
             <Card>
@@ -2189,7 +2250,7 @@ export default function Settings() {
           )}
 
           {/* WHOOP Integration */}
-          {sectionVisible("fitness whoop samsung health connect services") && (
+          {showSection("fitness", "fitness whoop samsung health connect services") && (
           <div>
             <h2 className="text-xl font-semibold text-slate-900 mb-4">Fitness Services</h2>
             <Card>
@@ -2361,7 +2422,7 @@ export default function Settings() {
           )}
 
           {/* Habit Tracker Configuration */}
-          {sectionVisible("habits tracking tiles color") && (
+          {showSection("habits", "habits tracking tiles color") && (
           <div>
             <h2 className="text-xl font-semibold text-slate-900 mb-4">Habits</h2>
             <Card>
@@ -2501,7 +2562,7 @@ export default function Settings() {
           )}
 
           {/* Engagement Insights */}
-          {sectionVisible("engagement insights section usage ratings") && (
+          {showSection("engagement", "engagement insights section usage ratings") && (
           <div>
             <h2 className="text-xl font-semibold text-slate-900 mb-4">Engagement Insights</h2>
             <Card>
