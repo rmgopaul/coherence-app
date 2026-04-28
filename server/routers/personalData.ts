@@ -43,6 +43,9 @@ import {
   deleteHabitCategory,
   getHabitCompletionsByDate,
   getHabitCompletionsForDefinitionRange,
+  // Phase E (2026-04-28): bulk variant for HabitsHistoryPanel.
+  getHabitCompletionsForUserRange,
+  groupCompletionsByHabitId,
   getHabitCompletionsRange,
   getSleepNoteByDate,
   listHabitCategories,
@@ -1470,6 +1473,42 @@ export const habitsRouter = router({
         dateKey: r.dateKey,
         completed: r.completed,
       }));
+    }),
+
+  /**
+   * Phase E (2026-04-28) — bulk variant of `getCompletionsRange`.
+   *
+   * One round-trip returns `Record<habitId, {dateKey, completed}[]>`
+   * for every habit the user has rows for in the window. The
+   * `HabitsHistoryPanel` previously fired one query PER habit
+   * (N+1); with this it fires one total. Rows for habits with
+   * zero completions in the window are simply absent from the
+   * record — the client fills missing days with `completed: false`
+   * via its existing `fullRange` reduction.
+   */
+  getCompletionsRangeBulk: protectedProcedure
+    .input(
+      z.object({
+        startDateKey: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+        endDateKey: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      })
+    )
+    .query(async ({ ctx, input }) => {
+      const rows = await getHabitCompletionsForUserRange(
+        ctx.user.id,
+        input.startDateKey,
+        input.endDateKey
+      );
+      // Strip the row shape down to what the heatmap consumes,
+      // then fold into the per-habit map.
+      const stripped = rows.map((r) => ({
+        habitId: r.habitId,
+        dateKey: r.dateKey,
+        completed: r.completed,
+      }));
+      return {
+        byHabitId: groupCompletionsByHabitId(stripped),
+      };
     }),
 
   // ─── Correlation (habit × health metric) ─────────────────────────

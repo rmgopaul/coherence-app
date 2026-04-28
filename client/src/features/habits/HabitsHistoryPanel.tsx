@@ -41,6 +41,17 @@ export function HabitsHistoryPanel({ definitions }: HabitsHistoryPanelProps) {
 
   const activeDefs = definitions.filter((d) => d.isActive);
 
+  // Phase E (2026-04-28) — single bulk query across every habit
+  // for the selected window. Replaces the prior N+1 pattern where
+  // each `<HabitHistoryCard />` issued its own
+  // `getCompletionsRange.useQuery`. With ~10 habits that was 10
+  // round-trips per render; now it's 1.
+  const { data: bulk } = trpc.habits.getCompletionsRangeBulk.useQuery(
+    { startDateKey, endDateKey },
+    { retry: false, enabled: activeDefs.length > 0 }
+  );
+  const rowsByHabitId = bulk?.byHabitId ?? {};
+
   if (activeDefs.length === 0) {
     return (
       <div className="rounded-md border bg-muted/40 p-6 text-center text-sm text-muted-foreground">
@@ -77,6 +88,7 @@ export function HabitsHistoryPanel({ definitions }: HabitsHistoryPanelProps) {
             definition={def}
             startDateKey={startDateKey}
             endDateKey={endDateKey}
+            rows={rowsByHabitId[def.id] ?? []}
           />
         ))}
       </div>
@@ -88,18 +100,17 @@ interface HabitHistoryCardProps {
   definition: HabitDefinition;
   startDateKey: string;
   endDateKey: string;
+  /** Phase E (2026-04-28): rows passed in from the parent's bulk
+   *  query rather than each card fetching its own. */
+  rows: ReadonlyArray<{ dateKey: string; completed: boolean }>;
 }
 
 function HabitHistoryCard({
   definition,
   startDateKey,
   endDateKey,
+  rows,
 }: HabitHistoryCardProps) {
-  const { data: rows = [] } = trpc.habits.getCompletionsRange.useQuery(
-    { habitId: definition.id, startDateKey, endDateKey },
-    { retry: false }
-  );
-
   // Fill missing days with { completed: false } so the grid shows the full window.
   const fullRange = useMemo(() => {
     const byKey = new Map(rows.map((r) => [r.dateKey, r.completed]));

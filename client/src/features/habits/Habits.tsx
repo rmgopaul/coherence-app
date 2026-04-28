@@ -73,6 +73,8 @@ export default function Habits() {
     void utils.habits.listDefinitions.invalidate();
     void utils.habits.listCategories.invalidate();
     void utils.habits.getCompletionsRange.invalidate();
+    // Phase E (2026-04-28): bulk variant powers the history panel.
+    void utils.habits.getCompletionsRangeBulk.invalidate();
     void utils.habits.getSleepReport.invalidate();
     void utils.habits.getCorrelation.invalidate();
   }
