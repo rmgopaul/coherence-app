@@ -6,6 +6,7 @@
  */
 
 import { useState } from "react";
+import { PersistConfirmation, readMeterLifetimeKwh, readMeterName, readMeterStatus } from "../../components/PersistConfirmation";
 import { solarRecTrpc as trpc } from "../../solarRecTrpc";
 import { useSolarRecPermission } from "../../hooks/useSolarRecPermission";
 import { Button } from "@/components/ui/button";
@@ -52,12 +53,14 @@ export default function FroniusMeterReads() {
       toast.error("Enter a PV system ID");
       return;
     }
+    setShowPersist(true);
     snapshotMutation.mutate({
       pvSystemId: trimmed,
       anchorDate: anchorDate || undefined,
     });
   };
 
+  const [showPersist, setShowPersist] = useState(false);
   const result = snapshotMutation.data;
 
   return (
@@ -246,6 +249,27 @@ export default function FroniusMeterReads() {
                   </p>
                 )}
             </div>
+          )}
+        
+          {result && showPersist && (
+            <PersistConfirmation
+              providerKey="fronius"
+              providerLabel="Fronius"
+              rows={
+                readMeterStatus(result) === "Found" && readMeterLifetimeKwh(result) != null
+                  ? [{
+                monitoring: "Fronius",
+                monitoring_system_id: String(pvSystemId),
+                monitoring_system_name: readMeterName(result) ?? String(pvSystemId),
+                lifetime_meter_read_wh: String(Math.round((readMeterLifetimeKwh(result) ?? 0) * 1000)),
+                read_date: anchorDate || new Date().toISOString().slice(0, 10),
+                status: "",
+                alert_severity: ""
+                    }]
+                  : []
+              }
+              onDiscard={() => setShowPersist(false)}
+            />
           )}
         </CardContent>
       </Card>

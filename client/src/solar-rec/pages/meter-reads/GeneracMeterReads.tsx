@@ -10,6 +10,7 @@
  */
 
 import { useState } from "react";
+import { PersistConfirmation, readMeterLifetimeKwh, readMeterName, readMeterStatus } from "../../components/PersistConfirmation";
 import { solarRecTrpc as trpc } from "../../solarRecTrpc";
 import { PermissionGate } from "../../components/PermissionGate";
 import { useSolarRecPermission } from "../../hooks/useSolarRecPermission";
@@ -58,12 +59,14 @@ function GeneracMeterReadsImpl() {
       toast.error("Enter a system ID");
       return;
     }
+    setShowPersist(true);
     snapshotMutation.mutate({
       systemId: trimmed,
       anchorDate: anchorDate || undefined,
     });
   };
 
+  const [showPersist, setShowPersist] = useState(false);
   const result = snapshotMutation.data;
 
   return (
@@ -248,6 +251,27 @@ function GeneracMeterReadsImpl() {
                   </p>
                 )}
             </div>
+          )}
+        
+          {result && showPersist && (
+            <PersistConfirmation
+              providerKey="generac"
+              providerLabel="Generac"
+              rows={
+                readMeterStatus(result) === "Found" && readMeterLifetimeKwh(result) != null
+                  ? [{
+                monitoring: "Generac",
+                monitoring_system_id: String(systemId),
+                monitoring_system_name: readMeterName(result) ?? String(systemId),
+                lifetime_meter_read_wh: String(Math.round((readMeterLifetimeKwh(result) ?? 0) * 1000)),
+                read_date: anchorDate || new Date().toISOString().slice(0, 10),
+                status: "",
+                alert_severity: ""
+                    }]
+                  : []
+              }
+              onDiscard={() => setShowPersist(false)}
+            />
           )}
         </CardContent>
       </Card>

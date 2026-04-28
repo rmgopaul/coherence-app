@@ -12,6 +12,7 @@
  */
 
 import { useState } from "react";
+import { PersistConfirmation, readMeterLifetimeKwh, readMeterName, readMeterStatus } from "../../components/PersistConfirmation";
 import { solarRecTrpc as trpc } from "../../solarRecTrpc";
 import { useSolarRecPermission } from "../../hooks/useSolarRecPermission";
 import { Button } from "@/components/ui/button";
@@ -64,6 +65,7 @@ export default function EnphaseV4MeterReads() {
       toast.error("Anchor date is required for Enphase V4 snapshots");
       return;
     }
+    setShowPersist(true);
     snapshotMutation.mutate({
       systemId: trimmed,
       anchorDate,
@@ -71,6 +73,7 @@ export default function EnphaseV4MeterReads() {
     });
   };
 
+  const [showPersist, setShowPersist] = useState(false);
   const result = snapshotMutation.data;
 
   return (
@@ -275,6 +278,27 @@ export default function EnphaseV4MeterReads() {
                   </p>
                 )}
             </div>
+          )}
+        
+          {result && showPersist && (
+            <PersistConfirmation
+              providerKey="enphase-v4"
+              providerLabel="Enphase V4"
+              rows={
+                readMeterStatus(result) === "Found" && readMeterLifetimeKwh(result) != null
+                  ? [{
+                monitoring: "Enphase V4",
+                monitoring_system_id: String(systemId),
+                monitoring_system_name: readMeterName(result) ?? String(systemId),
+                lifetime_meter_read_wh: String(Math.round((readMeterLifetimeKwh(result) ?? 0) * 1000)),
+                read_date: anchorDate || new Date().toISOString().slice(0, 10),
+                status: "",
+                alert_severity: ""
+                    }]
+                  : []
+              }
+              onDiscard={() => setShowPersist(false)}
+            />
           )}
         </CardContent>
       </Card>

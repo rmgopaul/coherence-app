@@ -14,6 +14,7 @@
  */
 
 import { useEffect, useState } from "react";
+import { PersistConfirmation, readMeterLifetimeKwh, readMeterName, readMeterStatus } from "../../components/PersistConfirmation";
 import { solarRecTrpc as trpc } from "../../solarRecTrpc";
 import { useSolarRecPermission } from "../../hooks/useSolarRecPermission";
 import { Button } from "@/components/ui/button";
@@ -89,6 +90,7 @@ export default function EgaugeMeterReads() {
       toast.error("Enter a meter ID, or set a default on the credential.");
       return;
     }
+    setShowPersist(true);
     snapshotMutation.mutate({
       credentialId,
       meterId: meterIdOverride.trim() || undefined,
@@ -96,6 +98,7 @@ export default function EgaugeMeterReads() {
     });
   };
 
+  const [showPersist, setShowPersist] = useState(false);
   const result = snapshotMutation.data;
 
   return (
@@ -300,6 +303,27 @@ export default function EgaugeMeterReads() {
                 </p>
               )}
             </div>
+          )}
+        
+          {result && showPersist && (
+            <PersistConfirmation
+              providerKey="egauge"
+              providerLabel="eGauge"
+              rows={
+                readMeterStatus(result) === "Found" && readMeterLifetimeKwh(result) != null
+                  ? [{
+                monitoring: "eGauge",
+                monitoring_system_id: String(meterIdOverride || credentialId),
+                monitoring_system_name: readMeterName(result) ?? String(meterIdOverride || credentialId),
+                lifetime_meter_read_wh: String(Math.round((readMeterLifetimeKwh(result) ?? 0) * 1000)),
+                read_date: anchorDate || new Date().toISOString().slice(0, 10),
+                status: "",
+                alert_severity: ""
+                    }]
+                  : []
+              }
+              onDiscard={() => setShowPersist(false)}
+            />
           )}
         </CardContent>
       </Card>
