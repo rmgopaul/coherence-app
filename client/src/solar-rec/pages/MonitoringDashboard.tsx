@@ -921,6 +921,35 @@ function MonitoringDashboardImpl() {
       });
     },
   });
+  const schedulerStatusQuery = trpc.monitoring.getSchedulerStatus.useQuery(
+    undefined,
+    { enabled: isOperator }
+  );
+  const testScheduledRunMutation = trpc.monitoring.testScheduledRun.useMutation(
+    {
+      onSuccess: (data) => {
+        setActiveBatchId(data.batchId);
+        setBatchStatus({
+          id: data.batchId,
+          status: "running",
+          currentProvider: null,
+          currentCredentialName: null,
+          providersTotal: 0,
+          providersCompleted: 0,
+          totalSites: 0,
+          successCount: 0,
+          errorCount: 0,
+          noDataCount: 0,
+        });
+        toast.success(
+          data.wouldRunNormally
+            ? `Scheduler test fired (today is a scheduled day). Batch ${data.batchId.slice(0, 8)}…`
+            : `Scheduler test fired (today is NOT a scheduled day — bypassed). Batch ${data.batchId.slice(0, 8)}…`
+        );
+      },
+      onError: (err) => toast.error(`Scheduler test failed: ${err.message}`),
+    }
+  );
   const exportCsvMutation = trpc.monitoring.exportGridCsv.useMutation({
     onSuccess: (data) => {
       const blob = new Blob([data.csv], { type: "text/csv" });
@@ -1101,6 +1130,41 @@ function MonitoringDashboardImpl() {
           Re-running the same batch in one day adds 0 new rows — the bridge dedupes by site, date, and lifetime kWh.
         </span>
       </div>
+
+      {isOperator && schedulerStatusQuery.data && (
+        <div className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/30 px-3 py-2 text-xs">
+          <Activity className="h-3.5 w-3.5" />
+          <span className="font-medium">Scheduler:</span>
+          <span>
+            {schedulerStatusQuery.data.isDailyMode
+              ? `daily at ${schedulerStatusQuery.data.configuredHour}:00 CT`
+              : `${schedulerStatusQuery.data.configuredHour}:00 CT on day(s) ${schedulerStatusQuery.data.configuredDays.join(", ")}`}
+          </span>
+          <span className="text-muted-foreground">
+            ·{" "}
+            {schedulerStatusQuery.data.todayIsScheduledDay
+              ? "today IS a run day"
+              : `today is NOT a run day · next: ${
+                  schedulerStatusQuery.data.nextScheduledDateKey ?? "—"
+                }`}
+          </span>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 ml-auto"
+            onClick={() => testScheduledRunMutation.mutate()}
+            disabled={isRunning || testScheduledRunMutation.isPending}
+            title="Fires the scheduler's exact code path immediately, ignoring the day-of-month gate."
+          >
+            {testScheduledRunMutation.isPending ? (
+              <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+            ) : (
+              <Play className="h-3.5 w-3.5 mr-1" />
+            )}
+            Test scheduled run
+          </Button>
+        </div>
+      )}
 
       {isOperator && providerOptions.length > 0 && (
         <Card className="border-dashed">

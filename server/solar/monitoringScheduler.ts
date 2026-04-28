@@ -15,10 +15,11 @@ import { scheduleDaily } from "../_core/scheduleDaily";
 import { resolveSolarRecScopeId } from "../_core/solarRecAuth";
 import { executeMonitoringBatch } from "./monitoring.service";
 import * as db from "../db";
+import { toDateKey } from "@shared/dateKey";
 
 let stopScheduler: (() => void) | null = null;
 
-function getScheduledHour(): number {
+export function getScheduledHour(): number {
   const envValue = process.env.SOLAR_REC_MONITOR_HOUR;
   if (envValue) {
     const parsed = parseInt(envValue, 10);
@@ -27,13 +28,32 @@ function getScheduledHour(): number {
   return 8; // default: 8 AM
 }
 
-function getMonthlyScheduleTokens(): string[] {
+export function getMonthlyScheduleTokens(): string[] {
   const raw = process.env.SOLAR_REC_MONITOR_DAYS?.trim();
   if (!raw) return ["1", "12", "15", "last"];
   return raw
     .split(",")
     .map((token) => token.trim().toLowerCase())
     .filter((token) => token.length > 0);
+}
+
+/**
+ * Walk forward day-by-day from `fromDateKey` until the next day matching
+ * the configured monthly tokens. Returns null if `daily` is configured.
+ * Capped at 366 days so a misconfiguration can't infinite-loop.
+ */
+export function nextScheduledDateKey(fromDateKey: string): string | null {
+  const tokens = getMonthlyScheduleTokens();
+  if (tokens.includes("daily")) return null;
+  const start = new Date(`${fromDateKey}T00:00:00`);
+  if (Number.isNaN(start.getTime())) return null;
+  for (let i = 1; i <= 366; i += 1) {
+    const candidate = new Date(start);
+    candidate.setDate(candidate.getDate() + i);
+    const candidateKey = toDateKey(candidate);
+    if (shouldRunMonthlyMonitoring(candidateKey)) return candidateKey;
+  }
+  return null;
 }
 
 function dateParts(dateKey: string) {
@@ -65,8 +85,16 @@ async function runMonitoringBatch(dateKey: string): Promise<void> {
     );
     return;
   }
+  await runScheduledMonitoringBatch(dateKey, /* triggeredBy */ null);
+}
 
-  console.log(`[MonitoringScheduler] Starting scheduled run for ${dateKey}...`);
+async function runScheduledMonitoringBatch(
+  dateKey: string,
+  triggeredBy: number | null
+): Promise<{ batchId: string; scopeId: string }> {
+  console.log(
+    `[MonitoringScheduler] Starting ${triggeredBy ? "manual-test" : "scheduled"} run for ${dateKey}...`
+  );
   // Single-scope today (Rhett's scope). When Task 5.2 onboards a second
   // scope with its own team credentials, this loop will iterate every
   // active scope; for now resolveSolarRecScopeId() is the single-tenant
@@ -75,10 +103,39 @@ async function runMonitoringBatch(dateKey: string): Promise<void> {
   const batchId = await db.createMonitoringBatchRun({
     scopeId,
     dateKey,
-    triggeredBy: null, // system-triggered
+    triggeredBy,
   });
-  await executeMonitoringBatch(batchId, scopeId, dateKey, null);
-  console.log(`[MonitoringScheduler] Completed scheduled run for ${dateKey}`);
+  await executeMonitoringBatch(batchId, scopeId, dateKey, triggeredBy);
+  console.log(`[MonitoringScheduler] Completed run for ${dateKey} (batchId=${batchId})`);
+  return { batchId, scopeId };
+}
+
+/**
+ * Manually fire the same code path the scheduler executes on a configured
+ * day, regardless of whether today is in `SOLAR_REC_MONITOR_DAYS`. Returns
+ * batchId synchronously after creating the row; the actual API sweep runs
+ * in the background. Used by `monitoring.testScheduledRun` so an admin can
+ * verify the scheduler's path without waiting for the next scheduled day.
+ */
+export async function startScheduledMonitoringBatchManually(
+  triggeredBy: number | null
+): Promise<{ batchId: string; scopeId: string; dateKey: string; wouldRunNormally: boolean }> {
+  const dateKey = toDateKey(new Date(), "America/Chicago");
+  const wouldRunNormally = shouldRunMonthlyMonitoring(dateKey);
+  const scopeId = await resolveSolarRecScopeId();
+  const batchId = await db.createMonitoringBatchRun({
+    scopeId,
+    dateKey,
+    triggeredBy,
+  });
+  console.log(
+    `[MonitoringScheduler] Manual test fire for ${dateKey} (would-run-normally=${wouldRunNormally}, batchId=${batchId})`
+  );
+  // Background — matches the existing monitoring.runAll fire-and-forget pattern.
+  void executeMonitoringBatch(batchId, scopeId, dateKey, triggeredBy).catch((err) =>
+    console.error("[MonitoringScheduler] Manual test fire failed:", err)
+  );
+  return { batchId, scopeId, dateKey, wouldRunNormally };
 }
 
 export function startMonitoringScheduler() {
