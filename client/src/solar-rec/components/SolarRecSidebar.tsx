@@ -12,6 +12,7 @@ import {
   FileText,
   MapPin,
   Headset,
+  ListChecks,
   type LucideIcon,
 } from "lucide-react";
 import {
@@ -217,6 +218,17 @@ export default function SolarRecSidebar({
                     </SidebarMenuButton>
                   </SidebarMenuItem>
                 </>
+              )}
+              {canSee("jobs") && (
+                <SidebarMenuItem>
+                  <SidebarMenuButton
+                    onClick={() => setLocation("/solar-rec/jobs")}
+                    isActive={location === "/solar-rec/jobs"}
+                  >
+                    <ListChecks className="h-4 w-4" />
+                    <span>Jobs</span>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
               )}
             </SidebarMenu>
           </SidebarGroupContent>
