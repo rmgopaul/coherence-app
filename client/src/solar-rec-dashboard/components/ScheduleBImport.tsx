@@ -21,7 +21,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import { Loader2 } from "lucide-react";
+import { Bookmark, Loader2 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -32,6 +32,11 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { Progress } from "@/components/ui/progress";
 import {
   Table,
@@ -237,6 +242,49 @@ export function ScheduleBImport({
   // button; cleared on successful link.
   const [driveFolderUrl, setDriveFolderUrl] = useState("");
   const [csgIdsInput, setCsgIdsInput] = useState("");
+
+  // Task 9.3 PR-3 (2026-04-28): tiny "Load workset" popover next to
+  // the CSG-portal input. Doesn't replace the input — the smart
+  // parser at `parseCsgIdsFromInput` (extracts CSG IDs from portal
+  // URLs / CSV cells / bare numerics) is preserved. Loading a
+  // workset just dumps its CSG IDs into the same input as a
+  // newline-joined string, which the parser already handles.
+  const [worksetPopoverOpen, setWorksetPopoverOpen] = useState(false);
+  const worksetsListQuery = trpc.worksets.list.useQuery(undefined, {
+    enabled: worksetPopoverOpen,
+    refetchOnWindowFocus: false,
+  });
+  const worksetsTrpcUtils = trpc.useUtils();
+  const [loadingWorksetId, setLoadingWorksetId] = useState<string | null>(null);
+  const handleLoadWorkset = useCallback(
+    async (worksetId: string) => {
+      setLoadingWorksetId(worksetId);
+      try {
+        const result = await worksetsTrpcUtils.client.worksets.get.query({
+          id: worksetId,
+        });
+        const joined = result.workset.csgIds.join("\n");
+        // Append to existing input rather than replace, so users can
+        // mix a saved workset with a few hand-pasted IDs without
+        // losing what they already typed.
+        setCsgIdsInput((prev) => {
+          const trimmed = prev.trim();
+          return trimmed ? `${prev}\n${joined}` : joined;
+        });
+        toast.success(
+          `Loaded ${result.workset.csgIds.length} IDs from "${result.workset.name}"`
+        );
+        setWorksetPopoverOpen(false);
+      } catch (err) {
+        toast.error(
+          err instanceof Error ? err.message : "Failed to load workset"
+        );
+      } finally {
+        setLoadingWorksetId(null);
+      }
+    },
+    [worksetsTrpcUtils]
+  );
 
   // Persistent diagnostic when Apply produces zero usable rows. A toast
   // alone is too easy to miss — users were clicking Apply and seeing
@@ -1535,6 +1583,77 @@ export function ScheduleBImport({
             className="flex-1 rounded-sm border bg-background px-2 py-1.5 text-xs font-mono placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-ring"
             disabled={importFromCsgPortal.isPending}
           />
+          {/* Task 9.3 PR-3: small popover trigger that lets the user
+              load a saved workset's CSG IDs into the input above. The
+              smart parser at parseCsgIdsFromInput then handles the
+              IDs alongside any URL/CSV-row content already pasted. */}
+          <Popover
+            open={worksetPopoverOpen}
+            onOpenChange={setWorksetPopoverOpen}
+          >
+            <PopoverTrigger asChild>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={importFromCsgPortal.isPending}
+                title="Load CSG IDs from a saved workset"
+              >
+                <Bookmark className="h-3 w-3" />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-80 p-2" align="end">
+              <div className="space-y-2">
+                <p className="px-1 text-xs font-medium">
+                  Load CSG IDs from a saved workset
+                </p>
+                {worksetsListQuery.isLoading ? (
+                  <p className="px-1 text-xs text-muted-foreground">
+                    <Loader2 className="mr-1 inline-block h-3 w-3 animate-spin" />
+                    Loading worksets…
+                  </p>
+                ) : worksetsListQuery.error ? (
+                  <p className="px-1 text-xs text-destructive">
+                    Couldn't load worksets (
+                    {worksetsListQuery.error.message}).
+                  </p>
+                ) : (worksetsListQuery.data?.worksets ?? []).length === 0 ? (
+                  <p className="px-1 text-xs text-muted-foreground">
+                    No worksets in this scope yet. Create one from any
+                    job page (Contract Scrape, DIN Scrape, Invoice
+                    Match, Early Payment) by pasting IDs and clicking
+                    "Save as workset".
+                  </p>
+                ) : (
+                  <div className="max-h-60 overflow-y-auto">
+                    {(worksetsListQuery.data?.worksets ?? []).map((w) => (
+                      <button
+                        key={w.id}
+                        type="button"
+                        onClick={() => void handleLoadWorkset(w.id)}
+                        disabled={loadingWorksetId !== null}
+                        className="flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-xs hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        <span className="truncate font-medium">
+                          {w.name}
+                        </span>
+                        <span className="ml-2 shrink-0 text-muted-foreground">
+                          {loadingWorksetId === w.id ? (
+                            <Loader2 className="h-3 w-3 animate-spin" />
+                          ) : (
+                            `${w.csgIdCount} IDs`
+                          )}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+                <p className="px-1 text-[10px] text-muted-foreground">
+                  Selected IDs append to whatever is already in the
+                  input above — they don't replace it.
+                </p>
+              </div>
+            </PopoverContent>
+          </Popover>
           <Button
             variant="outline"
             size="sm"
