@@ -70,13 +70,15 @@ class WidgetDataWorker(
     return try {
       val data = fetchWidgetData()
       WidgetDataStore.save(context, data)
-      // Both widget classes read from the same WidgetDataStore cache,
-      // so we issue updateAll() against each so they repaint together
-      // when the worker finishes a tick. updateAll() is a no-op when
-      // no instance of that widget class is bound, so it's safe even
-      // when the user only has one of the two widgets placed.
+      // All four widget classes read from the same WidgetDataStore
+      // cache; we issue updateAll() against each so a single worker
+      // tick repaints whichever combination the user has placed.
+      // updateAll() is a no-op when no instance of a class is bound,
+      // so this is safe regardless of which widgets exist.
       CoherenceDashboardWidget().updateAll(context)
       CoherenceKingWidget().updateAll(context)
+      CoherenceKingLeftWidget().updateAll(context)
+      CoherenceKingRightWidget().updateAll(context)
       Result.success()
     } catch (e: Exception) {
       Log.e(TAG, "Widget data fetch failed", e)
@@ -85,6 +87,8 @@ class WidgetDataWorker(
       WidgetDataStore.save(context, existing.copy(error = e.message?.take(80)))
       try { CoherenceDashboardWidget().updateAll(context) } catch (_: Exception) {}
       try { CoherenceKingWidget().updateAll(context) } catch (_: Exception) {}
+      try { CoherenceKingLeftWidget().updateAll(context) } catch (_: Exception) {}
+      try { CoherenceKingRightWidget().updateAll(context) } catch (_: Exception) {}
       if (runAttemptCount < 3) Result.retry() else Result.failure()
     }
   }

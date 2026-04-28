@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  King • Left — half-width companion that pairs with King • Right.
+  Each is sized to the Samsung One UI inner-display per-widget cap
+  (~7×9 cells = ~451×776 dp). Place both side-by-side and they form
+  a ~14×9 contiguous grid spanning the full inner display.
+
+  Min dims chosen to land at the launcher's natural 7×9 cell on
+  first drop without exceeding the per-widget cap that earlier
+  forced the single-King widget into a half-screen render.
+-->
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    android:description="@string/widget_king_left_description"
+    android:initialLayout="@layout/glance_default_loading_layout"
+    android:previewImage="@mipmap/ic_launcher"
+    android:minWidth="320dp"
+    android:minHeight="500dp"
+    android:minResizeWidth="280dp"
+    android:minResizeHeight="280dp"
+    android:maxResizeWidth="600dp"
+    android:maxResizeHeight="900dp"
+    android:resizeMode="horizontal|vertical"
+    android:targetCellWidth="7"
+    android:targetCellHeight="9"
+    android:updatePeriodMillis="1800000"
+    android:widgetCategory="home_screen" />
