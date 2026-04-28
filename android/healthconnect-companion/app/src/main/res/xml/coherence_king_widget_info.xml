@@ -26,6 +26,7 @@
 <appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
     android:description="@string/widget_king_description"
     android:initialLayout="@layout/glance_default_loading_layout"
+    android:previewLayout="@layout/widget_preview_king"
     android:previewImage="@mipmap/ic_launcher"
     android:minWidth="700dp"
     android:minHeight="700dp"

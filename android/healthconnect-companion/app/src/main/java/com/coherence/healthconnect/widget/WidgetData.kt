@@ -26,8 +26,16 @@ data class WidgetData(
   // Tasks – top 3 due today
   val tasks: List<WidgetTask> = emptyList(),
 
-  // Next calendar event
+  // Next calendar event — kept for backward compat with the
+  // existing dashboard + single-king widgets that only render one.
   val nextEvent: WidgetCalendarEvent? = null,
+
+  // Up-next calendar events — used by the King · Left widget which
+  // has the room for a multi-event list. `events[0]` mirrors
+  // `nextEvent` for the simpler widgets; King · Left renders the
+  // first 4. Older serialized payloads without this field default
+  // to empty (kotlinx-serialization @Serializable uses the default).
+  val events: List<WidgetCalendarEvent> = emptyList(),
 
   // Phase G — King of the Day, surfaced as the widget headline so the
   // user sees their one thing without opening the app. `kingOfDaySource`

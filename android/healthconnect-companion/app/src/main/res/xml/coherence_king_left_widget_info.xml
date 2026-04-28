@@ -12,6 +12,7 @@
 <appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
     android:description="@string/widget_king_left_description"
     android:initialLayout="@layout/glance_default_loading_layout"
+    android:previewLayout="@layout/widget_preview_king_left"
     android:previewImage="@mipmap/ic_launcher"
     android:minWidth="320dp"
     android:minHeight="500dp"

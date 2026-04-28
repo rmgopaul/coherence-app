@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Preview for the single full-King widget — half-width Fold variant.
+  Shows the editorial KoD hero proportion + a hint of the 2-column
+  body so it's visibly distinct from the dashboard preview and from
+  the Left/Right halves.
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="#0E0D0A"
+    android:padding="12dp">
+  <TextView
+      android:layout_width="wrap_content"
+      android:layout_height="wrap_content"
+      android:text="COHERENCE — KING"
+      android:textColor="#FFD84A"
+      android:textSize="12sp"
+      android:textStyle="bold" />
+  <TextView
+      android:layout_width="wrap_content"
+      android:layout_height="wrap_content"
+      android:text="FULL · single widget · half screen"
+      android:textColor="#8F8B78"
+      android:textSize="9sp"
+      android:textStyle="bold"
+      android:layout_marginTop="4dp" />
+  <Space android:layout_width="match_parent" android:layout_height="6dp" />
+  <TextView
+      android:layout_width="wrap_content"
+      android:layout_height="wrap_content"
+      android:text="♛ KING OF THE DAY"
+      android:textColor="#8F8B78"
+      android:textSize="9sp"
+      android:textStyle="bold" />
+  <TextView
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:text="The one thing"
+      android:textColor="#F2EEDF"
+      android:textSize="18sp"
+      android:textStyle="bold"
+      android:singleLine="true" />
+  <Space android:layout_width="match_parent" android:layout_height="8dp" />
+  <LinearLayout
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:orientation="horizontal">
+    <TextView
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:text="• tasks\n• inbox"
+        android:textColor="#C9C5B4"
+        android:textSize="9sp" />
+    <TextView
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:text="• markets\n• news"
+        android:textColor="#C9C5B4"
+        android:textSize="9sp" />
+  </LinearLayout>
+</LinearLayout>

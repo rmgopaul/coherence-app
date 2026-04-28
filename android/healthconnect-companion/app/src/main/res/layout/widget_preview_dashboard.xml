@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Preview thumbnail rendered in the widget picker for the
+  CoherenceDashboardWidget (phone-sized 3×3). Static — purely
+  visual; doesn't need to match the live layout exactly, just be
+  distinguishable from the other Coherence widgets.
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="#0E0D0A"
+    android:padding="10dp">
+  <TextView
+      android:layout_width="wrap_content"
+      android:layout_height="wrap_content"
+      android:text="COHERENCE"
+      android:textColor="#FFD84A"
+      android:textSize="11sp"
+      android:textStyle="bold" />
+  <TextView
+      android:layout_width="wrap_content"
+      android:layout_height="wrap_content"
+      android:text="DASHBOARD · phone size"
+      android:textColor="#8F8B78"
+      android:textSize="9sp"
+      android:textStyle="bold"
+      android:layout_marginTop="4dp" />
+  <Space
+      android:layout_width="match_parent"
+      android:layout_height="6dp" />
+  <TextView
+      android:layout_width="wrap_content"
+      android:layout_height="wrap_content"
+      android:text="♛ Today's headline"
+      android:textColor="#F2EEDF"
+      android:textSize="11sp"
+      android:textStyle="bold" />
+  <TextView
+      android:layout_width="wrap_content"
+      android:layout_height="wrap_content"
+      android:text="• tasks   • email   • markets"
+      android:textColor="#C9C5B4"
+      android:textSize="9sp"
+      android:layout_marginTop="4dp" />
+</LinearLayout>
