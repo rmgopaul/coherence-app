@@ -40,6 +40,18 @@ type DeepUpdateRemoteReportPayload = {
   uploadedAt?: number;
 };
 
+// Per-report cloud sync state. Only populated for reports that have
+// been touched in this browser session — leaves untouched reports'
+// status undefined so the UI can hide the badge entirely. The chunked
+// writer flow drives every transition: handleUpload / clearUpload set
+// "pending"; the cloud-sync useEffect promotes to "syncing" with chunk
+// progress, then "synced" or "failed".
+type CloudSyncStatus =
+  | { state: "pending" }
+  | { state: "syncing"; chunksDone: number; chunksTotal: number }
+  | { state: "synced"; syncedAt: number }
+  | { state: "failed"; message: string };
+
 function isDeepUpdateReportKey(value: string): value is DeepUpdateReportKey {
   return [
     "portal",
@@ -328,6 +340,9 @@ export default function DeepUpdateSynthesizer() {
   const [reportsHydrated, setReportsHydrated] = useState(false);
   const [remoteHydrated, setRemoteHydrated] = useState(false);
   const [storageNotice, setStorageNotice] = useState<string | null>(null);
+  const [cloudSyncStatuses, setCloudSyncStatuses] = useState<
+    Partial<Record<DeepUpdateReportKey, CloudSyncStatus>>
+  >({});
   const getRemoteDataset = trpc.solarRecDashboard.getDataset.useMutation();
   const saveRemoteDataset = trpc.solarRecDashboard.saveDataset.useMutation();
   const getRemoteDatasetRef = useRef(getRemoteDataset);
@@ -485,14 +500,38 @@ export default function DeepUpdateSynthesizer() {
 
             if (!reportData) {
               if (!remoteReportSignaturesRef.current[key]) continue;
-              await saveRemoteDatasetRef.current.mutateAsync({ key: storageKey, payload: "" });
-              delete remoteReportSignaturesRef.current[key];
+              setCloudSyncStatuses((previous) => ({
+                ...previous,
+                [key]: { state: "syncing", chunksDone: 0, chunksTotal: 1 },
+              }));
+              try {
+                await saveRemoteDatasetRef.current.mutateAsync({ key: storageKey, payload: "" });
+                delete remoteReportSignaturesRef.current[key];
+                setCloudSyncStatuses((previous) => ({
+                  ...previous,
+                  [key]: { state: "synced", syncedAt: Date.now() },
+                }));
+              } catch (chunkError) {
+                setCloudSyncStatuses((previous) => ({
+                  ...previous,
+                  [key]: { state: "failed", message: toErrorMessage(chunkError) },
+                }));
+                throw chunkError;
+              }
               continue;
             }
 
             const signature = `${reportData.fileName}|${reportData.sheetName}|${reportData.rows.length}|${reportData.headers.length}`;
             nextSignatures[key] = signature;
-            if (remoteReportSignaturesRef.current[key] === signature) continue;
+            if (remoteReportSignaturesRef.current[key] === signature) {
+              // Already in cloud — surface as synced so the user can see
+              // every loaded report has a status, not just the ones they
+              // just touched.
+              setCloudSyncStatuses((previous) =>
+                previous[key] ? previous : { ...previous, [key]: { state: "synced", syncedAt: Date.now() } }
+              );
+              continue;
+            }
 
             const payload = serializeReportForRemote(reportData);
             if (payload.length > DEEP_UPDATE_REMOTE_REPORT_WARN_CHARS && !warnedLargePayload) {
@@ -503,19 +542,53 @@ export default function DeepUpdateSynthesizer() {
             }
             const chunks = splitTextIntoChunks(payload, DEEP_UPDATE_REMOTE_CHUNK_CHAR_LIMIT);
 
-            if (chunks.length === 1) {
-              await saveRemoteDatasetRef.current.mutateAsync({ key: storageKey, payload });
-            } else {
-              const chunkKeys = chunks.map((_, index) => buildRemoteChunkKey(key, index));
-              for (let index = 0; index < chunks.length; index += 1) {
-                await saveRemoteDatasetRef.current.mutateAsync({ key: chunkKeys[index], payload: chunks[index] });
+            // Total writes the user will see progress for: chunks +
+            // 1 pointer write when multi-chunk; single-chunk uploads
+            // are a single write.
+            const totalWrites = chunks.length === 1 ? 1 : chunks.length + 1;
+            setCloudSyncStatuses((previous) => ({
+              ...previous,
+              [key]: { state: "syncing", chunksDone: 0, chunksTotal: totalWrites },
+            }));
+
+            try {
+              if (chunks.length === 1) {
+                await saveRemoteDatasetRef.current.mutateAsync({ key: storageKey, payload });
+                setCloudSyncStatuses((previous) => ({
+                  ...previous,
+                  [key]: { state: "syncing", chunksDone: 1, chunksTotal: 1 },
+                }));
+              } else {
+                const chunkKeys = chunks.map((_, index) => buildRemoteChunkKey(key, index));
+                for (let index = 0; index < chunks.length; index += 1) {
+                  await saveRemoteDatasetRef.current.mutateAsync({ key: chunkKeys[index], payload: chunks[index] });
+                  const done = index + 1;
+                  setCloudSyncStatuses((previous) => ({
+                    ...previous,
+                    [key]: { state: "syncing", chunksDone: done, chunksTotal: totalWrites },
+                  }));
+                }
+                await saveRemoteDatasetRef.current.mutateAsync({
+                  key: storageKey,
+                  payload: buildChunkPointerPayload(chunkKeys),
+                });
+                setCloudSyncStatuses((previous) => ({
+                  ...previous,
+                  [key]: { state: "syncing", chunksDone: totalWrites, chunksTotal: totalWrites },
+                }));
               }
-              await saveRemoteDatasetRef.current.mutateAsync({
-                key: storageKey,
-                payload: buildChunkPointerPayload(chunkKeys),
-              });
+              remoteReportSignaturesRef.current[key] = signature;
+              setCloudSyncStatuses((previous) => ({
+                ...previous,
+                [key]: { state: "synced", syncedAt: Date.now() },
+              }));
+            } catch (chunkError) {
+              setCloudSyncStatuses((previous) => ({
+                ...previous,
+                [key]: { state: "failed", message: toErrorMessage(chunkError) },
+              }));
+              throw chunkError;
             }
-            remoteReportSignaturesRef.current[key] = signature;
           }
 
           const activeKeys = REPORTS.map((report) => report.key).filter((key) => Boolean(reports[key]));
@@ -567,6 +640,33 @@ export default function DeepUpdateSynthesizer() {
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, []);
+
+  const cloudSyncInFlightKeys = useMemo(
+    () =>
+      REPORTS.filter((report) => {
+        const status = cloudSyncStatuses[report.key];
+        return status?.state === "pending" || status?.state === "syncing";
+      }),
+    [cloudSyncStatuses]
+  );
+  const cloudSyncFailedKeys = useMemo(
+    () => REPORTS.filter((report) => cloudSyncStatuses[report.key]?.state === "failed"),
+    [cloudSyncStatuses]
+  );
+  const cloudSyncTotals = useMemo(() => {
+    let chunksDone = 0;
+    let chunksTotal = 0;
+    cloudSyncInFlightKeys.forEach((report) => {
+      const status = cloudSyncStatuses[report.key];
+      if (status?.state === "syncing") {
+        chunksDone += status.chunksDone;
+        chunksTotal += status.chunksTotal;
+      } else if (status?.state === "pending") {
+        chunksTotal += 1;
+      }
+    });
+    return { chunksDone, chunksTotal };
+  }, [cloudSyncInFlightKeys, cloudSyncStatuses]);
 
   const missingRequired = useMemo(
     () => REPORTS.filter((report) => report.required && !reports[report.key]),
@@ -655,6 +755,7 @@ export default function DeepUpdateSynthesizer() {
     try {
       const parsed = await parseDeepUpdateReportFile(file, key);
       setReports((previous) => ({ ...previous, [key]: parsed }));
+      setCloudSyncStatuses((previous) => ({ ...previous, [key]: { state: "pending" } }));
       setResult(null);
       setSynthError(null);
       toast.success(`${REPORTS.find((item) => item.key === key)?.label ?? key} uploaded (${parsed.rows.length} rows).`);
@@ -669,6 +770,7 @@ export default function DeepUpdateSynthesizer() {
 
   const clearUpload = (key: DeepUpdateReportKey) => {
     setReports((previous) => ({ ...previous, [key]: undefined }));
+    setCloudSyncStatuses((previous) => ({ ...previous, [key]: { state: "pending" } }));
     setUploadErrors((previous) => ({ ...previous, [key]: undefined }));
     setResult(null);
     setSynthError(null);
@@ -731,6 +833,7 @@ export default function DeepUpdateSynthesizer() {
               const uploaded = reports[report.key];
               const isBusy = activeUpload === report.key;
               const uploadError = uploadErrors[report.key];
+              const cloudStatus = cloudSyncStatuses[report.key];
               return (
                 <div key={report.key} className="rounded-lg border border-slate-200 bg-white p-4">
                   <div className="flex flex-wrap items-center justify-between gap-3">
@@ -754,6 +857,33 @@ export default function DeepUpdateSynthesizer() {
                       ) : (
                         <p className="text-xs text-slate-500">No file uploaded yet.</p>
                       )}
+                      {cloudStatus ? (
+                        <p
+                          className={`text-xs flex items-center gap-1 ${
+                            cloudStatus.state === "failed"
+                              ? "text-red-700"
+                              : cloudStatus.state === "synced"
+                              ? "text-emerald-700"
+                              : "text-amber-700"
+                          }`}
+                        >
+                          {cloudStatus.state === "pending" ? (
+                            <>
+                              <Loader2 className="h-3 w-3 animate-spin" />
+                              Cloud sync queued (waiting for debounce)…
+                            </>
+                          ) : cloudStatus.state === "syncing" ? (
+                            <>
+                              <Loader2 className="h-3 w-3 animate-spin" />
+                              Cloud sync: writing chunk {cloudStatus.chunksDone}/{cloudStatus.chunksTotal}
+                            </>
+                          ) : cloudStatus.state === "synced" ? (
+                            <>Cloud sync: ✓ synced {new Date(cloudStatus.syncedAt).toLocaleTimeString()}</>
+                          ) : (
+                            <>Cloud sync failed: {cloudStatus.message}</>
+                          )}
+                        </p>
+                      ) : null}
                     </div>
                     <div className="flex items-center gap-2">
                       <Label htmlFor={`upload-${report.key}`} className="sr-only">
@@ -825,6 +955,37 @@ export default function DeepUpdateSynthesizer() {
             <CardHeader>
               <CardTitle className="text-base text-amber-900">Storage Notice</CardTitle>
               <CardDescription className="text-amber-800">{storageNotice}</CardDescription>
+            </CardHeader>
+          </Card>
+        ) : null}
+
+        {cloudSyncInFlightKeys.length > 0 ? (
+          <Card className="border-amber-300 bg-amber-50">
+            <CardHeader>
+              <CardTitle className="text-base text-amber-900 flex items-center gap-2">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Cloud sync in progress — do not close this tab
+              </CardTitle>
+              <CardDescription className="text-amber-800">
+                {cloudSyncInFlightKeys.length} report
+                {cloudSyncInFlightKeys.length === 1 ? "" : "s"} still syncing
+                {cloudSyncTotals.chunksTotal > 0
+                  ? ` (${cloudSyncTotals.chunksDone}/${cloudSyncTotals.chunksTotal} chunks written)`
+                  : ""}
+                . Synthesis still works against your local data; closing now means teammates won't see the latest upload.
+              </CardDescription>
+            </CardHeader>
+          </Card>
+        ) : null}
+
+        {cloudSyncFailedKeys.length > 0 ? (
+          <Card className="border-red-300 bg-red-50">
+            <CardHeader>
+              <CardTitle className="text-base text-red-900">Cloud sync failed</CardTitle>
+              <CardDescription className="text-red-800">
+                {cloudSyncFailedKeys.map((report) => report.label).join(", ")} did not sync to cloud storage.
+                Re-upload the affected file to retry. Synthesis still works against the local copy.
+              </CardDescription>
             </CardHeader>
           </Card>
         ) : null}

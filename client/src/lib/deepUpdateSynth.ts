@@ -38,6 +38,17 @@ type SynthesisContext = {
   furthestStepComplete: number | null;
 };
 
+// How the synthesizer decided to look up the ABP row for this Portal
+// row. Surfaced in the Status Review CSV so the user can see WHY a
+// row landed in the catch-all Step 3.1 — the dominant cause is no
+// ABP match, the second is ABP matched but Part_1_Status / Batch_Status
+// has an unexpected value.
+export type AbpMatchMethod =
+  | "state_certification_number"
+  | "state_application_ref_id"
+  | "sd_id"
+  | "none";
+
 export type SynthesisRow = {
   id: string;
   systemName: string;
@@ -47,6 +58,10 @@ export type SynthesisRow = {
   calcStepValue: CalcStepValue;
   shouldBeUpdated: boolean;
   deepUpdateRow: DeepUpdateRow;
+  abpMatchMethod: AbpMatchMethod;
+  abpPart1Status: string;
+  abpPart2Status: string;
+  abpBatchStatus: string;
 };
 
 export type DeepUpdateRow = {
@@ -506,9 +521,35 @@ export function synthesizeDeepUpdate(
       pickByHeaders(portalRow, ["furthest_step_complete", "Furthest Step Complete", "farthest_step_complete"])
     );
 
-    const abpMatchId = stateCertificationNumber || stateApplicationRefId;
-    const abpRowByApplicationId = abpMatchId ? abpByApplicationId.get(abpMatchId) : undefined;
-    const abpRow = abpRowByApplicationId ?? (sdId ? abpByDisclosureFormId.get(sdId) : undefined);
+    let abpMatchMethod: AbpMatchMethod = "none";
+    let abpRow: Record<string, string> | undefined;
+    if (stateCertificationNumber) {
+      const candidate = abpByApplicationId.get(stateCertificationNumber);
+      if (candidate) {
+        abpRow = candidate;
+        abpMatchMethod = "state_certification_number";
+      }
+    }
+    if (!abpRow && stateApplicationRefId) {
+      const candidate = abpByApplicationId.get(stateApplicationRefId);
+      if (candidate) {
+        abpRow = candidate;
+        abpMatchMethod = "state_application_ref_id";
+      }
+    }
+    if (!abpRow && sdId) {
+      const candidate = abpByDisclosureFormId.get(sdId);
+      if (candidate) {
+        abpRow = candidate;
+        abpMatchMethod = "sd_id";
+      }
+    }
+    // Preserve the legacy "did we match by Application_ID at all"
+    // signal — used downstream by the Step 3.10 / 4.x branches.
+    const abpRowByApplicationId =
+      abpMatchMethod === "state_certification_number" || abpMatchMethod === "state_application_ref_id"
+        ? abpRow
+        : undefined;
     if (!abpRow) rowsMissingAbpMatch += 1;
 
     const applicationId = abpRow
@@ -587,6 +628,10 @@ export function synthesizeDeepUpdate(
       calcStepValue,
       shouldBeUpdated,
       deepUpdateRow,
+      abpMatchMethod,
+      abpPart1Status: part1Status,
+      abpPart2Status: part2Status,
+      abpBatchStatus: batchStatus,
     });
   });
 
@@ -624,6 +669,10 @@ export function synthesizeDeepUpdate(
     "calculated_step",
     "calc_step_value",
     "should_be_updated",
+    "abp_match_method",
+    "abp_part1_status",
+    "abp_part2_status",
+    "abp_batch_status",
   ];
 
   const deepUpdateCsvRows = synthesizedRows.map((row) => ({
@@ -638,6 +687,10 @@ export function synthesizeDeepUpdate(
     calculated_step: row.calculatedStep,
     calc_step_value: row.calcStepValue === null ? "" : String(row.calcStepValue),
     should_be_updated: row.shouldBeUpdated ? "Yes" : "No",
+    abp_match_method: row.abpMatchMethod,
+    abp_part1_status: row.abpPart1Status,
+    abp_part2_status: row.abpPart2Status,
+    abp_batch_status: row.abpBatchStatus,
   }));
 
   return {
