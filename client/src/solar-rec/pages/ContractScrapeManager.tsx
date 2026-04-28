@@ -23,7 +23,9 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Textarea } from "@/components/ui/textarea";
+// Task 9.3 (2026-04-28): textarea replaced by `<WorksetSelector />`.
+// Same parsing semantics; adds Load-workset + Save-as-workset.
+import { WorksetSelector } from "@/solar-rec/components/WorksetSelector";
 import {
   ArrowLeft,
   Download,
@@ -239,24 +241,18 @@ export default function ContractScrapeManager() {
           <CardHeader>
             <CardTitle className="text-lg">Start New Job</CardTitle>
             <CardDescription>
-              Paste CSG IDs (one per line or comma-separated)
+              Paste CSG IDs (one per line or comma-separated) or load
+              a saved workset.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
-            <Textarea
+            <WorksetSelector
               value={csgIdInput}
-              onChange={(e) => setCsgIdInput(e.target.value)}
+              onChange={setCsgIdInput}
+              disabled={isActive}
               placeholder={"CSG-12345\nCSG-12346\nCSG-12347"}
-              rows={6}
-              className="font-mono text-xs"
             />
-            <div className="flex items-center justify-between">
-              <span className="text-xs text-muted-foreground">
-                {csgIdInput
-                  .split(/[\n,\t]+/)
-                  .filter((s) => s.trim()).length}{" "}
-                IDs detected
-              </span>
+            <div className="flex justify-end">
               <Button
                 onClick={handleStart}
                 disabled={
