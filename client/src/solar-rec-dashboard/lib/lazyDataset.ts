@@ -136,6 +136,12 @@ export function buildLazyCsvDataset(input: {
     uploadedAt,
     headers: frozenHeaders,
     rows: [] as CsvRow[], // overwritten by the getter below
+    // Task 5.14 PR-1: scalar row count. Lets `dataset.rowCount`
+    // consumers (Step 1 upload UI, dashboard staleness/loaded
+    // checks) read the count without triggering the lazy `.rows`
+    // getter — which would walk the columnar source into a full
+    // CsvRow[] just to call `.length` on it.
+    rowCount,
     sources,
   };
   let cachedRows: CsvRow[] | null = null;

@@ -857,6 +857,7 @@ function deserializeRemoteDatasetPayload(payload: string): CsvDataset | null {
       uploadedAt,
       headers,
       rows,
+      rowCount: rows.length,
       sources,
     };
   } catch {
@@ -1143,6 +1144,11 @@ function deserializeDatasetRecord(dataset: SerializedCsvDataset | undefined): Cs
     uploadedAt,
     headers,
     rows: legacyRows,
+    // Task 5.14 PR-1: scalar row count for legacy v1 records too.
+    // Backfill = rows.length on read; the next save round-trips
+    // through the v2 columnar serializer (which already carries
+    // rowCount), so this branch only runs once per legacy record.
+    rowCount: legacyRows.length,
     sources,
   };
 }
@@ -3475,11 +3481,13 @@ export default function SolarRecDashboard() {
                 },
               ];
 
+              const combinedRows = [...existingRows, ...appendedRows];
               return {
                 fileName: `${sources.length} files loaded`,
                 uploadedAt,
                 headers: combinedHeaders,
-                rows: [...existingRows, ...appendedRows],
+                rows: combinedRows,
+                rowCount: combinedRows.length,
                 sources,
               } satisfies CsvDataset;
             }
@@ -3489,6 +3497,7 @@ export default function SolarRecDashboard() {
               uploadedAt,
               headers: parsed.headers,
               rows: parsed.rows,
+              rowCount: parsed.rows.length,
               sources: MULTI_APPEND_DATASET_KEYS.has(key)
                 ? [
                     {
@@ -3614,6 +3623,7 @@ export default function SolarRecDashboard() {
               uploadedAt,
               headers: combinedHeaders,
               rows: combinedRows,
+              rowCount: combinedRows.length,
               sources,
             } satisfies CsvDataset,
           };
@@ -5321,6 +5331,7 @@ export default function SolarRecDashboard() {
                     uploadedAt,
                     headers,
                     rows,
+                    rowCount: rows.length,
                     sources: sourceRows,
                   };
                   const newest = normalizedSources[normalizedSources.length - 1];
@@ -5330,15 +5341,17 @@ export default function SolarRecDashboard() {
                   const latest = parsedSourceData[parsedSourceData.length - 1];
                   const latestSource =
                     normalizedSources[normalizedSources.length - 1];
+                  const latestRows = latest?.parsed.rows ?? [];
                   loadedDatasets[rawKey] = {
                     fileName: latestSource?.fileName ?? `${DATASET_DEFINITIONS[rawKey].label} upload`,
                     uploadedAt: latestSource?.uploadedAt ? new Date(latestSource.uploadedAt) : new Date(),
                     headers: latest?.parsed.headers ?? [],
-                    rows: latest?.parsed.rows ?? [],
+                    rows: latestRows,
+                    rowCount: latestRows.length,
                     sources: sourceRows,
                   };
                   loadedSignatures[rawKey] =
-                    `raw:${normalizedSources.length}|${latestSource?.id ?? ""}|${latestSource?.uploadedAt ?? ""}|${latest?.parsed.rows.length ?? 0}`;
+                    `raw:${normalizedSources.length}|${latestSource?.id ?? ""}|${latestSource?.uploadedAt ?? ""}|${latestRows.length}`;
                 }
 
                 loadedSourceManifests[rawKey] = {
@@ -7443,6 +7456,7 @@ const aiDataContext = useMemo(() => {
                                     uploadedAt: new Date(latest.uploadedAt),
                                     headers: parsedCsv.headers,
                                     rows: parsedCsv.rows,
+                                    rowCount: parsedCsv.rows.length,
                                   };
                                 }
                               } catch (manifestErr) {
@@ -7579,6 +7593,7 @@ const aiDataContext = useMemo(() => {
                               uploadedAt: new Date(),
                               headers: mergedHeaders,
                               rows: mergedRows,
+                              rowCount: mergedRows.length,
                             },
                           };
                         });
