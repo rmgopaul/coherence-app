@@ -14,52 +14,16 @@ import {
 } from "@/solar-rec-dashboard/lib/constants";
 import { getCsvValueByHeader } from "./csvIdentity";
 
-export function parseNumber(
-  value: string | undefined,
-): number | null {
-  const cleaned = clean(value).replace(/[$,%\s]/g, "").replaceAll(",", "");
-  if (!cleaned) return null;
-  const parsed = Number(cleaned);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
-export function parseDate(value: string | undefined): Date | null {
-  const raw = clean(value);
-  if (!raw) return null;
-
-  const iso = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (iso) {
-    const year = Number(iso[1]);
-    const month = Number(iso[2]) - 1;
-    const day = Number(iso[3]);
-    const date = new Date(year, month, day);
-    return Number.isNaN(date.getTime()) ? null : date;
-  }
-
-  const usDateTime = raw.match(
-    /^(\d{1,2})\/(\d{1,2})\/(\d{2,4})(?:\s+(\d{1,2}):(\d{2})(?:\s*([AaPp][Mm]))?)?$/,
-  );
-  if (usDateTime) {
-    const month = Number(usDateTime[1]) - 1;
-    const day = Number(usDateTime[2]);
-    const year =
-      Number(usDateTime[3]) < 100
-        ? 2000 + Number(usDateTime[3])
-        : Number(usDateTime[3]);
-    let hours = usDateTime[4] ? Number(usDateTime[4]) : 0;
-    const minutes = usDateTime[5] ? Number(usDateTime[5]) : 0;
-    const meridiem = usDateTime[6]?.toUpperCase();
-
-    if (meridiem === "PM" && hours < 12) hours += 12;
-    if (meridiem === "AM" && hours === 12) hours = 0;
-
-    const date = new Date(year, month, day, hours, minutes);
-    return Number.isNaN(date.getTime()) ? null : date;
-  }
-
-  const fallback = new Date(raw);
-  return Number.isNaN(fallback.getTime()) ? null : fallback;
-}
+// `parseNumber`, `parseDate`, and `parseEnergyToWh` live in
+// `@shared/solarRecPerformanceRatio` so the server aggregator and
+// this tab share one implementation. Re-exported here so existing
+// call sites don't change.
+import {
+  parseNumber,
+  parseDate,
+  parseEnergyToWh,
+} from "@shared/solarRecPerformanceRatio";
+export { parseNumber, parseDate, parseEnergyToWh };
 
 export function parsePart2VerificationDate(
   value: string | undefined,
@@ -160,21 +124,6 @@ export function parseGeneratorDetailsAcSizeKw(
   }
 
   return null;
-}
-
-export function parseEnergyToWh(
-  value: string | undefined,
-  headerLabel: string,
-  defaultUnit: "kwh" | "wh" = "kwh",
-): number | null {
-  const parsed = parseNumber(value);
-  if (parsed === null) return null;
-  const header = clean(headerLabel).toLowerCase();
-  if (header.includes("mwh")) return Math.round(parsed * 1_000_000);
-  if (header.includes("kwh")) return Math.round(parsed * 1_000);
-  if (header.includes("wh")) return Math.round(parsed);
-  if (defaultUnit === "kwh") return Math.round(parsed * 1_000);
-  return Math.round(parsed);
 }
 
 export function splitRawCandidates(value: string): string[] {

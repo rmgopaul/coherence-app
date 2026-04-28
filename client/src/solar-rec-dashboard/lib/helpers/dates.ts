@@ -9,13 +9,14 @@ import {
   STALE_UPLOAD_DAYS,
 } from "@/solar-rec-dashboard/lib/constants";
 
-export function toStartOfDay(value: Date): Date {
-  return new Date(
-    value.getFullYear(),
-    value.getMonth(),
-    value.getDate(),
-  );
-}
+// `toStartOfDay` and `calculateExpectedWhForRange` live in
+// `@shared/solarRecPerformanceRatio` so the server aggregator and
+// this tab share one implementation. Re-exported here so existing
+// call sites don't change.
+export {
+  toStartOfDay,
+  calculateExpectedWhForRange,
+} from "@shared/solarRecPerformanceRatio";
 
 export function toReadWindowMonthStart(value: Date): Date {
   if (value.getDate() <= 15) {
@@ -26,46 +27,6 @@ export function toReadWindowMonthStart(value: Date): Date {
     );
   }
   return new Date(value.getFullYear(), value.getMonth(), 1);
-}
-
-export function calculateExpectedWhForRange(
-  monthlyKwh: number[],
-  startDate: Date,
-  endDate: Date,
-): number | null {
-  if (monthlyKwh.length !== 12) return null;
-  const start = toStartOfDay(startDate);
-  const end = toStartOfDay(endDate);
-  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()))
-    return null;
-  if (end <= start) return 0;
-
-  let cursor = start;
-  let expectedWh = 0;
-
-  while (cursor < end) {
-    const monthStart = new Date(
-      cursor.getFullYear(),
-      cursor.getMonth(),
-      1,
-    );
-    const monthEnd = new Date(
-      cursor.getFullYear(),
-      cursor.getMonth() + 1,
-      1,
-    );
-    const segmentEnd = monthEnd < end ? monthEnd : end;
-    const dayCount =
-      (segmentEnd.getTime() - cursor.getTime()) / DAY_MS;
-    const daysInMonth =
-      (monthEnd.getTime() - monthStart.getTime()) / DAY_MS;
-    const monthlyValueKwh = monthlyKwh[cursor.getMonth()] ?? 0;
-    expectedWh +=
-      (monthlyValueKwh * 1_000 * dayCount) / daysInMonth;
-    cursor = segmentEnd;
-  }
-
-  return Number.isFinite(expectedWh) ? expectedWh : null;
 }
 
 export function maxDate(

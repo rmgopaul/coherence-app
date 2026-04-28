@@ -16,36 +16,20 @@ import {
 } from "@/solar-rec-dashboard/lib/constants";
 import { firstNonEmptyString } from "./misc";
 
-export function normalizeMonitoringMatch(
-  value: string | null | undefined,
-): string {
-  return clean(value)
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, " ")
-    .trim();
-}
-
-export function normalizeSystemIdMatch(
-  value: string | null | undefined,
-): string {
-  const compact = clean(value).replaceAll(",", "").replace(/\s+/g, "");
-  if (!compact) return "";
-  if (/^-?\d+(?:\.\d+)?$/.test(compact)) {
-    const parsed = Number(compact);
-    if (Number.isFinite(parsed)) return String(Math.trunc(parsed));
-  }
-  return compact.toUpperCase();
-}
-
-export function normalizeSystemNameMatch(
-  value: string | null | undefined,
-): string {
-  return clean(value)
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
+// Match-key normalizers live in `@shared/solarRecPerformanceRatio` so
+// the server aggregator and this tab share one source of truth. Re-
+// exported here so existing call sites (`@/solar-rec-dashboard/lib/
+// helpers/monitoring`) don't change.
+import {
+  normalizeMonitoringMatch,
+  normalizeSystemIdMatch,
+  normalizeSystemNameMatch,
+} from "@shared/solarRecPerformanceRatio";
+export {
+  normalizeMonitoringMatch,
+  normalizeSystemIdMatch,
+  normalizeSystemNameMatch,
+};
 
 /**
  * Normalize a freeform monitoring platform string (from portal, URL, or
