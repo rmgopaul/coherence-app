@@ -54,6 +54,10 @@ import {
   MapPin,
 } from "lucide-react";
 import { compareAddresses } from "@/lib/addressCompare";
+import {
+  buildRecValueRollup,
+  recValueSourceLabel,
+} from "@/lib/recValueRollup";
 
 function formatRelativeTime(date: Date | null | undefined): string {
   if (!date) return "—";
@@ -187,6 +191,13 @@ function SystemDetailImpl() {
             registry={data.registry}
             contractScan={data.contractScan}
             onJump={() => setLocation("/solar-rec/address-checker")}
+          />
+          <RecValueSection
+            registry={data.registry}
+            contractScan={data.contractScan}
+            scheduleBResult={data.scheduleBResult}
+            invoiceStatus={data.invoiceStatus}
+            onJump={() => setLocation("/solar-rec/early-payment")}
           />
           <p className="text-[10px] text-muted-foreground text-right font-mono">
             runner: {data._runnerVersion}
@@ -1142,6 +1153,219 @@ function matchLabel(
     case "missing-both":
       return "Both missing";
   }
+}
+
+function RecValueSection({
+  registry,
+  contractScan,
+  scheduleBResult,
+  invoiceStatus,
+  onJump,
+}: {
+  registry: SystemDetailResponse["registry"];
+  contractScan: SystemDetailResponse["contractScan"];
+  scheduleBResult: SystemDetailResponse["scheduleBResult"];
+  invoiceStatus: SystemDetailResponse["invoiceStatus"];
+  onJump: () => void;
+}) {
+  const rollup = useMemo(
+    () =>
+      buildRecValueRollup({
+        registry: registry
+          ? {
+              totalContractAmount: registry.totalContractAmount,
+              recPrice: registry.recPrice,
+              annualRecs: registry.annualRecs,
+            }
+          : null,
+        contractScan: contractScan
+          ? {
+              recQuantity: contractScan.recQuantity,
+              recPrice: contractScan.recPrice,
+            }
+          : null,
+        scheduleB: scheduleBResult
+          ? {
+              maxRecQuantity: scheduleBResult.maxRecQuantity,
+              contractPrice: scheduleBResult.contractPrice,
+              deliveryYearsJson: scheduleBResult.deliveryYearsJson,
+            }
+          : null,
+        iccReport: invoiceStatus.iccReport
+          ? {
+              contractedRecs: invoiceStatus.iccReport.contractedRecs,
+              recPrice: invoiceStatus.iccReport.recPrice,
+              grossContractValue: invoiceStatus.iccReport.grossContractValue,
+            }
+          : null,
+        utilityInvoices:
+          invoiceStatus.utilityInvoices.count > 0
+            ? {
+                totalRecs: invoiceStatus.utilityInvoices.totalRecs,
+                totalInvoiceAmount:
+                  invoiceStatus.utilityInvoices.totalInvoiceAmount,
+              }
+            : null,
+      }),
+    [registry, contractScan, scheduleBResult, invoiceStatus]
+  );
+
+  const noContractedData =
+    rollup.contractedRecs.value === null &&
+    rollup.contractedRecPrice.value === null &&
+    rollup.contractedTotalValue.value === null;
+  const noPaidData =
+    rollup.paidRecs === null && rollup.paidTotalValue === null;
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-start justify-between">
+          <div>
+            <CardTitle className="text-base">REC value</CardTitle>
+            <CardDescription>
+              Contracted vs paid-to-date with the most authoritative
+              source picked per field.
+            </CardDescription>
+          </div>
+          <Button variant="outline" size="sm" onClick={onJump}>
+            <ArrowUpRight className="h-3.5 w-3.5 mr-1" />
+            Early Payment
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent>
+        {noContractedData && noPaidData ? (
+          <NoData
+            primary="No REC value data on file."
+            secondary="Run a contract scrape, upload a Schedule B PDF, or import the ICC Report 3 dataset to populate this section."
+          />
+        ) : (
+          <>
+            <dl className="grid grid-cols-2 md:grid-cols-3 gap-x-6 gap-y-3 text-sm">
+              <FieldWithSource
+                label="Contracted RECs"
+                value={
+                  rollup.contractedRecs.value !== null
+                    ? formatNumber(rollup.contractedRecs.value, 0)
+                    : "—"
+                }
+                source={recValueSourceLabel(rollup.contractedRecs.source)}
+              />
+              <FieldWithSource
+                label="REC price"
+                value={
+                  rollup.contractedRecPrice.value !== null
+                    ? formatMoney(rollup.contractedRecPrice.value)
+                    : "—"
+                }
+                source={recValueSourceLabel(
+                  rollup.contractedRecPrice.source
+                )}
+              />
+              <FieldWithSource
+                label="Total contract value"
+                value={
+                  rollup.contractedTotalValue.value !== null
+                    ? formatMoney(rollup.contractedTotalValue.value)
+                    : "—"
+                }
+                source={recValueSourceLabel(
+                  rollup.contractedTotalValue.source
+                )}
+              />
+              <Field
+                label="RECs invoiced to date"
+                value={
+                  rollup.paidRecs !== null
+                    ? formatNumber(rollup.paidRecs, 0)
+                    : "—"
+                }
+              />
+              <Field
+                label="$ invoiced to date"
+                value={
+                  rollup.paidTotalValue !== null
+                    ? formatMoney(rollup.paidTotalValue)
+                    : "—"
+                }
+              />
+              <Field
+                label="Outstanding value"
+                value={
+                  rollup.outstandingValue !== null
+                    ? formatMoney(rollup.outstandingValue)
+                    : "—"
+                }
+              />
+              <Field
+                label="% RECs delivered"
+                value={
+                  rollup.pctDelivered !== null
+                    ? `${formatNumber(
+                        Math.min(rollup.pctDelivered, 999),
+                        1
+                      )}%`
+                    : "—"
+                }
+              />
+              {registry?.annualRecs !== undefined &&
+                registry.annualRecs !== null && (
+                  <Field
+                    label="Annual production estimate"
+                    value={`${formatNumber(registry.annualRecs, 0)} RECs/yr`}
+                  />
+                )}
+            </dl>
+
+            {rollup.deliveryYears.length > 0 && (
+              <div className="mt-3 pt-3 border-t">
+                <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">
+                  Per-year delivery schedule (Schedule B)
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {rollup.deliveryYears.map((y) => (
+                    <Badge
+                      key={y.year}
+                      variant="outline"
+                      className="text-xs"
+                    >
+                      {y.year}
+                      {y.quantity !== null
+                        ? `: ${formatNumber(y.quantity, 0)}`
+                        : ""}
+                    </Badge>
+                  ))}
+                </div>
+              </div>
+            )}
+          </>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function FieldWithSource({
+  label,
+  value,
+  source,
+}: {
+  label: string;
+  value: string;
+  source: string;
+}) {
+  return (
+    <div>
+      <dt className="text-xs text-muted-foreground">{label}</dt>
+      <dd className="text-sm">{value}</dd>
+      {source !== "—" && (
+        <p className="text-[10px] text-muted-foreground mt-0.5">
+          from {source}
+        </p>
+      )}
+    </div>
+  );
 }
 
 // ---------------------------------------------------------------------------
