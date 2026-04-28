@@ -21,6 +21,7 @@ import {
   extractMarkdownLink,
   extractUrlFromPaste,
   hasSensitiveParams,
+  shouldCopyDockChipUrl,
   stripMarkdownLinks,
   type DockSource,
 } from "@shared/dropdock.helpers";
@@ -246,7 +247,33 @@ export function DropDock() {
               idx % 3 === 1 && "fp-dock-chip--tilt-b",
               idx % 3 === 2 && "fp-dock-chip--tilt-c"
             )}
-            title={item.url}
+            title={`${item.url}\n(⌘C / Ctrl+C to copy)`}
+            onKeyDown={(e) => {
+              // Phase E (2026-04-28) — Cmd+C / Ctrl+C on a focused
+              // chip copies its URL to the clipboard. The default
+              // browser behavior is "copy current selection," which
+              // is empty at rest on a focused link → silently does
+              // nothing. shouldCopyDockChipUrl honors a non-empty
+              // text selection so users who actively highlighted
+              // part of the chip's title still get the default copy.
+              if (!shouldCopyDockChipUrl(e)) return;
+              e.preventDefault();
+              if (
+                typeof navigator === "undefined" ||
+                !navigator.clipboard?.writeText
+              ) {
+                toast.error("Clipboard API not available");
+                return;
+              }
+              navigator.clipboard
+                .writeText(item.url)
+                .then(() => {
+                  toast.success("URL copied");
+                })
+                .catch(() => {
+                  toast.error("Failed to copy");
+                });
+            }}
           >
             <span className={cn("fp-dock-chip__src", SOURCE_COLOR[item.source as DockSource])}>
               {SOURCE_LABEL[item.source as DockSource] ?? "LINK"}
