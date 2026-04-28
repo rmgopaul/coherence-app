@@ -436,3 +436,69 @@ export async function getHabitCompletionsForDefinitionRange(
       .orderBy(asc(habitCompletions.dateKey))
   ).then((rows) => rows.filter((r) => r.dateKey <= endDateKey));
 }
+
+/**
+ * Phase E (2026-04-28) — bulk variant of
+ * `getHabitCompletionsForDefinitionRange`. Returns every
+ * completion row for ANY of the user's habits in the
+ * `[startDateKey, endDateKey]` window (inclusive).
+ *
+ * Replaces the N+1 pattern in `HabitsHistoryPanel` where each
+ * habit card fired its own `getCompletionsRange` query — 10
+ * habits = 10 round-trips per render. The grouping into
+ * `Record<habitId, rows[]>` happens in the proc layer; this
+ * helper just returns the flat list so the row-table layout is
+ * obvious.
+ *
+ * One single round-trip; rows ordered by `(habitId, dateKey)` so
+ * the proc can fold without a follow-up sort.
+ */
+export async function getHabitCompletionsForUserRange(
+  userId: number,
+  startDateKey: string,
+  endDateKey: string
+) {
+  const db = await getDb();
+  if (!db) return [];
+
+  return withDbRetry(
+    "list habit completions for user range",
+    async () =>
+      db
+        .select()
+        .from(habitCompletions)
+        .where(
+          and(
+            eq(habitCompletions.userId, userId),
+            gte(habitCompletions.dateKey, startDateKey)
+          )
+        )
+        .orderBy(
+          asc(habitCompletions.habitId),
+          asc(habitCompletions.dateKey)
+        )
+  ).then((rows) => rows.filter((r) => r.dateKey <= endDateKey));
+}
+
+/**
+ * Phase E (2026-04-28) — pure helper to fold a flat list of
+ * habit-completion rows into a `Record<habitId, rows[]>` shape
+ * the dashboard's HabitsHistoryPanel consumes. Exposed for
+ * testability so the per-habit grouping is verifiable without DB
+ * round-trips.
+ *
+ * Generic over the row shape so the DB row + the proc's stripped-
+ * down `{dateKey, completed}` pair can both reuse it.
+ */
+export function groupCompletionsByHabitId<
+  R extends { habitId: string },
+>(
+  rows: readonly R[]
+): Record<string, R[]> {
+  const out: Record<string, R[]> = {};
+  for (const row of rows) {
+    if (!out[row.habitId]) out[row.habitId] = [];
+    out[row.habitId].push(row);
+  }
+  return out;
+}
