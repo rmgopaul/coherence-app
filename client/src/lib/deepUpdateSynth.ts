@@ -323,7 +323,24 @@ function computeCalcStepValue(context: SynthesisContext): CalcStepValue {
     if (furthestStep !== null && Math.abs(furthestStep - 2.5) < 0.0001) return 12;
     return 11;
   }
-  if (sdStatus === "COMPLETED" && activeContract && part1Status === "VERIFIED" && batchStatus === "PAID") return 10.2;
+  // Step 3.4.c — "ABP Part 1 Verified Pending ICC Approval".
+  // Per Rhett (2026-04-27): the batch flow is Part 1 submit → batch
+  // PAID (admin paid the review fee, review begins) → Part 1 reviewed
+  // → VERIFIED → batch transitions to ICC_PENDING (awaiting ICC sign-
+  // off) → ICC_APPROVED. Both `PAID` and `ICC_PENDING` represent the
+  // same workflow position from the team's perspective (Part 1 is
+  // verified and the application is sitting in the ICC-review window).
+  // Previously only `PAID` matched, so every row with a verified Part 1
+  // sitting in ICC_PENDING fell through to the Step 3.1 catch-all.
+  // Part 1 must be VERIFIED in either branch.
+  if (
+    sdStatus === "COMPLETED" &&
+    activeContract &&
+    part1Status === "VERIFIED" &&
+    (batchStatus === "PAID" || batchStatus === "ICC_PENDING")
+  ) {
+    return 10.2;
+  }
   if (sdStatus === "COMPLETED" && activeContract && part1NeedInfo && batchStatus === "PAID") return 10;
   if (sdStatus === "COMPLETED" && activeContract && part1Status === "SUBMITTED") return 9;
 
