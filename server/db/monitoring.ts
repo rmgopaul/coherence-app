@@ -494,6 +494,253 @@ export async function getMonitoringOverview(
   });
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// Per-site daily overview (Task 7.1)
+// ─────────────────────────────────────────────────────────────────────
+
+export type MonitoringDailyOverviewSite = {
+  provider: string;
+  connectionId: string | null;
+  siteId: string;
+  siteName: string | null;
+  yesterdayStatus: "success" | "error" | "no_data" | "skipped" | null;
+  last7Attempts: number;
+  last7Successes: number;
+  last30Attempts: number;
+  last30Successes: number;
+  lastRunAt: string | null;
+  lastRunStatus: "success" | "error" | "no_data" | "skipped" | null;
+  lastErrorMessage: string | null;
+  lastErrorAt: string | null;
+};
+
+const MONITORING_DAILY_OVERVIEW_VERSION = "monitoring-daily-overview@1";
+
+/**
+ * Per-site daily overview anchored at `anchorDateKey`. Returns one row
+ * per (provider, connectionId, siteId) triple that has been seen in
+ * the last 30 days, with:
+ *
+ *   - yesterdayStatus: most recent run status on `anchorDateKey - 1`
+ *     (null if no run on that day — which is itself a useful signal)
+ *   - last7Attempts / last7Successes: rollup over the last 7 days
+ *     ending at `anchorDateKey` inclusive
+ *   - last30Attempts / last30Successes: same shape over the last 30
+ *   - lastRunAt + lastRunStatus: most recent run regardless of status,
+ *     with the dateKey + status of that run
+ *   - lastErrorMessage + lastErrorAt: most recent non-success run's
+ *     errorMessage and dateKey, so the user can see the most recent
+ *     failure context without drilling into a separate detail view.
+ *
+ * Implemented as two SQL passes: the aggregate (per-site sum/max) and
+ * the most-recent-row-per-site (window function). Both queries are
+ * indexed on (scopeId, provider, siteId, dateKey) so a 50-site, 30-day
+ * scope is well under the < 1s DoD even on a cold buffer pool.
+ *
+ * Sites that exist in credential metadata but have NEVER run in the
+ * last 30 days won't appear here — that's a deliberate choice to keep
+ * the list focused on actionable rows. The "Re-run failed" workflow
+ * targets visibility-not-coverage: bulk-running every site is the job
+ * of the existing `runAll` mutation.
+ */
+export async function getMonitoringDailyOverview(
+  scopeId: string,
+  anchorDateKey: string
+): Promise<MonitoringDailyOverviewSite[]> {
+  const db = await getDb();
+  if (!db) return [];
+
+  return withDbRetry("get monitoring daily overview", async () => {
+    // Compute the dateKey thresholds in JS so the SQL is timezone-
+    // agnostic. Using the project's "America/Chicago dateKey"
+    // semantics is the caller's responsibility (`anchorDateKey` is
+    // expected to be a YYYY-MM-DD string in CT).
+    const anchor = new Date(`${anchorDateKey}T00:00:00`);
+    const yesterday = new Date(anchor);
+    yesterday.setDate(yesterday.getDate() - 1);
+    const last7Start = new Date(anchor);
+    last7Start.setDate(last7Start.getDate() - 6);
+    const last30Start = new Date(anchor);
+    last30Start.setDate(last30Start.getDate() - 29);
+
+    const yesterdayDateKey = yesterday.toISOString().slice(0, 10);
+    const last7StartDateKey = last7Start.toISOString().slice(0, 10);
+    const last30StartDateKey = last30Start.toISOString().slice(0, 10);
+
+    // Aggregate pass — one row per (provider, connectionId, siteId).
+    const aggregateResult = await db.execute(sql`
+      SELECT
+        ${monitoringApiRuns.provider} AS provider,
+        ${monitoringApiRuns.connectionId} AS connectionId,
+        ${monitoringApiRuns.siteId} AS siteId,
+        MAX(${monitoringApiRuns.siteName}) AS siteName,
+        MAX(CASE WHEN ${monitoringApiRuns.dateKey} = ${yesterdayDateKey}
+                 THEN ${monitoringApiRuns.status} END) AS yesterdayStatus,
+        SUM(CASE WHEN ${monitoringApiRuns.dateKey} >= ${last7StartDateKey}
+                 THEN 1 ELSE 0 END) AS last7Attempts,
+        SUM(CASE WHEN ${monitoringApiRuns.dateKey} >= ${last7StartDateKey}
+                  AND ${monitoringApiRuns.status} = 'success'
+                 THEN 1 ELSE 0 END) AS last7Successes,
+        COUNT(*) AS last30Attempts,
+        SUM(CASE WHEN ${monitoringApiRuns.status} = 'success' THEN 1 ELSE 0 END)
+          AS last30Successes
+      FROM ${monitoringApiRuns}
+      WHERE ${monitoringApiRuns.scopeId} = ${scopeId}
+        AND ${monitoringApiRuns.dateKey} >= ${last30StartDateKey}
+        AND ${monitoringApiRuns.dateKey} <= ${anchorDateKey}
+      GROUP BY
+        ${monitoringApiRuns.provider},
+        ${monitoringApiRuns.connectionId},
+        ${monitoringApiRuns.siteId}
+    `);
+
+    // Most-recent-run pass — window function picks the latest row per
+    // (provider, connectionId, siteId) within the 30-day window.
+    const lastRunResult = await db.execute(sql`
+      SELECT provider, connectionId, siteId, dateKey, status, errorMessage
+      FROM (
+        SELECT
+          ${monitoringApiRuns.provider} AS provider,
+          ${monitoringApiRuns.connectionId} AS connectionId,
+          ${monitoringApiRuns.siteId} AS siteId,
+          ${monitoringApiRuns.dateKey} AS dateKey,
+          ${monitoringApiRuns.status} AS status,
+          ${monitoringApiRuns.errorMessage} AS errorMessage,
+          ROW_NUMBER() OVER (
+            PARTITION BY
+              ${monitoringApiRuns.provider},
+              ${monitoringApiRuns.connectionId},
+              ${monitoringApiRuns.siteId}
+            ORDER BY ${monitoringApiRuns.dateKey} DESC
+          ) AS rn
+        FROM ${monitoringApiRuns}
+        WHERE ${monitoringApiRuns.scopeId} = ${scopeId}
+          AND ${monitoringApiRuns.dateKey} >= ${last30StartDateKey}
+          AND ${monitoringApiRuns.dateKey} <= ${anchorDateKey}
+      ) ranked
+      WHERE rn = 1
+    `);
+
+    // Most-recent-error pass — window function picks the latest non-
+    // success row per group. Joined into the result so the surfaced
+    // error reflects the actual failure context, not just "the last
+    // run was an error" (which the lastRun pass already covers).
+    const lastErrorResult = await db.execute(sql`
+      SELECT provider, connectionId, siteId, dateKey, errorMessage
+      FROM (
+        SELECT
+          ${monitoringApiRuns.provider} AS provider,
+          ${monitoringApiRuns.connectionId} AS connectionId,
+          ${monitoringApiRuns.siteId} AS siteId,
+          ${monitoringApiRuns.dateKey} AS dateKey,
+          ${monitoringApiRuns.errorMessage} AS errorMessage,
+          ROW_NUMBER() OVER (
+            PARTITION BY
+              ${monitoringApiRuns.provider},
+              ${monitoringApiRuns.connectionId},
+              ${monitoringApiRuns.siteId}
+            ORDER BY ${monitoringApiRuns.dateKey} DESC
+          ) AS rn
+        FROM ${monitoringApiRuns}
+        WHERE ${monitoringApiRuns.scopeId} = ${scopeId}
+          AND ${monitoringApiRuns.dateKey} >= ${last30StartDateKey}
+          AND ${monitoringApiRuns.dateKey} <= ${anchorDateKey}
+          AND ${monitoringApiRuns.status} != 'success'
+          AND ${monitoringApiRuns.errorMessage} IS NOT NULL
+      ) ranked
+      WHERE rn = 1
+    `);
+
+    // Stitch the three result sets into the public shape. Key by a
+    // composite "provider|connectionId|siteId" string so null
+    // connectionIds participate in lookups consistently.
+    const compositeKey = (
+      provider: string,
+      connectionId: string | null,
+      siteId: string
+    ) => `${provider}|${connectionId ?? ""}|${siteId}`;
+
+    const lastRunByKey = new Map<
+      string,
+      { dateKey: string; status: string }
+    >();
+    for (const row of resultRows<Record<string, unknown>>(lastRunResult)) {
+      lastRunByKey.set(
+        compositeKey(
+          String(row.provider ?? ""),
+          row.connectionId == null ? null : String(row.connectionId),
+          String(row.siteId ?? "")
+        ),
+        {
+          dateKey: String(row.dateKey ?? ""),
+          status: String(row.status ?? ""),
+        }
+      );
+    }
+
+    const lastErrorByKey = new Map<
+      string,
+      { dateKey: string; errorMessage: string | null }
+    >();
+    for (const row of resultRows<Record<string, unknown>>(lastErrorResult)) {
+      lastErrorByKey.set(
+        compositeKey(
+          String(row.provider ?? ""),
+          row.connectionId == null ? null : String(row.connectionId),
+          String(row.siteId ?? "")
+        ),
+        {
+          dateKey: String(row.dateKey ?? ""),
+          errorMessage:
+            row.errorMessage == null ? null : String(row.errorMessage),
+        }
+      );
+    }
+
+    return resultRows<Record<string, unknown>>(aggregateResult).map((row) => {
+      const provider = String(row.provider ?? "");
+      const connectionId =
+        row.connectionId == null ? null : String(row.connectionId);
+      const siteId = String(row.siteId ?? "");
+      const key = compositeKey(provider, connectionId, siteId);
+      const lastRun = lastRunByKey.get(key);
+      const lastError = lastErrorByKey.get(key);
+
+      const yesterdayStatusRaw = row.yesterdayStatus;
+      const yesterdayStatus =
+        typeof yesterdayStatusRaw === "string" &&
+        ["success", "error", "no_data", "skipped"].includes(yesterdayStatusRaw)
+          ? (yesterdayStatusRaw as MonitoringDailyOverviewSite["yesterdayStatus"])
+          : null;
+      const lastRunStatus =
+        lastRun && ["success", "error", "no_data", "skipped"].includes(
+          lastRun.status
+        )
+          ? (lastRun.status as MonitoringDailyOverviewSite["lastRunStatus"])
+          : null;
+
+      return {
+        provider,
+        connectionId,
+        siteId,
+        siteName: row.siteName == null ? null : String(row.siteName),
+        yesterdayStatus,
+        last7Attempts: Number(row.last7Attempts ?? 0),
+        last7Successes: Number(row.last7Successes ?? 0),
+        last30Attempts: Number(row.last30Attempts ?? 0),
+        last30Successes: Number(row.last30Successes ?? 0),
+        lastRunAt: lastRun?.dateKey ?? null,
+        lastRunStatus,
+        lastErrorMessage: lastError?.errorMessage ?? null,
+        lastErrorAt: lastError?.dateKey ?? null,
+      };
+    });
+  });
+}
+
+export const MONITORING_DAILY_OVERVIEW_RUNNER_VERSION =
+  MONITORING_DAILY_OVERVIEW_VERSION;
+
 /**
  * Delete every monitoringApiRuns row older than `olderThanDateKey`.
  * Called nightly with a 365-day cutoff so the table stays bounded.
