@@ -10,6 +10,17 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 // Table primitives + Sheet — removed in Phases 11–12; the only
 // remaining parent-level table consumers were the SystemDetailSheet
@@ -1512,7 +1523,7 @@ async function loadDatasetsFromStorage(options: ProgressiveHydrationOptions): Pr
               if (debug) {
                 const ms = Math.round(performance.now() - t0);
                 // eslint-disable-next-line no-console
-                console.warn(`${HYDRATE_LOG_PREFIX_IDB} ${key} FAILED after ${ms}ms`, error);
+                console.error(`${HYDRATE_LOG_PREFIX_IDB} ${key} FAILED after ${ms}ms`, error);
               }
               onError?.(key, error);
             }
@@ -2327,7 +2338,7 @@ export default function SolarRecDashboard() {
         ]);
       }
       // eslint-disable-next-line no-console
-      console.warn(
+      console.error(
         `[solar-rec] srDs sync for ${key} became unknown before completion; progress UI cleared without marking success.`
       );
     },
@@ -2369,7 +2380,7 @@ export default function SolarRecDashboard() {
           jobId = startResult.jobId;
         } catch (err) {
           // eslint-disable-next-line no-console
-          console.warn(
+          console.error(
             `[solar-rec] srDs sync for ${key} failed to start:`,
             err
           );
@@ -5095,7 +5106,7 @@ export default function SolarRecDashboard() {
       });
     } catch (err) {
       // eslint-disable-next-line no-console
-      console.warn("[loadAllDatasets] failed:", err);
+      console.error("[loadAllDatasets] failed:", err);
       setStorageNotice("Could not finish loading all datasets. Try again.");
     } finally {
       setLoadingAllDatasets(false);
@@ -5372,7 +5383,7 @@ export default function SolarRecDashboard() {
             if (debug) {
               const ms = Math.round(performance.now() - t0);
               // eslint-disable-next-line no-console
-              console.warn(`${HYDRATE_LOG_PREFIX_CLOUD} ${rawKey} FAILED after ${ms}ms`, error);
+              console.error(`${HYDRATE_LOG_PREFIX_CLOUD} ${rawKey} FAILED after ${ms}ms`, error);
             }
             if (!cancelled) {
               recordHydrationError(rawKey, error);
@@ -6355,7 +6366,7 @@ export default function SolarRecDashboard() {
   ]);
 
   const part2FilterAudit = useMemo(() => {
-    const totalAbpRows = datasets.abpReport?.rows.length ?? 0;
+    const totalAbpRows = datasetSummariesByKey['abpReport']?.rowCount ?? 0;
     const part2Rows = part2VerifiedAbpRows.length;
     const excludedRows = Math.max(0, totalAbpRows - part2Rows);
     return {
@@ -6368,7 +6379,7 @@ export default function SolarRecDashboard() {
     };
   }, [
     abpEligibleTotalSystems,
-    datasets.abpReport?.rows.length,
+    datasetSummariesByKey,
     part2EligibleSystemsForSizeReporting.length,
     part2VerifiedAbpRows.length,
   ]);
@@ -7450,7 +7461,7 @@ const aiDataContext = useMemo(() => {
                             toast.error(
                               "Apply landed on the server but the cloud reload returned no payload. Refresh the page if the Delivery Tracker doesn't update."
                             );
-                            console.warn(
+                            console.error(
                               "[onApplyComplete] getRemoteDataset returned no payload; leaving local state untouched"
                             );
                             return;
@@ -7893,9 +7904,23 @@ const aiDataContext = useMemo(() => {
                         </p>
                         <div className="flex items-center gap-2">
                           {dataset ? (
-                            <Button variant="ghost" size="sm" onClick={() => clearDataset(key)}>
-                              Clear
-                            </Button>
+                            <AlertDialog>
+                              <AlertDialogTrigger asChild>
+                                <Button variant="ghost" size="sm">Clear</Button>
+                              </AlertDialogTrigger>
+                              <AlertDialogContent>
+                                <AlertDialogHeader>
+                                  <AlertDialogTitle>Clear dataset?</AlertDialogTitle>
+                                  <AlertDialogDescription>
+                                    This will remove the local copy and queue a cloud-side delete. The dataset will need to be re-uploaded or re-scanned.
+                                  </AlertDialogDescription>
+                                </AlertDialogHeader>
+                                <AlertDialogFooter>
+                                  <AlertDialogCancel>Cancel</AlertDialogCancel>
+                                  <AlertDialogAction onClick={() => clearDataset(key)}>Clear</AlertDialogAction>
+                                </AlertDialogFooter>
+                              </AlertDialogContent>
+                            </AlertDialog>
                           ) : null}
                           {dataset && localOnlyDatasets[key] ? (
                             <Button
@@ -7934,9 +7959,23 @@ const aiDataContext = useMemo(() => {
                           />
                         </label>
                         {dataset ? (
-                          <Button variant="ghost" size="sm" onClick={() => clearDataset(key)}>
-                            Remove
-                          </Button>
+                          <AlertDialog>
+                            <AlertDialogTrigger asChild>
+                              <Button variant="ghost" size="sm">Remove</Button>
+                            </AlertDialogTrigger>
+                            <AlertDialogContent>
+                              <AlertDialogHeader>
+                                <AlertDialogTitle>Remove dataset?</AlertDialogTitle>
+                                <AlertDialogDescription>
+                                  This will remove the local copy and queue a cloud-side delete. You will need to re-upload a CSV to restore it.
+                                </AlertDialogDescription>
+                              </AlertDialogHeader>
+                              <AlertDialogFooter>
+                                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                                <AlertDialogAction onClick={() => clearDataset(key)}>Remove</AlertDialogAction>
+                              </AlertDialogFooter>
+                            </AlertDialogContent>
+                          </AlertDialog>
                         ) : null}
                         {dataset && localOnlyDatasets[key] ? (
                           <Button
