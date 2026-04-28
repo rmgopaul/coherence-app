@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  King Widget — sized for the Galaxy Z Fold 7's inner display.
+
+  Z Fold 7 inner display is roughly 6.5"×7.6" at ~2160×1856. A
+  default 5×4 launcher grid puts each cell at ~74dp; we want this
+  widget to span ~5 cells wide × ~6 cells tall so it dominates a
+  home-screen page rather than competing with regular phone widgets.
+
+  Resize is allowed in both axes so users with non-default grids can
+  shrink/expand to taste. Min sizes guarantee the 2-column body layout
+  has room (under ~280dp wide it would crowd the right column).
+-->
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    android:description="@string/widget_king_description"
+    android:initialLayout="@layout/glance_default_loading_layout"
+    android:previewImage="@mipmap/ic_launcher"
+    android:minWidth="380dp"
+    android:minHeight="440dp"
+    android:minResizeWidth="320dp"
+    android:minResizeHeight="320dp"
+    android:resizeMode="horizontal|vertical"
+    android:targetCellWidth="5"
+    android:targetCellHeight="6"
+    android:updatePeriodMillis="1800000"
+    android:widgetCategory="home_screen" />

@@ -2,4 +2,5 @@
 <resources>
   <string name="app_name">Coherence</string>
   <string name="widget_description">Dashboard with headlines, weather, markets, sports, email, tasks &amp; calendar</string>
+  <string name="widget_king_description">Coherence King — full-screen dashboard for Galaxy Z Fold</string>
 </resources>
