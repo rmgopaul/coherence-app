@@ -11,6 +11,7 @@ import TwoFactorGate from "./components/TwoFactorGate";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import { FocusModeProvider } from "./contexts/FocusModeContext";
 import { AppShell } from "./components/layout/AppShell";
+import { useAuth } from "./_core/hooks/useAuth";
 
 const Home = lazy(() => import("@/features/dashboard/Home"));
 const Dashboard = lazy(() => import("@/features/dashboard/Dashboard"));
@@ -48,6 +49,13 @@ const ClockifyWidget = lazy(() => import("@/features/dashboard/ClockifyWidget"))
 const ChatGPTWidget = lazy(() => import("@/features/dashboard/ChatGPTWidget"));
 const GoogleCalendarWidget = lazy(() => import("@/features/dashboard/GoogleCalendarWidget"));
 const GmailWidget = lazy(() => import("@/features/dashboard/GmailWidget"));
+// Phase E (2026-04-28): admin-only Feedback Review Dashboard. Gated
+// by `adminProcedure` on the server; the client also gates via
+// `AdminRoute` below so non-admins see a friendlier message instead
+// of a tRPC FORBIDDEN screen.
+const FeedbackReviewDashboard = lazy(
+  () => import("@/features/feedback/FeedbackReviewDashboard")
+);
 
 const LEGACY_METER_READ_REDIRECTS = [
   { from: "/sunpower-readings", to: "/solar-rec/meter-reads/sunpower" },
@@ -78,6 +86,37 @@ function RouteFallback() {
 
 function withRouteSuspense(Component: ComponentType) {
   return function SuspendedRouteComponent() {
+    return (
+      <Suspense fallback={<RouteFallback />}>
+        <Component />
+      </Suspense>
+    );
+  };
+}
+
+/**
+ * Phase E (2026-04-28) — wraps admin-only routes so non-admin users
+ * land on a friendly "not authorized" message instead of the
+ * underlying page firing a tRPC adminProcedure call that returns
+ * FORBIDDEN. The server is the canonical gate; this is a UX layer
+ * that keeps the dashboard out of the route tree for non-admins.
+ */
+function withAdminRoute(Component: ComponentType) {
+  return function AdminGatedRouteComponent() {
+    const { user, loading } = useAuth();
+    if (loading) {
+      return <RouteFallback />;
+    }
+    if (!user || user.role !== "admin") {
+      return (
+        <div className="container max-w-2xl space-y-3 p-6">
+          <h1 className="text-2xl font-semibold">Not authorized</h1>
+          <p className="text-sm text-muted-foreground">
+            This page is only available to admins.
+          </p>
+        </div>
+      );
+    }
     return (
       <Suspense fallback={<RouteFallback />}>
         <Component />
@@ -147,6 +186,10 @@ function AppRoutes() {
       <Route path={"/habits"} component={withRouteSuspense(Habits)} />
       <Route path={"/health"} component={withRouteSuspense(Health)} />
       <Route path={"/settings"} component={withRouteSuspense(Settings)} />
+      <Route
+        path={"/feedback"}
+        component={withAdminRoute(FeedbackReviewDashboard)}
+      />
       <Route path={"/widget/todoist"} component={withRouteSuspense(TodoistWidget)} />
       <Route path={"/widget/clockify"} component={withRouteSuspense(ClockifyWidget)} />
       <Route path={"/widget/chatgpt"} component={withRouteSuspense(ChatGPTWidget)} />

@@ -12,9 +12,11 @@ import {
   Mail,
   ChevronDown,
   BarChart3,
+  MessageSquareText,
   Settings,
   type LucideIcon,
 } from "lucide-react";
+import { useAuth } from "@/_core/hooks/useAuth";
 import {
   Sidebar,
   SidebarContent,
@@ -90,6 +92,24 @@ const NAV_SECTIONS: NavSection[] = [
   },
 ];
 
+/**
+ * Phase E (2026-04-28) — admin-only nav section. Hidden entirely
+ * from non-admins (the route itself is server-gated, this just
+ * keeps the link out of the sidebar so the section doesn't even
+ * show up). New admin tools land here.
+ */
+const ADMIN_NAV_SECTION: NavSection = {
+  title: "Admin",
+  items: [
+    {
+      label: "Feedback Review",
+      href: "/feedback",
+      icon: MessageSquareText,
+      badgeKey: "feedbackOpen",
+    },
+  ],
+};
+
 function getStoredSections(): Record<string, boolean> {
   try {
     const stored = localStorage.getItem("sidebar-sections");
@@ -105,6 +125,8 @@ function storeSections(sections: Record<string, boolean>) {
 
 export function AppSidebar() {
   const [location] = useLocation();
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
 
   // Badge counts. All queries pin staleTime + disable refetch-on-focus
   // so a sidebar mount doesn't cost a roundtrip when the user tabs back.
@@ -140,6 +162,19 @@ export function AppSidebar() {
     refetchOnWindowFocus: false,
   });
 
+  // Phase E (2026-04-28) — pipeline summary chip count for the
+  // sidebar's Admin → Feedback Review badge. Only fires when the
+  // current user is admin; non-admins never see the section, so
+  // the badge query stays disabled to avoid a guaranteed FORBIDDEN.
+  const { data: feedbackSummary } = trpc.feedback.listRecent.useQuery(
+    { limit: 500 },
+    {
+      enabled: isAdmin,
+      staleTime: 5 * 60_000,
+      refetchOnWindowFocus: false,
+    }
+  );
+
   const badges = useMemo(() => {
     const today = new Date().toISOString().slice(0, 10);
     const tasksDueToday = (todoistTasks ?? []).filter(
@@ -155,6 +190,10 @@ export function AppSidebar() {
         ? Math.round(whoopSummary.recoveryScore)
         : null;
     const chatCount = (conversations ?? []).length;
+    const counts = feedbackSummary?.statusCounts;
+    const feedbackOpen = counts
+      ? (counts.open ?? 0) + (counts.triaged ?? 0)
+      : 0;
     return {
       tasks: tasksDueToday > 0 ? tasksDueToday : null,
       events: eventsToday > 0 ? eventsToday : null,
@@ -165,6 +204,7 @@ export function AppSidebar() {
       habits: habitsTotal > 0 ? `${habitsDone}/${habitsTotal}` : null,
       health: recovery,
       chat: chatCount > 0 ? chatCount : null,
+      feedbackOpen: feedbackOpen > 0 ? feedbackOpen : null,
     } as Record<string, number | string | null>;
   }, [
     todoistTasks,
@@ -174,14 +214,23 @@ export function AppSidebar() {
     habitsForDate,
     whoopSummary,
     conversations,
+    feedbackSummary,
   ]);
+
+  // Admin section is only included in the rendered nav for admin
+  // users — non-admins never see it (and the underlying route is
+  // server-gated regardless).
+  const renderedSections = useMemo(
+    () => (isAdmin ? [...NAV_SECTIONS, ADMIN_NAV_SECTION] : NAV_SECTIONS),
+    [isAdmin]
+  );
 
   const [openSections, setOpenSections] = useState<Record<string, boolean>>(
     () => {
       const stored = getStoredSections();
       const defaults: Record<string, boolean> = {};
       const defaultClosed = new Set<string>(["Portfolio"]);
-      for (const section of NAV_SECTIONS) {
+      for (const section of [...NAV_SECTIONS, ADMIN_NAV_SECTION]) {
         defaults[section.title] =
           stored[section.title] !== undefined
             ? stored[section.title]
@@ -226,7 +275,7 @@ export function AppSidebar() {
       <SidebarSeparator />
 
       <SidebarContent>
-        {NAV_SECTIONS.map((section) => (
+        {renderedSections.map((section) => (
           <Collapsible
             key={section.title}
             open={openSections[section.title]}
