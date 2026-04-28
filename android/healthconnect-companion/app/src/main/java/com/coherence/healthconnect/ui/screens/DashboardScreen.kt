@@ -27,6 +27,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.put
 import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -95,6 +100,29 @@ fun DashboardScreen(viewModel: DashboardViewModel) {
     )
   }
 
+  // Live King of the Day. Single fetch on screen entry — the hero
+  // falls back to its local heuristic ("TODAY IS A LIST" etc.) when
+  // null, so we don't need to block render. Refresh fires when the
+  // dashboard's pull-to-refresh re-keys this LaunchedEffect via the
+  // `state.isRefreshing` boundary, mirroring the periodic worker
+  // path that drives the home-screen widget's KoD field.
+  var kingOfDayTitle by remember { mutableStateOf<String?>(null) }
+  var kingOfDayReason by remember { mutableStateOf<String?>(null) }
+  LaunchedEffect(today, state.isRefreshing) {
+    try {
+      val response = app.container.trpcClient.query(
+        "kingOfDay.get",
+        buildJsonObject { put("dateKey", JsonPrimitive(today)) },
+      )
+      val obj = response as? JsonObject
+      kingOfDayTitle = (obj?.get("title") as? JsonPrimitive)?.contentOrNull
+      kingOfDayReason = (obj?.get("reason") as? JsonPrimitive)?.contentOrNull
+    } catch (_: Throwable) {
+      // Keep previous KoD on transient fetch error rather than
+      // dropping back to the heuristic mid-session.
+    }
+  }
+
   LaunchedEffect(searchQuery) {
     val normalized = searchQuery.trim()
     if (normalized.length < 2) {
@@ -151,7 +179,11 @@ fun DashboardScreen(viewModel: DashboardViewModel) {
 
       // Hero greeting card
       item {
-        BasquiatDashboardHero(stats = heroStats)
+        BasquiatDashboardHero(
+          stats = heroStats,
+          kingOfDayTitle = kingOfDayTitle,
+          kingOfDayReason = kingOfDayReason,
+        )
       }
 
       // Phase G — focus mode collapses everything below the hero to
@@ -211,6 +243,7 @@ fun DashboardScreen(viewModel: DashboardViewModel) {
             error = state.marketState.errorOrNull(),
             lastUpdatedMillis = state.marketState.updatedAtOrNull(),
             onRetry = { viewModel.retryMarket() },
+            onRefresh = { viewModel.retryMarket() },
           )
         }
       }

@@ -101,8 +101,20 @@ private sealed class RichLine {
 }
 
 private fun parseLines(text: String): List<RichLine> {
-  // First strip HTML block tags and convert <br> to newlines
+  // First strip HTML block tags and convert <br> to newlines.
+  //
+  // Tiptap's StarterKit emits list items as `<li><p>foo</p></li>`
+  // (paragraph wrapper inside each li). Without the two pre-strips
+  // below, the order `</?p>` → `\n` runs first and turns
+  // `<li><p>foo</p></li>` into `\n• \nfoo\n`, which splits into
+  // (a) a bullet row with empty text and (b) a separate paragraph
+  // with "foo". The user sees the bullet "above" the text. Strip
+  // the `<p>`/`</p>` immediately inside an `<li>` boundary before
+  // the global `<p>` → `\n` rewrite so the bullet text stays on
+  // the same line.
   val cleaned = text
+    .replace(Regex("<li>\\s*<p>", RegexOption.IGNORE_CASE), "<li>")
+    .replace(Regex("</p>\\s*</li>", RegexOption.IGNORE_CASE), "</li>")
     .replace(Regex("<br\\s*/?>", RegexOption.IGNORE_CASE), "\n")
     .replace(Regex("</?p>", RegexOption.IGNORE_CASE), "\n")
     .replace(Regex("<h([1-3])>", RegexOption.IGNORE_CASE), "\n<h$1>")

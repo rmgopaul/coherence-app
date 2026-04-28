@@ -76,6 +76,13 @@ data class HeroStats(
 fun BasquiatDashboardHero(
   stats: HeroStats,
   modifier: Modifier = Modifier,
+  // Live King of the Day from server (`kingOfDay.get`). When non-null
+  // it overrides the deriveHeadline() heuristic so the hero displays
+  // the same headline as the home-screen widget and the web app
+  // (rather than the static "TODAY IS A LIST" / "SHIP ONE THING"
+  // fallbacks that were always shown previously).
+  kingOfDayTitle: String? = null,
+  kingOfDayReason: String? = null,
 ) {
   // The hero is intentionally always dark — Paper bg + Ink text in
   // dark mode hit dark-on-dark and become unreadable. Mirroring the
@@ -109,8 +116,20 @@ fun BasquiatDashboardHero(
       .uppercase(Locale.US)
   }
 
-  val headline = remember(stats) { deriveHeadline(stats) }
-  val annotation = remember(stats) { deriveAnnotation(stats) }
+  // Prefer the live King of the Day if the server supplied one; only
+  // fall back to the local heuristic when KoD is null/blank (offline,
+  // not yet selected for today, etc.).
+  val headline = remember(stats, kingOfDayTitle) {
+    kingOfDayTitle?.takeIf { it.isNotBlank() }?.uppercase(Locale.US)
+      ?: deriveHeadline(stats)
+  }
+  val annotation = remember(stats, kingOfDayReason, kingOfDayTitle) {
+    if (!kingOfDayTitle.isNullOrBlank()) {
+      kingOfDayReason?.takeIf { it.isNotBlank() } ?: deriveAnnotation(stats)
+    } else {
+      deriveAnnotation(stats)
+    }
+  }
 
   // Brutalist card shell — no rounded corners, 2dp ink border,
   // flat 6dp offset shadow imitated via a stacked Box.
