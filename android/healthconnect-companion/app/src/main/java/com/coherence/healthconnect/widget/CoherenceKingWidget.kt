@@ -59,15 +59,13 @@ import java.util.Locale
  */
 class CoherenceKingWidget : GlanceAppWidget() {
 
-  // Exact size mode — Glance paints at whatever pixel size the
-  // launcher allocates rather than a single fixed footprint. Required
-  // for the resize handles to actually grow the rendered widget on
-  // launchers like Samsung One UI that pass progressive size hints
-  // during a drag. With SizeMode.Single the composable was committed
-  // at a fixed footprint and the resize handle visually clipped
-  // instead of expanding the canvas (the user's "stuck at half"
-  // symptom on the Fold inner display).
-  override val sizeMode: SizeMode = SizeMode.Exact
+  // Stick with Single — Exact mode rendered black/empty on Samsung
+  // One UI when the launcher passed a tiny initial size. Single
+  // pins the composable to a single render at the natural size,
+  // which the Glance host stretches to fit the launcher's frame.
+  // Resize handles still grow the placement; the inner content
+  // just renders once and scales.
+  override val sizeMode: SizeMode = SizeMode.Single
 
   override suspend fun provideGlance(context: Context, id: GlanceId) {
     val data = WidgetDataStore.load(context)
@@ -136,8 +134,11 @@ private fun KingWidgetContent(data: WidgetData) {
       // Two-column body. Each column gets `defaultWeight()` so they
       // share width 50/50; sections are stacked top-to-bottom inside
       // each column. Empty sections collapse via the `if` gates.
+      // No `fillMaxHeight` here — Glance's RemoteViews layout doesn't
+      // reliably resolve fillMax on a vertically-stacked child of a
+      // Column, and the resulting 0-height row was rendering blank.
       Row(
-        modifier = GlanceModifier.fillMaxWidth().fillMaxHeight(),
+        modifier = GlanceModifier.fillMaxWidth(),
       ) {
         Column(modifier = GlanceModifier.defaultWeight().padding(end = 10.dp)) {
           if (data.nextEvent != null) {
