@@ -315,6 +315,51 @@ walking the actual runtime:
    assumes one process on a warm cache is brittle. `dailyJobClaims`
    exists because the old in-process `lastRunDateKey` didn't
    survive this question.
+5. **The two-app shell rule.** This origin serves *two* SPAs from
+   the same domain: `/` (personal app, entry `client/src/main.tsx`,
+   HTML `client/index.html`) and `/solar-rec/` (team app, entry
+   `client/src/solar-rec-main.tsx`, HTML `client/solar-rec.html`).
+   Vite chunk-splits shared library code; Express routes both via
+   `serveStatic` with a `/solar-rec/*` override. Anything that
+   touches client-shell infrastructure — service worker, asset
+   caching, install/registration logic, route fallback paths,
+   chunk naming, lazy-loading boundaries — must be smoke-tested
+   on **both** apps before merging. Specifically:
+     - A service worker registered at `/service-worker.js` controls
+       BOTH apps (its scope is `/`). Any cache strategy that picks
+       a single shell-fallback URL is wrong by construction; pick
+       by URL prefix (`/solar-rec/` vs `/`).
+     - Cached HTML carries hashed `<script src>` references. Vite's
+       `emptyOutDir: true` deletes those hashes on every build. A
+       persistently cached HTML payload outlives the chunks it
+       references and renders blank. Don't persist HTML in a long-
+       lived SW cache; treat HTML navigations as network-only or
+       very-short-TTL stale-while-revalidate.
+     - PR #223 (PWA shell) shipped both failure modes simultaneously
+       and bricked the solar-rec app for every team member. Hotfix
+       at PR #234.
+6. **Component context-dependency check.** When adding a shared
+   component (any UI atom that calls a `use*` hook from a context —
+   `Toaster` calls `useTheme`; `SignalActions` calls `useAuth`;
+   `WorksetSelector` reads `solarRecTrpc`) into a tree it didn't
+   live in before, **first verify the matching Provider is above
+   it.** The check: open the component's source, list every
+   `use<Context>` it calls, then grep the target tree for each
+   matching `<*Provider>`. Personal `App.tsx` has the full provider
+   stack (Theme / Tooltip / FocusMode / etc.); `SolarRecApp.tsx`
+   does not. Mounting `<Toaster />` into SolarRecApp without
+   `<ThemeProvider>` throws "useTheme must be used within
+   ThemeProvider" and crashes the entire bundle on boot —
+   precisely the PR #223 → PR #234 sequence above.
+7. **Drive-by fixes are deceptive.** A "drive-by" fix folded into
+   an unrelated PR introduces regressions whose proximate cause is
+   the unrelated PR itself, masking the true scope. PR #223 (PWA
+   shell) folded in a Toaster mount on `SolarRecApp.tsx` to "light
+   up the SW update toast on solar-rec." That mount was the bug
+   that crashed solar-rec — not the SW. Lesson: if a change is
+   genuinely unrelated to the PR's stated scope, it gets its own
+   PR with its own test plan. Drive-bys are how `useTheme` errors
+   surface in a "PWA shell" stack trace.
 
 When the answer to any of these is "I'm not sure," figure it out or
 flag it in the PR description. Shipping on "it compiles" is how
