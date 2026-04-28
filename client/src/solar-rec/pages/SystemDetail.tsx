@@ -177,6 +177,10 @@ function SystemDetailImpl() {
               else setLocation("/solar-rec/monitoring");
             }}
           />
+          <InvoiceStatusSection
+            invoiceStatus={data.invoiceStatus}
+            onJump={() => setLocation("/solar-rec/abp-invoice-settlement")}
+          />
           <p className="text-[10px] text-muted-foreground text-right font-mono">
             runner: {data._runnerVersion}
           </p>
@@ -785,6 +789,161 @@ function MeterReadsSection({
                 </TableBody>
               </Table>
             </div>
+          </>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function InvoiceStatusSection({
+  invoiceStatus,
+  onJump,
+}: {
+  invoiceStatus: SystemDetailResponse["invoiceStatus"];
+  onJump: () => void;
+}) {
+  const { utilityInvoices, iccReport } = invoiceStatus;
+  const noData =
+    utilityInvoices.count === 0 && iccReport === null;
+
+  // Roll-up: % of contracted REC quantity already invoiced. Useful
+  // sanity check that the system is on track. Only meaningful when
+  // the ICC report has a contractedRecs value AND we've seen any
+  // utility invoice with a totalRecs.
+  const recsInvoicedPct = useMemo(() => {
+    if (!iccReport?.contractedRecs || iccReport.contractedRecs <= 0) return null;
+    if (utilityInvoices.totalRecs === null) return null;
+    return (utilityInvoices.totalRecs / iccReport.contractedRecs) * 100;
+  }, [iccReport, utilityInvoices.totalRecs]);
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-start justify-between">
+          <div>
+            <CardTitle className="text-base">Invoice status</CardTitle>
+            <CardDescription>
+              Utility invoices paid + ICC contract value baseline.
+            </CardDescription>
+          </div>
+          <Button variant="outline" size="sm" onClick={onJump}>
+            <ArrowUpRight className="h-3.5 w-3.5 mr-1" />
+            Open settlement
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent>
+        {noData ? (
+          <NoData
+            primary="No invoice data on file."
+            secondary="Upload ABP Utility Invoice + ICC Report 3 datasets to populate this section. Verify the system's `systemId` matches the invoice rows."
+          />
+        ) : (
+          <>
+            <dl className="grid grid-cols-2 md:grid-cols-4 gap-x-6 gap-y-3 text-sm">
+              <Field
+                label="Invoices on file"
+                value={utilityInvoices.count.toString()}
+              />
+              <Field
+                label="Total invoiced"
+                value={
+                  utilityInvoices.totalInvoiceAmount !== null
+                    ? formatMoney(utilityInvoices.totalInvoiceAmount)
+                    : "—"
+                }
+              />
+              <Field
+                label="Total RECs invoiced"
+                value={
+                  utilityInvoices.totalRecs !== null
+                    ? formatNumber(utilityInvoices.totalRecs, 0)
+                    : "—"
+                }
+              />
+              <Field
+                label="ICC contracted RECs"
+                value={
+                  iccReport?.contractedRecs !== undefined &&
+                  iccReport?.contractedRecs !== null
+                    ? formatNumber(iccReport.contractedRecs, 0)
+                    : "—"
+                }
+              />
+              <Field
+                label="ICC contract value"
+                value={
+                  iccReport?.grossContractValue !== undefined &&
+                  iccReport?.grossContractValue !== null
+                    ? formatMoney(iccReport.grossContractValue)
+                    : "—"
+                }
+              />
+              <Field
+                label="ICC REC price"
+                value={
+                  iccReport?.recPrice !== undefined &&
+                  iccReport?.recPrice !== null
+                    ? formatMoney(iccReport.recPrice)
+                    : "—"
+                }
+              />
+              <Field
+                label="% of contract invoiced"
+                value={
+                  recsInvoicedPct !== null
+                    ? `${formatNumber(recsInvoicedPct, 1)}%`
+                    : "—"
+                }
+              />
+              <Field
+                label="Scheduled energization"
+                value={iccReport?.scheduledEnergizationDate ?? "—"}
+              />
+            </dl>
+
+            {utilityInvoices.rows.length > 0 && (
+              <div className="mt-3">
+                <p className="text-xs text-muted-foreground mb-1">
+                  Recent utility invoices
+                </p>
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Payment #</TableHead>
+                      <TableHead>RECs</TableHead>
+                      <TableHead>REC price</TableHead>
+                      <TableHead>Invoice amount</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {utilityInvoices.rows.map((r, i) => (
+                      <TableRow key={`${r.paymentNumber ?? "noPayment"}-${i}`}>
+                        <TableCell className="text-xs font-mono">
+                          {r.paymentNumber ?? "—"}
+                        </TableCell>
+                        <TableCell className="text-xs">
+                          {r.totalRecs !== null
+                            ? formatNumber(r.totalRecs, 0)
+                            : "—"}
+                        </TableCell>
+                        <TableCell className="text-xs">
+                          {r.recPrice !== null
+                            ? formatMoney(r.recPrice)
+                            : "—"}
+                        </TableCell>
+                        <TableCell className="text-xs">
+                          {r.invoiceAmount !== null
+                            ? formatMoney(r.invoiceAmount)
+                            : "—"}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
           </>
         )}
       </CardContent>

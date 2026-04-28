@@ -36,6 +36,7 @@ export * from "./db/jobsIndex";
 export * from "./db/systemRegistry";
 export * from "./db/idWorksets";
 export * from "./db/systemMeterReads";
+export * from "./db/systemInvoiceStatus";
 export * from "./db/solarRecDatasets";
 export * from "./db/kingOfDay";
 export * from "./db/dock";
