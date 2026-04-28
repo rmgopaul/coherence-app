@@ -53,6 +53,8 @@ import {
   engagementRouter,
   anthropicRouter,
   solarReadingsRouter,
+  // Phase E (2026-04-28) — Personal contacts overlay.
+  contactsRouter,
 } from "./routers/personalData";
 import { kingOfDayRouter } from "./routers/kingOfDay";
 import { weatherRouter } from "./routers/weather";
@@ -107,6 +109,7 @@ export const appRouter = router({
   notes: notesRouter,
   dataExport: dataExportRouter,
   dock: dockRouter,
+  contacts: contactsRouter,
   engagement: engagementRouter,
   anthropic: anthropicRouter,
   solarReadings: solarReadingsRouter,

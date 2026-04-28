@@ -122,6 +122,15 @@ import {
   setDockItemDueAt,
   updateDockItemCanvas,
 } from "../db/dock";
+// Phase E (2026-04-28) — personal contacts overlay.
+import {
+  archivePersonalContact,
+  deletePersonalContact,
+  insertPersonalContact,
+  listPersonalContacts,
+  recordPersonalContactEvent,
+  updatePersonalContact,
+} from "../db/contacts";
 import { canonicalizeUrl } from "@shared/dropdock.helpers";
 
 export const metricsRouter = router({
@@ -3195,5 +3204,175 @@ export const solarReadingsRouter = router({
     )
     .query(async ({ input }) => {
       return listProductionReadings(input ?? undefined);
+    }),
+});
+
+/**
+ * Phase E (2026-04-28) — Personal contacts (CRM-lite) overlay.
+ *
+ * Personal-side feature; lives on the main app router. All procs
+ * scope by `ctx.user.id`, never `scopeId` (this is single-user
+ * data, not a team feature).
+ *
+ * Wire shape: dates serialize as ISO strings via the toJSON path
+ * built into superjson. The client reconstitutes them inside
+ * `formatLastContactedLabel` / `categorizeContactStaleness` which
+ * accept both strings and Date instances.
+ */
+const CONTACT_FIELD_LIMITS = {
+  name: 200,
+  email: 320,
+  phone: 64,
+  role: 200,
+  company: 200,
+  notes: 4000,
+  tags: 500,
+} as const;
+
+const contactInputShape = z.object({
+  name: z.string().min(1).max(CONTACT_FIELD_LIMITS.name),
+  email: z
+    .string()
+    .max(CONTACT_FIELD_LIMITS.email)
+    .nullable()
+    .optional(),
+  phone: z
+    .string()
+    .max(CONTACT_FIELD_LIMITS.phone)
+    .nullable()
+    .optional(),
+  role: z.string().max(CONTACT_FIELD_LIMITS.role).nullable().optional(),
+  company: z
+    .string()
+    .max(CONTACT_FIELD_LIMITS.company)
+    .nullable()
+    .optional(),
+  notes: z.string().max(CONTACT_FIELD_LIMITS.notes).nullable().optional(),
+  tags: z.string().max(CONTACT_FIELD_LIMITS.tags).nullable().optional(),
+});
+
+function normalizeContactField(
+  value: string | null | undefined
+): string | null {
+  if (value == null) return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+export const contactsRouter = router({
+  list: protectedProcedure
+    .input(
+      z
+        .object({
+          limit: z.number().int().min(1).max(500).optional(),
+          includeArchived: z.boolean().optional(),
+          sort: z.enum(["recent", "stale"]).optional(),
+        })
+        .optional()
+    )
+    .query(async ({ ctx, input }) => {
+      return listPersonalContacts(ctx.user.id, {
+        limit: input?.limit,
+        includeArchived: input?.includeArchived,
+        sort: input?.sort,
+      });
+    }),
+
+  create: protectedProcedure
+    .input(contactInputShape)
+    .mutation(async ({ ctx, input }) => {
+      const id = nanoid();
+      const now = new Date();
+      await insertPersonalContact({
+        id,
+        userId: ctx.user.id,
+        name: input.name.trim(),
+        email: normalizeContactField(input.email),
+        phone: normalizeContactField(input.phone),
+        role: normalizeContactField(input.role),
+        company: normalizeContactField(input.company),
+        notes: normalizeContactField(input.notes),
+        tags: normalizeContactField(input.tags),
+        lastContactedAt: null,
+        createdAt: now,
+        updatedAt: now,
+        archivedAt: null,
+      });
+      return { id };
+    }),
+
+  update: protectedProcedure
+    .input(
+      contactInputShape.partial().extend({
+        id: z.string().min(1).max(64),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { id, ...rest } = input;
+      // Trim/strip optional string fields the same way create does
+      // so a follow-up patch produces the same canonical shape as
+      // the original insert.
+      const patch: Parameters<typeof updatePersonalContact>[2] = {};
+      if (rest.name !== undefined) patch.name = rest.name.trim();
+      if (rest.email !== undefined) patch.email = normalizeContactField(rest.email);
+      if (rest.phone !== undefined) patch.phone = normalizeContactField(rest.phone);
+      if (rest.role !== undefined) patch.role = normalizeContactField(rest.role);
+      if (rest.company !== undefined)
+        patch.company = normalizeContactField(rest.company);
+      if (rest.notes !== undefined) patch.notes = normalizeContactField(rest.notes);
+      if (rest.tags !== undefined) patch.tags = normalizeContactField(rest.tags);
+      const updated = await updatePersonalContact(ctx.user.id, id, patch);
+      return { updated };
+    }),
+
+  /**
+   * Stamp `lastContactedAt = now()` on a contact. The "Just talked"
+   * button on each contact card calls this. Pass `clear=true` to
+   * undo (clears the stamp).
+   */
+  recordContact: protectedProcedure
+    .input(
+      z.object({
+        id: z.string().min(1).max(64),
+        clear: z.boolean().optional(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const updated = await recordPersonalContactEvent(
+        ctx.user.id,
+        input.id,
+        input.clear ? null : new Date()
+      );
+      return { updated };
+    }),
+
+  /**
+   * Soft delete: stamps `archivedAt`. Pass `archived=false` to
+   * restore.
+   */
+  archive: protectedProcedure
+    .input(
+      z.object({
+        id: z.string().min(1).max(64),
+        archived: z.boolean(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const updated = await archivePersonalContact(
+        ctx.user.id,
+        input.id,
+        input.archived
+      );
+      return { updated };
+    }),
+
+  /**
+   * Hard delete. Surfaces a "Permanently delete?" confirm in the UI.
+   */
+  delete: protectedProcedure
+    .input(z.object({ id: z.string().min(1).max(64) }))
+    .mutation(async ({ ctx, input }) => {
+      const deleted = await deletePersonalContact(ctx.user.id, input.id);
+      return { deleted };
     }),
 });

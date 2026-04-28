@@ -358,6 +358,13 @@
       "when": 1777403734289,
       "tag": "0054_add_daily_reflections",
       "breakpoints": true
+    },
+    {
+      "idx": 55,
+      "version": "5",
+      "when": 1777406433425,
+      "tag": "0055_add_personal_contacts",
+      "breakpoints": true
     }
   ]
 }
