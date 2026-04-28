@@ -53,6 +53,7 @@ import com.coherence.healthconnect.ui.widgets.GmailWidget
 import com.coherence.healthconnect.ui.widgets.HabitsWidget
 import com.coherence.healthconnect.ui.widgets.HealthWidget
 import com.coherence.healthconnect.ui.widgets.HeroStats
+import com.coherence.healthconnect.ui.widgets.InsightsWidget
 import com.coherence.healthconnect.ui.widgets.MarketHeadlinesWidget
 import com.coherence.healthconnect.ui.widgets.MorningBriefingWidget
 import com.coherence.healthconnect.ui.widgets.NudgesWidget
@@ -75,6 +76,7 @@ fun DashboardScreen(
   viewModel: DashboardViewModel,
   onNavigateToReflection: () -> Unit = {},
   onNavigateToWeeklyReview: () -> Unit = {},
+  onNavigateToInsights: () -> Unit = {},
 ) {
   val app = LocalApp.current
   val state by viewModel.state.collectAsState()
@@ -242,6 +244,15 @@ fun DashboardScreen(
             onOpenTasks = {}, // Tasks tab is bottom-nav; nudge is informational here.
             onOpenEmail = {}, // Gmail widget already on dashboard; nudge is informational.
           )
+        }
+      }
+
+      // Cross-domain insights — Anthropic correlations over the
+      // trailing 90 days. Pure projection of `insights.getLatest`;
+      // tap-through to InsightsScreen for the full list + regenerate.
+      if (!hiddenWidgets.contains("insights")) {
+        item {
+          InsightsWidget(onOpenInsights = onNavigateToInsights)
         }
       }
 

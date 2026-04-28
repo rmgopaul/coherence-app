@@ -365,6 +365,13 @@
       "when": 1777406433425,
       "tag": "0055_add_personal_contacts",
       "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "5",
+      "when": 1777414871249,
+      "tag": "0056_add_user_insights",
+      "breakpoints": true
     }
   ]
 }

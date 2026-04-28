@@ -16,6 +16,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.automirrored.filled.Notes
+import androidx.compose.material.icons.filled.AutoGraph
 import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.CalendarViewWeek
 import androidx.compose.material.icons.filled.Folder
@@ -48,6 +49,7 @@ fun MoreScreen(
   onNavigateToSettings: () -> Unit = {},
   onNavigateToReflection: () -> Unit = {},
   onNavigateToWeeklyReview: () -> Unit = {},
+  onNavigateToInsights: () -> Unit = {},
 ) {
   val app = LocalApp.current
 
@@ -67,6 +69,7 @@ fun MoreScreen(
     item { MoreMenuItem(Icons.AutoMirrored.Filled.Chat, "Chat", "AI-powered conversations") { onNavigateToChat() } }
     item { MoreMenuItem(Icons.Default.NightsStay, "Tonight's reflection", "Energy + journal + tomorrow's one thing") { onNavigateToReflection() } }
     item { MoreMenuItem(Icons.Default.CalendarViewWeek, "Weekly review", "AI summary of your week") { onNavigateToWeeklyReview() } }
+    item { MoreMenuItem(Icons.Default.AutoGraph, "Patterns", "AI correlations across the last 90 days") { onNavigateToInsights() } }
     item { MoreMenuItem(Icons.AutoMirrored.Filled.Notes, "Notes", "Your notebook") { onNavigateToNotes() } }
     item { MoreMenuItem(Icons.Default.Medication, "Supplements", "Track daily supplements") { onNavigateToSupplements() } }
     item { MoreMenuItem(Icons.Default.TrackChanges, "Habits", "Daily habit tracking") { onNavigateToHabits() } }

@@ -63,6 +63,9 @@ import { newsRouter } from "./routers/news";
 import { weeklyReviewRouter } from "./routers/weeklyReview";
 // Daily Rituals (2026-04-28) — evening reflection journal.
 import { reflectionsRouter } from "./routers/reflections";
+// Cross-domain Insights (2026-04-28) — Anthropic over the trailing
+// 90 days of biology + behavior. See routers/insights.ts.
+import { insightsRouter } from "./routers/insights";
 
 // ---------------------------------------------------------------------------
 // App Router — thin composition of all sub-routers
@@ -120,6 +123,7 @@ export const appRouter = router({
   news: newsRouter,
   weeklyReview: weeklyReviewRouter,
   reflections: reflectionsRouter,
+  insights: insightsRouter,
 });
 
 export type AppRouter = typeof appRouter;
