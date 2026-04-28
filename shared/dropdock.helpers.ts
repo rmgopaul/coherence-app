@@ -196,6 +196,52 @@ export function classifyUrl(input: string): ClassifiedUrl {
 }
 
 /**
+ * Match a Markdown-style hyperlink anywhere in a string.
+ *
+ * Many apps (Todoist, Linear, Slack mobile) "Copy task link" produce
+ * a Markdown-shaped clipboard payload like
+ * `[Read sprint plan](https://todoist.com/showTask?id=12345)`. The
+ * URL classifier can't parse that as a URL, so without this helper
+ * the dock chip ends up as a raw `url` source with the literal
+ * `[…](…)` text as the title.
+ *
+ * Returns the FIRST match's `{title, url}` or `null`. Pure — exposed
+ * for testability.
+ *
+ * Phase E (2026-04-28) — fix for "dock chips show raw markdown."
+ */
+export function extractMarkdownLink(
+  text: string
+): { title: string; url: string } | null {
+  if (typeof text !== "string") return null;
+  // [title](url) — title can include any non-`]` character; url
+  // can include any non-`)` character. Both required, both
+  // non-empty after trim. We use a non-greedy match on the title
+  // so a string like "[a](b) [c](d)" picks "a"/"b" not "a](b) [c"/"d".
+  const match = /\[([^\]]+?)\]\(([^)]+?)\)/.exec(text);
+  if (!match) return null;
+  const title = match[1].trim();
+  const url = match[2].trim();
+  if (!title || !url) return null;
+  return { title, url };
+}
+
+/**
+ * Replace every `[label](url)` substring in `text` with just
+ * `label`. Used both as a defensive client-side chip-render step
+ * (so old rows with unstripped markdown still render cleanly)
+ * and server-side inside `getItemDetails` to clean Todoist task
+ * content before persisting.
+ *
+ * Pure — exposed for testability. Idempotent: applying twice
+ * produces the same result.
+ */
+export function stripMarkdownLinks(text: string): string {
+  if (typeof text !== "string" || !text) return "";
+  return text.replace(/\[([^\]]+?)\]\(([^)]+?)\)/g, "$1");
+}
+
+/**
  * Given a clipboard-paste or drag-drop payload, extract the most
  * URL-looking string. Drops handlers receive a DataTransfer that may
  * contain `text/uri-list`, `text/plain`, or `application/json` — try
@@ -221,5 +267,15 @@ export function extractUrlFromPaste(text: string): string {
     .split(/\r?\n/)
     .map((line) => line.trim())
     .find((line) => line.length > 0 && !line.startsWith("#"));
-  return firstUrlLine ?? trimmed;
+  const candidate = firstUrlLine ?? trimmed;
+
+  // Phase E (2026-04-28) — markdown-paste support. If the candidate
+  // is a `[title](url)` blob (or contains one as a prefix/sole
+  // element), peel it down to just the URL so the classifier can
+  // do its job. The title is recovered separately via
+  // `extractMarkdownLink` from the original paste text in the
+  // DropDock handler.
+  const md = extractMarkdownLink(candidate);
+  if (md) return md.url;
+  return candidate;
 }

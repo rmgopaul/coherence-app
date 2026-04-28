@@ -2294,11 +2294,26 @@ export const dockRouter = router({
       meta: z.record(z.string(), z.any()).optional(),
     }))
     .mutation(async ({ ctx, input }) => {
+      // Phase E (2026-04-28) — return `{title: null}` instead of a
+      // generic placeholder string ("Email" / "Task" / "Calendar
+      // Event") when we can't resolve a real title. The chip render
+      // falls back to the URL in that case, which is far more useful
+      // than `TODO Task` everywhere. Apply `stripMarkdownLinks` to
+      // every successful title so a Todoist task content like
+      // "Read [sprint plan](https://docs.google.com/...)" surfaces
+      // as "Read sprint plan" in the chip.
+      const { stripMarkdownLinks } = await import("@shared/dropdock.helpers");
+      const cleanTitle = (raw: string | null | undefined): string | null => {
+        if (!raw) return null;
+        const stripped = stripMarkdownLinks(raw).trim();
+        return stripped.length > 0 ? stripped : null;
+      };
+
       try {
         if (input.source === "gmail") {
           const googleIntegration = await getIntegrationByProvider(ctx.user.id, "google");
           if (!googleIntegration?.accessToken) {
-            return { title: "Email" };
+            return { title: null };
           }
           const accessToken = await getValidGoogleToken(ctx.user.id);
 
@@ -2315,7 +2330,7 @@ export const dockRouter = router({
               messageId = undefined;
             }
           }
-          if (!messageId) return { title: "Email" };
+          if (!messageId) return { title: null };
 
           // Fetch email details from Gmail API
           const response = await fetch(
@@ -2323,20 +2338,20 @@ export const dockRouter = router({
             { headers: { Authorization: `Bearer ${accessToken}` } }
           );
 
-          if (!response.ok) return { title: "Email" };
+          if (!response.ok) return { title: null };
 
           const data = await response.json();
           const subject = data.payload?.headers?.find(
             (h: { name: string; value: string }) => h.name === "Subject"
-          )?.value || "Email";
+          )?.value;
 
-          return { title: subject };
+          return { title: cleanTitle(subject) };
         }
 
         if (input.source === "gcal") {
           const googleIntegration = await getIntegrationByProvider(ctx.user.id, "google");
           if (!googleIntegration?.accessToken) {
-            return { title: "Calendar Event" };
+            return { title: null };
           }
           const accessToken = await getValidGoogleToken(ctx.user.id);
 
@@ -2346,7 +2361,7 @@ export const dockRouter = router({
 
           if (!eventId) {
             const eid = input.meta?.eid as string;
-            if (!eid) return { title: "Calendar Event" };
+            if (!eid) return { title: null };
 
             // Decode base64 event ID. Format is "eventId calendarId"
             // (calendarId absent when the event lives on the primary
@@ -2358,11 +2373,11 @@ export const dockRouter = router({
               eventId = parts[0];
               if (!calendarId && parts[1]) calendarId = parts[1];
             } catch {
-              return { title: "Calendar Event" };
+              return { title: null };
             }
           }
 
-          if (!eventId) return { title: "Calendar Event" };
+          if (!eventId) return { title: null };
 
           // Fetch event details from Calendar API
           const targetCalendar = calendarId ?? "primary";
@@ -2371,23 +2386,23 @@ export const dockRouter = router({
             { headers: { Authorization: `Bearer ${accessToken}` } }
           );
 
-          if (!response.ok) return { title: "Calendar Event" };
+          if (!response.ok) return { title: null };
 
           const event = await response.json();
-          return { title: event.summary || "Calendar Event" };
+          return { title: cleanTitle(event.summary) };
         }
 
         if (input.source === "gsheet") {
           const googleIntegration = await getIntegrationByProvider(ctx.user.id, "google");
           if (!googleIntegration?.accessToken) {
-            return { title: "Spreadsheet" };
+            return { title: null };
           }
           const accessToken = await getValidGoogleToken(ctx.user.id);
 
           const spreadsheetId =
             (input.meta?.spreadsheetId as string | undefined) ??
             (input.meta?.sheetId as string | undefined);
-          if (!spreadsheetId) return { title: "Spreadsheet" };
+          if (!spreadsheetId) return { title: null };
 
           // Fetch spreadsheet details from Drive API
           const response = await fetch(
@@ -2395,16 +2410,16 @@ export const dockRouter = router({
             { headers: { Authorization: `Bearer ${accessToken}` } }
           );
 
-          if (!response.ok) return { title: "Spreadsheet" };
+          if (!response.ok) return { title: null };
 
           const file = await response.json();
-          return { title: file.name || "Spreadsheet" };
+          return { title: cleanTitle(file.name) };
         }
 
         if (input.source === "todoist") {
           const todoistIntegration = await getIntegrationByProvider(ctx.user.id, "todoist");
           if (!todoistIntegration?.accessToken) {
-            return { title: "Task" };
+            return { title: null };
           }
 
           let taskId = input.meta?.taskId as string | undefined;
@@ -2412,7 +2427,7 @@ export const dockRouter = router({
             const taskMatch = input.url.match(/\/task\/([A-Za-z0-9_-]+)/);
             taskId = taskMatch?.[1];
           }
-          if (!taskId) return { title: "Task" };
+          if (!taskId) return { title: null };
 
           // Fetch task details from Todoist API (v1).
           const response = await fetch(
@@ -2421,20 +2436,23 @@ export const dockRouter = router({
           );
 
           if (!response.ok) {
+            // Fallback: pull the full open-task list and find by id.
+            // Slow but covers cases where the v1 single-task endpoint
+            // returns 404 for a task the user CAN access.
             const tasks = await getTodoistTasks(todoistIntegration.accessToken);
             const task = tasks.find((t) => t.id === taskId);
-            return { title: task?.content || "Task" };
+            return { title: cleanTitle(task?.content) };
           }
 
           const data = await response.json();
           const task = data?.task ?? data;
-          return { title: task?.content || "Task" };
+          return { title: cleanTitle(task?.content) };
         }
 
-        return { title: input.url };
+        return { title: null };
       } catch (error) {
         console.error(`[Dock] Error fetching details for ${input.source}:`, error);
-        return { title: input.source === "gmail" ? "Email" : input.source === "gcal" ? "Calendar Event" : input.source === "gsheet" ? "Spreadsheet" : input.source === "todoist" ? "Task" : input.url };
+        return { title: null };
       }
     }),
 

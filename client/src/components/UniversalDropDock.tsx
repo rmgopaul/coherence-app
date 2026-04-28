@@ -31,6 +31,25 @@ export default function UniversalDropDock() {
     return title === "loading..." || title === "email" || title === "task";
   };
 
+  // Phase E (2026-04-28) — `getItemDetails` now returns `{title:
+  // string | null}`. Map a null result to a per-source fallback so
+  // the local DroppedItem (which expects `title: string`) still
+  // gets a non-empty value to render.
+  const fallbackForType = (type: DroppedItem["type"]): string => {
+    switch (type) {
+      case "gmail":
+        return "Email";
+      case "gcal":
+        return "Calendar Event";
+      case "gsheet":
+        return "Spreadsheet";
+      case "todoist":
+        return "Task";
+      default:
+        return "Link";
+    }
+  };
+
   // Load items from localStorage on mount
   useEffect(() => {
     const saved = localStorage.getItem("dropDockItems");
@@ -49,9 +68,10 @@ export default function UniversalDropDock() {
                 source: item.type,
                 meta: item.meta,
               });
+              const nextTitle = details.title ?? fallbackForType(item.type);
               setItems((prev) =>
                 prev.map((current) =>
-                  current.id === item.id ? { ...current, title: details.title } : current
+                  current.id === item.id ? { ...current, title: nextTitle } : current
                 )
               );
             } catch (error) {
@@ -197,7 +217,9 @@ export default function UniversalDropDock() {
       
       setItems((prev) =>
         prev.map((item) =>
-          item.id === newItem.id ? { ...item, title: details.title } : item
+          item.id === newItem.id
+            ? { ...item, title: details.title ?? fallbackForType(item.type) }
+            : item
         )
       );
       toast.success("Item added");
