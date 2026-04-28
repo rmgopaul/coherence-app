@@ -5137,6 +5137,15 @@ export default function SolarRecDashboard() {
   // after onError fires for a dataset that never managed to hydrate.
   // Only the transition matters.
   const previousDatasetPresenceRef = useRef<Partial<Record<DatasetKey, boolean>>>({});
+  // Sticky-true ref: once a dataset has been hydrated locally in this
+  // browser session, this stays true for the rest of the session. The
+  // auto-persist effect uses it to gate the destructive `!dataset`
+  // CLEAR path so the dashboard never wipes cloud state for a dataset
+  // the user has not actually loaded. Without this guard a user who
+  // mounts the dashboard, but never tap-to-loads convertedReads, would
+  // fall through to the convertedReads CLEAR path on the first effect
+  // tick and wipe every user CSV source from the cloud manifest.
+  const everLoadedDatasetsRef = useRef<Partial<Record<DatasetKey, boolean>>>({});
   useEffect(() => {
     const previous = previousDatasetPresenceRef.current;
     const removed: DatasetKey[] = [];
@@ -5144,6 +5153,9 @@ export default function SolarRecDashboard() {
     (Object.keys(DATASET_DEFINITIONS) as DatasetKey[]).forEach((key) => {
       const isPresent = Boolean(datasets[key]);
       nextPresence[key] = isPresent;
+      if (isPresent) {
+        everLoadedDatasetsRef.current[key] = true;
+      }
       if (previous[key] && !isPresent) removed.push(key);
     });
     previousDatasetPresenceRef.current = nextPresence;
@@ -5908,6 +5920,21 @@ export default function SolarRecDashboard() {
           if (!dataset) {
             forcedRemoteDatasetSyncKeysRef.current.delete(key);
             setForceSyncingDatasets((previous) => (previous[key] ? { ...previous, [key]: false } : previous));
+
+            // Hard guard: only run the destructive cloud cleanup if
+            // the user actually loaded this dataset in the current
+            // session. Without this, simply mounting the dashboard
+            // (which leaves convertedReads in its "Tap tab to load"
+            // state) would fall through to the
+            // syncConvertedReadsUserSources({ userSources: [] }) call
+            // below and wipe every user CSV source from cloud — which
+            // is exactly the user-reported regression that turned a
+            // ~1M-row Converted Reads dataset into a single
+            // monitoring-batch source after running one provider on
+            // /solar-rec/monitoring.
+            if (!everLoadedDatasetsRef.current[key]) {
+              continue;
+            }
 
             // Special-case convertedReads: the manifest may contain
             // server-managed sources (mon_batch_*, individual_*) the
