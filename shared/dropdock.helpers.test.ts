@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   canonicalizeUrl,
   classifyUrl,
+  extractMarkdownLink,
   extractUrlFromPaste,
   hasSensitiveParams,
+  stripMarkdownLinks,
 } from "./dropdock.helpers";
 
 describe("canonicalizeUrl", () => {
@@ -183,5 +185,116 @@ describe("hasSensitiveParams", () => {
   it("returns false for unparseable input", () => {
     expect(hasSensitiveParams("not a url")).toBe(false);
     expect(hasSensitiveParams("")).toBe(false);
+  });
+});
+
+describe("extractMarkdownLink (Phase E)", () => {
+  it("extracts the first [title](url) match", () => {
+    expect(
+      extractMarkdownLink(
+        "[Read sprint plan](https://docs.google.com/document/d/abc)"
+      )
+    ).toEqual({
+      title: "Read sprint plan",
+      url: "https://docs.google.com/document/d/abc",
+    });
+  });
+
+  it("returns null when no match is present", () => {
+    expect(extractMarkdownLink("just plain text")).toBeNull();
+    expect(extractMarkdownLink("https://example.com")).toBeNull();
+  });
+
+  it("returns null for malformed brackets/parens", () => {
+    expect(extractMarkdownLink("[just title]")).toBeNull();
+    expect(extractMarkdownLink("(just url)")).toBeNull();
+    expect(extractMarkdownLink("[]()")).toBeNull();
+  });
+
+  it("trims whitespace inside brackets and parens", () => {
+    expect(
+      extractMarkdownLink("[  Read me  ](  https://example.com  )")
+    ).toEqual({ title: "Read me", url: "https://example.com" });
+  });
+
+  it("picks the first match in a paragraph with multiple links", () => {
+    expect(
+      extractMarkdownLink(
+        "Compare [first](https://a.com) and [second](https://b.com)"
+      )
+    ).toEqual({ title: "first", url: "https://a.com" });
+  });
+
+  it("handles non-string input defensively", () => {
+    // @ts-expect-error — purposely-wrong input
+    expect(extractMarkdownLink(null)).toBeNull();
+    // @ts-expect-error — purposely-wrong input
+    expect(extractMarkdownLink(undefined)).toBeNull();
+  });
+});
+
+describe("stripMarkdownLinks (Phase E)", () => {
+  it("replaces [text](url) with text", () => {
+    expect(
+      stripMarkdownLinks(
+        "Read [sprint plan](https://docs.google.com/document/d/abc) by Friday"
+      )
+    ).toBe("Read sprint plan by Friday");
+  });
+
+  it("strips multiple matches in one string", () => {
+    expect(
+      stripMarkdownLinks(
+        "Compare [first](https://a.com) and [second](https://b.com)"
+      )
+    ).toBe("Compare first and second");
+  });
+
+  it("is a no-op for plain text", () => {
+    expect(stripMarkdownLinks("nothing to strip here")).toBe(
+      "nothing to strip here"
+    );
+  });
+
+  it("is idempotent (applying twice produces the same result)", () => {
+    const input = "Read [docs](https://a.com) and [more](https://b.com)";
+    const once = stripMarkdownLinks(input);
+    expect(stripMarkdownLinks(once)).toBe(once);
+  });
+
+  it("returns empty string for null/undefined/empty input", () => {
+    expect(stripMarkdownLinks("")).toBe("");
+    // @ts-expect-error — purposely-wrong input
+    expect(stripMarkdownLinks(null)).toBe("");
+    // @ts-expect-error — purposely-wrong input
+    expect(stripMarkdownLinks(undefined)).toBe("");
+  });
+});
+
+describe("extractUrlFromPaste — markdown branch (Phase E)", () => {
+  it("returns the URL from a [title](url) paste so classifyUrl can parse it", () => {
+    const url = extractUrlFromPaste(
+      "[Read sprint plan](https://todoist.com/showTask?id=12345)"
+    );
+    expect(url).toBe("https://todoist.com/showTask?id=12345");
+  });
+
+  it("strips surrounding text around a markdown link", () => {
+    // The current behavior takes the first non-comment line, then
+    // matches the markdown pattern within it. A line that contains
+    // markdown surrounded by other words still resolves to the
+    // URL — title recovery happens in the DropDock handler via
+    // `extractMarkdownLink`, not here.
+    expect(
+      extractUrlFromPaste(
+        "task: [Sprint plan](https://example.com/x) — due Friday"
+      )
+    ).toBe("https://example.com/x");
+  });
+
+  it("falls through to the bare URL when the input has no markdown", () => {
+    expect(extractUrlFromPaste("https://example.com/x")).toBe(
+      "https://example.com/x"
+    );
   });
 });

@@ -18,8 +18,10 @@ import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import {
   classifyUrl,
+  extractMarkdownLink,
   extractUrlFromPaste,
   hasSensitiveParams,
+  stripMarkdownLinks,
   type DockSource,
 } from "@shared/dropdock.helpers";
 
@@ -76,6 +78,12 @@ export function DropDock() {
 
   const handleAddText = useCallback(
     async (raw: string) => {
+      // Phase E (2026-04-28) — markdown-paste support. When the
+      // user pastes a "Copy task link" payload (Todoist/Linear/Slack)
+      // shaped `[title](url)`, recover the title verbatim from the
+      // markdown so we don't need to round-trip through
+      // `getItemDetails` to learn what to call the chip.
+      const markdown = extractMarkdownLink(raw);
       const url = extractUrlFromPaste(raw);
       if (!url) return;
       if (hasSensitiveParams(url)) {
@@ -88,9 +96,18 @@ export function DropDock() {
       }
       const classified = classifyUrl(url);
 
-      // Optimistic title from the URL itself; the existing
-      // dock.getItemDetails mutation enriches it once we have the real
-      // payload (Gmail subject, calendar event title, etc.).
+      // Title resolution priority:
+      //   1. enrichment success      — Gmail subject, calendar event,
+      //                                 Todoist task content (markdown
+      //                                 stripped server-side)
+      //   2. markdown paste title    — when the user copied a
+      //                                 `[title](url)` blob, the
+      //                                 title in the brackets is what
+      //                                 the source app meant the link
+      //                                 to be called
+      //   3. undefined               — server falls back to the URL
+      //                                 (better than a generic
+      //                                 "Email" / "Task" placeholder)
       let title: string | undefined;
       try {
         const detail = await enrich.mutateAsync({
@@ -98,9 +115,12 @@ export function DropDock() {
           url: classified.url,
           meta: classified.meta,
         });
-        title = detail?.title;
+        title = detail?.title ?? undefined;
       } catch {
         title = undefined;
+      }
+      if (!title && markdown?.title) {
+        title = stripMarkdownLinks(markdown.title);
       }
 
       await addItem.mutateAsync({
@@ -232,7 +252,10 @@ export function DropDock() {
               {SOURCE_LABEL[item.source as DockSource] ?? "LINK"}
             </span>
             <span className="fp-dock-chip__title">
-              {item.title?.trim() || item.url}
+              {/* Phase E (2026-04-28) — strip embedded `[text](url)`
+                  markdown defensively so rows persisted before the
+                  server-side strip shipped still render cleanly. */}
+              {stripMarkdownLinks(item.title ?? "").trim() || item.url}
             </span>
             <button
               type="button"
