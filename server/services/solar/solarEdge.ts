@@ -14,15 +14,18 @@ import {
 } from "./helpers";
 import { mapWithConcurrency } from "../core/concurrency";
 
-// All paths in this module (`/sites/list`, `/site/{id}/overview`,
-// `/site/{id}/energy`, etc.) are SolarEdge Monitoring API v1 paths.
-// The default base URL therefore must NOT include a `/v2` prefix —
-// `https://monitoringapi.solaredge.com/v2/sites/list` is a malformed
-// URL that SolarEdge's gateway returns 403 for, even with a valid key.
-// Admins who genuinely need the v2 REST endpoints can override
-// `baseUrl` per-credential, in which case `getSolarEdgeJson` falls
-// back to a stripped-`/v2` retry to keep v1 paths working.
-export const SOLAR_EDGE_DEFAULT_BASE_URL = "https://monitoringapi.solaredge.com";
+// Historic working default. SolarEdge's gateway accepts the `/v2`
+// prefix on the v1 Monitoring API paths (`/sites/list`, `/site/{id}/...`)
+// for keys that were registered against a v2-aware account, and
+// `getSolarEdgeJson` falls back to a stripped-`/v2` retry on auth
+// failure for keys that aren't. PR #224 attempted to drop the `/v2`
+// prefix on the theory that it was a malformed URL; in practice the
+// gateway response on the `/v2`-prefixed paths is a *valid* 401 (auth
+// missing/wrong-shape), not a 404, meaning the route exists and the
+// 4-attempt retry was the actual safety net. Keep `/v2` here so the
+// retry order matches what the team's existing credentials were
+// validated against.
+export const SOLAR_EDGE_DEFAULT_BASE_URL = "https://monitoringapi.solaredge.com/v2";
 
 // Keys pasted from the SolarEdge admin portal can pick up zero-width
 // characters or BOM bytes from the clipboard that survive `.trim()` and
