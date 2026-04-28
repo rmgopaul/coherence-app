@@ -23,7 +23,12 @@ vi.mock("./_core", async () => {
   };
 });
 
-import { archiveStaleDockItems, listDockItems } from "./dock";
+import {
+  archiveStaleDockItems,
+  listDockItems,
+  listUpcomingDockItems,
+  setDockItemDueAt,
+} from "./dock";
 
 interface BuilderCall {
   kind: "select" | "update" | "insert" | "delete";
@@ -194,5 +199,103 @@ describe("archiveStaleDockItems", () => {
     mocks.getDb.mockResolvedValue(stub);
     const result = await archiveStaleDockItems({ ageDays: 30 });
     expect(result.affected).toBe(4);
+  });
+});
+
+describe("setDockItemDueAt", () => {
+  it("returns false when getDb yields null (test/dev with no DB)", async () => {
+    mocks.getDb.mockResolvedValue(null);
+    const ok = await setDockItemDueAt(1, "abc", new Date());
+    expect(ok).toBe(false);
+  });
+
+  it("issues an UPDATE with dueAt set to the provided Date", async () => {
+    const due = new Date("2026-05-01T18:00:00Z");
+    const stub = makeDbStub({ updateAffected: 1 });
+    mocks.getDb.mockResolvedValue(stub);
+    const ok = await setDockItemDueAt(42, "row-1", due);
+    expect(ok).toBe(true);
+    const updateCall = stub.calls.find((c) => c.kind === "update");
+    expect(updateCall?.setValue).toEqual({ dueAt: due });
+    // userId + id → an AND chain → drizzle's where() helper is
+    // invoked once per query (the AND condition is built before
+    // calling .where).
+    expect(updateCall?.whereCalled).toBe(1);
+  });
+
+  it("clears the due date when null is passed", async () => {
+    const stub = makeDbStub({ updateAffected: 1 });
+    mocks.getDb.mockResolvedValue(stub);
+    const ok = await setDockItemDueAt(42, "row-1", null);
+    expect(ok).toBe(true);
+    const updateCall = stub.calls.find((c) => c.kind === "update");
+    expect(updateCall?.setValue).toEqual({ dueAt: null });
+  });
+
+  it("returns false when the row doesn't exist (no rows updated)", async () => {
+    // affectedRows = 0 → either the id was wrong or it belonged to a
+    // different user. Either way the proc layer should treat this
+    // as a 404, not a silent success.
+    const stub = makeDbStub({ updateAffected: 0 });
+    mocks.getDb.mockResolvedValue(stub);
+    const ok = await setDockItemDueAt(42, "missing", new Date());
+    expect(ok).toBe(false);
+  });
+
+  it("falls back to rowCount when affectedRows is absent", async () => {
+    const stub = {
+      update: () => {
+        const chain: Record<string, unknown> = {
+          set: () => chain,
+          where: () => chain,
+          then: (resolve: (out: unknown) => unknown) =>
+            Promise.resolve({ rowCount: 1 }).then(resolve),
+        };
+        return chain;
+      },
+    };
+    mocks.getDb.mockResolvedValue(stub);
+    const ok = await setDockItemDueAt(1, "row-2", new Date());
+    expect(ok).toBe(true);
+  });
+});
+
+describe("listUpcomingDockItems", () => {
+  it("returns the rows the stub yields", async () => {
+    const rows = [
+      { id: "a", userId: 1, dueAt: new Date("2026-04-30T00:00:00Z") },
+    ];
+    const stub = makeDbStub({ selectRows: [rows] });
+    mocks.getDb.mockResolvedValue(stub);
+    const result = await listUpcomingDockItems(1, { now: new Date() });
+    expect(result).toEqual(rows);
+  });
+
+  it("returns empty array when getDb yields null", async () => {
+    mocks.getDb.mockResolvedValue(null);
+    const result = await listUpcomingDockItems(1);
+    expect(result).toEqual([]);
+  });
+
+  it("issues exactly one WHERE call when no window is given", async () => {
+    const stub = makeDbStub({ selectRows: [[]] });
+    mocks.getDb.mockResolvedValue(stub);
+    await listUpcomingDockItems(1, { windowHours: null });
+    // The query AND-composes the conditions before .where(), so one
+    // .where() call regardless of how many conditions are inside.
+    expect(stub.calls[0].whereCalled).toBe(1);
+  });
+
+  it("clamps the limit to a sane range", async () => {
+    const stub = makeDbStub({ selectRows: [[]] });
+    mocks.getDb.mockResolvedValue(stub);
+    // 0 → clamped to 1; 9999 → clamped to 200. We don't observe the
+    // limit through the stub, but the call should not throw.
+    await expect(
+      listUpcomingDockItems(1, { limit: 0 })
+    ).resolves.toEqual([]);
+    await expect(
+      listUpcomingDockItems(1, { limit: 9999 })
+    ).resolves.toEqual([]);
   });
 });

@@ -297,6 +297,133 @@ export function shouldCopyDockChipUrl(
 }
 
 /**
+ * Phase E (2026-04-28) — due-date categorization for the
+ * dashboard's "Upcoming" strip and the chip's near-due visual cue.
+ *
+ *   overdue   — dueAt is in the past
+ *   due-soon  — dueAt is within the next 4 hours
+ *   upcoming  — dueAt is within the next 24 hours
+ *   future    — dueAt is later than 24 hours from now
+ *   none      — no dueAt set (chip is just a bookmark)
+ *
+ * Pure — exposed for testability. Accepts an injectable `now`
+ * so tests can pin "current time" without faking Date globally.
+ */
+export type DockDueCategory =
+  | "overdue"
+  | "due-soon"
+  | "upcoming"
+  | "future"
+  | "none";
+
+export function categorizeDockDueDate(
+  dueAt: Date | string | null | undefined,
+  now: Date = new Date()
+): DockDueCategory {
+  if (!dueAt) return "none";
+  const dueMs =
+    dueAt instanceof Date ? dueAt.getTime() : new Date(dueAt).getTime();
+  if (!Number.isFinite(dueMs)) return "none";
+  const diff = dueMs - now.getTime();
+  if (diff < 0) return "overdue";
+  if (diff <= 4 * 3_600_000) return "due-soon";
+  if (diff <= 24 * 3_600_000) return "upcoming";
+  return "future";
+}
+
+/**
+ * Phase E (2026-04-28) — short human-readable label for the
+ * chip's due-date pill and the dashboard reminders strip.
+ *
+ *   "12m overdue"   — past, less than an hour ago
+ *   "3h overdue"    — past, less than a day ago
+ *   "2d overdue"    — past, more than a day ago
+ *   "in 38m"        — under an hour away
+ *   "in 5h"         — under a day away
+ *   "Tomorrow 9am"  — same day or next day, with the hour
+ *   "Mon 6pm"       — within the next 6 days, day name + hour
+ *   "Apr 30"        — further out, month + day
+ *
+ * Pure — exposed for testability. The label drops minutes once
+ * the gap is greater than ~6 hours so the chip text doesn't
+ * jitter every minute on long-horizon reminders.
+ */
+export function formatDockDueLabel(
+  dueAt: Date | string | null | undefined,
+  now: Date = new Date()
+): string {
+  if (!dueAt) return "";
+  const due = dueAt instanceof Date ? dueAt : new Date(dueAt);
+  const dueMs = due.getTime();
+  if (!Number.isFinite(dueMs)) return "";
+  const diff = dueMs - now.getTime();
+  const absMs = Math.abs(diff);
+  const hours = Math.floor(absMs / 3_600_000);
+  const minutes = Math.floor(absMs / 60_000);
+  const days = Math.floor(absMs / 86_400_000);
+
+  if (diff < 0) {
+    if (minutes < 60) return `${Math.max(1, minutes)}m overdue`;
+    if (hours < 24) return `${hours}h overdue`;
+    return `${days}d overdue`;
+  }
+
+  if (minutes < 60) return `in ${Math.max(1, minutes)}m`;
+  if (hours < 6) return `in ${hours}h`;
+
+  // Within a week → day name + hour. Otherwise month + day.
+  const sameDay = sameLocalDay(due, now);
+  const tomorrow = sameLocalDay(
+    due,
+    new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1)
+  );
+  if (sameDay) return `Today ${formatHour(due)}`;
+  if (tomorrow) return `Tomorrow ${formatHour(due)}`;
+  if (days <= 6) return `${formatWeekday(due)} ${formatHour(due)}`;
+  return formatMonthDay(due);
+}
+
+function sameLocalDay(a: Date, b: Date): boolean {
+  return (
+    a.getFullYear() === b.getFullYear() &&
+    a.getMonth() === b.getMonth() &&
+    a.getDate() === b.getDate()
+  );
+}
+
+function formatHour(d: Date): string {
+  const h = d.getHours();
+  const m = d.getMinutes();
+  const suffix = h < 12 ? "am" : "pm";
+  const display = ((h + 11) % 12) + 1; // 0→12, 13→1, etc.
+  if (m === 0) return `${display}${suffix}`;
+  const mm = m.toString().padStart(2, "0");
+  return `${display}:${mm}${suffix}`;
+}
+
+function formatWeekday(d: Date): string {
+  return ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][d.getDay()];
+}
+
+function formatMonthDay(d: Date): string {
+  const month = [
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec",
+  ][d.getMonth()];
+  return `${month} ${d.getDate()}`;
+}
+
+/**
  * Given a clipboard-paste or drag-drop payload, extract the most
  * URL-looking string. Drops handlers receive a DataTransfer that may
  * contain `text/uri-list`, `text/plain`, or `application/json` — try

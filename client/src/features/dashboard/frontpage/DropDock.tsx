@@ -21,26 +21,9 @@ import {
   extractMarkdownLink,
   extractUrlFromPaste,
   hasSensitiveParams,
-  shouldCopyDockChipUrl,
   stripMarkdownLinks,
-  type DockSource,
 } from "@shared/dropdock.helpers";
-
-const SOURCE_LABEL: Record<DockSource, string> = {
-  gmail: "GMAIL",
-  gcal: "GCAL",
-  gsheet: "SHEET",
-  todoist: "TODO",
-  url: "LINK",
-};
-
-const SOURCE_COLOR: Record<DockSource, string> = {
-  gmail: "fp-dock-chip__src--gmail",
-  gcal: "fp-dock-chip__src--gcal",
-  gsheet: "fp-dock-chip__src--gsheet",
-  todoist: "fp-dock-chip__src--todoist",
-  url: "fp-dock-chip__src--url",
-};
+import { DockChip } from "./DockChip";
 
 export function DropDock() {
   const utils = trpc.useUtils();
@@ -233,70 +216,12 @@ export function DropDock() {
           <span className="fp-dock__empty">drop, paste, or type a link to pin it here.</span>
         )}
         {items.map((item, idx) => (
-          <a
+          <DockChip
             key={item.id}
-            href={item.url}
-            target="_blank"
-            rel="noopener noreferrer"
-            role="listitem"
-            className={cn(
-              "fp-dock-chip",
-              // Light, deterministic tilt — keeps the wireframe's hand-pinned feel
-              // without random jitter on every render.
-              idx % 3 === 0 && "fp-dock-chip--tilt-a",
-              idx % 3 === 1 && "fp-dock-chip--tilt-b",
-              idx % 3 === 2 && "fp-dock-chip--tilt-c"
-            )}
-            title={`${item.url}\n(⌘C / Ctrl+C to copy)`}
-            onKeyDown={(e) => {
-              // Phase E (2026-04-28) — Cmd+C / Ctrl+C on a focused
-              // chip copies its URL to the clipboard. The default
-              // browser behavior is "copy current selection," which
-              // is empty at rest on a focused link → silently does
-              // nothing. shouldCopyDockChipUrl honors a non-empty
-              // text selection so users who actively highlighted
-              // part of the chip's title still get the default copy.
-              if (!shouldCopyDockChipUrl(e)) return;
-              e.preventDefault();
-              if (
-                typeof navigator === "undefined" ||
-                !navigator.clipboard?.writeText
-              ) {
-                toast.error("Clipboard API not available");
-                return;
-              }
-              navigator.clipboard
-                .writeText(item.url)
-                .then(() => {
-                  toast.success("URL copied");
-                })
-                .catch(() => {
-                  toast.error("Failed to copy");
-                });
-            }}
-          >
-            <span className={cn("fp-dock-chip__src", SOURCE_COLOR[item.source as DockSource])}>
-              {SOURCE_LABEL[item.source as DockSource] ?? "LINK"}
-            </span>
-            <span className="fp-dock-chip__title">
-              {/* Phase E (2026-04-28) — strip embedded `[text](url)`
-                  markdown defensively so rows persisted before the
-                  server-side strip shipped still render cleanly. */}
-              {stripMarkdownLinks(item.title ?? "").trim() || item.url}
-            </span>
-            <button
-              type="button"
-              className="fp-dock-chip__x"
-              aria-label={`Remove ${item.title ?? item.url}`}
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                removeItem.mutate({ id: item.id });
-              }}
-            >
-              ×
-            </button>
-          </a>
+            item={item}
+            tiltIndex={idx}
+            onRemove={(id) => removeItem.mutate({ id })}
+          />
         ))}
       </div>
 

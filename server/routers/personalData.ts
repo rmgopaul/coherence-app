@@ -117,6 +117,9 @@ import {
   findDockItemByCanonicalUrl,
   insertDockItem,
   listDockItems,
+  // Phase E (2026-04-28) — dueAt + reminders.
+  listUpcomingDockItems,
+  setDockItemDueAt,
   updateDockItemCanvas,
 } from "../db/dock";
 import { canonicalizeUrl } from "@shared/dropdock.helpers";
@@ -2582,6 +2585,11 @@ export const dockRouter = router({
       y: (row as { y?: number | null }).y ?? null,
       tilt: (row as { tilt?: number | null }).tilt ?? null,
       color: (row as { color?: string | null }).color ?? null,
+      // Phase E (2026-04-28) — optional reminder. ISO string so the
+      // wire payload roundtrips cleanly through superjson.
+      dueAt: (row as { dueAt?: Date | null }).dueAt
+        ? (row as { dueAt: Date }).dueAt.toISOString()
+        : null,
     }));
   }),
 
@@ -2674,6 +2682,62 @@ export const dockRouter = router({
       const { id, ...patch } = input;
       await updateDockItemCanvas(ctx.user.id, id, patch);
       return { ok: true as const };
+    }),
+
+  /**
+   * Phase E (2026-04-28) — set or clear a chip's due date. Stores
+   * the wire ISO string as a Date column so MySQL can sort by it
+   * server-side. Returns `{ updated }` so the client can surface a
+   * toast when the row vanished out from under the user (e.g. they
+   * had two tabs open and removed the chip in the other tab).
+   */
+  setDueAt: protectedProcedure
+    .input(
+      z.object({
+        id: z.string().min(1).max(64),
+        // ISO datetime string ("2026-05-01T18:00:00Z"). null clears.
+        dueAt: z.string().datetime().nullable(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const dueAt = input.dueAt ? new Date(input.dueAt) : null;
+      const updated = await setDockItemDueAt(ctx.user.id, input.id, dueAt);
+      return { updated };
+    }),
+
+  /**
+   * Phase E (2026-04-28) — chips with a due date inside the next
+   * `windowHours` window (default 36h). Always includes overdue
+   * chips regardless of windowHours so the dashboard's "Upcoming"
+   * strip never silently drops a missed reminder. The proc layer
+   * defines the window default; the underlying db helper accepts
+   * `null` to mean "every dated chip" so a future "Show all
+   * reminders" view doesn't need a new helper.
+   */
+  listUpcoming: protectedProcedure
+    .input(
+      z
+        .object({
+          windowHours: z.number().int().min(1).max(24 * 90).optional(),
+          limit: z.number().int().min(1).max(200).optional(),
+        })
+        .optional()
+    )
+    .query(async ({ ctx, input }) => {
+      const rows = await listUpcomingDockItems(ctx.user.id, {
+        windowHours: input?.windowHours ?? 36,
+        limit: input?.limit ?? 50,
+      });
+      return rows.map((row) => ({
+        id: row.id,
+        source: row.source,
+        url: row.url,
+        title: row.title,
+        meta: parseDockMeta(row.meta),
+        dueAt: row.dueAt ? row.dueAt.toISOString() : null,
+        pinnedAt: row.pinnedAt ? row.pinnedAt.toISOString() : null,
+        createdAt: row.createdAt ? row.createdAt.toISOString() : null,
+      }));
     }),
 });
 

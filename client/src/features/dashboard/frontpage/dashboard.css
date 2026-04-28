@@ -423,6 +423,200 @@ html[data-focus="1"] .fp-root {
   border-color: var(--fp-red);
 }
 
+/* --- Phase E (2026-04-28): chip due dates ----------------------- */
+
+.fp-dock-chip__due {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  padding: 3px 6px;
+  border: 1.5px solid var(--fp-rule);
+  background: var(--fp-paper-2);
+  color: var(--fp-ink);
+  cursor: pointer;
+  white-space: nowrap;
+  line-height: 1;
+}
+.fp-dock-chip__due:hover {
+  filter: brightness(1.05);
+}
+.fp-dock-chip__due--unset {
+  opacity: 0.55;
+  font-weight: 600;
+}
+.fp-dock-chip--overdue .fp-dock-chip__due {
+  background: #b91c1c;
+  border-color: #b91c1c;
+  color: #fff;
+}
+.fp-dock-chip--due-soon .fp-dock-chip__due {
+  background: #d97706;
+  border-color: #d97706;
+  color: #fff;
+}
+.fp-dock-chip--upcoming .fp-dock-chip__due {
+  background: #1d4ed8;
+  border-color: #1d4ed8;
+  color: #fff;
+}
+
+/* When the chip itself is overdue/due-soon, escalate the chip's
+   own border/shadow so it pops against neighbors. */
+.fp-dock-chip--overdue {
+  box-shadow: 3px 3px 0 #b91c1c;
+  border-color: #b91c1c;
+}
+.fp-dock-chip--due-soon {
+  box-shadow: 3px 3px 0 #d97706;
+  border-color: #d97706;
+}
+
+.fp-dock-chip__due-popover {
+  position: absolute;
+  z-index: 30;
+  background: var(--fp-paper);
+  color: var(--fp-ink);
+  border: 2px solid var(--fp-rule);
+  box-shadow: 4px 4px 0 var(--fp-rule);
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 240px;
+  font-family: "Inter", sans-serif;
+  font-size: 12px;
+}
+.fp-dock-chip__due-popover input[type="datetime-local"] {
+  border: 1.5px solid var(--fp-rule);
+  padding: 6px 8px;
+  background: var(--fp-paper-2);
+  font-family: inherit;
+  font-size: 12px;
+}
+.fp-dock-chip__due-popover .fp-dock-chip__due-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+.fp-dock-chip__due-popover button {
+  border: 1.5px solid var(--fp-rule);
+  background: var(--fp-paper-2);
+  padding: 4px 10px;
+  font-size: 11px;
+  font-family: "Archivo Black", "Inter", sans-serif;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.fp-dock-chip__due-popover button.fp-dock-chip__due-set {
+  background: var(--fp-ink);
+  color: var(--fp-paper);
+}
+.fp-dock-chip__due-popover button.fp-dock-chip__due-clear {
+  color: #b91c1c;
+}
+
+/* --- Phase E (2026-04-28): Upcoming reminders strip ------------ */
+
+.fp-dock-reminders {
+  margin: 8px 0 12px;
+  padding: 10px 12px;
+  border: 2px solid var(--fp-rule);
+  background: var(--fp-paper-2);
+  box-shadow: 3px 3px 0 var(--fp-rule);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.fp-dock-reminders__head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+.fp-dock-reminders__sub {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 10.5px;
+  color: var(--fp-ink-3);
+  letter-spacing: 0.06em;
+}
+.fp-dock-reminders__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+}
+.fp-dock-reminders__item {
+  display: flex;
+  align-items: stretch;
+}
+.fp-dock-reminders__link {
+  display: inline-grid;
+  grid-template-columns: auto auto 1fr;
+  align-items: center;
+  gap: 8px;
+  max-width: 360px;
+  padding: 6px 8px;
+  border: 1.5px solid var(--fp-rule);
+  background: var(--fp-paper);
+  color: var(--fp-ink);
+  text-decoration: none;
+  font-family: "Inter", sans-serif;
+  font-size: 12.5px;
+  line-height: 1.2;
+}
+.fp-dock-reminders__link:hover {
+  filter: brightness(0.97);
+}
+.fp-dock-reminders__pill {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  padding: 2px 6px;
+  border: 1.5px solid var(--fp-rule);
+  background: var(--fp-paper-2);
+  color: var(--fp-ink);
+  white-space: nowrap;
+  line-height: 1;
+}
+.fp-dock-reminders__item--overdue .fp-dock-reminders__pill {
+  background: #b91c1c;
+  border-color: #b91c1c;
+  color: #fff;
+}
+.fp-dock-reminders__item--due-soon .fp-dock-reminders__pill {
+  background: #d97706;
+  border-color: #d97706;
+  color: #fff;
+}
+.fp-dock-reminders__item--upcoming .fp-dock-reminders__pill {
+  background: #1d4ed8;
+  border-color: #1d4ed8;
+  color: #fff;
+}
+.fp-dock-reminders__item--overdue .fp-dock-reminders__link {
+  border-color: #b91c1c;
+}
+.fp-dock-reminders__source {
+  font-family: "Archivo Black", "Inter", sans-serif;
+  font-size: 9.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 2px 5px;
+  border: 1.5px solid var(--fp-rule);
+  background: var(--fp-paper-2);
+  color: var(--fp-ink);
+  white-space: nowrap;
+}
+.fp-dock-reminders__title {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
 /* --- Shared primitives --- */
 
 .mono-label {
