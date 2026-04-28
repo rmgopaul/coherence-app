@@ -7,6 +7,7 @@
  */
 
 import { useState } from "react";
+import { PersistConfirmation } from "../../components/PersistConfirmation";
 import { solarRecTrpc as trpc } from "../../solarRecTrpc";
 import { useSolarRecPermission } from "../../hooks/useSolarRecPermission";
 import { Button } from "@/components/ui/button";
@@ -53,12 +54,14 @@ export default function LocusMeterReads() {
       toast.error("Enter a site ID");
       return;
     }
+    setShowPersist(true);
     snapshotMutation.mutate({
       siteId: trimmed,
       anchorDate: anchorDate || undefined,
     });
   };
 
+  const [showPersist, setShowPersist] = useState(false);
   const result = snapshotMutation.data;
 
   return (
@@ -246,6 +249,23 @@ export default function LocusMeterReads() {
                   </p>
                 )}
             </div>
+          )}
+        
+          {result && (result as any).status === "Found" && (result as any).lifetimeKwh != null && showPersist && (
+            <PersistConfirmation
+              providerKey="locus"
+              providerLabel="Locus Energy"
+              rows={[{
+                monitoring: "Locus Energy",
+                monitoring_system_id: String(siteId),
+                monitoring_system_name: String((result as any).name || (result as any).systemName || siteId),
+                lifetime_meter_read_wh: String(Math.round(Number((result as any).lifetimeKwh) * 1000)),
+                read_date: typeof anchorDate !== 'undefined' && anchorDate ? anchorDate : new Date().toISOString().slice(0, 10),
+                status: "",
+                alert_severity: ""
+              }]}
+              onDiscard={() => setShowPersist(false)}
+            />
           )}
         </CardContent>
       </Card>

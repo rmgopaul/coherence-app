@@ -6,6 +6,7 @@
  */
 
 import { useState } from "react";
+import { PersistConfirmation } from "../../components/PersistConfirmation";
 import { solarRecTrpc as trpc } from "../../solarRecTrpc";
 import { useSolarRecPermission } from "../../hooks/useSolarRecPermission";
 import { Button } from "@/components/ui/button";
@@ -52,12 +53,14 @@ export default function GrowattMeterReads() {
       toast.error("Enter a plant ID");
       return;
     }
+    setShowPersist(true);
     snapshotMutation.mutate({
       plantId: trimmed,
       anchorDate: anchorDate || undefined,
     });
   };
 
+  const [showPersist, setShowPersist] = useState(false);
   const result = snapshotMutation.data;
 
   return (
@@ -246,6 +249,23 @@ export default function GrowattMeterReads() {
                   </p>
                 )}
             </div>
+          )}
+        
+          {result && (result as any).status === "Found" && (result as any).lifetimeKwh != null && showPersist && (
+            <PersistConfirmation
+              providerKey="growatt"
+              providerLabel="Growatt"
+              rows={[{
+                monitoring: "Growatt",
+                monitoring_system_id: String(plantId),
+                monitoring_system_name: String((result as any).name || (result as any).systemName || plantId),
+                lifetime_meter_read_wh: String(Math.round(Number((result as any).lifetimeKwh) * 1000)),
+                read_date: typeof anchorDate !== 'undefined' && anchorDate ? anchorDate : new Date().toISOString().slice(0, 10),
+                status: "",
+                alert_severity: ""
+              }]}
+              onDiscard={() => setShowPersist(false)}
+            />
           )}
         </CardContent>
       </Card>

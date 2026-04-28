@@ -8,6 +8,7 @@
  */
 
 import { useState } from "react";
+import { PersistConfirmation } from "../../components/PersistConfirmation";
 import { solarRecTrpc as trpc } from "../../solarRecTrpc";
 import { useSolarRecPermission } from "../../hooks/useSolarRecPermission";
 import { Button } from "@/components/ui/button";
@@ -54,12 +55,14 @@ export default function SolarLogMeterReads() {
       toast.error("Enter a device ID (or 'solar-log-1' for the default)");
       return;
     }
+    setShowPersist(true);
     snapshotMutation.mutate({
       deviceId: trimmed,
       anchorDate: anchorDate || undefined,
     });
   };
 
+  const [showPersist, setShowPersist] = useState(false);
   const result = snapshotMutation.data;
 
   return (
@@ -248,6 +251,23 @@ export default function SolarLogMeterReads() {
                   </p>
                 )}
             </div>
+          )}
+        
+          {result && (result as any).status === "Found" && (result as any).lifetimeKwh != null && showPersist && (
+            <PersistConfirmation
+              providerKey="solarlog"
+              providerLabel="SolarLog"
+              rows={[{
+                monitoring: "SolarLog",
+                monitoring_system_id: String(deviceId),
+                monitoring_system_name: String((result as any).name || (result as any).systemName || deviceId),
+                lifetime_meter_read_wh: String(Math.round(Number((result as any).lifetimeKwh) * 1000)),
+                read_date: typeof anchorDate !== 'undefined' && anchorDate ? anchorDate : new Date().toISOString().slice(0, 10),
+                status: "",
+                alert_severity: ""
+              }]}
+              onDiscard={() => setShowPersist(false)}
+            />
           )}
         </CardContent>
       </Card>
