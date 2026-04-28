@@ -407,6 +407,36 @@ export async function completeTodoistTask(accessToken: string, taskId: string): 
 }
 
 /**
+ * Task 10.2 (2026-04-28) — return true if a Todoist task is
+ * completed (or deleted) so the kingOfDay auto-unpin can fire.
+ *
+ * Uses a single GET /tasks/{id} which returns 404 once a task is
+ * closed/deleted. Treats any 404 as "task is gone" (the behavior
+ * we want for auto-unpin) and any other failure as "task is still
+ * around" so a transient network error doesn't accidentally unpin
+ * the user's King.
+ */
+export async function isTodoistTaskCompletedById(
+  accessToken: string,
+  taskId: string
+): Promise<boolean> {
+  try {
+    const response = await fetch(`${TODOIST_API_BASE}/tasks/${taskId}`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (response.status === 404) return true;
+    if (!response.ok) return false;
+    const data = (await response.json()) as { is_completed?: boolean };
+    return data.is_completed === true;
+  } catch {
+    // Network error / timeout — treat as "still around" so we
+    // don't accidentally unpin on transient failures.
+    return false;
+  }
+}
+
+/**
  * Task 10.1 (2026-04-28) — defer a Todoist task by setting a new
  * `due_string`. Uses POST /tasks/{id} with `{ due_string }` per the
  * REST API. Natural-language strings ("tomorrow", "next mon", "in

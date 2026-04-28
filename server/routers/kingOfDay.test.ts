@@ -1,7 +1,68 @@
-import { describe, expect, it } from "vitest";
-import { __test__ } from "./kingOfDay";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { daysOverdue } = __test__;
+// Mocks must be hoisted so `vi.mock` runs before the import below.
+// We mock the upstream services + db helpers `unpinIfCompletedTodoistKing`
+// reaches for so the throttle / taskId / completion-check logic can be
+// exercised without real network or DB access.
+const mocks = vi.hoisted(() => ({
+  getIntegrationByProvider: vi.fn(),
+  isTodoistTaskCompletedById: vi.fn(),
+  deleteKingOfDay: vi.fn(),
+}));
+
+vi.mock("../db", async () => {
+  const actual = await vi.importActual<typeof import("../db")>("../db");
+  return {
+    ...actual,
+    getIntegrationByProvider: mocks.getIntegrationByProvider,
+    deleteKingOfDay: mocks.deleteKingOfDay,
+  };
+});
+
+vi.mock("../services/integrations/todoist", async () => {
+  const actual = await vi.importActual<
+    typeof import("../services/integrations/todoist")
+  >("../services/integrations/todoist");
+  return {
+    ...actual,
+    isTodoistTaskCompletedById: mocks.isTodoistTaskCompletedById,
+  };
+});
+
+import { __test__ } from "./kingOfDay";
+import type { UserKingOfDay } from "../../drizzle/schema";
+
+const { daysOverdue, unpinIfCompletedTodoistKing } = __test__;
+
+beforeEach(() => {
+  mocks.getIntegrationByProvider.mockReset();
+  mocks.isTodoistTaskCompletedById.mockReset();
+  mocks.deleteKingOfDay.mockReset();
+  mocks.deleteKingOfDay.mockResolvedValue(undefined);
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
+function makeKing(
+  overrides: Partial<UserKingOfDay> = {}
+): UserKingOfDay {
+  return {
+    id: "row-1",
+    userId: 1,
+    dateKey: "2026-04-28",
+    source: "auto",
+    title: "Mail the contracts",
+    reason: "P1 · due today",
+    taskId: "task-1",
+    eventId: null,
+    pinnedAt: null,
+    createdAt: new Date(),
+    updatedAt: new Date(Date.now() - 5 * 60_000), // 5 min ago — past stale window
+    ...overrides,
+  } as UserKingOfDay;
+}
 
 function makeTask(
   due:
@@ -65,5 +126,92 @@ describe("daysOverdue", () => {
         fixedNow
       )
     ).toBeGreaterThanOrEqual(3);
+  });
+});
+
+describe("unpinIfCompletedTodoistKing (Task 10.2)", () => {
+  it("returns false when the King has no taskId", async () => {
+    const king = makeKing({ taskId: null });
+    const out = await unpinIfCompletedTodoistKing(1, "2026-04-28", king);
+    expect(out).toBe(false);
+    expect(mocks.isTodoistTaskCompletedById).not.toHaveBeenCalled();
+    expect(mocks.deleteKingOfDay).not.toHaveBeenCalled();
+  });
+
+  it("returns false (throttled) when updatedAt is within the staleAfterMs window", async () => {
+    const king = makeKing({
+      // Just-updated row; the throttle should skip the API call.
+      updatedAt: new Date(Date.now() - 1_000),
+    });
+    const out = await unpinIfCompletedTodoistKing(
+      1,
+      "2026-04-28",
+      king,
+      60_000
+    );
+    expect(out).toBe(false);
+    expect(mocks.isTodoistTaskCompletedById).not.toHaveBeenCalled();
+  });
+
+  it("returns false when Todoist isn't connected", async () => {
+    mocks.getIntegrationByProvider.mockResolvedValue(null);
+    const king = makeKing();
+    const out = await unpinIfCompletedTodoistKing(1, "2026-04-28", king);
+    expect(out).toBe(false);
+    expect(mocks.isTodoistTaskCompletedById).not.toHaveBeenCalled();
+  });
+
+  it("returns false when the task is still open", async () => {
+    mocks.getIntegrationByProvider.mockResolvedValue({
+      accessToken: "fake-token",
+    });
+    mocks.isTodoistTaskCompletedById.mockResolvedValue(false);
+    const king = makeKing();
+    const out = await unpinIfCompletedTodoistKing(1, "2026-04-28", king);
+    expect(out).toBe(false);
+    expect(mocks.deleteKingOfDay).not.toHaveBeenCalled();
+  });
+
+  it("returns true and deletes the row when the task is completed", async () => {
+    mocks.getIntegrationByProvider.mockResolvedValue({
+      accessToken: "fake-token",
+    });
+    mocks.isTodoistTaskCompletedById.mockResolvedValue(true);
+    const king = makeKing();
+    const out = await unpinIfCompletedTodoistKing(1, "2026-04-28", king);
+    expect(out).toBe(true);
+    expect(mocks.deleteKingOfDay).toHaveBeenCalledWith(1, "2026-04-28");
+  });
+
+  it("returns false on transient errors (fail-open)", async () => {
+    mocks.getIntegrationByProvider.mockResolvedValue({
+      accessToken: "fake-token",
+    });
+    mocks.isTodoistTaskCompletedById.mockRejectedValue(
+      new Error("network down")
+    );
+    const king = makeKing();
+    const out = await unpinIfCompletedTodoistKing(1, "2026-04-28", king);
+    // Fail-open: King hangs around rather than mysteriously
+    // disappearing on a transient blip.
+    expect(out).toBe(false);
+    expect(mocks.deleteKingOfDay).not.toHaveBeenCalled();
+  });
+
+  it("respects an explicit staleAfterMs=0 to force an immediate check", async () => {
+    mocks.getIntegrationByProvider.mockResolvedValue({
+      accessToken: "fake-token",
+    });
+    mocks.isTodoistTaskCompletedById.mockResolvedValue(true);
+    const king = makeKing({ updatedAt: new Date(Date.now() - 100) });
+    const out = await unpinIfCompletedTodoistKing(
+      1,
+      "2026-04-28",
+      king,
+      0
+    );
+    // With staleAfterMs=0, the throttle is skipped even though the
+    // row was updated 100ms ago.
+    expect(out).toBe(true);
   });
 });
