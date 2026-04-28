@@ -357,7 +357,17 @@ export default function SolarRecApp() {
     // `switchable={false}` keeps the team app on a single theme
     // for now — change to `true` if/when team-side theme toggling
     // is wanted.
-    <ThemeProvider defaultTheme="dark" switchable={false}>
+    // `defaultTheme="light"` preserves solar-rec's pre-PR-#223
+    // visual behavior. Solar-rec had no ThemeProvider before, so
+    // `<html>` never carried the `dark` class, so the page rendered
+    // in light mode by default. The team-side CSS hasn't been
+    // audited for dark-mode contrast — PR #236 launched with
+    // `defaultTheme="dark"` and the headers became unreadable. A
+    // followup commit on the PR-#236 branch flipped this to
+    // "light", but never made it into the squash-merge to main —
+    // this PR re-applies that fix. Switch to dark/switchable=true
+    // once the dark-mode CSS pass is complete.
+    <ThemeProvider defaultTheme="light" switchable={false}>
       <Toaster />
       <SolarRecAppInner />
     </ThemeProvider>
