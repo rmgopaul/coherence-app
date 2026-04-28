@@ -216,6 +216,62 @@ export async function listUpcomingDockItems(
 }
 
 /**
+ * Look up one dock item by id (scoped to the calling user). Used by
+ * the self-heal `refreshTitle` proc — needs the row's source/url/
+ * meta to re-run enrichment, plus an ownership check to fail closed
+ * when an attacker probes another user's chip id.
+ */
+export async function getDockItemById(
+  userId: number,
+  id: string
+): Promise<DockItem | null> {
+  const db = await getDb();
+  if (!db) return null;
+  const rows = await withDbRetry("get dock item by id", async () =>
+    db
+      .select()
+      .from(dockItems)
+      .where(and(eq(dockItems.userId, userId), eq(dockItems.id, id)))
+      .limit(1)
+  );
+  return rows[0] ?? null;
+}
+
+/**
+ * Persist a freshly resolved title on an existing dock item. Used
+ * by the self-heal `refreshTitle` proc to fix chips whose original
+ * enrichment failed (e.g. Calendar `htmlLink` URLs that didn't
+ * classify as `gcal` before that bug was fixed).
+ *
+ * Returns true when a row was updated, false otherwise (chip
+ * doesn't exist, belongs to another user, or `title` is empty
+ * after trimming). The proc layer uses the boolean to decide
+ * whether to invalidate `dock.list`.
+ */
+export async function updateDockItemTitle(
+  userId: number,
+  id: string,
+  title: string
+): Promise<boolean> {
+  const db = await getDb();
+  if (!db) return false;
+  const trimmed = title.trim();
+  if (!trimmed) return false;
+  const result = await withDbRetry("update dock item title", async () =>
+    db
+      .update(dockItems)
+      .set({ title: trimmed.slice(0, 500) })
+      .where(and(eq(dockItems.userId, userId), eq(dockItems.id, id)))
+  );
+  const affected =
+    (result as unknown as { affectedRows?: number; rowCount?: number })
+      .affectedRows ??
+    (result as unknown as { rowCount?: number }).rowCount ??
+    0;
+  return affected > 0;
+}
+
+/**
  * Update a dock item's canvas position. Pass `null` for any field to
  * clear it (e.g. `{ x: null, y: null, tilt: null }` removes the chip
  * from the canvas board entirely).
