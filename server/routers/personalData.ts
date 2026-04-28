@@ -82,6 +82,8 @@ import {
   countNoteLinksByExternalIds,
   listProductionReadings,
   listSupplementDefinitions,
+  // Phase E (2026-04-28): "Log all AM/PM" eligibility filter.
+  selectUnloggedDefinitionsForTiming,
   listSupplementLogs,
   listSupplementPriceLogs,
   setSupplementDefinitionLock,
@@ -763,6 +765,72 @@ export const supplementsRouter = router({
     .mutation(async ({ ctx, input }) => {
       await deleteSupplementLog(ctx.user.id, input.id);
       return { success: true };
+    }),
+  /**
+   * Phase E (2026-04-28) — "Log all AM" / "Log all PM" batch.
+   *
+   * Inserts a log row for every active supplement definition with
+   * the requested timing that doesn't already have a log for the
+   * given dateKey. Returns counts so the toast can say "logged 4
+   * (2 already logged)" — useful when the user double-clicks or
+   * re-opens the page mid-day.
+   *
+   * The `dateKey` defaults to today; pass an explicit value when
+   * back-filling.
+   */
+  logAllForTiming: protectedProcedure
+    .input(
+      z.object({
+        timing: z.enum(["am", "pm"]),
+        dateKey: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/)
+          .optional(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const dateKey = input.dateKey ?? getTodayDateKey();
+      // Fan-out reads in parallel — definitions list + already-
+      // logged-today list. Both are small so the cost is dominated
+      // by the round-trip itself.
+      const [definitions, todaysLogs] = await Promise.all([
+        listSupplementDefinitions(ctx.user.id),
+        listSupplementLogs(ctx.user.id, dateKey, 500),
+      ]);
+      const toLog = selectUnloggedDefinitionsForTiming(
+        definitions,
+        todaysLogs,
+        input.timing
+      );
+      const candidatesCount = definitions.filter(
+        (def) => def.isActive && def.timing === input.timing
+      ).length;
+
+      const now = new Date();
+      // Sequential insert — supplements per timing typically ≤10,
+      // so the latency is negligible and we avoid hammering the
+      // pool with parallel writes against the same user.
+      for (const def of toLog) {
+        await addSupplementLog({
+          id: nanoid(),
+          userId: ctx.user.id,
+          definitionId: def.id,
+          name: def.name,
+          dose: def.dose,
+          doseUnit: def.doseUnit,
+          timing: input.timing,
+          autoLogged: false,
+          notes: null,
+          dateKey,
+          takenAt: now,
+        });
+      }
+
+      return {
+        logged: toLog.length,
+        skipped: candidatesCount - toLog.length,
+        candidates: candidatesCount,
+      };
     }),
   getDefinitionById: protectedProcedure
     .input(z.object({ definitionId: z.string().min(1) }))
