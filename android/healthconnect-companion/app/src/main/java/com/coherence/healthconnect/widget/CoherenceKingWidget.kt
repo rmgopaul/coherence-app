@@ -86,16 +86,17 @@ private val AccentBlue = ColorProvider(Color(0xFF6A8AFF))
 private val AccentGreen = ColorProvider(Color(0xFF66C266))
 private val AccentOrange = ColorProvider(Color(0xFFFFB74D))
 
-// Type scale is bigger than the phone widget — Fold inner display has
-// the room and is meant to be readable from arm's length on the
-// home screen.
+// Type scale is sized for a fullscreen Fold-inner widget. The widget
+// occupies the entire ~750×740 dp canvas, so we lean into editorial
+// proportions — the user reads it from a couple feet away on the
+// home screen, not phone-arm distance.
 private val SectionTitle = TextStyle(
   color = TextTertiary,
-  fontSize = 11.sp,
+  fontSize = 14.sp,
   fontWeight = FontWeight.Bold,
 )
-private val Body = TextStyle(color = TextPrimary, fontSize = 14.sp)
-private val Secondary = TextStyle(color = TextSecondary, fontSize = 12.sp)
+private val Body = TextStyle(color = TextPrimary, fontSize = 17.sp)
+private val Secondary = TextStyle(color = TextSecondary, fontSize = 14.sp)
 
 // ── Layout ───────────────────────────────────────────────────────────────────
 
@@ -110,10 +111,10 @@ private fun KingWidgetContent(data: WidgetData) {
     Column(
       modifier = GlanceModifier
         .fillMaxSize()
-        .padding(horizontal = 20.dp, vertical = 16.dp),
+        .padding(horizontal = 28.dp, vertical = 24.dp),
     ) {
       Header(data.updatedAtMillis)
-      Spacer(GlanceModifier.height(12.dp))
+      Spacer(GlanceModifier.height(16.dp))
 
       // KoD hero — full width, oversized headline. The Fold's
       // landscape proportions give us room for a real editorial
@@ -184,7 +185,7 @@ private fun Header(updatedAtMillis: Long) {
       text = "COHERENCE — KING",
       style = TextStyle(
         color = AccentYellow,
-        fontSize = 16.sp,
+        fontSize = 22.sp,
         fontWeight = FontWeight.Bold,
       ),
     )
@@ -195,7 +196,7 @@ private fun Header(updatedAtMillis: Long) {
         text = "UPDATED ${fmt.format(Date(updatedAtMillis)).uppercase(Locale.getDefault())}",
         style = TextStyle(
           color = TextTertiary,
-          fontSize = 11.sp,
+          fontSize = 14.sp,
           fontWeight = FontWeight.Bold,
         ),
       )
@@ -220,35 +221,35 @@ private fun KingOfDayHero(
         else -> null
       }
       if (sourceTag != null) {
-        Spacer(GlanceModifier.width(8.dp))
+        Spacer(GlanceModifier.width(10.dp))
         Text(
           text = sourceTag,
           style = TextStyle(
             color = AccentYellow,
-            fontSize = 10.sp,
+            fontSize = 12.sp,
             fontWeight = FontWeight.Bold,
           ),
         )
       }
     }
-    Spacer(GlanceModifier.height(6.dp))
-    // Big editorial headline — the only thing on the Fold's home
-    // screen the user shouldn't have to squint to read.
+    Spacer(GlanceModifier.height(8.dp))
+    // Editorial headline at full Fold-inner-display proportions —
+    // visible across the room, not just at phone-arm distance.
     Text(
       text = title,
       style = TextStyle(
         color = TextPrimary,
-        fontSize = 30.sp,
+        fontSize = 48.sp,
         fontWeight = FontWeight.Bold,
       ),
       maxLines = 3,
     )
     if (!reason.isNullOrBlank()) {
-      Spacer(GlanceModifier.height(4.dp))
+      Spacer(GlanceModifier.height(8.dp))
       Text(
         text = reason,
-        style = TextStyle(color = TextSecondary, fontSize = 14.sp),
-        maxLines = 2,
+        style = TextStyle(color = TextSecondary, fontSize = 18.sp),
+        maxLines = 3,
       )
     }
   }
@@ -263,15 +264,15 @@ private fun NextEventSection(event: WidgetCalendarEvent) {
     Spacer(GlanceModifier.height(4.dp))
     Row(verticalAlignment = Alignment.CenterVertically) {
       Box(
-        modifier = GlanceModifier.size(4.dp, 36.dp).background(AccentYellow),
+        modifier = GlanceModifier.size(5.dp, 44.dp).background(AccentYellow),
       ) {}
-      Spacer(GlanceModifier.width(10.dp))
+      Spacer(GlanceModifier.width(12.dp))
       Column {
         Text(
           text = event.title,
           style = TextStyle(
             color = TextPrimary,
-            fontSize = 16.sp,
+            fontSize = 22.sp,
             fontWeight = FontWeight.Bold,
           ),
           maxLines = 2,
@@ -281,7 +282,7 @@ private fun NextEventSection(event: WidgetCalendarEvent) {
             text = event.time.uppercase(Locale.getDefault()),
             style = TextStyle(
               color = AccentYellow,
-              fontSize = 12.sp,
+              fontSize = 16.sp,
               fontWeight = FontWeight.Bold,
             ),
           )
@@ -345,7 +346,7 @@ private fun EmailsSection(emails: List<WidgetEmail>) {
             text = email.from,
             style = TextStyle(
               color = TextPrimary,
-              fontSize = 13.sp,
+              fontSize = 16.sp,
               fontWeight = if (email.isUnread) FontWeight.Bold else FontWeight.Normal,
             ),
             maxLines = 1,
@@ -374,19 +375,19 @@ private fun TickersSection(tickers: List<WidgetTicker>) {
               text = ticker.symbol,
               style = TextStyle(
                 color = TextSecondary,
-                fontSize = 11.sp,
+                fontSize = 14.sp,
                 fontWeight = FontWeight.Medium,
               ),
             )
             Text(
               text = ticker.price,
-              style = TextStyle(color = TextPrimary, fontSize = 13.sp),
+              style = TextStyle(color = TextPrimary, fontSize = 17.sp),
             )
             Text(
               text = ticker.changePercent,
               style = TextStyle(
                 color = if (ticker.isPositive) AccentGreen else AccentRed,
-                fontSize = 11.sp,
+                fontSize = 14.sp,
                 fontWeight = FontWeight.Bold,
               ),
             )
@@ -438,18 +439,18 @@ private fun SportsSection(games: List<WidgetGame>) {
           text = game.league,
           style = TextStyle(
             color = leagueColor,
-            fontSize = 11.sp,
+            fontSize = 14.sp,
             fontWeight = FontWeight.Bold,
           ),
         )
-        Spacer(GlanceModifier.width(8.dp))
+        Spacer(GlanceModifier.width(10.dp))
         Text(
           text = game.teams,
           style = Body,
           maxLines = 1,
           modifier = GlanceModifier.defaultWeight(),
         )
-        Spacer(GlanceModifier.width(6.dp))
+        Spacer(GlanceModifier.width(8.dp))
         val scoreColor = when (game.status) {
           "in", "halftime" -> AccentGreen
           "post" -> TextSecondary
@@ -459,7 +460,7 @@ private fun SportsSection(games: List<WidgetGame>) {
           text = game.score,
           style = TextStyle(
             color = scoreColor,
-            fontSize = 13.sp,
+            fontSize = 17.sp,
             fontWeight = FontWeight.Medium,
           ),
         )
