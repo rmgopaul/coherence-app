@@ -1536,6 +1536,22 @@ export default function SolarRecDashboard() {
     Partial<Record<DatasetKey, string>>
   >({});
   const [forceDatasetSyncTick, setForceDatasetSyncTick] = useState(0);
+  // 2026-04-29 — Force-load-all entry point. Bumping the tick re-
+  // runs the cloud-hydration effect with `keysToLoad = ALL manifest
+  // keys` instead of the active tab's priority subset; the
+  // hydration loop's per-key onKeyComplete callback drives the
+  // progress bar below the "Datasets Loaded" stat.
+  const [forceLoadAllTick, setForceLoadAllTick] = useState(0);
+  const [forceLoadProgress, setForceLoadProgress] = useState<{
+    loaded: number;
+    total: number;
+  } | null>(null);
+  const requestForceLoadAll = useCallback(() => {
+    // Reset progress to zero immediately so the UI flips to
+    // "loading" without waiting for the effect to seed the count.
+    setForceLoadProgress({ loaded: 0, total: 0 });
+    setForceLoadAllTick((t) => t + 1);
+  }, []);
   const [remoteStateHydrated, setRemoteStateHydrated] = useState(false);
   const allDatasetKeys = useMemo(
     () => Object.keys(DATASET_DEFINITIONS) as DatasetKey[],
@@ -4306,7 +4322,10 @@ export default function SolarRecDashboard() {
         setStorageNotice("Could not load dashboard state metadata from cloud. Trying dataset fallback sync.");
       }
 
-      const loadRemoteDatasets = async (keys: DatasetKey[]) => {
+      const loadRemoteDatasets = async (
+        keys: DatasetKey[],
+        options: { onKeyComplete?: (key: DatasetKey) => void } = {}
+      ) => {
         const loadedDatasets: Partial<Record<DatasetKey, CsvDataset>> = {};
         const loadedSignatures: Partial<Record<DatasetKey, string>> = {};
         const loadedChunkKeys: Partial<Record<DatasetKey, string[]>> = {};
@@ -4571,6 +4590,15 @@ export default function SolarRecDashboard() {
             if (!cancelled) {
               recordHydrationError(rawKey, error);
             }
+          } finally {
+            // Force-load-all progress bar reads its loaded-count
+            // increments from here. Fires once per key regardless of
+            // success / error so the bar always advances; the per-
+            // card hydration error UI surfaces the failure
+            // separately.
+            if (!cancelled) {
+              options.onKeyComplete?.(rawKey);
+            }
           }
         };
 
@@ -4606,17 +4634,24 @@ export default function SolarRecDashboard() {
 
         // Cloud fallback is network-bound and can include very large
         // source CSVs, so automatic hydration only fetches the active
-        // tab's priority keys. The local IDB path can still hydrate the
-        // full manifest cheaply via lazy rows.
+        // tab's priority keys. When the user clicks "Force load all
+        // datasets", the same effect re-runs but `keysToLoad`
+        // expands to every manifest entry — at the cost of more
+        // bytes over the wire and more main-thread parsing.
+        const isForceLoadAll = forceLoadAllTick > 0;
         const priorityKeys = buildHydrationPriorityKeys(
           getTabFromSearch(search) ?? DEFAULT_DASHBOARD_TAB
         );
-        const keysToLoad = resolveHydrationKeys({
-          manifestKeys: Object.keys(manifest),
-          priorityKeys,
-          isDatasetKey,
-          includeManifestEntries: false,
-        });
+        const keysToLoad = isForceLoadAll
+          ? new Set<DatasetKey>(
+              (Object.keys(manifest) as string[]).filter(isDatasetKey)
+            )
+          : resolveHydrationKeys({
+              manifestKeys: Object.keys(manifest),
+              priorityKeys,
+              isDatasetKey,
+              includeManifestEntries: false,
+            });
 
         if (keysToLoad.size === 0) {
           try {
@@ -4633,8 +4668,28 @@ export default function SolarRecDashboard() {
           }
         }
 
+        // Seed the force-load progress bar AFTER we know the final
+        // key count (manifest fallback above can grow `keysToLoad`).
+        if (isForceLoadAll && !cancelled) {
+          setForceLoadProgress({ loaded: 0, total: keysToLoad.size });
+        }
+
         const { loadedDatasets, loadedSignatures, loadedChunkKeys, loadedSourceManifests } =
-          await loadRemoteDatasets(Array.from(keysToLoad));
+          await loadRemoteDatasets(Array.from(keysToLoad), {
+            onKeyComplete: isForceLoadAll
+              ? () => {
+                  // Increment loaded-count on every key completion,
+                  // success or failure. The per-card hydrationErrors
+                  // map separately surfaces failures. Ref-based
+                  // updater handles concurrent fires (concurrency
+                  // limit is REMOTE_READ_CONCURRENCY=8, so up to 8
+                  // simultaneous increments).
+                  setForceLoadProgress((prev) =>
+                    prev ? { ...prev, loaded: prev.loaded + 1 } : prev
+                  );
+                }
+              : undefined,
+          });
 
         let loadedCloudLogs: DashboardLogEntry[] = [];
         try {
@@ -4760,6 +4815,9 @@ export default function SolarRecDashboard() {
         if (!cancelled) {
           setRemoteStateHydrated(true);
           setDatasetsHydrated(true);
+          // Clear force-load progress regardless of success / error
+          // so the button re-appears once the run finishes.
+          setForceLoadProgress(null);
         }
       }
     })();
@@ -4773,6 +4831,7 @@ export default function SolarRecDashboard() {
     parseCsvTextAsync,
     remoteDashboardStateQuery.data,
     remoteDashboardStateQuery.status,
+    forceLoadAllTick,
   ]);
 
   useEffect(() => {
@@ -6095,14 +6154,56 @@ const aiDataContext = useMemo(() => {
                 <p className="text-lg font-semibold text-slate-900">
                   {formatNumber(dataHealthSummary.loadedDatasetCount)} / {formatNumber(dataHealthSummary.totalDatasetCount)}
                 </p>
-                {/* Phase 5c: removed the "Loading cache: x/y" progress
-                    counter and the "Load all (n remaining)" button.
-                    Both were tied to the IndexedDB hydration path
-                    that Phase 5a no-op'd. The dashboard now mounts
-                    with `datasets={}` and the 6 main tabs hydrate
-                    from server-side aggregators, so there is no
-                    local cache to progress through and no second
-                    pass to trigger. */}
+                {/* 2026-04-29 — Force-load-all hydration.
+                    Re-triggers the cloud-fallback hydration with
+                    every manifest key (instead of the active tab's
+                    priority subset). The progress bar fills as each
+                    key's chunked-CSV blob lands and parses; per-card
+                    hydration errors stay separate so a failing
+                    dataset doesn't stall the bar. */}
+                {forceLoadProgress !== null ? (
+                  <div className="mt-2 space-y-1">
+                    <Progress
+                      value={
+                        forceLoadProgress.total > 0
+                          ? Math.min(
+                              100,
+                              (forceLoadProgress.loaded /
+                                forceLoadProgress.total) *
+                                100
+                            )
+                          : 0
+                      }
+                      className="h-2"
+                    />
+                    <p className="text-[11px] text-sky-700">
+                      Loading {formatNumber(forceLoadProgress.loaded)} /{" "}
+                      {formatNumber(forceLoadProgress.total)} datasets
+                      {forceLoadProgress.total > 0
+                        ? ` (${Math.round(
+                            (forceLoadProgress.loaded /
+                              forceLoadProgress.total) *
+                              100
+                          )}%)`
+                        : ""}
+                    </p>
+                  </div>
+                ) : dataHealthSummary.loadedDatasetCount <
+                    dataHealthSummary.totalDatasetCount ? (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={requestForceLoadAll}
+                    className="mt-2 h-7 w-full px-2 text-[11px]"
+                  >
+                    Force load all (
+                    {formatNumber(
+                      dataHealthSummary.totalDatasetCount -
+                        dataHealthSummary.loadedDatasetCount
+                    )}{" "}
+                    remaining)
+                  </Button>
+                ) : null}
               </div>
               <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
                 <p className="text-xs uppercase tracking-wide text-slate-500">Rows Loaded</p>
