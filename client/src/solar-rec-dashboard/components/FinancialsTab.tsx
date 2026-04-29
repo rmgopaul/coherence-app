@@ -74,8 +74,6 @@ import {
 } from "@/solar-rec-dashboard/lib/helpers";
 import type {
   ContractScanResultRow,
-  CsvDataset,
-  CsvRow,
   FinancialProfitData,
   ProfitRow,
   SystemRecord,
@@ -88,9 +86,6 @@ import type {
 export interface FinancialsTabProps {
   // Master system list (parent-owned)
   systems: SystemRecord[];
-  // Part-II-verified ABP rows used by the debug panel (parent-owned,
-  // shared across many tabs)
-  part2VerifiedAbpRows: CsvRow[];
 
   // Financials profit/collateralization data. Computed by the parent's
   // `financialProfitData` useMemo, which is gated on `isFinancialsTabActive
@@ -106,15 +101,6 @@ export interface FinancialsTabProps {
   contractScanError: unknown;
   contractScanRefetch: () => Promise<unknown>;
   financialsRefetch: () => Promise<unknown>;
-
-  // CSG IDs feeding the contract scan query (debug panel reports the
-  // length so the user can see where data is dropping).
-  financialCsgIds: string[];
-
-  // Raw datasets for the debug panel's "input row counts" and ICC
-  // Report column analysis.
-  abpCsgSystemMapping: CsvDataset | null;
-  abpIccReport3Rows: CsvDataset | null;
 
   // Local optimistic overrides. State lives in the parent because
   // the Pipeline tab's cash flow aggregator also reads it.
@@ -167,7 +153,6 @@ type EditingFinancialRow = {
 export default memo(function FinancialsTab(props: FinancialsTabProps) {
   const {
     systems,
-    part2VerifiedAbpRows,
     financialProfitData,
     contractScanResults,
     contractScanStatus,
@@ -175,9 +160,6 @@ export default memo(function FinancialsTab(props: FinancialsTabProps) {
     contractScanError,
     contractScanRefetch,
     financialsRefetch,
-    financialCsgIds,
-    abpCsgSystemMapping,
-    abpIccReport3Rows,
     localOverrides,
     setLocalOverrides,
     onSelectSystem,
@@ -276,118 +258,10 @@ export default memo(function FinancialsTab(props: FinancialsTabProps) {
   }, [part2VerifiedSystems]);
 
   // -------------------------------------------------------------------------
-  // Debug panel: walks the ABP → CSG mapping → scan → ICC join chain,
-  // counts attrition at each step, and surfaces sample IDs for eyeballing.
+  // Debug panel: server aggregate + contract scan query state.
   // -------------------------------------------------------------------------
   const financialProfitDebug = useMemo(() => {
-    const mappingRows = abpCsgSystemMapping?.rows ?? [];
-    const iccRows = abpIccReport3Rows?.rows ?? [];
     const scanResults = contractScanResults;
-
-    // Step 1: parse the mapping into both directions
-    const csgIdByAppId = new Map<string, string>();
-    const appIdByCsgId = new Map<string, string>();
-    for (const row of mappingRows) {
-      const csgId = (row.csgId || row["CSG ID"] || "").trim();
-      const systemId = (row.systemId || row["System ID"] || "").trim();
-      if (csgId && systemId) {
-        csgIdByAppId.set(systemId, csgId);
-        appIdByCsgId.set(csgId, systemId);
-      }
-    }
-
-    // Step 2: scan-by-csgId
-    const scanByCsgId = new Map<string, ContractScanResultRow>();
-    for (const r of scanResults) {
-      scanByCsgId.set(r.csgId, r);
-    }
-
-    // Step 3: ICC by appId — same field-name fallbacks as financialProfitData
-    // and parseNumber (not parseFloat) to handle "$1,234.56" currency strings.
-    const iccAppIds = new Set<string>();
-    for (const row of iccRows) {
-      const appId = (
-        row["Application ID"] ||
-        row.Application_ID ||
-        row.application_id ||
-        ""
-      ).trim();
-      if (!appId) continue;
-      const gcv =
-        parseNumber(
-          row["Total REC Delivery Contract Value"] ||
-            row["REC Delivery Contract Value"] ||
-            row["Total Contract Value"],
-        ) ?? 0;
-      const rq =
-        parseNumber(
-          row["Total Quantity of RECs Contracted"] ||
-            row["Contracted SRECs"] ||
-            row.SRECs,
-        ) ?? 0;
-      const rp = parseNumber(row["REC Price"]) ?? 0;
-      const gross = gcv > 0 ? gcv : rq * rp;
-      if (gross > 0) iccAppIds.add(appId);
-    }
-
-    // Step 4: walk the join chain and count attrition
-    let withAppId = 0;
-    let withCsgId = 0;
-    let withScan = 0;
-    let withIcc = 0;
-    let final = 0;
-    for (const abpRow of part2VerifiedAbpRows) {
-      const appId = (abpRow.Application_ID || abpRow.application_id || "").trim();
-      if (!appId) continue;
-      withAppId += 1;
-
-      const csgId = csgIdByAppId.get(appId);
-      if (!csgId) continue;
-      withCsgId += 1;
-
-      if (scanByCsgId.has(csgId)) {
-        withScan += 1;
-      }
-      if (iccAppIds.has(appId)) {
-        withIcc += 1;
-      }
-
-      if (scanByCsgId.has(csgId) && iccAppIds.has(appId)) {
-        final += 1;
-      }
-    }
-
-    // Sample IDs from each side for the user to eyeball mismatches
-    const sample = <T,>(arr: T[], n: number) => arr.slice(0, n);
-    const mappingCsgIdSamples = sample(Array.from(appIdByCsgId.keys()), 5);
-    const scanCsgIdSamples = sample(scanResults.map((r) => r.csgId), 5);
-    const mappingAppIdSamples = sample(Array.from(csgIdByAppId.keys()), 5);
-    const iccAppIdSamples = sample(Array.from(iccAppIds), 5);
-    const part2AppIdSamples = sample(
-      part2VerifiedAbpRows
-        .map((r) => (r.Application_ID || r.application_id || "").trim())
-        .filter((id) => id.length > 0),
-      5,
-    );
-
-    // ICC Report headers: surface the actual column names from the CSV
-    // so the user can see if the expected field names match.
-    const iccHeaders = abpIccReport3Rows?.headers ?? [];
-    const iccFirstRow = iccRows.length > 0 ? iccRows[0] : null;
-    const iccAppIdFieldFound = iccFirstRow
-      ? ["Application ID", "Application_ID", "application_id"].filter(
-          (key) => key in iccFirstRow && (iccFirstRow[key] ?? "").trim().length > 0,
-        )
-      : [];
-    const iccContractValueFieldFound = iccFirstRow
-      ? [
-          "Total REC Delivery Contract Value",
-          "REC Delivery Contract Value",
-          "Total Contract Value",
-        ].filter(
-          (key) => key in iccFirstRow && (iccFirstRow[key] ?? "").trim().length > 0,
-        )
-      : [];
     const queryErrorMessage =
       contractScanError instanceof Error
         ? contractScanError.message
@@ -398,45 +272,22 @@ export default memo(function FinancialsTab(props: FinancialsTabProps) {
     return {
       queryStatus: contractScanStatus,
       queryFetching: contractScanIsFetching,
-      queryEnabled: financialCsgIds.length > 0,
+      queryEnabled: financialProfitData.rows.length > 0,
       queryErrorMessage,
       counts: {
-        part2VerifiedAbpRows: part2VerifiedAbpRows.length,
-        mappingRows: mappingRows.length,
-        iccReport3Rows: iccRows.length,
-        financialCsgIdsCount: financialCsgIds.length,
+        profitRows: financialProfitData.rows.length,
         scanResultsReturned: scanResults.length,
       },
       chain: {
-        iterated: part2VerifiedAbpRows.length,
-        withAppId,
-        withCsgId,
-        withScan,
-        withIcc,
-        final,
-      },
-      samples: {
-        mappingCsgIds: mappingCsgIdSamples,
-        scanCsgIds: scanCsgIdSamples,
-        mappingAppIds: mappingAppIdSamples,
-        iccAppIds: iccAppIdSamples,
-        part2AppIds: part2AppIdSamples,
-      },
-      icc: {
-        headers: iccHeaders.slice(0, 20),
-        appIdFieldFound: iccAppIdFieldFound,
-        contractValueFieldFound: iccContractValueFieldFound,
+        final: financialProfitData.rows.length,
       },
     };
   }, [
-    abpCsgSystemMapping,
-    abpIccReport3Rows,
     contractScanError,
     contractScanIsFetching,
     contractScanResults,
     contractScanStatus,
-    financialCsgIds,
-    part2VerifiedAbpRows,
+    financialProfitData.rows.length,
   ]);
 
   // -------------------------------------------------------------------------
@@ -862,7 +713,7 @@ export default memo(function FinancialsTab(props: FinancialsTabProps) {
         </Card>
       </div>
 
-      {financialProfitData.rows.length === 0 && financialCsgIds.length === 0 && (
+      {financialProfitData.rows.length === 0 && (
         <Card className="border-amber-200 bg-amber-50/50">
           <CardContent className="py-4">
             <p className="text-sm text-amber-800">
@@ -877,14 +728,12 @@ export default memo(function FinancialsTab(props: FinancialsTabProps) {
         </Card>
       )}
 
-      {/* Financials debug panel — walks the join chain financialProfitData
-          uses and shows where rows are being dropped. */}
+      {/* Financials debug panel — server aggregate and contract scan query state. */}
       <Card className="border-slate-200">
         <CardHeader className="pb-2">
           <CardTitle className="text-sm">Financials data flow debug</CardTitle>
           <CardDescription>
-            Walks the same join chain the profit table uses, counting attrition at every
-            step. Use this to identify which dataset or which join is dropping rows.
+            Shows the server aggregate row count and contract scan query state.
           </CardDescription>
         </CardHeader>
         <CardContent className="pt-2">
@@ -933,24 +782,12 @@ export default memo(function FinancialsTab(props: FinancialsTabProps) {
               </div>
               <div>
                 <p className="font-bold uppercase tracking-wider text-[10px] text-slate-500 mb-1">
-                  Input dataset row counts
+                  Server result counts
                 </p>
                 <ul className="space-y-0.5">
                   <li>
-                    part2VerifiedAbpRows:{" "}
-                    <strong>{formatNumber(financialProfitDebug.counts.part2VerifiedAbpRows)}</strong>
-                  </li>
-                  <li>
-                    abpCsgSystemMapping rows:{" "}
-                    <strong>{formatNumber(financialProfitDebug.counts.mappingRows)}</strong>
-                  </li>
-                  <li>
-                    abpIccReport3Rows:{" "}
-                    <strong>{formatNumber(financialProfitDebug.counts.iccReport3Rows)}</strong>
-                  </li>
-                  <li>
-                    financialCsgIds (passed to query):{" "}
-                    <strong>{formatNumber(financialProfitDebug.counts.financialCsgIdsCount)}</strong>
+                    financial profit rows:{" "}
+                    <strong>{formatNumber(financialProfitDebug.counts.profitRows)}</strong>
                   </li>
                   <li>
                     contractScanResults returned by query:{" "}
@@ -958,113 +795,6 @@ export default memo(function FinancialsTab(props: FinancialsTabProps) {
                   </li>
                 </ul>
               </div>
-              <div>
-                <p className="font-bold uppercase tracking-wider text-[10px] text-slate-500 mb-1">
-                  Join chain attrition
-                </p>
-                <ul className="space-y-0.5">
-                  <li>
-                    iterated part2VerifiedAbpRows:{" "}
-                    <strong>{formatNumber(financialProfitDebug.chain.iterated)}</strong>
-                  </li>
-                  <li>
-                    ↳ with non-empty Application_ID:{" "}
-                    <strong>{formatNumber(financialProfitDebug.chain.withAppId)}</strong>
-                  </li>
-                  <li>
-                    ↳ with csgId in mapping:{" "}
-                    <strong>{formatNumber(financialProfitDebug.chain.withCsgId)}</strong>
-                  </li>
-                  <li>
-                    ↳ with scan result for that csgId:{" "}
-                    <strong>{formatNumber(financialProfitDebug.chain.withScan)}</strong>
-                  </li>
-                  <li>
-                    ↳ with ICC Report row for appId:{" "}
-                    <strong>{formatNumber(financialProfitDebug.chain.withIcc)}</strong>
-                  </li>
-                  <li>
-                    FINAL (scan AND icc both present):{" "}
-                    <strong className="text-emerald-700">
-                      {formatNumber(financialProfitDebug.chain.final)}
-                    </strong>
-                  </li>
-                </ul>
-              </div>
-              <div>
-                <p className="font-bold uppercase tracking-wider text-[10px] text-slate-500 mb-1">
-                  Sample IDs (first 5 of each — eyeball for mismatches)
-                </p>
-                <ul className="space-y-0.5">
-                  <li>
-                    mapping csgIds: [
-                    {financialProfitDebug.samples.mappingCsgIds.join(", ") || "(empty)"}]
-                  </li>
-                  <li>
-                    scan result csgIds: [
-                    {financialProfitDebug.samples.scanCsgIds.join(", ") || "(empty)"}]
-                  </li>
-                  <li>
-                    mapping appIds: [
-                    {financialProfitDebug.samples.mappingAppIds.join(", ") || "(empty)"}]
-                  </li>
-                  <li>
-                    ICC report appIds: [
-                    {financialProfitDebug.samples.iccAppIds.join(", ") || "(empty)"}]
-                  </li>
-                  <li>
-                    part2 verified appIds: [
-                    {financialProfitDebug.samples.part2AppIds.join(", ") || "(empty)"}]
-                  </li>
-                </ul>
-              </div>
-              <div>
-                <p className="font-bold uppercase tracking-wider text-[10px] text-slate-500 mb-1">
-                  ICC Report 3 column analysis
-                </p>
-                <ul className="space-y-0.5">
-                  <li>
-                    CSV headers (first 20):{" "}
-                    {financialProfitDebug.icc.headers.length > 0
-                      ? `[${financialProfitDebug.icc.headers.join(", ")}]`
-                      : "(no headers)"}
-                  </li>
-                  <li>
-                    appId field match:{" "}
-                    <span
-                      className={
-                        financialProfitDebug.icc.appIdFieldFound.length > 0
-                          ? "text-emerald-700"
-                          : "text-rose-700 font-bold"
-                      }
-                    >
-                      {financialProfitDebug.icc.appIdFieldFound.length > 0
-                        ? financialProfitDebug.icc.appIdFieldFound.join(", ")
-                        : "NONE — expected 'Application ID', 'Application_ID', or 'application_id'"}
-                    </span>
-                  </li>
-                  <li>
-                    contract value field match:{" "}
-                    <span
-                      className={
-                        financialProfitDebug.icc.contractValueFieldFound.length > 0
-                          ? "text-emerald-700"
-                          : "text-rose-700 font-bold"
-                      }
-                    >
-                      {financialProfitDebug.icc.contractValueFieldFound.length > 0
-                        ? financialProfitDebug.icc.contractValueFieldFound.join(", ")
-                        : "NONE — expected 'Total REC Delivery Contract Value', 'REC Delivery Contract Value', or 'Total Contract Value'"}
-                    </span>
-                  </li>
-                </ul>
-              </div>
-              <p className="text-[10px] text-slate-500 italic">
-                Diagnostic added 2026-04-11 to debug "contract scraper data not reaching
-                Financials". If the chain shows withScan=0 but withCsgId&gt;0, the csgIds
-                in your mapping don't match what the scraper has. If withScan&gt;0 but
-                final=0, ICC Report 3 is missing rows for those appIds.
-              </p>
             </div>
           </details>
         </CardContent>

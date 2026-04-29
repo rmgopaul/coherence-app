@@ -116,7 +116,6 @@ import { DatasetUploadV2Button } from "@/solar-rec-dashboard/components/DatasetU
 // @/solar-rec-dashboard/lib/buildSystems (worker-side).
 import type {
   AnnualContractVintageAggregate,
-  AnnualProductionProfile,
   AnnualVintageAggregate,
   ChangeOwnershipStatus,
   ChangeOwnershipSummary,
@@ -126,7 +125,6 @@ import type {
   DashboardLogEntry,
   DatasetKey,
   FinancialProfitData,
-  GenerationBaseline,
   MonitoringDetailsRecord,
   OfflineBreakdownRow,
   OwnershipStatus,
@@ -203,8 +201,6 @@ import {
   maxDate,
   resolveContractValueAmount,
   resolveValueGapAmount,
-  buildAnnualProductionByTrackingId,
-  buildGenerationBaselineByTrackingId,
   getMonitoringDetailsForSystem,
   createLogId,
   classifyMonitoringAccessType,
@@ -1536,22 +1532,6 @@ export default function SolarRecDashboard() {
     Partial<Record<DatasetKey, string>>
   >({});
   const [forceDatasetSyncTick, setForceDatasetSyncTick] = useState(0);
-  // 2026-04-29 — Force-load-all entry point. Bumping the tick re-
-  // runs the cloud-hydration effect with `keysToLoad = ALL manifest
-  // keys` instead of the active tab's priority subset; the
-  // hydration loop's per-key onKeyComplete callback drives the
-  // progress bar below the "Datasets Loaded" stat.
-  const [forceLoadAllTick, setForceLoadAllTick] = useState(0);
-  const [forceLoadProgress, setForceLoadProgress] = useState<{
-    loaded: number;
-    total: number;
-  } | null>(null);
-  const requestForceLoadAll = useCallback(() => {
-    // Reset progress to zero immediately so the UI flips to
-    // "loading" without waiting for the effect to seed the count.
-    setForceLoadProgress({ loaded: 0, total: 0 });
-    setForceLoadAllTick((t) => t + 1);
-  }, []);
   const [remoteStateHydrated, setRemoteStateHydrated] = useState(false);
   const allDatasetKeys = useMemo(
     () => Object.keys(DATASET_DEFINITIONS) as DatasetKey[],
@@ -2297,8 +2277,12 @@ export default function SolarRecDashboard() {
       solarRecTrpcUtils.solarRecDashboard.getTransferDeliveryLookup.invalidate({ scopeId }),
       solarRecTrpcUtils.solarRecDashboard.getActiveDatasetVersions.invalidate({ scopeId }),
       solarRecTrpcUtils.solarRecDashboard.getSystemSnapshotHash.invalidate({ scopeId }),
+      solarRecTrpcUtils.solarRecDashboard.getDashboardDeliveryTrackerAggregates.invalidate(),
+      solarRecTrpcUtils.solarRecDashboard.getDashboardForecast.invalidate(),
+      solarRecTrpcUtils.solarRecDashboard.getDashboardPerformanceRatio.invalidate(),
+      solarRecTrpcUtils.solarRecDashboard.getDashboardFinancials.invalidate(),
     ]);
-  }, [scopeId, trpcUtils]);
+  }, [scopeId, solarRecTrpcUtils]);
 
   const pollCoreDatasetSyncJob = useCallback(
     async (key: DatasetKey, jobId: string) => {
@@ -3791,25 +3775,6 @@ export default function SolarRecDashboard() {
     return mapping;
   }, [datasets.solarApplications]);
 
-  // Gate: only compute when perf-ratio or forecast tab is active.
-  // These tabs have heavy internal memos that process this data — computing
-  // eagerly caused browser crashes from cascading O(n²) operations.
-  const annualProductionByTrackingId = useMemo(() => {
-    if (!isPerformanceRatioTabActive && !isForecastTabActive) return new Map<string, AnnualProductionProfile>();
-    return buildAnnualProductionByTrackingId(datasets.annualProductionEstimates?.rows ?? []);
-  }, [datasets.annualProductionEstimates, isPerformanceRatioTabActive, isForecastTabActive]);
-
-  // Shared between the Performance Ratio tab (via props) and Forecast tab
-  // (directly in forecastProjections). Stays in the parent so both callers
-  // share one computation when both tabs use the same dataset snapshot.
-  const generationBaselineByTrackingId = useMemo(() => {
-    if (!isPerformanceRatioTabActive && !isForecastTabActive) return new Map<string, GenerationBaseline>();
-    return buildGenerationBaselineByTrackingId(
-      datasets.generationEntry?.rows ?? [],
-      datasets.accountSolarGeneration?.rows ?? [],
-    );
-  }, [datasets.accountSolarGeneration, datasets.generationEntry, isPerformanceRatioTabActive, isForecastTabActive]);
-
   // generatorDateOnlineByTrackingId, portalMonitoringCandidates, performanceRatioMatchIndexes,
   // convertedReadRows, performanceRatioResult, performanceRatioMonitoringOptions, filteredPerformanceRatioRows,
   // performanceRatioTotalPages/CurrentPage/visible*, performanceRatioSummary, compliantSourceByPortalId,
@@ -4634,24 +4599,16 @@ export default function SolarRecDashboard() {
 
         // Cloud fallback is network-bound and can include very large
         // source CSVs, so automatic hydration only fetches the active
-        // tab's priority keys. When the user clicks "Force load all
-        // datasets", the same effect re-runs but `keysToLoad`
-        // expands to every manifest entry — at the cost of more
-        // bytes over the wire and more main-thread parsing.
-        const isForceLoadAll = forceLoadAllTick > 0;
+        // tab's priority keys.
         const priorityKeys = buildHydrationPriorityKeys(
           getTabFromSearch(search) ?? DEFAULT_DASHBOARD_TAB
         );
-        const keysToLoad = isForceLoadAll
-          ? new Set<DatasetKey>(
-              (Object.keys(manifest) as string[]).filter(isDatasetKey)
-            )
-          : resolveHydrationKeys({
-              manifestKeys: Object.keys(manifest),
-              priorityKeys,
-              isDatasetKey,
-              includeManifestEntries: false,
-            });
+        const keysToLoad = resolveHydrationKeys({
+          manifestKeys: Object.keys(manifest),
+          priorityKeys,
+          isDatasetKey,
+          includeManifestEntries: false,
+        });
 
         if (keysToLoad.size === 0) {
           try {
@@ -4668,50 +4625,8 @@ export default function SolarRecDashboard() {
           }
         }
 
-        // 2026-04-29 Force-load hotfix — skip the 3 multi-append
-        // datasets (`accountSolarGeneration`, `convertedReads`,
-        // `transferHistory`) when force-loading. Browser-side proof
-        // (Chrome MCP, 2026-04-29): a populated scope's force-load
-        // succeeds at the network layer (1000+ chunked GETs all
-        // 200 OK) but freezes the renderer's main thread under the
-        // CSV parse load — `convertedReads` alone can be 50–150 MB
-        // assembled. Skipping these 3 keeps force-load useful for
-        // the small / medium datasets (the long tail of admin /
-        // mapping / report tables) without locking the tab. The
-        // 3 deferred Phase-5d tabs that need them (PerformanceRatio,
-        // Forecast, Financials) hydrate via their tab-priority
-        // path, not via force-load. Phase 5d PR 1 onward replaces
-        // those with server-side aggregators so this skip can come
-        // off the moment those land.
-        if (isForceLoadAll) {
-          MULTI_APPEND_DATASET_KEYS.forEach((heavyKey) => {
-            keysToLoad.delete(heavyKey);
-          });
-        }
-
-        // Seed the force-load progress bar AFTER we know the final
-        // key count (manifest fallback above can grow `keysToLoad`,
-        // and the multi-append filter above can shrink it).
-        if (isForceLoadAll && !cancelled) {
-          setForceLoadProgress({ loaded: 0, total: keysToLoad.size });
-        }
-
         const { loadedDatasets, loadedSignatures, loadedChunkKeys, loadedSourceManifests } =
-          await loadRemoteDatasets(Array.from(keysToLoad), {
-            onKeyComplete: isForceLoadAll
-              ? () => {
-                  // Increment loaded-count on every key completion,
-                  // success or failure. The per-card hydrationErrors
-                  // map separately surfaces failures. Ref-based
-                  // updater handles concurrent fires (concurrency
-                  // limit is REMOTE_READ_CONCURRENCY=8, so up to 8
-                  // simultaneous increments).
-                  setForceLoadProgress((prev) =>
-                    prev ? { ...prev, loaded: prev.loaded + 1 } : prev
-                  );
-                }
-              : undefined,
-          });
+          await loadRemoteDatasets(Array.from(keysToLoad));
 
         let loadedCloudLogs: DashboardLogEntry[] = [];
         try {
@@ -4837,9 +4752,6 @@ export default function SolarRecDashboard() {
         if (!cancelled) {
           setRemoteStateHydrated(true);
           setDatasetsHydrated(true);
-          // Clear force-load progress regardless of success / error
-          // so the button re-appears once the run finishes.
-          setForceLoadProgress(null);
         }
       }
     })();
@@ -4853,7 +4765,6 @@ export default function SolarRecDashboard() {
     parseCsvTextAsync,
     remoteDashboardStateQuery.data,
     remoteDashboardStateQuery.status,
-    forceLoadAllTick,
   ]);
 
   useEffect(() => {
@@ -5648,28 +5559,21 @@ const deliveryTrackerData = deliveryTrackerQuery.data ?? EMPTY_DELIVERY_TRACKER_
 // AlertItem type, alerts memo, alertSummary memo — moved to @/solar-rec-dashboard/components/AlertsTab
 // comparisonInstallers, comparisonPlatforms — moved to @/solar-rec-dashboard/components/ComparisonsTab
 
-// ── Financials: Part II Verified System IDs (strict) ────────────
-const part2VerifiedSystemIds = useMemo(() => {
-  const ids = new Set<string>();
-  part2VerifiedAbpRows.forEach((row) => {
-    const appId = clean(row.Application_ID) || clean(row.system_id);
-    if (appId) ids.add(appId);
-  });
-  return ids;
-}, [part2VerifiedAbpRows]);
-
 // part2VerifiedSystems, financialRevenueAtRisk — moved to @/solar-rec-dashboard/components/FinancialsTab
 // ── Financials: Profit & Collateralization ──────────────────────
+const financialsQuery =
+  solarRecTrpc.solarRecDashboard.getDashboardFinancials.useQuery(undefined, {
+    enabled: isFinancialsTabActive || isOverviewTabActive || isPipelineTabActive,
+    staleTime: 60_000,
+  });
+
 const financialCsgIds = useMemo(() => {
-  if (!isFinancialsTabActive && !isPipelineTabActive && !isOverviewTabActive) return [];
-  const mappingRows = datasets.abpCsgSystemMapping?.rows ?? [];
   const ids = new Set<string>();
-  for (const row of mappingRows) {
-    const csgId = (row.csgId || row["CSG ID"] || "").trim();
-    if (csgId) ids.add(csgId);
+  for (const row of financialsQuery.data?.rows ?? []) {
+    if (row.csgId) ids.add(row.csgId);
   }
   return Array.from(ids);
-}, [isFinancialsTabActive, isPipelineTabActive, isOverviewTabActive, datasets.abpCsgSystemMapping]);
+}, [financialsQuery.data?.rows]);
 
 // Task 5.7 PR-B (2026-04-26): getContractScanResultsByCsgIds moved
 // from main `abpSettlementRouter` to standalone `contractScan` —
@@ -5679,192 +5583,24 @@ const contractScanResultsQuery = solarRecTrpc.contractScan.getContractScanResult
   { csgIds: financialCsgIds },
   { enabled: (isFinancialsTabActive || isPipelineTabActive || isOverviewTabActive) && financialCsgIds.length > 0 }
 );
-const financialsQuery =
-  solarRecTrpc.solarRecDashboard.getDashboardFinancials.useQuery(undefined, {
-    enabled: isFinancialsTabActive || isOverviewTabActive,
-    staleTime: 60_000,
-  });
 // updateContractOverride, rescanSingleContract mutations + editingFinancialRow state
 // — moved to @/solar-rec-dashboard/components/FinancialsTab
 
 // ProfitRow — moved to @/solar-rec-dashboard/state/types
-
-const _clientFallbackFinancialProfitData = useMemo<FinancialProfitData>(() => {
-  const empty = { rows: [] as ProfitRow[], totalProfit: 0, avgProfit: 0, totalCollateralization: 0, totalUtilityCollateral: 0, totalAdditionalCollateral: 0, totalCcAuth: 0, systemsWithData: 0 };
-  if (!isFinancialsTabActive && !isOverviewTabActive) return empty;
-
-  const scanResults = contractScanResultsQuery.data ?? [];
-  if (scanResults.length === 0) return empty;
-
-  // Build lookup maps
-  const scanByCsgId = new Map<string, (typeof scanResults)[number]>();
-  for (const r of scanResults) {
-    scanByCsgId.set(r.csgId, r);
-  }
-
-  const mappingRows = datasets.abpCsgSystemMapping?.rows ?? [];
-  const csgIdByAppId = new Map<string, string>();
-  const appIdByCsgId = new Map<string, string>();
-  for (const row of mappingRows) {
-    const csgId = (row.csgId || row["CSG ID"] || "").trim();
-    const systemId = (row.systemId || row["System ID"] || "").trim();
-    if (csgId && systemId) {
-      csgIdByAppId.set(systemId, csgId);
-      appIdByCsgId.set(csgId, systemId);
-    }
-  }
-
-  // Build ICC Report 3 lookup by applicationId → grossContractValue
-  const iccRows = datasets.abpIccReport3Rows?.rows ?? [];
-  // 2026-04-11: replaced raw parseFloat with parseNumber (line 793)
-  // which strips $, commas, %, and whitespace before parsing. The ICC
-  // Report 3 CSV uses currency-formatted values like "$1,234.56" that
-  // parseFloat can't handle — every row returned NaN, gross was
-  // always 0, and no appIds made it into iccByAppId.
-  const iccByAppId = new Map<string, { grossContractValue: number; recQuantity: number; recPrice: number }>();
-  for (const row of iccRows) {
-    const appId = (
-      row["Application ID"] || row.Application_ID || row.application_id || ""
-    ).trim();
-    if (!appId) continue;
-    const gcv =
-      parseNumber(
-        row["Total REC Delivery Contract Value"] ||
-        row["REC Delivery Contract Value"] ||
-        row["Total Contract Value"]
-      ) ?? 0;
-    const rq =
-      parseNumber(
-        row["Total Quantity of RECs Contracted"] ||
-        row["Contracted SRECs"] ||
-        row.SRECs
-      ) ?? 0;
-    const rp = parseNumber(row["REC Price"]) ?? 0;
-    const gross = gcv > 0 ? gcv : rq * rp;
-    if (gross > 0) {
-      iccByAppId.set(appId, { grossContractValue: gross, recQuantity: rq, recPrice: rp });
-    }
-  }
-
-  // Build Part I submit date lookup from ABP report rows
-  const abpRows = datasets.abpReport?.rows ?? [];
-  const part1DateByAppId = new Map<string, Date>();
-  for (const row of abpRows) {
-    const appId = (row.Application_ID || row.application_id || "").trim();
-    if (!appId) continue;
-    const raw = row.Part_1_Submission_Date || row.Part_1_submission_date || row.Part_1_Original_Submission_Date || "";
-    if (raw) {
-      const d = new Date(raw);
-      if (!Number.isNaN(d.getTime())) part1DateByAppId.set(appId, d);
-    }
-  }
-
-  const profitRows: ProfitRow[] = [];
-  const APPLICATION_FEE_CUTOFF = new Date("2024-06-01");
-
-  for (const abpRow of part2VerifiedAbpRows) {
-    const appId = (abpRow.Application_ID || abpRow.application_id || "").trim();
-    if (!appId) continue;
-
-    const csgId = csgIdByAppId.get(appId);
-    if (!csgId) continue;
-
-    const scan = scanByCsgId.get(csgId);
-    const icc = iccByAppId.get(appId);
-    if (!scan || !icc) continue;
-
-    const gcv = icc.grossContractValue;
-    const localOv = localOverrides.get(csgId);
-    const hasOverride = localOv != null || scan.overriddenAt != null;
-    const vfp = localOv?.vfp ?? scan.overrideVendorFeePercent ?? scan.vendorFeePercent ?? 0;
-    const vendorFeeAmount = roundMoney(gcv * (vfp / 100));
-    const utilityCollateral = roundMoney(gcv * 0.05);
-    const acp = localOv?.acp ?? scan.overrideAdditionalCollateralPercent ?? scan.additionalCollateralPercent ?? 0;
-    const additionalCollateralAmount = roundMoney(gcv * (acp / 100));
-
-    // CC auth 5%: if CC auth not completed AND not absent from contract, apply 5%
-    const ccAuthCompleted = scan.ccAuthorizationCompleted;
-    const ccAuth5Percent = ccAuthCompleted === false ? roundMoney(gcv * 0.05) : 0;
-
-    // Application fee
-    const acSizeKw = scan.acSizeKw ?? 0;
-    const part1Date = part1DateByAppId.get(appId);
-    let applicationFee = 0;
-    if (part1Date && acSizeKw > 0) {
-      if (part1Date < APPLICATION_FEE_CUTOFF) {
-        applicationFee = Math.min(roundMoney(10 * acSizeKw), 5000);
-      } else {
-        applicationFee = Math.min(roundMoney(20 * acSizeKw), 15000);
-      }
-    }
-
-    const totalDeductions = roundMoney(
-      vendorFeeAmount + utilityCollateral + additionalCollateralAmount + ccAuth5Percent + applicationFee
-    );
-    // 2026-04-12: profit = vendor fee (what Carbon Solutions earns),
-    // NOT gross minus all deductions. The vendor fee is the revenue;
-    // the rest (collateral, app fees) are borne by the project.
-    const profit = vendorFeeAmount;
-    const totalCollateralization = roundMoney(utilityCollateral + additionalCollateralAmount + ccAuth5Percent);
-
-    // Validation: flag rows where collateral > 30% of GCV.
-    const collateralPercent = gcv > 0 ? totalCollateralization / gcv : 0;
-    const needsReview = collateralPercent > 0.30;
-    const reviewReason = needsReview
-      ? `Collateral is ${(collateralPercent * 100).toFixed(1)}% of GCV`
-      : "";
-
-    profitRows.push({
-      systemName: scan.systemName ?? appId,
-      applicationId: appId,
-      csgId,
-      grossContractValue: gcv,
-      vendorFeePercent: vfp,
-      vendorFeeAmount,
-      utilityCollateral,
-      additionalCollateralPercent: acp,
-      additionalCollateralAmount,
-      ccAuth5Percent,
-      applicationFee,
-      totalDeductions,
-      profit,
-      totalCollateralization,
-      needsReview,
-      reviewReason,
-      hasOverride,
-    });
-  }
-
-  const totalProfit = profitRows.reduce((a, r) => a + r.profit, 0);
-  const totalColl = profitRows.reduce((a, r) => a + r.totalCollateralization, 0);
-  const totalUtilColl = profitRows.reduce((a, r) => a + r.utilityCollateral, 0);
-  const totalAddlColl = profitRows.reduce((a, r) => a + r.additionalCollateralAmount, 0);
-  const totalCcAuthColl = profitRows.reduce((a, r) => a + r.ccAuth5Percent, 0);
-
-  return {
-    rows: profitRows.sort((a, b) => b.profit - a.profit),
-    totalProfit: roundMoney(totalProfit),
-    avgProfit: profitRows.length > 0 ? roundMoney(totalProfit / profitRows.length) : 0,
-    totalCollateralization: roundMoney(totalColl),
-    totalUtilityCollateral: roundMoney(totalUtilColl),
-    totalAdditionalCollateral: roundMoney(totalAddlColl),
-    totalCcAuth: roundMoney(totalCcAuthColl),
-    systemsWithData: profitRows.length,
-  };
-}, [
-  isFinancialsTabActive,
-  isOverviewTabActive,
-  part2VerifiedAbpRows,
-  contractScanResultsQuery.data,
-  datasets.abpCsgSystemMapping,
-  datasets.abpIccReport3Rows,
-  datasets.abpReport,
-  localOverrides,
-]);
-
 const financialProfitData = useMemo<FinancialProfitData>(() => {
   const data = financialsQuery.data;
-  if (!data) return _clientFallbackFinancialProfitData;
+  if (!data) {
+    return {
+      rows: [],
+      totalProfit: 0,
+      avgProfit: 0,
+      totalCollateralization: 0,
+      totalUtilityCollateral: 0,
+      totalAdditionalCollateral: 0,
+      totalCcAuth: 0,
+      systemsWithData: 0,
+    };
+  }
 
   let rows = data.rows as ProfitRow[];
 
@@ -5936,197 +5672,10 @@ const financialProfitData = useMemo<FinancialProfitData>(() => {
     totalCcAuth: roundMoney(totalCcAuthColl),
     systemsWithData: rows.length,
   };
-}, [financialsQuery.data, _clientFallbackFinancialProfitData, localOverrides]);
+}, [financialsQuery.data, localOverrides]);
 
 // ── Pipeline: Cash Flow by Month (M+1 from Part II verification) ──
 // pipelineCashFlowRows, cashFlowRows3Year, cashFlowRows12Month, cashFlowRows12MonthRef — moved to @/solar-rec-dashboard/components/AppPipelineTab
-
-// ── Financials: debug panel data (drive the collapsible diagnostic
-//    block under the profit table). Walks the same join chain as
-//    financialProfitData and counts attrition at every step so the
-//    user can see EXACTLY which dataset is missing or mis-keyed.
-//    Pure: gated on isFinancialsTabActive so it doesn't run on
-//    other tabs.
-const financialProfitDebug = useMemo(() => {
-  if (!isFinancialsTabActive) {
-    return null;
-  }
-
-  const mappingRows = datasets.abpCsgSystemMapping?.rows ?? [];
-  const iccRows = datasets.abpIccReport3Rows?.rows ?? [];
-  const scanResults = contractScanResultsQuery.data ?? [];
-
-  // Step 1: parse the mapping into both directions
-  const csgIdByAppId = new Map<string, string>();
-  const appIdByCsgId = new Map<string, string>();
-  for (const row of mappingRows) {
-    const csgId = (row.csgId || row["CSG ID"] || "").trim();
-    const systemId = (row.systemId || row["System ID"] || "").trim();
-    if (csgId && systemId) {
-      csgIdByAppId.set(systemId, csgId);
-      appIdByCsgId.set(csgId, systemId);
-    }
-  }
-
-  // Step 2: scan-by-csgId
-  const scanByCsgId = new Map<string, (typeof scanResults)[number]>();
-  for (const r of scanResults) {
-    scanByCsgId.set(r.csgId, r);
-  }
-
-  // Step 3: ICC by appId — match the same field-name fallbacks AND
-  // use parseNumber (not parseFloat) to mirror the fix in
-  // financialProfitData. Raw parseFloat chokes on currency-formatted
-  // strings like "$1,234.56", making every row's gross === 0 and
-  // dropping the appId entirely.
-  const iccAppIds = new Set<string>();
-  for (const row of iccRows) {
-    const appId = (
-      row["Application ID"] || row.Application_ID || row.application_id || ""
-    ).trim();
-    if (!appId) continue;
-    const gcv =
-      parseNumber(
-        row["Total REC Delivery Contract Value"] ||
-          row["REC Delivery Contract Value"] ||
-          row["Total Contract Value"]
-      ) ?? 0;
-    const rq =
-      parseNumber(
-        row["Total Quantity of RECs Contracted"] ||
-          row["Contracted SRECs"] ||
-          row.SRECs
-      ) ?? 0;
-    const rp = parseNumber(row["REC Price"]) ?? 0;
-    const gross = gcv > 0 ? gcv : rq * rp;
-    if (gross > 0) iccAppIds.add(appId);
-  }
-
-  // Step 4: walk the join chain on part2VerifiedAbpRows and count
-  // attrition at every step.
-  let withAppId = 0;
-  let withCsgId = 0;
-  let withScan = 0;
-  let withIcc = 0;
-  let final = 0;
-  for (const abpRow of part2VerifiedAbpRows) {
-    const appId = (abpRow.Application_ID || abpRow.application_id || "").trim();
-    if (!appId) continue;
-    withAppId += 1;
-
-    const csgId = csgIdByAppId.get(appId);
-    if (!csgId) continue;
-    withCsgId += 1;
-
-    if (scanByCsgId.has(csgId)) {
-      withScan += 1;
-    }
-    if (iccAppIds.has(appId)) {
-      withIcc += 1;
-    }
-
-    if (scanByCsgId.has(csgId) && iccAppIds.has(appId)) {
-      final += 1;
-    }
-  }
-
-  // Sample IDs from each side for the user to eyeball mismatches
-  const sample = <T,>(arr: T[], n: number) => arr.slice(0, n);
-  const mappingCsgIdSamples = sample(
-    Array.from(appIdByCsgId.keys()),
-    5
-  );
-  const scanCsgIdSamples = sample(
-    scanResults.map((r) => r.csgId),
-    5
-  );
-  const mappingAppIdSamples = sample(
-    Array.from(csgIdByAppId.keys()),
-    5
-  );
-  const iccAppIdSamples = sample(Array.from(iccAppIds), 5);
-  const part2AppIdSamples = sample(
-    part2VerifiedAbpRows
-      .map((r) => (r.Application_ID || r.application_id || "").trim())
-      .filter((id) => id.length > 0),
-    5
-  );
-
-  // ICC Report headers: surface the actual column names from the CSV
-  // so the user can see if the expected field names (Application ID,
-  // Total REC Delivery Contract Value, etc.) match what's in the file.
-  const iccHeaders = datasets.abpIccReport3Rows?.headers ?? [];
-  const iccFirstRow = iccRows.length > 0 ? iccRows[0] : null;
-  // Try ALL known variants of the appId field to show which one works.
-  const iccAppIdFieldFound =
-    iccFirstRow
-      ? ["Application ID", "Application_ID", "application_id"]
-          .filter((key) => key in iccFirstRow && (iccFirstRow[key] ?? "").trim().length > 0)
-      : [];
-  const iccContractValueFieldFound =
-    iccFirstRow
-      ? [
-          "Total REC Delivery Contract Value",
-          "REC Delivery Contract Value",
-          "Total Contract Value",
-        ].filter(
-          (key) =>
-            key in iccFirstRow &&
-            (iccFirstRow[key] ?? "").trim().length > 0
-        )
-      : [];
-  const queryError = contractScanResultsQuery.error;
-  const queryErrorMessage =
-    queryError instanceof Error
-      ? queryError.message
-      : queryError
-        ? String(queryError)
-        : null;
-
-  return {
-    queryStatus: contractScanResultsQuery.status,
-    queryFetching: contractScanResultsQuery.isFetching,
-    queryEnabled: isFinancialsTabActive && financialCsgIds.length > 0,
-    queryErrorMessage,
-    counts: {
-      part2VerifiedAbpRows: part2VerifiedAbpRows.length,
-      mappingRows: mappingRows.length,
-      iccReport3Rows: iccRows.length,
-      financialCsgIdsCount: financialCsgIds.length,
-      scanResultsReturned: scanResults.length,
-    },
-    chain: {
-      iterated: part2VerifiedAbpRows.length,
-      withAppId,
-      withCsgId,
-      withScan,
-      withIcc,
-      final,
-    },
-    samples: {
-      mappingCsgIds: mappingCsgIdSamples,
-      scanCsgIds: scanCsgIdSamples,
-      mappingAppIds: mappingAppIdSamples,
-      iccAppIds: iccAppIdSamples,
-      part2AppIds: part2AppIdSamples,
-    },
-    icc: {
-      headers: iccHeaders.slice(0, 20),
-      appIdFieldFound: iccAppIdFieldFound,
-      contractValueFieldFound: iccContractValueFieldFound,
-    },
-  };
-}, [
-  isFinancialsTabActive,
-  part2VerifiedAbpRows,
-  contractScanResultsQuery.data,
-  contractScanResultsQuery.status,
-  contractScanResultsQuery.isFetching,
-  financialCsgIds,
-  datasets.abpCsgSystemMapping,
-  datasets.abpIccReport3Rows,
-]);
-
 
 // ── Data Quality: Freshness ─────────────────────────────────────
 // dataQualityFreshness, dataQualityUnmatched — moved to @/solar-rec-dashboard/components/DataQualityTab
@@ -6257,79 +5806,6 @@ const aiDataContext = useMemo(() => {
                 <p className="text-lg font-semibold text-slate-900">
                   {formatNumber(dataHealthSummary.loadedDatasetCount)} / {formatNumber(dataHealthSummary.totalDatasetCount)}
                 </p>
-                {/* 2026-04-29 — Force-load-all hydration.
-                    Re-triggers the cloud-fallback hydration with
-                    every manifest key (instead of the active tab's
-                    priority subset). The 3 multi-append datasets
-                    (`accountSolarGeneration`, `convertedReads`,
-                    `transferHistory`) are deliberately skipped —
-                    parsing their assembled chunked-CSV blobs locks
-                    the renderer's main thread on populated scopes.
-                    The deferred Phase-5d tabs that need them
-                    hydrate via their tab-priority path. The
-                    button label below subtracts the 3 skipped keys
-                    from the "remaining" count so the number is
-                    honest about what force-load will actually
-                    fetch. */}
-                {forceLoadProgress !== null ? (
-                  <div className="mt-2 space-y-1">
-                    <Progress
-                      value={
-                        forceLoadProgress.total > 0
-                          ? Math.min(
-                              100,
-                              (forceLoadProgress.loaded /
-                                forceLoadProgress.total) *
-                                100
-                            )
-                          : 0
-                      }
-                      className="h-2"
-                    />
-                    <p className="text-[11px] text-sky-700">
-                      Loading {formatNumber(forceLoadProgress.loaded)} /{" "}
-                      {formatNumber(forceLoadProgress.total)} datasets
-                      {forceLoadProgress.total > 0
-                        ? ` (${Math.round(
-                            (forceLoadProgress.loaded /
-                              forceLoadProgress.total) *
-                              100
-                          )}%)`
-                        : ""}
-                    </p>
-                  </div>
-                ) : (() => {
-                    // Subtract the 3 force-load-skipped multi-append
-                    // keys from the remaining count IF any of them
-                    // are unloaded. They won't be picked up by
-                    // force-load, so showing them as "remaining"
-                    // would mislead the user into thinking the
-                    // button will fetch them.
-                    const totalRemaining =
-                      dataHealthSummary.totalDatasetCount -
-                      dataHealthSummary.loadedDatasetCount;
-                    const skippedHeavyUnloaded = Array.from(
-                      MULTI_APPEND_DATASET_KEYS
-                    ).filter((key) => !datasets[key]).length;
-                    const forceLoadable =
-                      totalRemaining - skippedHeavyUnloaded;
-                    if (forceLoadable <= 0) return null;
-                    return (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={requestForceLoadAll}
-                        className="mt-2 h-7 w-full px-2 text-[11px]"
-                        title={
-                          skippedHeavyUnloaded > 0
-                            ? `Skips ${skippedHeavyUnloaded} large dataset${skippedHeavyUnloaded === 1 ? "" : "s"} (convertedReads / accountSolarGeneration / transferHistory) — load those by visiting the relevant tab`
-                            : undefined
-                        }
-                      >
-                        Force load all ({formatNumber(forceLoadable)} remaining)
-                      </Button>
-                    );
-                  })()}
               </div>
               <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
                 <p className="text-xs uppercase tracking-wide text-slate-500">Rows Loaded</p>
@@ -6708,18 +6184,8 @@ const aiDataContext = useMemo(() => {
             <div style={{ display: activeTab === "performance-ratio" ? "contents" : "none" }}>
               <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading performance ratio tab...</div>}>
                 <PerformanceRatioTabLazy
-                  convertedReads={datasets.convertedReads ?? null}
-                  annualProductionEstimates={datasets.annualProductionEstimates ?? null}
-                  generatorDetails={datasets.generatorDetails ?? null}
-                  convertedReadsLabel={DATASET_DEFINITIONS.convertedReads.label}
-                  annualProductionEstimatesLabel={DATASET_DEFINITIONS.annualProductionEstimates.label}
                   part2EligibleSystemsForSizeReporting={part2EligibleSystemsForSizeReporting}
-                  monitoringDetailsBySystemKey={monitoringDetailsBySystemKey}
-                  abpAcSizeKwByApplicationId={abpAcSizeKwByApplicationId}
-                  abpPart2VerificationDateByApplicationId={abpPart2VerificationDateByApplicationId}
                   abpAcSizeKwBySystemKey={abpAcSizeKwBySystemKey}
-                  annualProductionByTrackingId={annualProductionByTrackingId}
-                  generationBaselineByTrackingId={generationBaselineByTrackingId}
                 />
               </Suspense>
             </div>
@@ -6766,12 +6232,7 @@ const aiDataContext = useMemo(() => {
           {visitedTabsRef.current.has("forecast") && (
             <div style={{ display: activeTab === "forecast" ? "contents" : "none" }}>
               <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading forecast tab...</div>}>
-                <ForecastTabLazy
-                  performanceSourceRows={performanceSourceRows}
-                  systems={systems}
-                  annualProductionByTrackingId={annualProductionByTrackingId}
-                  generationBaselineByTrackingId={generationBaselineByTrackingId}
-                />
+                <ForecastTabLazy />
               </Suspense>
             </div>
           )}
@@ -6801,7 +6262,6 @@ const aiDataContext = useMemo(() => {
               <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading financials tab...</div>}>
                 <FinancialsTabLazy
                   systems={systems}
-                  part2VerifiedAbpRows={part2VerifiedAbpRows}
                   financialProfitData={financialProfitData}
                   contractScanResults={contractScanResultsQuery.data ?? []}
                   contractScanStatus={contractScanResultsQuery.status}
@@ -6809,9 +6269,6 @@ const aiDataContext = useMemo(() => {
                   contractScanError={contractScanResultsQuery.error}
                   contractScanRefetch={contractScanResultsQuery.refetch}
                   financialsRefetch={financialsQuery.refetch}
-                  financialCsgIds={financialCsgIds}
-                  abpCsgSystemMapping={datasets.abpCsgSystemMapping ?? null}
-                  abpIccReport3Rows={datasets.abpIccReport3Rows ?? null}
                   localOverrides={localOverrides}
                   setLocalOverrides={setLocalOverrides}
                   onSelectSystem={setSelectedSystemKey}
@@ -6842,241 +6299,13 @@ const aiDataContext = useMemo(() => {
                     {/* ── Schedule B PDF Import ────────────────────────── */}
                     <ScheduleBImport
                       transferDeliveryLookup={transferDeliveryLookup}
-                      existingDeliverySchedule={datasets.deliveryScheduleBase?.rows ?? null}
                       onClearAppliedSchedule={() => {
-                        // Phase 1a follow-up: Clear on the Schedule B card wipes
-                        // the applied deliveryScheduleBase dataset so the tracker
-                        // starts fresh. Also reset the stale signature ref so
-                        // the next apply always fires a genuine cloud sync.
                         delete remoteDatasetSignatureRef.current.deliveryScheduleBase;
                         clearDataset("deliveryScheduleBase");
+                        void invalidateServerDerivedSolarData();
                       }}
-                      // apply-track-v1 + contract-id-mapping-v1: after a
-                      // server-side apply or mapping mutation lands, reload
-                      // deliveryScheduleBase from the cloud so local state
-                      // mirrors the server's post-apply truth. This eliminates
-                      // the "Dataset has: N stays flat" bug caused by the
-                      // client doing an independent parallel merge (see the
-                      // deprecated onApply handler below).
-                      //
-                      // Hardening pass 2026-04-11: previously this had silent
-                      // console.warn bail-outs on "no payload" and "null
-                      // deserialize" that left the user staring at stale data
-                      // with no error indication. Now every bail-out surfaces a
-                      // toast, logs enough shape info to diagnose, AND falls
-                      // back to the source-manifest path if the flat-payload
-                      // deserializer can't handle what the server wrote.
                       onApplyComplete={async () => {
-                        try {
-                          const response = await getRemoteDatasetRef.current
-                            .mutateAsync({ key: "deliveryScheduleBase" })
-                            .catch((fetchErr) => {
-                              console.error(
-                                "[onApplyComplete] getRemoteDataset threw",
-                                fetchErr
-                              );
-                              return null;
-                            });
-                          if (!response?.payload) {
-                            toast.error(
-                              "Apply landed on the server but the cloud reload returned no payload. Refresh the page if the Delivery Tracker doesn't update."
-                            );
-                            console.error(
-                              "[onApplyComplete] getRemoteDataset returned no payload; leaving local state untouched"
-                            );
-                            return;
-                          }
-
-                          // Primary path: flat {fileName,uploadedAt,headers,csvText}
-                          // shape (what applyScheduleBToDeliveryObligations and
-                          // applyScheduleBContractIdMapping both write).
-                          let loaded = deserializeRemoteDatasetPayload(
-                            response.payload
-                          );
-
-                          // Fallback path: source-manifest shape. If the cloud
-                          // has an older {_rawSourcesV1: true, sources: [...]}
-                          // payload (from a pre-apply-track-v1 era), resolve
-                          // the latest source's storageKey and parse that.
-                          // Mirrors the main rehydration path in
-                          // loadRemoteDatasets at ~line 7167.
-                          if (!loaded) {
-                            const sourceManifest = parseRemoteSourceManifestPayload(
-                              response.payload
-                            );
-                            if (sourceManifest && sourceManifest.sources.length > 0) {
-                              try {
-                                const latest =
-                                  sourceManifest.sources[
-                                    sourceManifest.sources.length - 1
-                                  ];
-                                const sourceResponse =
-                                  await getRemoteDatasetRef.current
-                                    .mutateAsync({ key: latest.storageKey })
-                                    .catch(() => null);
-                                if (sourceResponse?.payload) {
-                                  const decoded =
-                                    latest.encoding === "base64"
-                                      ? new TextDecoder().decode(
-                                          base64ToBytes(sourceResponse.payload)
-                                        )
-                                      : sourceResponse.payload;
-                                  const parsedCsv = await parseCsvTextAsync(decoded);
-                                  loaded = {
-                                    fileName: latest.fileName || "Schedule B Import",
-                                    uploadedAt: new Date(latest.uploadedAt),
-                                    headers: parsedCsv.headers,
-                                    rows: parsedCsv.rows,
-                                    rowCount: parsedCsv.rows.length,
-                                  };
-                                }
-                              } catch (manifestErr) {
-                                console.error(
-                                  "[onApplyComplete] source-manifest fallback failed",
-                                  manifestErr
-                                );
-                              }
-                            }
-                          }
-
-                          if (!loaded) {
-                            // Still null — log the payload shape prefix so we
-                            // can diagnose from the browser console without
-                            // another deploy round-trip.
-                            const preview = response.payload.slice(0, 200);
-                            toast.error(
-                              "Apply landed on the server but the local dataset couldn't be refreshed. Open DevTools console for details, or refresh the page."
-                            );
-                            console.error(
-                              "[onApplyComplete] deserializeRemoteDatasetPayload and source-manifest fallback both returned null. Payload preview:",
-                              preview
-                            );
-                            return;
-                          }
-
-                          setDatasets((prev) => ({
-                            ...prev,
-                            deliveryScheduleBase: loaded,
-                          }));
-                          // Sync the signature ref to match the freshly loaded
-                          // dataset so the sync effect at ~line 7565 doesn't
-                          // immediately re-upload the same payload (would be a
-                          // harmless redundant round-trip, but still wasteful).
-                          remoteDatasetSignatureRef.current.deliveryScheduleBase = `${loaded.fileName}|${loaded.uploadedAt.toISOString()}|${loaded.rows.length}|${loaded.sources?.length ?? 0}`;
-                          setDatasetCloudSyncStatus((prev) => ({
-                            ...prev,
-                            deliveryScheduleBase: "synced",
-                          }));
-                          console.log(
-                            `[onApplyComplete] reloaded deliveryScheduleBase: ${loaded.rows.length} rows, uploadedAt=${loaded.uploadedAt.toISOString()}`
-                          );
-                        } catch (err) {
-                          console.error(
-                            "[onApplyComplete] failed to reload deliveryScheduleBase",
-                            err
-                          );
-                          toast.error(
-                            err instanceof Error
-                              ? `Cloud reload failed: ${err.message}`
-                              : "Cloud reload failed"
-                          );
-                        }
-                      }}
-                      // @deprecated apply-track-v1: the parallel client-side
-                      // merge below is superseded by onApplyComplete's cloud
-                      // reload. Kept for backward compatibility during rollout;
-                      // delete in a follow-up after verifying prod behavior.
-                      onApply={(rows) => {
-                        const makeDeliveryRowKey = (row: CsvRow, fallbackPrefix: string, index: number) => {
-                          const trackingId = clean(row.tracking_system_ref_id).toUpperCase();
-                          if (trackingId) return `tracking:${trackingId}`;
-                          const designatedSystemId = clean(row.designated_system_id);
-                          if (designatedSystemId) return `designated:${designatedSystemId}`;
-                          const systemName = clean(row.system_name).toLowerCase();
-                          if (systemName) return `name:${systemName}`;
-                          return `${fallbackPrefix}:${index}`;
-                        };
-
-                        // Persistence fix (Phase 0, Bug 4): clear any stale sync
-                        // signature so the cloud-sync effect at ~line 8438 treats the
-                        // new dataset as a genuine change regardless of whether the
-                        // previous signature was raw:... (manifest era) or
-                        // local-only:... (silent-drop branch).
-                        delete remoteDatasetSignatureRef.current.deliveryScheduleBase;
-
-                        const beforeRowCount = datasets.deliveryScheduleBase?.rows.length ?? 0;
-
-                        setDatasets((prev) => {
-                          const existingRows = prev.deliveryScheduleBase?.rows ?? [];
-                          const mergedByKey = new Map<string, CsvRow>();
-                          const orderedKeys: string[] = [];
-
-                          existingRows.forEach((row, index) => {
-                            const key = makeDeliveryRowKey(row, "existing", index);
-                            if (mergedByKey.has(key)) return;
-                            mergedByKey.set(key, row);
-                            orderedKeys.push(key);
-                          });
-
-                          let incomingNewCount = 0;
-                          let incomingMergedCount = 0;
-                          rows.forEach((row, index) => {
-                            const key = makeDeliveryRowKey(row, "scheduleb", index);
-                            const existing = mergedByKey.get(key);
-                            if (existing) {
-                              mergedByKey.set(key, { ...existing, ...row });
-                              incomingMergedCount += 1;
-                              return;
-                            }
-                            mergedByKey.set(key, row);
-                            orderedKeys.push(key);
-                            incomingNewCount += 1;
-                          });
-
-                          const mergedRows = orderedKeys
-                            .map((key) => mergedByKey.get(key))
-                            .filter((row): row is CsvRow => Boolean(row));
-
-                          const mergedHeaders: string[] = [];
-                          const pushHeader = (header: string) => {
-                            if (!header || mergedHeaders.includes(header)) return;
-                            mergedHeaders.push(header);
-                          };
-                          (prev.deliveryScheduleBase?.headers ?? []).forEach(pushHeader);
-                          rows.flatMap((row) => Object.keys(row)).forEach(pushHeader);
-                          mergedRows.flatMap((row) => Object.keys(row)).forEach(pushHeader);
-
-                          // Diagnostic toast so the user can see exactly what
-                          // happened: rows received, new vs. merged-into-existing,
-                          // dataset size before/after. Without this the UX is
-                          // opaque when "Apply says success but tracker count
-                          // doesn't change" (usually because the new rows all
-                          // collided with existing tracking IDs).
-                          toast.info(
-                            `Apply: ${rows.length} incoming (${incomingNewCount} new, ${incomingMergedCount} merged). Dataset ${beforeRowCount} → ${mergedRows.length} rows.`,
-                            { duration: 8000 }
-                          );
-
-                          return {
-                            ...prev,
-                            deliveryScheduleBase: {
-                              fileName: prev.deliveryScheduleBase?.fileName ?? "Schedule B Import",
-                              uploadedAt: new Date(),
-                              headers: mergedHeaders,
-                              rows: mergedRows,
-                              rowCount: mergedRows.length,
-                            },
-                          };
-                        });
-                        // Phase 0 persistence fix: do NOT wipe the source manifest.
-                        // A synthesized (merged) dataset was never backed by a
-                        // manifest, so setting it to undefined just poisons the
-                        // sync path — it forced the inline-serialize branch to
-                        // recompute from a stale signature. Leave it alone and let
-                        // the dataset sync effect take the normal synth path.
-                        setDatasetCloudSyncBadge("deliveryScheduleBase", "pending");
-                        setForceSyncingDatasets((prev) => ({ ...prev, deliveryScheduleBase: false }));
-                        forcedRemoteDatasetSyncKeysRef.current.delete("deliveryScheduleBase");
+                        await invalidateServerDerivedSolarData();
                       }}
                     />
                   </>
@@ -7459,7 +6688,6 @@ const aiDataContext = useMemo(() => {
             selectedSystemKey={selectedSystemKey}
             onClose={() => setSelectedSystemKey(null)}
             systems={systems}
-            convertedReads={datasets.convertedReads ?? null}
           />
         </Suspense>
       </div>
