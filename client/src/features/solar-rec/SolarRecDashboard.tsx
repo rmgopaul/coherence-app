@@ -470,6 +470,17 @@ const EMPTY_PERFORMANCE_SOURCE_ROWS: PerformanceSourceRow[] = [];
  * main SystemRecord[] snapshot now comes from the server.
  *
  * Tabs not listed here hydrate in manifest order behind the core set.
+ *
+ * Phase 5e Followup #3 (2026-04-29) — `accountSolarGeneration` and
+ * `transferHistory` removed from every tab's priority list. Both
+ * had ZERO live client-side row consumers after the Phase 5d/5e
+ * server-aggregator migrations (delivery tracker, trend delivery
+ * pace, contract vintage, forecast, performance ratio, performance
+ * source rows, financials all read straight from `srDs*` tables
+ * server-side). Hydrating them here was wasted bandwidth + main-
+ * thread parse cost. `convertedReads` stays — it's still consumed
+ * by `SystemDetailSheet`'s "Recent Meter Reads" table until that
+ * migrates to a server query.
  */
 const TAB_PRIORITY_DATASETS: Record<string, DatasetKey[]> = {
   "performance-ratio": [
@@ -478,19 +489,16 @@ const TAB_PRIORITY_DATASETS: Record<string, DatasetKey[]> = {
     "annualProductionEstimates",
     "generatorDetails",
     "generationEntry",
-    "accountSolarGeneration",
   ],
   "offline-monitoring": ["solarApplications"],
-  "delivery-tracker": ["deliveryScheduleBase", "transferHistory"],
-  "contracts": ["deliveryScheduleBase", "transferHistory"],
-  "annual-review": ["deliveryScheduleBase", "transferHistory"],
-  "performance-eval": ["deliveryScheduleBase", "transferHistory"],
-  "snapshot-log": ["deliveryScheduleBase", "transferHistory"],
+  "delivery-tracker": ["deliveryScheduleBase"],
+  "contracts": ["deliveryScheduleBase"],
+  "annual-review": ["deliveryScheduleBase"],
+  "performance-eval": ["deliveryScheduleBase"],
+  "snapshot-log": ["deliveryScheduleBase"],
   "forecast": [
     "deliveryScheduleBase",
-    "transferHistory",
     "annualProductionEstimates",
-    "accountSolarGeneration",
     "generationEntry",
   ],
   "financials": [
@@ -503,7 +511,7 @@ const TAB_PRIORITY_DATASETS: Record<string, DatasetKey[]> = {
     "abpIccReport3Rows",
   ],
   "app-pipeline": ["generatorDetails", "abpCsgSystemMapping", "abpIccReport3Rows"],
-  "trends": ["convertedReads", "transferHistory", "deliveryScheduleBase"],
+  "trends": ["convertedReads", "deliveryScheduleBase"],
 };
 
 function buildHydrationPriorityKeys(activeTab: string): Set<DatasetKey> {
@@ -4431,12 +4439,16 @@ export default function SolarRecDashboard() {
         // CSV parse load — `convertedReads` alone can be 50–150 MB
         // assembled. Skipping these 3 keeps force-load useful for
         // the small / medium datasets (the long tail of admin /
-        // mapping / report tables) without locking the tab. The
-        // 3 deferred Phase-5d tabs that need them (PerformanceRatio,
-        // Forecast, Financials) hydrate via their tab-priority
-        // path, not via force-load. Phase 5d PR 1 onward replaces
-        // those with server-side aggregators so this skip can come
-        // off the moment those land.
+        // mapping / report tables) without locking the tab.
+        //
+        // Phase 5e Followup #3 (2026-04-29) — `accountSolarGeneration`
+        // + `transferHistory` are now also gone from per-tab
+        // priority lists, so they only ever appear in `keysToLoad`
+        // here under the force-load expansion (which pulls from the
+        // full manifest). This filter is the only path that excludes
+        // them in that case. `convertedReads` still reaches per-tab
+        // hydration (SystemDetailSheet's "Recent Meter Reads" table)
+        // until that migrates to a server query — Followup #4.
         if (isForceLoadAll) {
           MULTI_APPEND_DATASET_KEYS.forEach((heavyKey) => {
             keysToLoad.delete(heavyKey);
