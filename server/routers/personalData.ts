@@ -2725,21 +2725,54 @@ async function enrichDockTitle(
         `[enrichDockTitle todoist] api-${singleTaskStatus} task=${taskId.slice(0, 12)}… — falling back to list`
       );
 
-      // Step 2 — active-task list lookup.
+      // Step 2 — active-task list lookup. Loose-match the taskId
+      // both ways (string equality + trim + leading-zero strip)
+      // because chip URLs occasionally carry a slightly-different
+      // ID format than the API returns (legacy migrations,
+      // copy-pasted URLs from old Todoist exports). When the find
+      // misses, log a sample of the live IDs so prod logs reveal
+      // any format mismatch.
       const tasks = await getTodoistTasks(todoistIntegration.accessToken);
-      const activeTask = tasks.find((t) => t.id === taskId);
+      const normalizedTarget = taskId.trim().replace(/^0+/, "");
+      const activeTask = tasks.find((t) => {
+        if (t.id === taskId) return true;
+        const candidate = t.id.trim().replace(/^0+/, "");
+        return candidate === normalizedTarget;
+      });
       if (activeTask) {
         const result = cleanTitle(activeTask.content);
-        if (result) return { title: result, reason: "ok" };
+        if (result) {
+          console.log(
+            `[enrichDockTitle todoist] resolved-from-active task=${taskId.slice(0, 12)}… (active-list-size=${tasks.length})`
+          );
+          return { title: result, reason: "ok" };
+        }
         console.log(
           `[enrichDockTitle todoist] active-list-empty-content task=${taskId.slice(0, 12)}…`
         );
         return { title: null, reason: "todoist-empty-content" };
       }
 
-      // Step 3 — completed-task lookup over the last 365 days.
+      // Active-list missed. Sample the first few IDs so prod logs
+      // reveal whether the chip's stored taskId format matches the
+      // live API response format. Heavy users with >4000 active
+      // tasks will hit the pagination cap (20 × 200) — surface
+      // that in the log too.
+      const sampleIds = tasks.slice(0, 5).map((t) => t.id).join(",");
       console.log(
-        `[enrichDockTitle todoist] not-in-active task=${taskId.slice(0, 12)}… — checking completed tasks`
+        `[enrichDockTitle todoist] not-in-active task="${taskId}" active-count=${tasks.length} sample-ids=[${sampleIds}]`
+      );
+
+      // Step 3 — completed-task lookup. Todoist's
+      // by-completion-date endpoint caps the range at **3 months**
+      // (we got `INVALID_ARGUMENT_VALUE / 20` on a 365-day
+      // request). Cap our window at 90 days. This won't resolve
+      // chips for tasks completed more than 3 months ago, but
+      // those are rare in practice — most stuck chips are either
+      // still-active tasks (handled by Step 2) or recently-
+      // completed ones.
+      console.log(
+        `[enrichDockTitle todoist] checking completed-90d task=${taskId.slice(0, 12)}…`
       );
       try {
         const { getTodoistCompletedTasksInRange } = await import(
@@ -2747,14 +2780,18 @@ async function enrichDockTitle(
         );
         const today = new Date();
         const todayKey = today.toISOString().slice(0, 10);
-        const yearAgo = new Date(today.getTime() - 365 * 86_400_000);
-        const yearAgoKey = yearAgo.toISOString().slice(0, 10);
+        const ninetyDaysAgo = new Date(today.getTime() - 90 * 86_400_000);
+        const startKey = ninetyDaysAgo.toISOString().slice(0, 10);
         const completed = await getTodoistCompletedTasksInRange(
           todoistIntegration.accessToken,
-          yearAgoKey,
+          startKey,
           todayKey
         );
-        const completedTask = completed.find((t) => t.taskId === taskId);
+        const completedTask = completed.find((t) => {
+          if (t.taskId === taskId) return true;
+          if (!t.taskId) return false;
+          return t.taskId.trim().replace(/^0+/, "") === normalizedTarget;
+        });
         if (completedTask) {
           const result = cleanTitle(completedTask.content);
           if (result) {
@@ -2765,12 +2802,12 @@ async function enrichDockTitle(
           }
         }
         console.log(
-          `[enrichDockTitle todoist] not-found-anywhere task=${taskId.slice(0, 12)}… (single-task=${singleTaskStatus}, active-list-miss, completed-365d-miss)`
+          `[enrichDockTitle todoist] not-found-anywhere task=${taskId.slice(0, 12)}… (single-task=${singleTaskStatus}, active-list-miss size=${tasks.length}, completed-90d-miss size=${completed.length})`
         );
         return {
           title: null,
           reason: "todoist-not-found-anywhere",
-          detail: `single-task=${singleTaskStatus}, active-list-miss, completed-365d-miss`,
+          detail: `single-task=${singleTaskStatus}, active-list-miss (${tasks.length}), completed-90d-miss (${completed.length})`,
         };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
