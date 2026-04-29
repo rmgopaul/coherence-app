@@ -117,6 +117,48 @@ export function isDatasetKey(value: string): value is DatasetKey {
 }
 
 /**
+ * Phase 6 PR-B — datasets that accumulate across uploads rather
+ * than being replaced wholesale. A v2 upload of one of these keys
+ * preserves the prior active batch's rows and de-duplicates the
+ * new file against them; everything else replaces the active batch
+ * with the freshly parsed rows.
+ *
+ * Keep aligned with:
+ *   - `APPEND_CORE_DATASETS` in `server/services/solar/serverSideMigration.ts`
+ *   - `MULTI_APPEND_DATASET_KEYS` in `client/src/features/solar-rec/SolarRecDashboard.tsx`
+ *   - `multiFileAppend: true` entries in `CORE_DATASET_DEFINITIONS`
+ *     (`server/services/solar/datasetIngestion.ts`)
+ *
+ * Drift here = silent data loss: a multi-append dataset uploaded
+ * via v2 with `mergeStrategy: "replace"` truncates everything that
+ * isn't in the latest file.
+ */
+export const MULTI_APPEND_DATASET_KEYS: ReadonlySet<DatasetKey> = new Set<DatasetKey>([
+  "accountSolarGeneration",
+  "convertedReads",
+  "transferHistory",
+]);
+
+/**
+ * The merge strategy this dataset uses when ingested via the v2
+ * upload runner. Multi-append datasets accumulate; everything else
+ * replaces the active batch.
+ *
+ * Pure — derived solely from the dataset key. Caller doesn't choose;
+ * the dataset's nature does. (If a future dataset needs caller-
+ * driven mode selection, evolve this signature; for now the
+ * mapping is 1:1.)
+ */
+export type DatasetMergeStrategy = "replace" | "append";
+export function defaultMergeStrategyForDataset(
+  datasetKey: string
+): DatasetMergeStrategy {
+  return MULTI_APPEND_DATASET_KEYS.has(datasetKey as DatasetKey)
+    ? "append"
+    : "replace";
+}
+
+/**
  * State machine for an upload job. Each status describes the
  * job's current phase; the runner advances through them in order
  * (or jumps to `failed` from any non-terminal state on error).
