@@ -45,8 +45,17 @@ import {
   matchesExpectedHeaders,
   parseCsv,
 } from "@/solar-rec-dashboard/lib/csvIo";
+import { getDatasetColumnarSource } from "@/solar-rec-dashboard/lib/lazyDataset";
+// Phase 5d PR 1 (2026-04-29) — server-side aggregator for the
+// performance-ratio compute. Replaces the client `performanceRatioResult`
+// useMemo that walked `convertedReads.rows` (the heaviest dataset on
+// populated scopes). The local useMemo body is preserved as a fallback
+// for the brief gap between mount and the first query response, but the
+// hot path (post-mount, cache hit) bypasses it entirely.
 import { solarRecTrpc } from "@/solar-rec/solarRecTrpc";
 import {
+  buildGeneratorDateOnlineByTrackingId,
+  calculateExpectedWhForRange,
   createLogId,
   formatDate,
   formatMonthYear,
@@ -54,11 +63,21 @@ import {
   formatSignedNumber,
   getAutoCompliantSourcePriority,
   getCsvValueByHeader,
+  getMonitoringDetailsForSystem,
   isTenKwAcOrLess,
   isValidCompliantSourceText,
+  normalizeMonitoringMatch,
+  normalizeMonitoringPlatform,
+  normalizeSystemIdMatch,
+  normalizeSystemNameMatch,
+  parseDate,
+  parseEnergyToWh,
+  resolveContractValueAmount,
   resolveMonitoringPlatformCompliantSource,
+  splitRawCandidates,
   toPercentValue,
   toReadWindowMonthStart,
+  uniqueNonEmpty,
 } from "@/solar-rec-dashboard/lib/helpers";
 import {
   COMPLIANT_REPORT_PAGE_SIZE,
@@ -70,12 +89,17 @@ import {
   TEN_KW_COMPLIANT_SOURCE,
 } from "@/solar-rec-dashboard/lib/constants";
 import type {
+  AnnualProductionProfile,
   CompliantPerformanceRatioRow,
   CompliantSourceEntry,
   CompliantSourceEvidence,
   CompliantSourceTableRow,
+  CsvDataset,
+  GenerationBaseline,
+  MonitoringDetailsRecord,
   PerformanceRatioMatchType,
   PerformanceRatioRow,
+  PortalMonitoringCandidate,
   SystemRecord,
 } from "@/solar-rec-dashboard/state/types";
 
@@ -84,8 +108,21 @@ import type {
 // ---------------------------------------------------------------------------
 
 export interface PerformanceRatioTabProps {
+  // Raw CSV datasets — only the fields this tab actually reads
+  convertedReads: CsvDataset | null;
+  annualProductionEstimates: CsvDataset | null;
+  generatorDetails: CsvDataset | null;
+  convertedReadsLabel: string;
+  annualProductionEstimatesLabel: string;
+
+  // Upstream computed data (shared with other tabs; computed in parent)
   part2EligibleSystemsForSizeReporting: SystemRecord[];
+  monitoringDetailsBySystemKey: Map<string, MonitoringDetailsRecord>;
+  abpAcSizeKwByApplicationId: Map<string, number>;
+  abpPart2VerificationDateByApplicationId: Map<string, Date>;
   abpAcSizeKwBySystemKey: Map<string, number>;
+  annualProductionByTrackingId: Map<string, AnnualProductionProfile>;
+  generationBaselineByTrackingId: Map<string, GenerationBaseline>;
 }
 
 // ---------------------------------------------------------------------------
@@ -135,8 +172,18 @@ function loadPersistedCompliantSources(): CompliantSourceEntry[] {
 
 export default memo(function PerformanceRatioTab(props: PerformanceRatioTabProps) {
   const {
+    convertedReads,
+    annualProductionEstimates,
+    generatorDetails,
+    convertedReadsLabel,
+    annualProductionEstimatesLabel,
     part2EligibleSystemsForSizeReporting,
+    monitoringDetailsBySystemKey,
+    abpAcSizeKwByApplicationId,
+    abpPart2VerificationDateByApplicationId,
     abpAcSizeKwBySystemKey,
+    annualProductionByTrackingId,
+    generationBaselineByTrackingId,
   } = props;
 
   // --- Filter / sort / pagination state ---
@@ -211,20 +258,420 @@ export default memo(function PerformanceRatioTab(props: PerformanceRatioTabProps
   }, []);
 
   // -------------------------------------------------------------------------
+  // Upstream memo: fallback Date Online baseline (perf-ratio-only dataset)
+  // -------------------------------------------------------------------------
+  const generatorDateOnlineByTrackingId = useMemo(
+    () => buildGeneratorDateOnlineByTrackingId(generatorDetails?.rows ?? []),
+    [generatorDetails],
+  );
+
+  // -------------------------------------------------------------------------
+  // Tokenize each portal system into (monitoring, ids, names) candidates
+  // -------------------------------------------------------------------------
+  const portalMonitoringCandidates = useMemo<PortalMonitoringCandidate[]>(
+    () =>
+      part2EligibleSystemsForSizeReporting
+        .filter((system) => !!system.trackingSystemRefId)
+        .map((system) => {
+          const details = getMonitoringDetailsForSystem(
+            system,
+            monitoringDetailsBySystemKey,
+          );
+          const normalizedPlatform = normalizeMonitoringPlatform(
+            details?.online_monitoring ?? system.monitoringPlatform,
+            details?.online_monitoring_website_api_link ?? "",
+            details?.online_monitoring_notes ?? "",
+          );
+
+          const monitoringTokens = uniqueNonEmpty([
+            normalizeMonitoringMatch(system.monitoringPlatform),
+            normalizeMonitoringMatch(details?.online_monitoring),
+            normalizeMonitoringMatch(normalizedPlatform),
+          ]);
+
+          const idTokens = uniqueNonEmpty([
+            ...splitRawCandidates(
+              details?.online_monitoring_system_id ?? "",
+            ).map((value) => normalizeSystemIdMatch(value)),
+            normalizeSystemIdMatch(system.systemId),
+          ]);
+
+          const nameTokens = uniqueNonEmpty([
+            ...splitRawCandidates(
+              details?.online_monitoring_system_name ?? "",
+            ).map((value) => normalizeSystemNameMatch(value)),
+            normalizeSystemNameMatch(system.systemName),
+          ]);
+
+          return {
+            key: system.key,
+            system,
+            monitoringTokens,
+            idTokens,
+            nameTokens,
+          } satisfies PortalMonitoringCandidate;
+        }),
+    [monitoringDetailsBySystemKey, part2EligibleSystemsForSizeReporting],
+  );
+
+  // -------------------------------------------------------------------------
+  // Build 3 key-prefix indexes so the match step is O(reads) not O(reads*systems)
+  // -------------------------------------------------------------------------
+  const performanceRatioMatchIndexes = useMemo(() => {
+    const byMonitoringAndId = new Map<string, Set<string>>();
+    const byMonitoringAndName = new Map<string, Set<string>>();
+    const byMonitoringAndIdAndName = new Map<string, Set<string>>();
+    const candidateByKey = new Map<string, PortalMonitoringCandidate>();
+
+    const add = (
+      map: Map<string, Set<string>>,
+      key: string,
+      candidateKey: string,
+    ) => {
+      if (!key) return;
+      const current = map.get(key);
+      if (current) {
+        current.add(candidateKey);
+        return;
+      }
+      map.set(key, new Set([candidateKey]));
+    };
+
+    portalMonitoringCandidates.forEach((candidate) => {
+      candidateByKey.set(candidate.key, candidate);
+
+      candidate.monitoringTokens.forEach((monitoringToken) => {
+        candidate.idTokens.forEach((idToken) => {
+          add(
+            byMonitoringAndId,
+            `${monitoringToken}__${idToken}`,
+            candidate.key,
+          );
+        });
+        candidate.nameTokens.forEach((nameToken) => {
+          add(
+            byMonitoringAndName,
+            `${monitoringToken}__${nameToken}`,
+            candidate.key,
+          );
+        });
+        candidate.idTokens.forEach((idToken) => {
+          candidate.nameTokens.forEach((nameToken) => {
+            add(
+              byMonitoringAndIdAndName,
+              `${monitoringToken}__${idToken}__${nameToken}`,
+              candidate.key,
+            );
+          });
+        });
+      });
+    });
+
+    return {
+      byMonitoringAndId,
+      byMonitoringAndName,
+      byMonitoringAndIdAndName,
+      candidateByKey,
+    };
+  }, [portalMonitoringCandidates]);
+
+  // -------------------------------------------------------------------------
+  // Single-pass parse + match + compute. Reads each raw convertedReads
+  // row, normalizes inline, and either skips (invalid / unmatched) or
+  // pushes one PerformanceRatioRow per matched candidate. Replaces a
+  // prior two-stage path that built a 700k-element normalized array
+  // first, then iterated it again — that doubled peak memory on the
+  // dashboard's largest scope and was the most likely source of the
+  // tab's frequent crashes on machines with limited heap.
+  //
+  // `convertedReads` is read through `useDeferredValue` so React
+  // schedules the recomputation as a transition. Subsequent
+  // dataset-state churn (auto-persist, monitoring batch refresh)
+  // doesn't block the UI thread on a fresh full pass.
+  const deferredConvertedReads = useDeferredValue(convertedReads);
+  // Phase 5d PR 1 (2026-04-29) — preserved as a brief fallback during
+  // the initial query roundtrip + as a graceful-degradation path if
+  // the server query errors. Renamed from `performanceRatioResult`;
+  // the new `performanceRatioResult` below is the canonical source
+  // and prefers the server query result.
+  const _clientFallbackPerformanceRatioResult = useMemo(() => {
+    const rows: PerformanceRatioRow[] = [];
+    let matchedConvertedReads = 0;
+    let unmatchedConvertedReads = 0;
+    let invalidConvertedReads = 0;
+    let convertedReadCount = 0;
+
+    // Read directly from the columnar source so we never trigger the
+    // lazy `.rows` getter and never allocate a 700k-element CsvRow[]
+    // just to walk it. The columnar source is what the hydrator
+    // already produced; we just need column-index lookups for the 5
+    // fields this tab actually reads. Falls back to materialized
+    // `.rows` if the dataset wasn't built via buildLazyCsvDataset
+    // (legacy in-memory datasets, e.g. fresh uploads).
+    const columnar = getDatasetColumnarSource(deferredConvertedReads);
+    const rowCount = columnar
+      ? columnar.rowCount
+      : deferredConvertedReads?.rows.length ?? 0;
+    const monitoringCol = columnar ? columnar.headers.indexOf("monitoring") : -1;
+    const monitoringSystemIdCol = columnar
+      ? columnar.headers.indexOf("monitoring_system_id")
+      : -1;
+    const monitoringSystemNameCol = columnar
+      ? columnar.headers.indexOf("monitoring_system_name")
+      : -1;
+    const lifetimeReadCol = columnar
+      ? columnar.headers.indexOf("lifetime_meter_read_wh")
+      : -1;
+    const readDateCol = columnar ? columnar.headers.indexOf("read_date") : -1;
+    const monitoringColumn = columnar && monitoringCol >= 0 ? columnar.columnData[monitoringCol] : null;
+    const monitoringSystemIdColumn =
+      columnar && monitoringSystemIdCol >= 0 ? columnar.columnData[monitoringSystemIdCol] : null;
+    const monitoringSystemNameColumn =
+      columnar && monitoringSystemNameCol >= 0 ? columnar.columnData[monitoringSystemNameCol] : null;
+    const lifetimeReadColumn =
+      columnar && lifetimeReadCol >= 0 ? columnar.columnData[lifetimeReadCol] : null;
+    const readDateColumn = columnar && readDateCol >= 0 ? columnar.columnData[readDateCol] : null;
+    // Fallback path: when no columnar source is available, walk the
+    // already-materialized rows array. This still allocates the
+    // CsvRow[] cache, but avoids re-reading from a non-existent
+    // columnar source.
+    const fallbackRows = columnar ? null : deferredConvertedReads?.rows ?? null;
+
+    for (let index = 0; index < rowCount; index += 1) {
+      convertedReadCount += 1;
+      const monitoringRaw = monitoringColumn
+        ? monitoringColumn[index] ?? ""
+        : fallbackRows
+          ? fallbackRows[index]?.monitoring ?? ""
+          : "";
+      const monitoringSystemIdRaw = monitoringSystemIdColumn
+        ? monitoringSystemIdColumn[index] ?? ""
+        : fallbackRows
+          ? fallbackRows[index]?.monitoring_system_id ?? ""
+          : "";
+      const monitoringSystemNameRaw = monitoringSystemNameColumn
+        ? monitoringSystemNameColumn[index] ?? ""
+        : fallbackRows
+          ? fallbackRows[index]?.monitoring_system_name ?? ""
+          : "";
+      const lifetimeReadRaw = lifetimeReadColumn
+        ? lifetimeReadColumn[index] ?? ""
+        : fallbackRows
+          ? fallbackRows[index]?.lifetime_meter_read_wh ?? ""
+          : "";
+      const readDateRawCell = readDateColumn
+        ? readDateColumn[index] ?? ""
+        : fallbackRows
+          ? fallbackRows[index]?.read_date ?? ""
+          : "";
+
+      const monitoring = clean(monitoringRaw);
+      const monitoringNormalized = normalizeMonitoringMatch(monitoring);
+      const lifetimeReadWh = parseEnergyToWh(
+        lifetimeReadRaw,
+        "lifetime_meter_read_wh",
+        "wh",
+      );
+      const monitoringSystemId = clean(monitoringSystemIdRaw);
+      const monitoringSystemIdNormalized = normalizeSystemIdMatch(monitoringSystemId);
+      const monitoringSystemName = clean(monitoringSystemNameRaw);
+      const monitoringSystemNameNormalized = normalizeSystemNameMatch(monitoringSystemName);
+
+      if (
+        !monitoringNormalized ||
+        lifetimeReadWh === null ||
+        (!monitoringSystemIdNormalized && !monitoringSystemNameNormalized)
+      ) {
+        invalidConvertedReads += 1;
+        continue;
+      }
+
+      const readDateRaw = clean(readDateRawCell);
+      const readDate = parseDate(readDateRaw);
+      const readKey = `converted-${index}`;
+
+      const bothMatches =
+        monitoringSystemIdNormalized && monitoringSystemNameNormalized
+          ? performanceRatioMatchIndexes.byMonitoringAndIdAndName.get(
+              `${monitoringNormalized}__${monitoringSystemIdNormalized}__${monitoringSystemNameNormalized}`,
+            ) ?? null
+          : null;
+
+      const idMatches = monitoringSystemIdNormalized
+        ? performanceRatioMatchIndexes.byMonitoringAndId.get(
+            `${monitoringNormalized}__${monitoringSystemIdNormalized}`,
+          ) ?? null
+        : null;
+
+      const nameMatches = monitoringSystemNameNormalized
+        ? performanceRatioMatchIndexes.byMonitoringAndName.get(
+            `${monitoringNormalized}__${monitoringSystemNameNormalized}`,
+          ) ?? null
+        : null;
+
+      if (
+        (!bothMatches || bothMatches.size === 0) &&
+        (!idMatches || idMatches.size === 0) &&
+        (!nameMatches || nameMatches.size === 0)
+      ) {
+        unmatchedConvertedReads += 1;
+        continue;
+      }
+
+      const matchedCandidateKeys = new Set<string>();
+      bothMatches?.forEach((k) => matchedCandidateKeys.add(k));
+      idMatches?.forEach((k) => matchedCandidateKeys.add(k));
+      nameMatches?.forEach((k) => matchedCandidateKeys.add(k));
+
+      if (matchedCandidateKeys.size === 0) {
+        unmatchedConvertedReads += 1;
+        continue;
+      }
+      matchedConvertedReads += 1;
+
+      matchedCandidateKeys.forEach((candidateKey) => {
+        const candidate =
+          performanceRatioMatchIndexes.candidateByKey.get(candidateKey);
+        if (!candidate || !candidate.system.trackingSystemRefId) return;
+
+        const baseline = generationBaselineByTrackingId.get(
+          candidate.system.trackingSystemRefId,
+        );
+        const generatorDateOnline =
+          generatorDateOnlineByTrackingId.get(
+            candidate.system.trackingSystemRefId,
+          ) ?? null;
+        const baselineValueWh =
+          baseline?.valueWh ?? (generatorDateOnline ? 0 : null);
+        const baselineDate = baseline?.date ?? generatorDateOnline;
+        const baselineSource =
+          baseline?.source ??
+          (generatorDateOnline
+            ? "Generator Details (Date Online @ day 15, baseline 0)"
+            : null);
+        const annualProfile = annualProductionByTrackingId.get(
+          candidate.system.trackingSystemRefId,
+        );
+        const productionDeltaWh =
+          lifetimeReadWh !== null && baselineValueWh !== null
+            ? lifetimeReadWh - baselineValueWh
+            : null;
+        const expectedProductionWh =
+          baselineDate && readDate && annualProfile
+            ? calculateExpectedWhForRange(
+                annualProfile.monthlyKwh,
+                baselineDate,
+                readDate,
+              )
+            : null;
+        const performanceRatioPercent =
+          productionDeltaWh !== null &&
+          expectedProductionWh !== null &&
+          expectedProductionWh > 0
+            ? (productionDeltaWh / expectedProductionWh) * 100
+            : null;
+
+        const matchType: PerformanceRatioMatchType =
+          bothMatches && bothMatches.has(candidateKey)
+            ? "Monitoring + System ID + System Name"
+            : idMatches && idMatches.has(candidateKey)
+              ? "Monitoring + System ID"
+              : "Monitoring + System Name";
+
+        rows.push({
+          key: `${readKey}-${candidateKey}-${rows.length + 1}`,
+          convertedReadKey: readKey,
+          matchType,
+          monitoring,
+          monitoringSystemId,
+          monitoringSystemName,
+          readDate,
+          readDateRaw,
+          lifetimeReadWh,
+          trackingSystemRefId: candidate.system.trackingSystemRefId,
+          systemId: candidate.system.systemId,
+          stateApplicationRefId: candidate.system.stateApplicationRefId,
+          systemName: candidate.system.systemName,
+          installerName: candidate.system.installerName,
+          monitoringPlatform: candidate.system.monitoringPlatform,
+          portalAcSizeKw: candidate.system.installedKwAc,
+          abpAcSizeKw: candidate.system.stateApplicationRefId
+            ? abpAcSizeKwByApplicationId.get(
+                candidate.system.stateApplicationRefId,
+              ) ?? null
+            : null,
+          part2VerificationDate: candidate.system.stateApplicationRefId
+            ? abpPart2VerificationDateByApplicationId.get(
+                candidate.system.stateApplicationRefId,
+              ) ?? null
+            : null,
+          baselineReadWh: baselineValueWh,
+          baselineDate,
+          baselineSource,
+          productionDeltaWh,
+          expectedProductionWh,
+          performanceRatioPercent,
+          contractValue: resolveContractValueAmount(candidate.system),
+        });
+      });
+    }
+
+    rows.sort((a, b) => {
+      const aTime = a.readDate?.getTime() ?? Number.NEGATIVE_INFINITY;
+      const bTime = b.readDate?.getTime() ?? Number.NEGATIVE_INFINITY;
+      if (aTime !== bTime) return bTime - aTime;
+      const aRatio = a.performanceRatioPercent ?? Number.NEGATIVE_INFINITY;
+      const bRatio = b.performanceRatioPercent ?? Number.NEGATIVE_INFINITY;
+      if (aRatio !== bRatio) return bRatio - aRatio;
+      return a.systemName.localeCompare(b.systemName, undefined, {
+        sensitivity: "base",
+        numeric: true,
+      });
+    });
+
+    return {
+      rows,
+      convertedReadCount,
+      matchedConvertedReads,
+      unmatchedConvertedReads,
+      invalidConvertedReads,
+    };
+  }, [
+    abpAcSizeKwByApplicationId,
+    abpPart2VerificationDateByApplicationId,
+    annualProductionByTrackingId,
+    deferredConvertedReads,
+    generatorDateOnlineByTrackingId,
+    generationBaselineByTrackingId,
+    performanceRatioMatchIndexes,
+  ]);
+
+  // -------------------------------------------------------------------------
   // Phase 5d PR 1 (2026-04-29) — canonical performance-ratio source.
+  //
+  // Pulls from `getDashboardPerformanceRatio` (server-side aggregator
+  // with `withArtifactCache` memoization). On a cache hit the wire
+  // payload is ~10–200 KB depending on scope size; on cache miss the
+  // server runs the same compute the client used to do, then caches
+  // by the 7 input batch IDs.
+  //
+  // Fallback semantics (`_clientFallbackPerformanceRatioResult`
+  // above): used only when the query has no data yet (initial mount
+  // before the first response, or query error). Once the server data
+  // lands, the client memo's output is dropped on the floor — its
+  // upstream `convertedReads` walk will eventually be deleted in a
+  // follow-up once the dataset prop forwarding from the parent is
+  // also dropped.
   // -------------------------------------------------------------------------
   const performanceRatioQuery =
     solarRecTrpc.solarRecDashboard.getDashboardPerformanceRatio.useQuery();
   const performanceRatioResult = useMemo(() => {
     const data = performanceRatioQuery.data;
     if (!data) {
-      return {
-        rows: [],
-        convertedReadCount: 0,
-        matchedConvertedReads: 0,
-        unmatchedConvertedReads: 0,
-        invalidConvertedReads: 0,
-      };
+      // Initial load / error path — use the client compute so the tab
+      // never renders a blank state for users with already-hydrated
+      // local datasets.
+      return _clientFallbackPerformanceRatioResult;
     }
     return {
       rows: data.rows as unknown as PerformanceRatioRow[],
@@ -233,7 +680,7 @@ export default memo(function PerformanceRatioTab(props: PerformanceRatioTabProps
       unmatchedConvertedReads: data.unmatchedConvertedReads,
       invalidConvertedReads: data.invalidConvertedReads,
     };
-  }, [performanceRatioQuery.data]);
+  }, [performanceRatioQuery.data, _clientFallbackPerformanceRatioResult]);
 
   // -------------------------------------------------------------------------
   // Filters / sort / summary / pagination
@@ -1046,14 +1493,23 @@ export default memo(function PerformanceRatioTab(props: PerformanceRatioTabProps
         </CardHeader>
       </Card>
 
-      {performanceRatioQuery.isError ? (
+      {!convertedReads || !annualProductionEstimates ? (
         <Card className="border-amber-200 bg-amber-50/60">
           <CardHeader>
             <CardTitle className="text-base text-amber-900">
-              Performance Ratio Aggregator Unavailable
+              Missing Files for Performance Ratio
             </CardTitle>
             <CardDescription className="text-amber-800">
-              The server-side Performance Ratio result could not be loaded.
+              Upload these files in Step 1:{" "}
+              {[
+                !convertedReads ? convertedReadsLabel : null,
+                !annualProductionEstimates
+                  ? annualProductionEstimatesLabel
+                  : null,
+              ]
+                .filter((value): value is string => value !== null)
+                .join(", ")}
+              .
             </CardDescription>
           </CardHeader>
         </Card>
@@ -1781,13 +2237,13 @@ export default memo(function PerformanceRatioTab(props: PerformanceRatioTabProps
         title="Ask AI about Performance Ratio"
         contextGetter={() => ({
           inputs: {
-            serverAggregatorLoaded: Boolean(performanceRatioQuery.data),
-            serverAggregatorError:
-              performanceRatioQuery.error instanceof Error
-                ? performanceRatioQuery.error.message
-                : performanceRatioQuery.error
-                  ? String(performanceRatioQuery.error)
-                  : null,
+            convertedReadsProvided: Boolean(convertedReads),
+            annualProductionEstimatesProvided: Boolean(
+              annualProductionEstimates
+            ),
+            generatorDetailsProvided: Boolean(generatorDetails),
+            convertedReadsLabel,
+            annualProductionEstimatesLabel,
           },
           allRatioSummary: performanceRatioSummary,
           compliantRatioSummary: compliantPerformanceRatioSummary,

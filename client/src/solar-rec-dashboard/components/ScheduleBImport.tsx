@@ -11,8 +11,8 @@
  *  - hydrating previously-uploaded results on mount
  *  - letting the user paste a GATS-ID → Contract-ID mapping that
  *    patches existing delivery schedule rows in place
- *  - applying scanned rows to deliveryScheduleBase through the
- *    server-side apply mutation
+ *  - converting the scan results into deliveryScheduleBase rows via
+ *    the caller-provided onApply callback
  *
  * Self-contained helpers (waitMs, getErrorMessage, ScheduleBResultRow,
  * SCHEDULE_B_* constants) live at the top of this file rather than in
@@ -50,6 +50,7 @@ import {
 // REC router. Alias keeps call sites unchanged.
 import { solarRecTrpc as trpc } from "@/solar-rec/solarRecTrpc";
 
+import type { CsvRow } from "../state/types";
 import { bytesToBase64 } from "../lib/binaryEncoding";
 import { buildCsv, timestampForCsvFileName, triggerCsvDownload } from "../lib/csvIo";
 
@@ -125,10 +126,24 @@ type ScheduleBResultRow = {
 export type ScheduleBImportProps = {
   transferDeliveryLookup: Map<string, Map<number, number>>;
   /**
+   * @deprecated Kept for backward compatibility during the
+   * apply-track-v1 rollout. New code should prefer onApplyComplete,
+   * which signals the parent to reload deliveryScheduleBase from the
+   * server (the authoritative source) instead of running a parallel
+   * client-side merge. Safe to remove once onApplyComplete is
+   * battle-tested in prod.
+   */
+  onApply: (rows: CsvRow[]) => void;
+  /**
    * Called after a successful server-side apply mutation. The parent
-   * should invalidate server-derived dashboard queries.
+   * should reload datasets.deliveryScheduleBase from the cloud so
+   * local state matches the server. Eliminates the client/server
+   * merge divergence that made "Dataset has: N" stale and
+   * unpredictable. If omitted, the component falls back to onApply
+   * for the transition period.
    */
   onApplyComplete?: () => Promise<void> | void;
+  existingDeliverySchedule: CsvRow[] | null;
   /**
    * Called when the user clicks "Clear". The parent should wipe the
    * applied deliveryScheduleBase dataset so the tracker starts fresh.
@@ -146,7 +161,9 @@ const AUTO_APPLY_MIN_INTERVAL_MS = 30_000;
 
 export function ScheduleBImport({
   transferDeliveryLookup,
+  onApply,
   onApplyComplete,
+  existingDeliverySchedule,
   onClearAppliedSchedule,
 }: ScheduleBImportProps) {
   const [scheduleBResults, setScheduleBResults] = useState<ScheduleBResultRow[]>([]);
@@ -506,17 +523,16 @@ export function ScheduleBImport({
     const timer = window.setTimeout(async () => {
       if (cancelled) return;
       try {
-        const activeJobId = scheduleBStatusQuery.data?.job?.id ?? undefined;
-        const serverResult = await applyScheduleBToDeliveryObligations.mutateAsync(
-          activeJobId ? { jobId: activeJobId } : undefined
-        );
-        if (serverResult.incoming === 0) return;
+        const { toDeliveryScheduleBaseRows } = await import("@/lib/scheduleBScanner");
+        const mapping = contractIdMappingRef.current.size > 0 ? contractIdMappingRef.current : undefined;
+        const rows = toDeliveryScheduleBaseRows(successful, mapping);
+        if (rows.length === 0) return;
+        onApply(rows);
         autoApplyStateRef.current = { count: successful.length, time: Date.now() };
         setAutoApplyStatus({
-          lastAppliedCount: serverResult.incoming,
+          lastAppliedCount: rows.length,
           lastAppliedAt: Date.now(),
         });
-        if (onApplyComplete) await onApplyComplete();
       } catch {
         // Best-effort — manual Apply button is still available.
       }
@@ -526,13 +542,7 @@ export function ScheduleBImport({
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [
-    applyScheduleBToDeliveryObligations,
-    onApplyComplete,
-    scheduleBResults,
-    scheduleBStatusQuery.data?.job?.id,
-    scheduleBStatusQuery.data?.job?.status,
-  ]);
+  }, [scheduleBResults, scheduleBStatusQuery.data?.job?.status, onApply]);
 
   // contract-id-mapping-v1: onChange is now a LOCAL-ONLY state update.
   // It parses the text into a Map for in-memory use (so Apply can
@@ -877,13 +887,26 @@ export function ScheduleBImport({
         activeJobId ? { jobId: activeJobId } : undefined
       );
 
+      const { toDeliveryScheduleBaseRows } = await import("@/lib/scheduleBScanner");
       const successful = scheduleBResults.filter((r) => !r.extraction.error);
-      autoApplyStateRef.current = { count: successful.length, time: Date.now() };
-      setAutoApplyStatus({
-        lastAppliedCount: serverResult.incoming,
-        lastAppliedAt: Date.now(),
-      });
+      const rows = toDeliveryScheduleBaseRows(
+        scheduleBResults,
+        contractIdMappingRef.current.size > 0 ? contractIdMappingRef.current : undefined
+      );
 
+      if (rows.length > 0) {
+        onApply(rows);
+        autoApplyStateRef.current = { count: successful.length, time: Date.now() };
+        setAutoApplyStatus({ lastAppliedCount: rows.length, lastAppliedAt: Date.now() });
+      }
+
+      // apply-track-v1: fire onApplyComplete UNCONDITIONALLY after a
+      // successful mutation, even if the client-side toDeliveryScheduleBaseRows
+      // produced zero rows. The server may legitimately have merged rows
+      // that the client's filter dropped (e.g. rows without gatsId after
+      // toDeliveryScheduleBaseRows but present in the DB via other paths),
+      // and in any case the parent needs to reload the cloud dataset to
+      // stay in sync with the server's post-apply state.
       if (onApplyComplete) {
         try {
           await onApplyComplete();
@@ -953,6 +976,7 @@ export function ScheduleBImport({
     }
   }, [
     scheduleBResults,
+    onApply,
     onApplyComplete,
     scheduleBStatusQuery,
     scheduleBResultsQuery,
@@ -1851,8 +1875,7 @@ export function ScheduleBImport({
                   : ""}
               </span>
               <span>
-                <strong>Dataset has:</strong>{" "}
-                {lastServerApply ? formatNumber(lastServerApply.totalRows) : "server-managed"} rows
+                <strong>Dataset has:</strong> {formatNumber(existingDeliverySchedule?.length ?? 0)} rows
               </span>
               <span>
                 <strong>Last apply:</strong> {formatNumber(autoApplyStatus.lastAppliedCount)}
@@ -1981,8 +2004,8 @@ export function ScheduleBImport({
             server-side and patches utility_contract_number on the
             cloud dataset, then reloads via onApplyComplete. */}
         {(scheduleBResults.length > 0 ||
-          contractIdMappingText.length > 0 ||
-          lastServerApply !== null) && (
+          (existingDeliverySchedule?.length ?? 0) > 0 ||
+          contractIdMappingText.length > 0) && (
           <div className="rounded-md border border-border/60 p-3 space-y-2">
             <div className="flex items-center justify-between">
               <div>

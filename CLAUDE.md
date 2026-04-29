@@ -670,9 +670,6 @@ All 6 dashboard tabs scheduled in Task 5.13 are off raw rows:
 | ContractsTab | #146 (PR-3, shared) | `buildContractVintageAggregates.ts` |
 | AnnualReviewTab | #146 (PR-3, shared) | `buildContractVintageAggregates.ts` |
 | ApplicationPipelineTab | #156 (PR-5) | `buildAppPipelineMonthly.ts` + `buildAppPipelineCashFlow.ts` |
-| PerformanceRatioTab | #263 (Phase 5d PR-1) | `buildPerformanceRatioAggregates.ts` |
-| ForecastTab | #265 (Phase 5d PR-2) | `buildForecastAggregates.ts` |
-| FinancialsTab | #266 (Phase 5d PR-3) | `buildFinancialsAggregates.ts` |
 
 Pattern for any new tab aggregate:
 - Aggregates → extend `getSystemSnapshot` to include the per-tab
