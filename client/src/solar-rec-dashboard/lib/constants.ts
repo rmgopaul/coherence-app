@@ -44,15 +44,20 @@ export const AUTO_MONITORING_PLATFORM_COMPLIANT_SOURCE_BY_KEY: Record<string, st
 // ---------------------------------------------------------------------------
 // Storage keys
 // ---------------------------------------------------------------------------
+//
+// Phase 5e (2026-04-29): IDB constants gone.
+//   - `LEGACY_DATASETS_STORAGE_KEY` ("solarRecDashboardDatasetsV1") —
+//     localStorage key for the pre-IDB dataset blob; only consumer was
+//     the now-deleted `loadLegacyDatasetsFromLocalStorage`.
+//   - `DASHBOARD_DB_NAME` / `_VERSION` / `_DATASETS_STORE` /
+//     `_DATASETS_RECORD_KEY` / `_DATASETS_MANIFEST_KEY` /
+//     `_LOGS_RECORD_KEY` — IDB DB/store/record keys, all dead since
+//     Phase 5c. Imported but never referenced after the IDB
+//     load/save bodies were no-op'd.
+// `LOGS_STORAGE_KEY` stays — it backs the localStorage path for
+// dashboard log entries (`loadLogsFromStorage` / `saveLogsToStorage`).
 
-export const LEGACY_DATASETS_STORAGE_KEY = "solarRecDashboardDatasetsV1";
 export const LOGS_STORAGE_KEY = "solarRecDashboardLogsV1";
-export const DASHBOARD_DB_NAME = "solarRecDashboardDb";
-export const DASHBOARD_DB_VERSION = 2;
-export const DASHBOARD_DATASETS_STORE = "datasets";
-export const DASHBOARD_DATASETS_RECORD_KEY = "activeDatasets";
-export const DASHBOARD_DATASETS_MANIFEST_KEY = "__dataset_manifest_v2__";
-export const DASHBOARD_LOGS_RECORD_KEY = "__snapshot_logs_v2__";
 
 // ---------------------------------------------------------------------------
 // Formatting & numeric constants

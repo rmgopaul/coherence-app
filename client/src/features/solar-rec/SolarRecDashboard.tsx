@@ -146,16 +146,14 @@ import {
   triggerCsvDownload,
 } from "@/solar-rec-dashboard/lib/csvIo";
 import { base64ToBytes, bytesToBase64 } from "@/solar-rec-dashboard/lib/binaryEncoding";
-import {
-  buildColumnarFromRows,
-  buildLazyCsvDataset,
-  getDatasetColumnarSource,
-} from "@/solar-rec-dashboard/lib/lazyDataset";
+// Phase 5e (2026-04-29): `lazyDataset` infrastructure deleted —
+// it was only consumed by the IDB-serialization chain
+// (`serializeDatasets`, `deserializeDatasetRecord`, etc.) which
+// itself was already dead after Phases 5a–5c removed IDB.
 import { resolveHydrationKeys } from "@/solar-rec-dashboard/lib/hydrationKeys";
 import { isSolarRecDebugEnabled } from "@/solar-rec-dashboard/lib/debugFlag";
 import {
   HYDRATE_LOG_PREFIX_CLOUD,
-  HYDRATE_LOG_PREFIX_IDB,
   toUserFacingHydrationMessage,
   type PerDatasetErrorMap,
 } from "@/solar-rec-dashboard/lib/hydrationErrors";
@@ -165,14 +163,7 @@ import { ScheduleBImport } from "@/solar-rec-dashboard/components/ScheduleBImpor
 // runtime, the parity report has no two sources to compare.
 import {
   COO_TARGET_STATUS,
-  LEGACY_DATASETS_STORAGE_KEY,
   LOGS_STORAGE_KEY,
-  DASHBOARD_DB_NAME,
-  DASHBOARD_DB_VERSION,
-  DASHBOARD_DATASETS_STORE,
-  DASHBOARD_DATASETS_RECORD_KEY,
-  DASHBOARD_DATASETS_MANIFEST_KEY,
-  DASHBOARD_LOGS_RECORD_KEY,
   OWNERSHIP_ORDER,
   CHANGE_OWNERSHIP_ORDER,
   SNAPSHOT_REC_PERFORMANCE_DELIVERY_YEAR_LABEL,
@@ -875,56 +866,13 @@ function deserializeRemoteDatasetPayload(payload: string): CsvDataset | null {
 
 // createLogId — moved to @/solar-rec-dashboard/lib/helpers
 
-/**
- * On-disk (IndexedDB) shape for a persisted CSV dataset.
- *
- * Phase 15 — columnar persistence: the `_v: 2` branch stores rows as
- * `columnData: string[][]` (one inner array per header, aligned by
- * index) instead of `rows: CsvRow[]`. The columnar shape stores each
- * header string ONCE per dataset rather than once per row, which:
- *   - shrinks IndexedDB footprint 30–50% for wide datasets (the
- *     Transfer History sheet goes from ~30 MB to ~15 MB)
- *   - halves structured-clone work on save/load (half as many JS
- *     objects to walk)
- *   - doesn't touch any tab code, because the deserializer
- *     re-materialises `CsvRow[]` in memory — tabs still see
- *     `row[header]` everywhere
- *
- * Legacy row-oriented records (`rows: CsvRow[]`) are still readable
- * forever — `deserializeDatasetRecord` accepts both shapes and the
- * next save rewrites them in the new shape.
- */
-type SerializedCsvDataset =
-  | {
-      _v?: undefined;
-      fileName: string;
-      uploadedAt: string;
-      headers: string[];
-      rows: CsvRow[];
-      sources?: Array<{
-        fileName: string;
-        uploadedAt: string;
-        rowCount: number;
-      }>;
-    }
-  | {
-      _v: 2;
-      fileName: string;
-      uploadedAt: string;
-      headers: string[];
-      columnData: string[][];
-      rowCount: number;
-      sources?: Array<{
-        fileName: string;
-        uploadedAt: string;
-        rowCount: number;
-      }>;
-    };
-
-type SerializedDatasetsManifest = {
-  keys: DatasetKey[];
-  updatedAt: string;
-};
+// Phase 5e (2026-04-29): `SerializedCsvDataset` +
+// `SerializedDatasetsManifest` types deleted along with the
+// IDB-serialization chain (`deserializeDatasetRecord`,
+// `serializeDatasetRecord`, etc.) they parameterized. The columnar
+// `_v: 2` shape they once described is now gone — server-side `srDs*`
+// row tables + the chunked-CSV manifest path are the only persistence
+// surfaces.
 
 type RemoteDatasetPayload = {
   fileName: string;
@@ -1093,151 +1041,21 @@ async function computeSha256Hex(value: string): Promise<string | null> {
   }
 }
 
-// Lazy-dataset infrastructure (row-materialization on demand, columnar
-// serialization round-trip, non-enumerable source symbol) lives in
-// @/solar-rec-dashboard/lib/lazyDataset so it's testable + reusable.
-// See that module's docstring for the design rationale.
-
-function deserializeDatasetRecord(dataset: SerializedCsvDataset | undefined): CsvDataset | null {
-  if (!dataset) return null;
-  const uploadedAt = new Date(dataset.uploadedAt);
-  if (Number.isNaN(uploadedAt.getTime())) return null;
-
-  const sources = Array.isArray(dataset.sources)
-    ? dataset.sources
-        .map((source) => {
-          const sourceUploadedAt = new Date(source.uploadedAt);
-          if (Number.isNaN(sourceUploadedAt.getTime())) return null;
-          return {
-            fileName: source.fileName,
-            uploadedAt: sourceUploadedAt,
-            rowCount: source.rowCount,
-          };
-        })
-        .filter((source): source is NonNullable<typeof source> => source !== null)
-    : undefined;
-
-  const headers = Array.isArray(dataset.headers) ? dataset.headers : [];
-
-  // Phase 15: dispatch on the version tag. New records carry `_v: 2`
-  // and a columnar payload; legacy records have a `rows` array. Both
-  // shapes land in the same in-memory `CsvDataset` so callers don't
-  // care.
-  //
-  // v2 (columnar) records now flow through buildLazyCsvDataset so
-  // rows only materialize when a tab actually reads them. The
-  // columnar arrays are kept on a hidden symbol field for
-  // serializeDatasetRecord to reuse.
-  if (dataset._v === 2) {
-    const rowCount = Number.isFinite(dataset.rowCount) ? dataset.rowCount : 0;
-    const columnData = Array.isArray(dataset.columnData) ? dataset.columnData : [];
-    return buildLazyCsvDataset({
-      fileName: dataset.fileName,
-      uploadedAt,
-      headers,
-      columnData,
-      rowCount,
-      sources,
-    });
-  }
-
-  const legacyRows = Array.isArray(dataset.rows) ? dataset.rows : [];
-  return {
-    fileName: dataset.fileName,
-    uploadedAt,
-    headers,
-    rows: legacyRows,
-    // Task 5.14 PR-1: scalar row count for legacy v1 records too.
-    // Backfill = rows.length on read; the next save round-trips
-    // through the v2 columnar serializer (which already carries
-    // rowCount), so this branch only runs once per legacy record.
-    rowCount: legacyRows.length,
-    sources,
-  };
-}
-
-function deserializeDatasets(
-  parsed: Record<string, SerializedCsvDataset | undefined>
-): Partial<Record<DatasetKey, CsvDataset>> {
-  const loaded: Partial<Record<DatasetKey, CsvDataset>> = {};
-  (Object.keys(DATASET_DEFINITIONS) as DatasetKey[]).forEach((key) => {
-    const deserialized = deserializeDatasetRecord(parsed[key]);
-    if (!deserialized) return;
-    loaded[key] = deserialized;
-  });
-  return loaded;
-}
-
-/**
- * Phase 15: serialize a dataset in the compact columnar shape. The
- * cost of `buildColumnarFromRows` is a single O(rows × headers) pass,
- * paid once per save — but structured-clone then walks ~half as many
- * JS objects (N columns instead of N×rows row records), and IndexedDB
- * stores each header name once rather than once per row.
- */
-function serializeDatasetRecord(dataset: CsvDataset): SerializedCsvDataset {
-  const sources = dataset.sources?.map((source) => ({
-    fileName: source.fileName,
-    uploadedAt: source.uploadedAt.toISOString(),
-    rowCount: source.rowCount,
-  }));
-
-  // Fast-path: if this dataset came from the IDB hydration path via
-  // buildLazyCsvDataset, the original columnar arrays are cached on
-  // the hidden symbol slot. Reuse them instead of walking rows back
-  // into columns — that rebuild forces full materialization and
-  // defeats the lazy-rows memory win.
-  const columnarSource = getDatasetColumnarSource(dataset);
-  if (columnarSource) {
-    // Cast away readonly at the serialization boundary — IDB's
-    // structured-clone makes its own deep copy of both arrays, so the
-    // frozen input is never actually mutated. Typing the wire shape
-    // as readonly wasn't worth threading through SerializedCsvDataset.
-    return {
-      _v: 2,
-      fileName: dataset.fileName,
-      uploadedAt: dataset.uploadedAt.toISOString(),
-      headers: columnarSource.headers as string[],
-      columnData: columnarSource.columnData as string[][],
-      rowCount: columnarSource.rowCount,
-      sources,
-    };
-  }
-
-  return {
-    _v: 2,
-    fileName: dataset.fileName,
-    uploadedAt: dataset.uploadedAt.toISOString(),
-    headers: dataset.headers,
-    columnData: buildColumnarFromRows(dataset.headers, dataset.rows),
-    rowCount: dataset.rows.length,
-    sources,
-  };
-}
-
-function serializeDatasets(
-  datasets: Partial<Record<DatasetKey, CsvDataset>>
-): Record<string, SerializedCsvDataset | undefined> {
-  const serialized: Record<string, SerializedCsvDataset | undefined> = {};
-  (Object.keys(DATASET_DEFINITIONS) as DatasetKey[]).forEach((key) => {
-    const dataset = datasets[key];
-    if (!dataset) return;
-    serialized[key] = serializeDatasetRecord(dataset);
-  });
-  return serialized;
-}
-
-function loadLegacyDatasetsFromLocalStorage(): Partial<Record<DatasetKey, CsvDataset>> {
-  if (typeof window === "undefined") return {};
-  try {
-    const raw = window.localStorage.getItem(LEGACY_DATASETS_STORAGE_KEY);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw) as Record<string, SerializedCsvDataset | undefined>;
-    return deserializeDatasets(parsed);
-  } catch {
-    return {};
-  }
-}
+// Phase 5e (2026-04-29): the dead IDB-serialization chain is gone.
+// What used to live here:
+//   - `deserializeDatasetRecord` / `deserializeDatasets` —
+//     read columnar `_v:2` records (or legacy `rows: CsvRow[]`)
+//     out of IndexedDB and rebuild in-memory `CsvDataset`s.
+//   - `serializeDatasetRecord` / `serializeDatasets` —
+//     flip in-memory datasets back into the columnar IDB shape,
+//     reusing hidden columnar slots set by `buildLazyCsvDataset`.
+//   - `loadLegacyDatasetsFromLocalStorage` — last-resort
+//     localStorage fallback for the pre-IDB v1 dataset shape.
+// All five were transitively dead after Phases 5a–5c removed
+// IndexedDB. The lazyDataset infrastructure they consumed
+// (`buildLazyCsvDataset`, `buildColumnarFromRows`,
+// `getDatasetColumnarSource`, `rowsFromColumnar`) lived in
+// `lib/lazyDataset.ts` and is deleted in the same PR.
 
 // Phase 5c (2026-04-28): the IndexedDB dataset-storage layer is gone.
 // What used to live here:
