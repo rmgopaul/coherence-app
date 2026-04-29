@@ -192,7 +192,20 @@ export function classifyUrl(input: string): ClassifiedUrl {
     return { source: "gsheet", url, urlCanonical, meta };
   }
 
-  // ---- Todoist: todoist.com/showTask?id=<ID>  OR  todoist.com/app/task/<ID>
+  // ---- Todoist
+  // URL shapes (all classify as `todoist`):
+  //   1. todoist.com/showTask?id=<ID>            — legacy
+  //   2. todoist.com/app/task/<ID>               — older
+  //   3. todoist.com/app/task/<slug>-<ID>        — modern slug+ID
+  //   4. app.todoist.com/app/task/<slug>-<ID>    — modern subdomain
+  //
+  // Todoist's modern web app produces URLs like
+  //   /app/task/connect-with-anish-1-line-diagram-workshop-6g9W9CJJpFQmWQ6p
+  // where the ID is the trailing alphanumeric segment after the
+  // last hyphen. The path before is a human-readable slug derived
+  // from the task content. v1/v2 task IDs are alphanumeric (no
+  // hyphens), so taking the last hyphen-separated segment works
+  // for both legacy `/task/2995104339` and modern slug forms.
   if (host === "todoist.com" || host.endsWith(".todoist.com")) {
     const meta: Record<string, string> = {};
     const idQuery = parsed.searchParams.get("id");
@@ -200,7 +213,9 @@ export function classifyUrl(input: string): ClassifiedUrl {
     const segs = parsed.pathname.split("/").filter(Boolean);
     const taskIdx = segs.indexOf("task");
     if (!meta.taskId && taskIdx >= 0 && segs[taskIdx + 1]) {
-      meta.taskId = segs[taskIdx + 1];
+      const segmentParts = segs[taskIdx + 1].split("-");
+      const trailing = segmentParts[segmentParts.length - 1];
+      if (trailing) meta.taskId = trailing;
     }
     return { source: "todoist", url, urlCanonical, meta };
   }

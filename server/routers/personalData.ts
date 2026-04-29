@@ -2689,8 +2689,19 @@ async function enrichDockTitle(
         }
       }
       if (!taskId) {
-        const taskMatch = url.match(/\/task\/([A-Za-z0-9_-]+)/);
-        taskId = taskMatch?.[1];
+        // Todoist modern URLs: /app/task/<slug>-<ID> where the
+        // path segment is `connect-with-anish-…-6g9W9CJJpFQmWQ6p`
+        // and the actual task ID is the trailing alphanumeric
+        // chunk after the last hyphen. Legacy `/app/task/12345`
+        // URLs also work (a numeric-only segment splits to a
+        // single element so `pop()` returns it unchanged). Match
+        // anything that isn't `/`, `?`, or `#`.
+        const taskMatch = url.match(/\/task\/([^/?#]+)/);
+        if (taskMatch?.[1]) {
+          const segmentParts = taskMatch[1].split("-");
+          const trailing = segmentParts[segmentParts.length - 1];
+          if (trailing) taskId = trailing;
+        }
       }
       if (!taskId) {
         console.log(
