@@ -9,6 +9,7 @@ import { SidebarProvider, SidebarInset } from "@/components/ui/sidebar";
 // pairing isn't broken again.
 import { ThemeProvider } from "@/contexts/ThemeContext";
 import { Toaster } from "@/components/ui/sonner";
+import ErrorBoundary from "@/components/ErrorBoundary";
 import { useSolarRecAuth } from "./hooks/useSolarRecAuth";
 import SolarRecSidebar from "./components/SolarRecSidebar";
 import SolarRecLoginPage from "./SolarRecLoginPage";
@@ -350,27 +351,36 @@ function AuthenticatedApp() {
 }
 
 export default function SolarRecApp() {
+  // ErrorBoundary is the outermost wrapper so any throw inside the
+  // ThemeProvider, Toaster, auth gate, or the dashboard's 6500+ LOC
+  // tree is caught and surfaces a useful "Something went wrong" UI
+  // with an incident ID instead of a blank page. Mirrors
+  // `client/src/App.tsx`'s structure (the personal app has had this
+  // since launch). The team app went without it through PR #283 —
+  // added 2026-04-29 after the Performance Ratio tab hang made it
+  // visible that an uncaught throw on a populated scope just leaves
+  // the user staring at an empty route shell.
+  //
+  // ThemeProvider sits inside ErrorBoundary so descendants (including
+  // the Toaster, which calls useTheme) can resolve its context.
+  // `switchable={false}` keeps the team app on a single theme for now
+  // — change to `true` if/when team-side theme toggling is wanted.
+  // `defaultTheme="light"` preserves solar-rec's pre-PR-#223 visual
+  // behavior. Solar-rec had no ThemeProvider before, so `<html>` never
+  // carried the `dark` class, so the page rendered in light mode by
+  // default. The team-side CSS hasn't been audited for dark-mode
+  // contrast — PR #236 launched with `defaultTheme="dark"` and the
+  // headers became unreadable. A followup commit on the PR-#236 branch
+  // flipped this to "light", but never made it into the squash-merge
+  // to main — PR #235 re-applied that fix. Switch to
+  // dark/switchable=true once the dark-mode CSS pass is complete.
   return (
-    // ThemeProvider is the outermost wrapper so every descendant
-    // (including the Toaster, which calls useTheme) can resolve
-    // its context. Mirrors `client/src/App.tsx`'s structure.
-    // `switchable={false}` keeps the team app on a single theme
-    // for now — change to `true` if/when team-side theme toggling
-    // is wanted.
-    // `defaultTheme="light"` preserves solar-rec's pre-PR-#223
-    // visual behavior. Solar-rec had no ThemeProvider before, so
-    // `<html>` never carried the `dark` class, so the page rendered
-    // in light mode by default. The team-side CSS hasn't been
-    // audited for dark-mode contrast — PR #236 launched with
-    // `defaultTheme="dark"` and the headers became unreadable. A
-    // followup commit on the PR-#236 branch flipped this to
-    // "light", but never made it into the squash-merge to main —
-    // this PR re-applies that fix. Switch to dark/switchable=true
-    // once the dark-mode CSS pass is complete.
-    <ThemeProvider defaultTheme="light" switchable={false}>
-      <Toaster />
-      <SolarRecAppInner />
-    </ThemeProvider>
+    <ErrorBoundary>
+      <ThemeProvider defaultTheme="light" switchable={false}>
+        <Toaster />
+        <SolarRecAppInner />
+      </ThemeProvider>
+    </ErrorBoundary>
   );
 }
 
