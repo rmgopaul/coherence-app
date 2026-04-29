@@ -187,10 +187,21 @@ export function buildFinancialsAggregates(
     if (!scan || !icc) continue;
 
     const gcv = icc.grossContractValue;
-    const hasOverride =
-      scan.overrideVendorFeePercent != null ||
-      scan.overrideAdditionalCollateralPercent != null ||
-      scan.overriddenAt != null;
+    // hasOverride: align with the client's per-row check
+    // (`localOv != null || scan.overriddenAt != null`). The server
+    // doesn't have access to `localOverrides` (client-only
+    // optimistic-update Map), so it sets `hasOverride` purely from
+    // `scan.overriddenAt`. The client wrapper at
+    // SolarRecDashboard.tsx ~L5915 OR's local-overrides on top
+    // (`hasOverride: true` for any row with a localOv applied), so
+    // the final UI value matches the original client-only memo.
+    //
+    // Pre-cleanup the server also checked
+    // `overrideVendorFeePercent`/`overrideAdditionalCollateralPercent`
+    // for non-null which marked rows as overridden even when
+    // `overriddenAt` wasn't set — a tiny semantic divergence
+    // closed here.
+    const hasOverride = scan.overriddenAt != null;
     const vfp = scan.overrideVendorFeePercent ?? scan.vendorFeePercent ?? 0;
     const vendorFeeAmount = roundMoney(gcv * (vfp / 100));
     const utilityCollateral = roundMoney(gcv * 0.05);
@@ -434,14 +445,35 @@ export async function getOrBuildFinancialsAggregates(
     serde: jsonSerde<FinancialsAggregates>(),
     rowCount: data => data.rows.length,
     recompute: async () => {
-      const [iccRows, abpRows] = await Promise.all([
-        loadDatasetRows(
-          scopeId,
-          batchIds.abpIccReport3RowsBatchId,
-          srDsAbpIccReport3Rows
-        ),
-        loadDatasetRows(scopeId, batchIds.abpReportBatchId, srDsAbpReport),
-      ]);
+      // 2026-04-29 — sequential loads to match the OOM-safe pattern
+      // established in PR 2.5 (#269). The Financials inputs are
+      // smaller than PR 1's convertedReads (no single behemoth) so
+      // the OOM risk was always low here, but uniformity wins:
+      // every aggregator now loads datasets one at a time. The
+      // breadcrumbs below show heap pressure on cold compute so a
+      // future drift is visible in logs.
+      process.stdout.write(
+        `[financialsAggregates] cache miss for scope=${scopeId} — sequential dataset loads beginning. ` +
+          `heapUsed=${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB\n`
+      );
+
+      const iccRows = await loadDatasetRows(
+        scopeId,
+        batchIds.abpIccReport3RowsBatchId,
+        srDsAbpIccReport3Rows
+      );
+      const abpRows = await loadDatasetRows(
+        scopeId,
+        batchIds.abpReportBatchId,
+        srDsAbpReport
+      );
+
+      process.stdout.write(
+        `[financialsAggregates] datasets loaded; ` +
+          `iccRows=${iccRows.length} abpRows=${abpRows.length} ` +
+          `heapUsed=${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB. ` +
+          `Aggregator running next.\n`
+      );
 
       return buildFinancialsAggregates({
         mappingRows,

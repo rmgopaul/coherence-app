@@ -68,6 +68,107 @@ describe("buildFinancialsAggregates", () => {
     });
   });
 
+  it("returns the EMPTY_FINANCIALS sentinel when scanResults is empty", () => {
+    const result = buildFinancialsAggregates({
+      mappingRows: [{ csgId: "CSG-1", systemId: "APP-1" }],
+      iccRows: [
+        {
+          "Application ID": "APP-1",
+          "Total REC Delivery Contract Value": "$100,000.00",
+        },
+      ],
+      abpRows: [
+        { Application_ID: "APP-1", Part_2_App_Verification_Date: "2024-03-15" },
+      ],
+      scanResults: [],
+    });
+
+    expect(result).toEqual({
+      rows: [],
+      totalProfit: 0,
+      avgProfit: 0,
+      totalCollateralization: 0,
+      totalUtilityCollateral: 0,
+      totalAdditionalCollateral: 0,
+      totalCcAuth: 0,
+      systemsWithData: 0,
+    });
+  });
+
+  it("uses pre-cutoff application fee math for Part 1 dates before 2024-06-01", () => {
+    // Part 1 submitted 2024-05-01 → pre-cutoff branch:
+    //   applicationFee = min(10 * acSizeKw, 5000)
+    // For acSizeKw=1000 → 10*1000 = 10000, capped at 5000.
+    const result = buildFinancialsAggregates({
+      mappingRows: [{ csgId: "CSG-1", systemId: "APP-1" }],
+      iccRows: [
+        {
+          "Application ID": "APP-1",
+          "Total REC Delivery Contract Value": "$100,000.00",
+        },
+      ],
+      abpRows: [
+        {
+          Application_ID: "APP-1",
+          Part_2_App_Verification_Date: "2024-03-15",
+          Part_1_Submission_Date: "2024-05-01",
+        },
+      ],
+      scanResults: [
+        {
+          csgId: "CSG-1",
+          vendorFeePercent: 5,
+          additionalCollateralPercent: 0,
+          ccAuthorizationCompleted: true,
+          acSizeKw: 1000,
+        },
+      ],
+    });
+
+    expect(result.rows[0]).toMatchObject({
+      applicationFee: 5000, // capped at the pre-cutoff ceiling
+      ccAuth5Percent: 0, // ccAuthorizationCompleted=true skips the 5%
+    });
+  });
+
+  it("does not apply the CC auth 5% surcharge when ccAuthorizationCompleted is true", () => {
+    // Same shape as the happy-path test but with ccAuthorizationCompleted=true.
+    // Expected difference: ccAuth5Percent=0 (instead of 5000), totalDeductions
+    // and totalCollateralization shrink by the same 5000 each.
+    const result = buildFinancialsAggregates({
+      mappingRows: [{ csgId: "CSG-1", systemId: "APP-1" }],
+      iccRows: [
+        {
+          "Application ID": "APP-1",
+          "Total REC Delivery Contract Value": "$100,000.00",
+        },
+      ],
+      abpRows: [
+        {
+          Application_ID: "APP-1",
+          Part_2_App_Verification_Date: "2024-03-15",
+          Part_1_Submission_Date: "2024-05-01",
+        },
+      ],
+      scanResults: [
+        {
+          csgId: "CSG-1",
+          vendorFeePercent: 5,
+          additionalCollateralPercent: 10,
+          ccAuthorizationCompleted: true,
+          acSizeKw: 400,
+        },
+      ],
+    });
+
+    expect(result.rows[0]).toMatchObject({
+      ccAuth5Percent: 0,
+      totalCollateralization: 15000, // utility 5000 + additional 10000, no CC auth
+      totalDeductions: 24000, // 5000 vfp + 5000 utility + 10000 addl + 0 CC + 4000 fee
+    });
+    expect(result.totalCcAuth).toBe(0);
+  });
+
   it("prefers scan overrides and flags high collateralization for review", () => {
     const baseAbpRow: CsvRow = {
       Application_ID: "APP-1",
