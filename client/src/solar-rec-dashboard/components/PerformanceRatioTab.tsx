@@ -46,6 +46,13 @@ import {
   parseCsv,
 } from "@/solar-rec-dashboard/lib/csvIo";
 import { getDatasetColumnarSource } from "@/solar-rec-dashboard/lib/lazyDataset";
+// Phase 5d PR 1 (2026-04-29) — server-side aggregator for the
+// performance-ratio compute. Replaces the client `performanceRatioResult`
+// useMemo that walked `convertedReads.rows` (the heaviest dataset on
+// populated scopes). The local useMemo body is preserved as a fallback
+// for the brief gap between mount and the first query response, but the
+// hot path (post-mount, cache hit) bypasses it entirely.
+import { solarRecTrpc } from "@/solar-rec/solarRecTrpc";
 import {
   buildGeneratorDateOnlineByTrackingId,
   calculateExpectedWhForRange,
@@ -382,7 +389,12 @@ export default memo(function PerformanceRatioTab(props: PerformanceRatioTabProps
   // dataset-state churn (auto-persist, monitoring batch refresh)
   // doesn't block the UI thread on a fresh full pass.
   const deferredConvertedReads = useDeferredValue(convertedReads);
-  const performanceRatioResult = useMemo(() => {
+  // Phase 5d PR 1 (2026-04-29) — preserved as a brief fallback during
+  // the initial query roundtrip + as a graceful-degradation path if
+  // the server query errors. Renamed from `performanceRatioResult`;
+  // the new `performanceRatioResult` below is the canonical source
+  // and prefers the server query result.
+  const _clientFallbackPerformanceRatioResult = useMemo(() => {
     const rows: PerformanceRatioRow[] = [];
     let matchedConvertedReads = 0;
     let unmatchedConvertedReads = 0;
@@ -633,6 +645,42 @@ export default memo(function PerformanceRatioTab(props: PerformanceRatioTabProps
     generationBaselineByTrackingId,
     performanceRatioMatchIndexes,
   ]);
+
+  // -------------------------------------------------------------------------
+  // Phase 5d PR 1 (2026-04-29) — canonical performance-ratio source.
+  //
+  // Pulls from `getDashboardPerformanceRatio` (server-side aggregator
+  // with `withArtifactCache` memoization). On a cache hit the wire
+  // payload is ~10–200 KB depending on scope size; on cache miss the
+  // server runs the same compute the client used to do, then caches
+  // by the 7 input batch IDs.
+  //
+  // Fallback semantics (`_clientFallbackPerformanceRatioResult`
+  // above): used only when the query has no data yet (initial mount
+  // before the first response, or query error). Once the server data
+  // lands, the client memo's output is dropped on the floor — its
+  // upstream `convertedReads` walk will eventually be deleted in a
+  // follow-up once the dataset prop forwarding from the parent is
+  // also dropped.
+  // -------------------------------------------------------------------------
+  const performanceRatioQuery =
+    solarRecTrpc.solarRecDashboard.getDashboardPerformanceRatio.useQuery();
+  const performanceRatioResult = useMemo(() => {
+    const data = performanceRatioQuery.data;
+    if (!data) {
+      // Initial load / error path — use the client compute so the tab
+      // never renders a blank state for users with already-hydrated
+      // local datasets.
+      return _clientFallbackPerformanceRatioResult;
+    }
+    return {
+      rows: data.rows as unknown as PerformanceRatioRow[],
+      convertedReadCount: data.convertedReadCount,
+      matchedConvertedReads: data.matchedConvertedReads,
+      unmatchedConvertedReads: data.unmatchedConvertedReads,
+      invalidConvertedReads: data.invalidConvertedReads,
+    };
+  }, [performanceRatioQuery.data, _clientFallbackPerformanceRatioResult]);
 
   // -------------------------------------------------------------------------
   // Filters / sort / summary / pagination

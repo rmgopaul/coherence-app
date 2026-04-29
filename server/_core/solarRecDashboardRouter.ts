@@ -2802,6 +2802,38 @@ export const solarRecDashboardRouter = t.router({
   }),
 
   /**
+   * Phase 5d PR 1 (2026-04-29) — server-side aggregator for the
+   * Performance Ratio tab. Replaces the client `performanceRatioResult`
+   * useMemo that walked `datasets.convertedReads.rows` (the heaviest
+   * single dataset on populated scopes — root cause of the 2026-04-29
+   * Force-Load 502). Cache key bundles 7 active batch IDs:
+   * convertedReads + annualProductionEstimates + generationEntry +
+   * accountSolarGeneration + generatorDetails + abpReport +
+   * solarApplications. Sub-second recompute once invalidated.
+   *
+   * Wire payload caps at ~200 KB on populated scopes (one row per
+   * matched-system-converted-read pair, dedup'd by the system
+   * snapshot's part-2-eligibility filter). The client tab paginates
+   * its detail table client-side from the returned rows.
+   */
+  getDashboardPerformanceRatio: requirePermission(
+    "solar-rec-dashboard",
+    "read"
+  ).query(async ({ ctx }) => {
+    const {
+      getOrBuildPerformanceRatio,
+      PERFORMANCE_RATIO_RUNNER_VERSION,
+    } = await import("../services/solar/buildPerformanceRatioAggregates");
+
+    const result = await getOrBuildPerformanceRatio(ctx.scopeId);
+
+    return {
+      ...result,
+      _runnerVersion: PERFORMANCE_RATIO_RUNNER_VERSION,
+    };
+  }),
+
+  /**
    * Task 5.14 PR-4 (2026-04-27) — server-side reconciliation between
    * `srDsDeliverySchedule.trackingSystemRefId` (or `systemId` fallback)
    * and `srDsConvertedReads.monitoringSystemId`. Replaces the

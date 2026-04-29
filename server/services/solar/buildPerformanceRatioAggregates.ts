@@ -287,3 +287,94 @@ export function buildPerformanceRatioAggregates(
     invalidConvertedReads,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Cached server entrypoint — Phase 5d PR 1 (2026-04-29).
+//
+// Wraps the pure aggregator with the `withArtifactCache` memoization
+// layer so repeat tRPC calls hit the cache instead of re-loading
+// every srDs* table + snapshot. Cache key bundles the active batch
+// IDs of the 7 input datasets — any batch flip invalidates the
+// cached result deterministically.
+// ---------------------------------------------------------------------------
+
+import { createHash } from "node:crypto";
+import {
+  loadPerformanceRatioInput,
+  resolvePerformanceRatioBatchIds,
+  type PerformanceRatioInputBatchIds,
+} from "./loadPerformanceRatioInput";
+import { superjsonSerde, withArtifactCache } from "./withArtifactCache";
+
+const PERFORMANCE_RATIO_ARTIFACT_TYPE = "performanceRatio";
+
+export const PERFORMANCE_RATIO_RUNNER_VERSION =
+  "phase-5d-pr1-performance-ratio@1";
+
+function computePerformanceRatioInputHash(
+  batchIds: PerformanceRatioInputBatchIds
+): string {
+  return createHash("sha256")
+    .update(
+      [
+        `convertedReads:${batchIds.convertedReadsBatchId ?? ""}`,
+        `annualProductionEstimates:${batchIds.annualProductionBatchId ?? ""}`,
+        `generationEntry:${batchIds.generationEntryBatchId ?? ""}`,
+        `accountSolarGeneration:${batchIds.accountSolarGenerationBatchId ?? ""}`,
+        `generatorDetails:${batchIds.generatorDetailsBatchId ?? ""}`,
+        `abpReport:${batchIds.abpReportBatchId ?? ""}`,
+        `solarApplications:${batchIds.solarApplicationsBatchId ?? ""}`,
+        `runner:${PERFORMANCE_RATIO_RUNNER_VERSION}`,
+      ].join("|")
+    )
+    .digest("hex")
+    .slice(0, 16);
+}
+
+/**
+ * Public entrypoint for the Performance Ratio tab's tRPC query.
+ * Returns the same `PerformanceRatioAggregates` shape that the
+ * client tab's existing `performanceRatioResult` useMemo
+ * produces, plus a `fromCache` flag for telemetry.
+ *
+ * Empty-state semantics:
+ *   - No `convertedReads` active batch → empty result (no work to do).
+ *   - All other deps absent are tolerated; the underlying loader
+ *     supplies empty arrays + maps and the aggregator produces
+ *     consistent counts (e.g. all reads invalid because no
+ *     systems matched).
+ */
+export async function getOrBuildPerformanceRatio(
+  scopeId: string
+): Promise<PerformanceRatioAggregates & { fromCache: boolean }> {
+  const batchIds = await resolvePerformanceRatioBatchIds(scopeId);
+
+  if (!batchIds.convertedReadsBatchId) {
+    return {
+      rows: [],
+      convertedReadCount: 0,
+      matchedConvertedReads: 0,
+      unmatchedConvertedReads: 0,
+      invalidConvertedReads: 0,
+      fromCache: false,
+    };
+  }
+
+  const inputVersionHash = computePerformanceRatioInputHash(batchIds);
+
+  const { result, fromCache } = await withArtifactCache<
+    PerformanceRatioAggregates
+  >({
+    scopeId,
+    artifactType: PERFORMANCE_RATIO_ARTIFACT_TYPE,
+    inputVersionHash,
+    serde: superjsonSerde<PerformanceRatioAggregates>(),
+    rowCount: (data) => data.rows.length,
+    recompute: async () => {
+      const input = await loadPerformanceRatioInput(scopeId, batchIds);
+      return buildPerformanceRatioAggregates(input);
+    },
+  });
+
+  return { ...result, fromCache };
+}
