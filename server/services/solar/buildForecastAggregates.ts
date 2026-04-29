@@ -44,18 +44,59 @@ import {
 } from "./buildSystemSnapshot";
 import { buildTransferDeliveryLookupForScope } from "./buildTransferDeliveryLookup";
 import {
-  calculateExpectedWhForRange,
-  clean,
   buildAnnualProductionByTrackingId,
   buildGenerationBaselineByTrackingId,
-  buildRecReviewDeliveryYearLabel,
-  buildScheduleYearEntries,
-  deriveRecPerformanceThreeYearValues,
-  type AnnualProductionProfile,
-  type GenerationBaseline,
-  type PerformanceSourceRow,
+  type ServerAnnualProductionProfile,
+  type ServerGenerationBaseline,
+} from "./loadPerformanceRatioInput";
+import {
+  calculateExpectedWhForRange,
+  clean,
+  parseDate,
+  parseNumber,
 } from "@shared/solarRecPerformanceRatio";
 import { jsonSerde, withArtifactCache } from "./withArtifactCache";
+
+// ---------------------------------------------------------------------------
+// Types — mirror the client's local types in ForecastTab.tsx +
+// `state/types.ts` (PerformanceSourceRow, ScheduleYearEntry,
+// RecPerformanceThreeYearValues).
+// ---------------------------------------------------------------------------
+
+interface ScheduleYearEntry {
+  yearIndex: number;
+  required: number;
+  delivered: number;
+  startDate: Date | null;
+  endDate: Date | null;
+  startRaw: string;
+  endRaw: string;
+  key: string;
+}
+
+interface PerformanceSourceRow {
+  key: string;
+  contractId: string;
+  systemId: string | null;
+  trackingSystemRefId: string;
+  systemName: string;
+  batchId: string | null;
+  recPrice: number | null;
+  years: ScheduleYearEntry[];
+  firstTransferEnergyYear: number | null;
+}
+
+interface RecPerformanceThreeYearValues {
+  scheduleYearNumber: number;
+  deliveryYearOne: number;
+  deliveryYearTwo: number;
+  deliveryYearThree: number;
+  deliveryYearOneSource: "Actual" | "Expected";
+  deliveryYearTwoSource: "Actual" | "Expected";
+  deliveryYearThreeSource: "Actual" | "Expected";
+  rollingAverage: number;
+  expectedRecs: number;
+}
 
 export interface ForecastContractRow {
   contract: string;
@@ -78,6 +119,124 @@ export interface ForecastAggregates {
    * computation. Diverges only across a May 1 boundary mid-session.
    */
   energyYearLabel: string;
+}
+
+// ---------------------------------------------------------------------------
+// Helpers — byte-for-byte mirrors of the client functions.
+// ---------------------------------------------------------------------------
+
+function buildRecReviewDeliveryYearLabel(
+  start: Date | null,
+  end: Date | null,
+  startRaw: string,
+  endRaw: string
+): string {
+  // Mirror of `buildDeliveryYearLabel` in
+  // `client/src/solar-rec-dashboard/lib/helpers/recPerformance.ts`.
+  if (start && end) {
+    return `${start.getFullYear()}-${end.getFullYear()}`;
+  }
+  if (startRaw && endRaw) return `${startRaw} to ${endRaw}`;
+  if (startRaw) return startRaw;
+  if (start) {
+    // formatDate fallback — keep it simple (ISO date), the client's
+    // formatter is locale-dependent but this branch is a degenerate
+    // case where we only have a partial parse.
+    return start.toISOString().slice(0, 10);
+  }
+  return "Unknown";
+}
+
+function deriveRecPerformanceThreeYearValues(
+  sourceRow: PerformanceSourceRow,
+  targetYearIndex: number
+): RecPerformanceThreeYearValues | null {
+  if (targetYearIndex < 2) return null;
+
+  const dyOneYear = sourceRow.years[targetYearIndex - 2];
+  const dyTwoYear = sourceRow.years[targetYearIndex - 1];
+  const dyThreeYear = sourceRow.years[targetYearIndex];
+  if (!dyOneYear || !dyTwoYear || !dyThreeYear) return null;
+
+  if (sourceRow.firstTransferEnergyYear === null || !dyThreeYear.startDate) {
+    return null;
+  }
+
+  const firstDeliveryYear = sourceRow.firstTransferEnergyYear + 1;
+  const targetEnergyYear = dyThreeYear.startDate.getFullYear();
+  const actualDeliveryYearNumber = targetEnergyYear - firstDeliveryYear + 1;
+
+  if (actualDeliveryYearNumber < 3) return null;
+
+  const isThirdDeliveryYear = actualDeliveryYearNumber === 3;
+  const values: Array<{ value: number; source: "Actual" | "Expected" }> =
+    isThirdDeliveryYear
+      ? [
+          { value: dyOneYear.delivered, source: "Actual" },
+          { value: dyTwoYear.delivered, source: "Actual" },
+          { value: dyThreeYear.delivered, source: "Actual" },
+        ]
+      : [
+          { value: dyOneYear.required, source: "Expected" },
+          { value: dyTwoYear.required, source: "Expected" },
+          { value: dyThreeYear.delivered, source: "Actual" },
+        ];
+
+  return {
+    scheduleYearNumber: dyThreeYear.yearIndex,
+    deliveryYearOne: values[0]!.value,
+    deliveryYearTwo: values[1]!.value,
+    deliveryYearThree: values[2]!.value,
+    deliveryYearOneSource: values[0]!.source,
+    deliveryYearTwoSource: values[1]!.source,
+    deliveryYearThreeSource: values[2]!.source,
+    rollingAverage: Math.floor(
+      (values[0]!.value + values[1]!.value + values[2]!.value) / 3
+    ),
+    expectedRecs: dyThreeYear.required,
+  };
+}
+
+function buildScheduleYearEntries(row: CsvRow): ScheduleYearEntry[] {
+  // Mirror of `buildScheduleYearEntries` in
+  // `client/src/features/solar-rec/SolarRecDashboard.tsx` (~L551).
+  const entries: ScheduleYearEntry[] = [];
+
+  for (let yearIndex = 1; yearIndex <= 15; yearIndex += 1) {
+    const requiredRaw = row[`year${yearIndex}_quantity_required`];
+    const deliveredRaw = row[`year${yearIndex}_quantity_delivered`];
+    const startRaw = clean(row[`year${yearIndex}_start_date`]);
+    const endRaw = clean(row[`year${yearIndex}_end_date`]);
+
+    const required = parseNumber(requiredRaw) ?? 0;
+    const delivered = parseNumber(deliveredRaw) ?? 0;
+    const startDate = parseDate(startRaw);
+    const endDate = parseDate(endRaw);
+
+    if (!startRaw && !endRaw && required === 0 && delivered === 0) continue;
+
+    const key = startDate
+      ? startDate.toISOString().slice(0, 10)
+      : `${startRaw}-${yearIndex}`;
+
+    entries.push({
+      yearIndex,
+      required,
+      delivered,
+      startDate,
+      endDate,
+      startRaw,
+      endRaw,
+      key,
+    });
+  }
+
+  return entries.sort((a, b) => {
+    const aTime = a.startDate?.getTime() ?? Number.POSITIVE_INFINITY;
+    const bTime = b.startDate?.getTime() ?? Number.POSITIVE_INFINITY;
+    if (aTime !== bTime) return aTime - bTime;
+    return a.yearIndex - b.yearIndex;
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -216,11 +375,11 @@ export interface ForecastAggregatorInput {
   systems: SnapshotSystemForForecast[];
   annualProductionByTrackingId: ReadonlyMap<
     string,
-    AnnualProductionProfile
+    ServerAnnualProductionProfile
   >;
   generationBaselineByTrackingId: ReadonlyMap<
     string,
-    GenerationBaseline
+    ServerGenerationBaseline
   >;
   energyYear: EnergyYearWindow;
 }

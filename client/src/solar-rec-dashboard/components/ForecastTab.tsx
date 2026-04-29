@@ -58,7 +58,18 @@ import {
   timestampForCsvFileName,
   triggerCsvDownload,
 } from "@/solar-rec-dashboard/lib/csvIo";
-import { formatNumber } from "@/solar-rec-dashboard/lib/helpers";
+import {
+  calculateExpectedWhForRange,
+  buildRecReviewDeliveryYearLabel,
+  deriveRecPerformanceThreeYearValues,
+  formatNumber,
+} from "@/solar-rec-dashboard/lib/helpers";
+import type {
+  AnnualProductionProfile,
+  GenerationBaseline,
+  PerformanceSourceRow,
+  SystemRecord,
+} from "@/solar-rec-dashboard/state/types";
 
 // ---------------------------------------------------------------------------
 // Energy-year constants
@@ -98,7 +109,12 @@ type ForecastContractRow = {
   gapAll: number;
 };
 
-export interface ForecastTabProps {}
+export interface ForecastTabProps {
+  performanceSourceRows: PerformanceSourceRow[];
+  systems: SystemRecord[];
+  annualProductionByTrackingId: Map<string, AnnualProductionProfile>;
+  generationBaselineByTrackingId: Map<string, GenerationBaseline>;
+}
 
 // ---------------------------------------------------------------------------
 // Component
@@ -134,7 +150,12 @@ function AuditStat({
 }
 
 export default memo(function ForecastTab(props: ForecastTabProps) {
-  void props;
+  const {
+    performanceSourceRows,
+    systems,
+    annualProductionByTrackingId,
+    generationBaselineByTrackingId,
+  } = props;
 
   // Transfer-history audit: fetched on-demand when the user clicks the
   // "Audit transfer history" button. Surfaces exact-key duplicates
@@ -170,17 +191,165 @@ export default memo(function ForecastTab(props: ForecastTabProps) {
       }
     );
 
+  // Phase 5d PR 2 (2026-04-29) — server-side aggregator. The client
+  // useMemo below is preserved as a graceful fallback (initial
+  // mount, query error). The new `forecastProjections` const at
+  // the bottom of this block prefers the server data.
   const forecastQuery =
     trpc.solarRecDashboard.getDashboardForecast.useQuery();
 
-  // Canonical forecast source: server-side aggregator only.
+  // Use the same 3-year rolling logic as REC Performance Eval to match
+  // baseline numbers. For each system: find the delivery year matching
+  // FORECAST_EY_LABEL, require targetYearIndex >= 2 (3rd year or
+  // later), compute the rolling average. Then project the remaining
+  // RECs in the current energy year using the annual production
+  // estimate from the GATS meter-read date forward.
+  const _clientFallbackForecastProjections = useMemo<ForecastContractRow[]>(() => {
+    if (performanceSourceRows.length === 0) return [];
+
+    const contractMap = new Map<
+      string,
+      {
+        contract: string;
+        systemsTotal: number;
+        systemsReporting: number;
+        requiredRecs: number;
+        baselineRollingAvg: number;
+        revisedRollingAvgReporting: number;
+        revisedRollingAvgAll: number;
+      }
+    >();
+
+    for (const sourceRow of performanceSourceRows) {
+      const targetYearIndex = sourceRow.years.findIndex((year) => {
+        const label = buildRecReviewDeliveryYearLabel(
+          year.startDate,
+          year.endDate,
+          year.startRaw,
+          year.endRaw,
+        );
+        return label === FORECAST_EY_LABEL;
+      });
+      const recWindow = deriveRecPerformanceThreeYearValues(
+        sourceRow,
+        targetYearIndex,
+      );
+      if (!recWindow) continue; // Must be in 3rd delivery year or later
+
+      const dy1Val = recWindow.deliveryYearOne;
+      const dy2Val = recWindow.deliveryYearTwo;
+      const dy3Actual = recWindow.deliveryYearThree;
+      const obligation = recWindow.expectedRecs;
+      const baselineRollingAvg = recWindow.rollingAverage;
+
+      const trackingId = sourceRow.trackingSystemRefId;
+      const profile = annualProductionByTrackingId.get(trackingId);
+      const baseline = generationBaselineByTrackingId.get(trackingId);
+      const sys = systems.find(
+        (s) => s.trackingSystemRefId === trackingId,
+      );
+      const isReporting = sys?.isReporting ?? false;
+
+      // Determine start date: latest meter reading from GATS, clamped
+      // to the energy-year floor.
+      let meterReadDate = baseline?.date ?? null;
+      if (meterReadDate && meterReadDate < FORECAST_FLOOR_DATE) {
+        meterReadDate = FORECAST_FLOOR_DATE;
+      }
+
+      // Project RECs for remainder of the energy year.
+      let projectedRecsForSystem = 0;
+      if (profile && meterReadDate) {
+        const endDate = FORECAST_ENERGY_YEAR_END;
+        if (meterReadDate < endDate) {
+          const expectedWh = calculateExpectedWhForRange(
+            profile.monthlyKwh,
+            meterReadDate,
+            endDate,
+          );
+          if (expectedWh !== null && expectedWh > 0) {
+            projectedRecsForSystem = Math.floor(expectedWh / 1000 / 1000);
+          }
+        }
+      } else if (profile && !meterReadDate) {
+        const expectedWh = calculateExpectedWhForRange(
+          profile.monthlyKwh,
+          FORECAST_FLOOR_DATE,
+          FORECAST_ENERGY_YEAR_END,
+        );
+        if (expectedWh !== null && expectedWh > 0) {
+          projectedRecsForSystem = Math.floor(expectedWh / 1000 / 1000);
+        }
+      }
+
+      // Revised DY3: plug projected RECs into the current year's
+      // delivery, then recompute the rolling average. This avoids
+      // double-counting by running the projected generation through
+      // the same /3 averaging.
+      const dy3RevisedReporting =
+        isReporting && meterReadDate
+          ? dy3Actual + projectedRecsForSystem
+          : dy3Actual;
+      const dy3RevisedAll = dy3Actual + projectedRecsForSystem;
+
+      const revisedRollingAvgReporting = Math.floor(
+        (dy1Val + dy2Val + dy3RevisedReporting) / 3,
+      );
+      const revisedRollingAvgAll = Math.floor(
+        (dy1Val + dy2Val + dy3RevisedAll) / 3,
+      );
+
+      // Accumulate by contract
+      const contractId = sourceRow.contractId;
+      const existing = contractMap.get(contractId) ?? {
+        contract: contractId,
+        systemsTotal: 0,
+        systemsReporting: 0,
+        requiredRecs: 0,
+        baselineRollingAvg: 0,
+        revisedRollingAvgReporting: 0,
+        revisedRollingAvgAll: 0,
+      };
+
+      existing.systemsTotal++;
+      if (isReporting) existing.systemsReporting++;
+      existing.requiredRecs += obligation;
+      existing.baselineRollingAvg += baselineRollingAvg;
+      existing.revisedRollingAvgReporting += revisedRollingAvgReporting;
+      existing.revisedRollingAvgAll += revisedRollingAvgAll;
+      contractMap.set(contractId, existing);
+    }
+
+    return Array.from(contractMap.values())
+      .map((c) => ({
+        ...c,
+        delPercent:
+          c.requiredRecs > 0 ? (c.baselineRollingAvg / c.requiredRecs) * 100 : null,
+        gapReporting: c.revisedRollingAvgReporting - c.requiredRecs,
+        gapAll: c.revisedRollingAvgAll - c.requiredRecs,
+      }))
+      .sort((a, b) => a.gapReporting - b.gapReporting);
+  }, [
+    performanceSourceRows,
+    annualProductionByTrackingId,
+    generationBaselineByTrackingId,
+    systems,
+  ]);
+
+  // Canonical forecast source — prefer the server query, fall back
+  // to the client compute during the brief initial-load gap or on
+  // query error so the tab never renders blank for users with
+  // already-hydrated local datasets.
   const forecastProjections = useMemo<ForecastContractRow[]>(() => {
     const data = forecastQuery.data;
     if (!data) {
-      return [];
+      return _clientFallbackForecastProjections;
     }
+    // Wire shape matches `ForecastContractRow` exactly (no Date
+    // fields → JSON serde, no superjson revival needed). The cast
+    // is to detach the readonly inference on the fetched array.
     return data.rows as ForecastContractRow[];
-  }, [forecastQuery.data]);
+  }, [forecastQuery.data, _clientFallbackForecastProjections]);
 
   const forecastSummary = useMemo(() => {
     const total = forecastProjections.length;

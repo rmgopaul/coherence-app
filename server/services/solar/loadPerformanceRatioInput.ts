@@ -34,6 +34,7 @@ import {
 import { getActiveVersionsForKeys } from "../../db/solarRecDatasets";
 import {
   parseAbpAcSizeKw,
+  parseDateOnlineAsMidMonth,
   parsePart2VerificationDate,
   type CsvRow,
 } from "./aggregatorHelpers";
@@ -43,17 +44,79 @@ import {
 } from "./buildSystemSnapshot";
 import {
   clean,
-  buildAnnualProductionByTrackingId,
-  buildGenerationBaselineByTrackingId,
-  buildGeneratorDateOnlineByTrackingId,
   normalizeMonitoringMatch,
   normalizeSystemIdMatch,
   normalizeSystemNameMatch,
-  type AnnualProductionProfile,
-  type GenerationBaseline,
+  parseDate,
+  parseEnergyToWh,
+  parseNumber,
   type PerformanceRatioInput,
   type PerformanceRatioInputSystem,
 } from "@shared/solarRecPerformanceRatio";
+
+// ---------------------------------------------------------------------------
+// Constants — mirror `client/src/solar-rec-dashboard/lib/constants.ts`.
+// Kept inline so this file is portable to a future shared location.
+// ---------------------------------------------------------------------------
+
+const MONTH_HEADERS = [
+  "Jan",
+  "Feb",
+  "Mar",
+  "Apr",
+  "May",
+  "Jun",
+  "Jul",
+  "Aug",
+  "Sep",
+  "Oct",
+  "Nov",
+  "Dec",
+] as const;
+
+const GENERATION_BASELINE_VALUE_HEADERS = [
+  "Last Meter Read (kWh)",
+  "Last Meter Read (kW)",
+  "Last Meter Read",
+  "Most Recent Production (kWh)",
+  "Most Recent Production",
+  "Generation (kWh)",
+  "Production (kWh)",
+];
+
+const GENERATION_BASELINE_DATE_HEADERS = [
+  "Last Meter Read Date",
+  "Last Month of Gen",
+  "Effective Date",
+  "Month of Generation",
+];
+
+// ---------------------------------------------------------------------------
+// Helpers ported from
+// `client/src/solar-rec-dashboard/lib/helpers/csvIdentity.ts`.
+// `parseDateOnlineAsMidMonth` is imported from `aggregatorHelpers`
+// (already a server-side mirror of the client function).
+// ---------------------------------------------------------------------------
+
+function resolveLastMeterReadRawValue(row: CsvRow): string {
+  const direct =
+    clean(row["Last Meter Read (kWh)"]) ||
+    clean(row["Last Meter Read (kW)"]) ||
+    clean(row["Last Meter Read"]);
+  if (direct) return direct;
+
+  for (const [key, value] of Object.entries(row)) {
+    const normalizedKey = clean(key).toLowerCase();
+    if (
+      normalizedKey.includes("last meter read") &&
+      !normalizedKey.includes("date")
+    ) {
+      const candidate = clean(value);
+      if (candidate) return candidate;
+    }
+  }
+  return "";
+}
 
 function uniqueNonEmpty(values: readonly (string | null | undefined)[]): string[] {
   const out: string[] = [];
@@ -77,8 +140,152 @@ function splitRawCandidates(value: string | undefined): string[] {
     .filter((s) => s.length > 0);
 }
 
-export type ServerAnnualProductionProfile = AnnualProductionProfile;
-export type ServerGenerationBaseline = GenerationBaseline;
+// ---------------------------------------------------------------------------
+// Per-dataset builders — byte-for-byte mirrors of the 3 client
+// `system.ts` builders. Take CsvRow[] (the loadDatasetRows shape)
+// and return the maps the aggregator consumes.
+//
+// Exported so Phase 5d PR 2+ aggregators (Forecast, REC perf eval)
+// can reuse these without duplicating the byte-for-byte logic. A
+// future Phase-5d cleanup can hoist these to shared and the client
+// can re-export from there.
+// ---------------------------------------------------------------------------
+
+export type ServerAnnualProductionProfile = {
+  monthlyKwh: number[];
+};
+
+export type ServerGenerationBaseline = {
+  valueWh: number;
+  date: Date | null;
+  source: string;
+};
+
+type AnnualProductionProfile = ServerAnnualProductionProfile;
+type GenerationBaseline = ServerGenerationBaseline;
+
+export function buildAnnualProductionByTrackingId(
+  rows: CsvRow[]
+): Map<string, AnnualProductionProfile> {
+  const mapping = new Map<string, AnnualProductionProfile>();
+  rows.forEach((row) => {
+    const trackingSystemRefId = clean(row["Unit ID"]) || clean(row.unit_id);
+    if (!trackingSystemRefId) return;
+    const monthlyKwh = MONTH_HEADERS.map(
+      (month) =>
+        parseNumber(row[month] ?? row[month.toLowerCase()]) ?? 0
+    );
+    const current = mapping.get(trackingSystemRefId);
+    if (!current) {
+      mapping.set(trackingSystemRefId, { monthlyKwh });
+      return;
+    }
+    const mergedMonthly = current.monthlyKwh.map((value, index) => {
+      const candidate = monthlyKwh[index] ?? 0;
+      return candidate > 0 ? candidate : value;
+    });
+    mapping.set(trackingSystemRefId, { monthlyKwh: mergedMonthly });
+  });
+  return mapping;
+}
+
+export function buildGenerationBaselineByTrackingId(
+  generationEntryRows: CsvRow[],
+  accountSolarGenerationRows: CsvRow[]
+): Map<string, GenerationBaseline> {
+  const mapping = new Map<string, GenerationBaseline>();
+
+  const updateBaseline = (
+    trackingSystemRefId: string,
+    candidate: GenerationBaseline
+  ) => {
+    const existing = mapping.get(trackingSystemRefId);
+    if (!existing) {
+      mapping.set(trackingSystemRefId, candidate);
+      return;
+    }
+    const existingTime = existing.date?.getTime() ?? Number.NEGATIVE_INFINITY;
+    const candidateTime = candidate.date?.getTime() ?? Number.NEGATIVE_INFINITY;
+    if (candidateTime > existingTime) {
+      mapping.set(trackingSystemRefId, candidate);
+      return;
+    }
+    if (candidateTime === existingTime) {
+      const existingRank = existing.source === "Generation Entry" ? 2 : 1;
+      const candidateRank = candidate.source === "Generation Entry" ? 2 : 1;
+      if (candidateRank > existingRank) {
+        mapping.set(trackingSystemRefId, candidate);
+      }
+    }
+  };
+
+  generationEntryRows.forEach((row) => {
+    const trackingSystemRefId = clean(row["Unit ID"]);
+    if (!trackingSystemRefId) return;
+    let valueWh: number | null = null;
+    for (const header of GENERATION_BASELINE_VALUE_HEADERS) {
+      valueWh = parseEnergyToWh(row[header], header, "kwh");
+      if (valueWh !== null) break;
+    }
+    if (valueWh === null) return;
+    let date: Date | null = null;
+    for (const header of GENERATION_BASELINE_DATE_HEADERS) {
+      date = parseDate(row[header]);
+      if (date) break;
+    }
+    updateBaseline(trackingSystemRefId, {
+      valueWh,
+      date,
+      source: "Generation Entry",
+    });
+  });
+
+  accountSolarGenerationRows.forEach((row) => {
+    const trackingSystemRefId = clean(row["GATS Gen ID"]);
+    if (!trackingSystemRefId) return;
+    const valueWh = parseEnergyToWh(
+      resolveLastMeterReadRawValue(row),
+      "Last Meter Read (kWh)",
+      "kwh"
+    );
+    if (valueWh === null) return;
+    const date =
+      parseDate(row["Last Meter Read Date"]) ??
+      parseDate(row["Month of Generation"]);
+    updateBaseline(trackingSystemRefId, {
+      valueWh,
+      date,
+      source: "Account Solar Generation",
+    });
+  });
+
+  return mapping;
+}
+
+export function buildGeneratorDateOnlineByTrackingId(
+  rows: CsvRow[]
+): Map<string, Date> {
+  const mapping = new Map<string, Date>();
+  rows.forEach((row) => {
+    const trackingSystemRefId =
+      clean(row["GATS Unit ID"]) ||
+      clean(row.gats_unit_id) ||
+      clean(row["Unit ID"]);
+    if (!trackingSystemRefId) return;
+    const dateOnline = parseDateOnlineAsMidMonth(
+      row["Date Online"] ??
+        row["Date online"] ??
+        row.date_online ??
+        row.date_online_month_year
+    );
+    if (!dateOnline) return;
+    const existing = mapping.get(trackingSystemRefId);
+    if (!existing || dateOnline < existing) {
+      mapping.set(trackingSystemRefId, dateOnline);
+    }
+  });
+  return mapping;
+}
 
 // ---------------------------------------------------------------------------
 // ABP Report → application-id-keyed maps. Mirrors the parent-level
