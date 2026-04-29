@@ -191,13 +191,20 @@ export default memo(function ForecastTab(props: ForecastTabProps) {
       }
     );
 
+  // Phase 5d PR 2 (2026-04-29) — server-side aggregator. The client
+  // useMemo below is preserved as a graceful fallback (initial
+  // mount, query error). The new `forecastProjections` const at
+  // the bottom of this block prefers the server data.
+  const forecastQuery =
+    trpc.solarRecDashboard.getDashboardForecast.useQuery();
+
   // Use the same 3-year rolling logic as REC Performance Eval to match
   // baseline numbers. For each system: find the delivery year matching
   // FORECAST_EY_LABEL, require targetYearIndex >= 2 (3rd year or
   // later), compute the rolling average. Then project the remaining
   // RECs in the current energy year using the annual production
   // estimate from the GATS meter-read date forward.
-  const forecastProjections = useMemo<ForecastContractRow[]>(() => {
+  const _clientFallbackForecastProjections = useMemo<ForecastContractRow[]>(() => {
     if (performanceSourceRows.length === 0) return [];
 
     const contractMap = new Map<
@@ -328,6 +335,21 @@ export default memo(function ForecastTab(props: ForecastTabProps) {
     generationBaselineByTrackingId,
     systems,
   ]);
+
+  // Canonical forecast source — prefer the server query, fall back
+  // to the client compute during the brief initial-load gap or on
+  // query error so the tab never renders blank for users with
+  // already-hydrated local datasets.
+  const forecastProjections = useMemo<ForecastContractRow[]>(() => {
+    const data = forecastQuery.data;
+    if (!data) {
+      return _clientFallbackForecastProjections;
+    }
+    // Wire shape matches `ForecastContractRow` exactly (no Date
+    // fields → JSON serde, no superjson revival needed). The cast
+    // is to detach the readonly inference on the fetched array.
+    return data.rows as ForecastContractRow[];
+  }, [forecastQuery.data, _clientFallbackForecastProjections]);
 
   const forecastSummary = useMemo(() => {
     const total = forecastProjections.length;
