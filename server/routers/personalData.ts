@@ -2569,8 +2569,6 @@ async function enrichDockTitle(
 
       let taskId = meta?.taskId as string | undefined;
       if (!taskId) {
-        // First try the query-param shape (`?id=…` — matches
-        // SignalActions' `taskUrl: showTask?id=…`).
         try {
           const urlObj = new URL(url);
           taskId = urlObj.searchParams.get("id") ?? undefined;
@@ -2579,7 +2577,6 @@ async function enrichDockTitle(
         }
       }
       if (!taskId) {
-        // Fall through to the `/task/<id>` path-segment shape.
         const taskMatch = url.match(/\/task\/([A-Za-z0-9_-]+)/);
         taskId = taskMatch?.[1];
       }
@@ -2590,6 +2587,9 @@ async function enrichDockTitle(
         return null;
       }
 
+      // Step 1 — single-task lookup. Returns active tasks; some
+      // accounts get a 404 for tasks the user CAN access via the
+      // list endpoint, so we fall through to listing on non-OK.
       const response = await fetch(
         `https://api.todoist.com/api/v1/tasks/${encodeURIComponent(taskId)}`,
         {
@@ -2597,18 +2597,76 @@ async function enrichDockTitle(
         }
       );
 
-      if (!response.ok) {
-        // Fallback: pull the full open-task list and find by id.
-        // Slow but covers cases where the v1 single-task endpoint
-        // returns 404 for a task the user CAN access.
-        const tasks = await getTodoistTasks(todoistIntegration.accessToken);
-        const task = tasks.find((t) => t.id === taskId);
-        return cleanTitle(task?.content);
+      if (response.ok) {
+        const data = await response.json();
+        const task = data?.task ?? data;
+        const result = cleanTitle(task?.content);
+        if (!result) {
+          console.log(
+            `[enrichDockTitle todoist] empty-content task=${taskId.slice(0, 12)}…`
+          );
+        }
+        return result;
       }
 
-      const data = await response.json();
-      const task = data?.task ?? data;
-      return cleanTitle(task?.content);
+      console.log(
+        `[enrichDockTitle todoist] api-${response.status} task=${taskId.slice(0, 12)}… — falling back to list`
+      );
+
+      // Step 2 — active-task list lookup.
+      const tasks = await getTodoistTasks(todoistIntegration.accessToken);
+      const activeTask = tasks.find((t) => t.id === taskId);
+      if (activeTask) {
+        const result = cleanTitle(activeTask.content);
+        if (result) return result;
+        console.log(
+          `[enrichDockTitle todoist] active-list-empty-content task=${taskId.slice(0, 12)}…`
+        );
+        return null;
+      }
+
+      // Step 3 — completed-task lookup. This is the common case
+      // for stuck dock chips: the user pinned a task, completed
+      // it later, and the chip stays in the dock with no title
+      // because the active-task fallback can't find it.
+      // Range over the last 365 days; Todoist's by-completion-date
+      // endpoint is bounded and the fetch is cheap enough at the
+      // sub-100-task scale.
+      console.log(
+        `[enrichDockTitle todoist] not-in-active task=${taskId.slice(0, 12)}… — checking completed tasks`
+      );
+      try {
+        const { getTodoistCompletedTasksInRange } = await import(
+          "../services/integrations/todoist"
+        );
+        const today = new Date();
+        const todayKey = today.toISOString().slice(0, 10);
+        const yearAgo = new Date(today.getTime() - 365 * 86_400_000);
+        const yearAgoKey = yearAgo.toISOString().slice(0, 10);
+        const completed = await getTodoistCompletedTasksInRange(
+          todoistIntegration.accessToken,
+          yearAgoKey,
+          todayKey
+        );
+        const completedTask = completed.find((t) => t.taskId === taskId);
+        if (completedTask) {
+          const result = cleanTitle(completedTask.content);
+          if (result) {
+            console.log(
+              `[enrichDockTitle todoist] resolved-from-completed task=${taskId.slice(0, 12)}…`
+            );
+            return result;
+          }
+        }
+        console.log(
+          `[enrichDockTitle todoist] not-found-anywhere task=${taskId.slice(0, 12)}…`
+        );
+      } catch (err) {
+        console.log(
+          `[enrichDockTitle todoist] completed-lookup-failed task=${taskId.slice(0, 12)}…: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+      return null;
     }
 
     return null;
