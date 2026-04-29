@@ -4372,62 +4372,19 @@ export default function SolarRecDashboard() {
   // fallback can be dropped entirely.
   const serverTransferDeliveryLookup = useTransferDeliveryLookup();
 
-  const transferDeliveryLookup = useMemo(() => {
-    if (serverTransferDeliveryLookup.lookup) {
-      return serverTransferDeliveryLookup.lookup;
-    }
-    const lookup = new Map<string, Map<number, number>>();
-    const transferRows = datasets.transferHistory?.rows ?? [];
-    if (transferRows.length === 0) return lookup;
-
-    // Dedupe by GATS Transaction ID (mirrors the server + library
-    // lookup builders). See buildTransferDeliveryLookup for the
-    // rationale — date-string format drift across GATS re-exports
-    // defeats the ingest-time composite-key dedup, so the final
-    // sum must guard against it.
-    const seenTransactionIds = new Set<string>();
-
-    for (const row of transferRows) {
-      const unitId = clean(row["Unit ID"]);
-      if (!unitId) continue;
-      const qty = parseNumber(row.Quantity) ?? 0;
-      if (qty === 0) continue;
-
-      const txId = clean(row["Transaction ID"]);
-      if (txId) {
-        if (seenTransactionIds.has(txId)) continue;
-        seenTransactionIds.add(txId);
-      }
-
-      const transferor = (clean(row.Transferor) ?? "").toLowerCase();
-      const transferee = (clean(row.Transferee) ?? "").toLowerCase();
-
-      let direction = 0;
-      const isFromCS = transferor.includes("carbon solutions");
-      const isToCS = transferee.includes("carbon solutions");
-      const transfereeIsUtility = ["comed", "ameren", "midamerican"].some(u => transferee.includes(u));
-      const transferorIsUtility = ["comed", "ameren", "midamerican"].some(u => transferor.includes(u));
-
-      if (isFromCS && transfereeIsUtility) direction = 1;
-      else if (transferorIsUtility && isToCS) direction = -1;
-      else continue;
-
-      const completionDateRaw = clean(row["Transfer Completion Date"]);
-      const completionDate = completionDateRaw ? parseDate(completionDateRaw) : null;
-      if (!completionDate) continue;
-
-      const month = completionDate.getMonth();
-      const year = completionDate.getFullYear();
-      const eyStartYear = month >= 5 ? year : year - 1;
-
-      const key = unitId.toLowerCase();
-      if (!lookup.has(key)) lookup.set(key, new Map());
-      const yearMap = lookup.get(key)!;
-      yearMap.set(eyStartYear, (yearMap.get(eyStartYear) ?? 0) + qty * direction);
-    }
-
-    return lookup;
-  }, [serverTransferDeliveryLookup.lookup, datasets.transferHistory]);
+  // Phase 5b (2026-04-28) of the IndexedDB-removal refactor: the
+  // client-side fallback that walked `datasets.transferHistory?.rows`
+  // is dropped. After Phase 5a the dashboard mounts with empty
+  // `datasets`, so the fallback only ever produced an empty Map
+  // anyway. The server-computed lookup (built from the active
+  // transferHistory batch in srDsTransferHistory) is the only
+  // source now; an empty Map is returned while the snapshot
+  // hasn't loaded or hasn't been built yet — matching the
+  // pre-Phase-5a behavior for "transferHistory not uploaded."
+  const transferDeliveryLookup = useMemo(
+    () => serverTransferDeliveryLookup.lookup ?? new Map<string, Map<number, number>>(),
+    [serverTransferDeliveryLookup.lookup]
+  );
 
   const performanceSourceRows = useMemo<PerformanceSourceRow[]>(() => {
     if (!isPerformanceEvalTabActive && !isForecastTabActive) return [];
