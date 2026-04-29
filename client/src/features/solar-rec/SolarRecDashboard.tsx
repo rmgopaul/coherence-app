@@ -5679,12 +5679,17 @@ const contractScanResultsQuery = solarRecTrpc.contractScan.getContractScanResult
   { csgIds: financialCsgIds },
   { enabled: (isFinancialsTabActive || isPipelineTabActive || isOverviewTabActive) && financialCsgIds.length > 0 }
 );
+const financialsQuery =
+  solarRecTrpc.solarRecDashboard.getDashboardFinancials.useQuery(undefined, {
+    enabled: isFinancialsTabActive || isOverviewTabActive,
+    staleTime: 60_000,
+  });
 // updateContractOverride, rescanSingleContract mutations + editingFinancialRow state
 // — moved to @/solar-rec-dashboard/components/FinancialsTab
 
 // ProfitRow — moved to @/solar-rec-dashboard/state/types
 
-const financialProfitData = useMemo<FinancialProfitData>(() => {
+const _clientFallbackFinancialProfitData = useMemo<FinancialProfitData>(() => {
   const empty = { rows: [] as ProfitRow[], totalProfit: 0, avgProfit: 0, totalCollateralization: 0, totalUtilityCollateral: 0, totalAdditionalCollateral: 0, totalCcAuth: 0, systemsWithData: 0 };
   if (!isFinancialsTabActive && !isOverviewTabActive) return empty;
 
@@ -5856,6 +5861,82 @@ const financialProfitData = useMemo<FinancialProfitData>(() => {
   datasets.abpReport,
   localOverrides,
 ]);
+
+const financialProfitData = useMemo<FinancialProfitData>(() => {
+  const data = financialsQuery.data;
+  if (!data) return _clientFallbackFinancialProfitData;
+
+  let rows = data.rows as ProfitRow[];
+
+  if (localOverrides.size > 0) {
+    rows = rows.map((row) => {
+      const localOv = localOverrides.get(row.csgId);
+      if (!localOv) return row;
+
+      const vendorFeePercent = localOv.vfp;
+      const additionalCollateralPercent = localOv.acp;
+      const vendorFeeAmount = roundMoney(
+        row.grossContractValue * (vendorFeePercent / 100)
+      );
+      const additionalCollateralAmount = roundMoney(
+        row.grossContractValue * (additionalCollateralPercent / 100)
+      );
+      const totalDeductions = roundMoney(
+        vendorFeeAmount +
+          row.utilityCollateral +
+          additionalCollateralAmount +
+          row.ccAuth5Percent +
+          row.applicationFee
+      );
+      const totalCollateralization = roundMoney(
+        row.utilityCollateral +
+          additionalCollateralAmount +
+          row.ccAuth5Percent
+      );
+      const collateralPercent =
+        row.grossContractValue > 0
+          ? totalCollateralization / row.grossContractValue
+          : 0;
+      const needsReview = collateralPercent > 0.30;
+
+      return {
+        ...row,
+        vendorFeePercent,
+        vendorFeeAmount,
+        additionalCollateralPercent,
+        additionalCollateralAmount,
+        totalDeductions,
+        profit: vendorFeeAmount,
+        totalCollateralization,
+        needsReview,
+        reviewReason: needsReview
+          ? `Collateral is ${(collateralPercent * 100).toFixed(1)}% of GCV`
+          : "",
+        hasOverride: true,
+      };
+    });
+  }
+
+  const totalProfit = rows.reduce((a, r) => a + r.profit, 0);
+  const totalColl = rows.reduce((a, r) => a + r.totalCollateralization, 0);
+  const totalUtilColl = rows.reduce((a, r) => a + r.utilityCollateral, 0);
+  const totalAddlColl = rows.reduce(
+    (a, r) => a + r.additionalCollateralAmount,
+    0
+  );
+  const totalCcAuthColl = rows.reduce((a, r) => a + r.ccAuth5Percent, 0);
+
+  return {
+    rows,
+    totalProfit: roundMoney(totalProfit),
+    avgProfit: rows.length > 0 ? roundMoney(totalProfit / rows.length) : 0,
+    totalCollateralization: roundMoney(totalColl),
+    totalUtilityCollateral: roundMoney(totalUtilColl),
+    totalAdditionalCollateral: roundMoney(totalAddlColl),
+    totalCcAuth: roundMoney(totalCcAuthColl),
+    systemsWithData: rows.length,
+  };
+}, [financialsQuery.data, _clientFallbackFinancialProfitData, localOverrides]);
 
 // ── Pipeline: Cash Flow by Month (M+1 from Part II verification) ──
 // pipelineCashFlowRows, cashFlowRows3Year, cashFlowRows12Month, cashFlowRows12MonthRef — moved to @/solar-rec-dashboard/components/AppPipelineTab
@@ -6727,6 +6808,7 @@ const aiDataContext = useMemo(() => {
                   contractScanIsFetching={contractScanResultsQuery.isFetching}
                   contractScanError={contractScanResultsQuery.error}
                   contractScanRefetch={contractScanResultsQuery.refetch}
+                  financialsRefetch={financialsQuery.refetch}
                   financialCsgIds={financialCsgIds}
                   abpCsgSystemMapping={datasets.abpCsgSystemMapping ?? null}
                   abpIccReport3Rows={datasets.abpIccReport3Rows ?? null}

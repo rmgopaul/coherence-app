@@ -2867,6 +2867,37 @@ export const solarRecDashboardRouter = t.router({
   }),
 
   /**
+   * Phase 5d PR 3 (2026-04-29) — server-side aggregator for the
+   * Financials tab. Replaces the parent dashboard's
+   * `financialProfitData` useMemo that joins ABP Part-II rows,
+   * ABP → CSG mapping, ICC Report 3 values, and latest contract-scan
+   * rows to produce the profit/collateralization table.
+   *
+   * Cache key bundles the 3 active dashboard dataset batch IDs
+   * (abpCsgSystemMapping, abpIccReport3Rows, abpReport) plus a
+   * contract-scan freshness hash so manual override edits invalidate
+   * the cached result even though no dashboard dataset changed.
+   * Wire payload is one row per system with financial data and should
+   * stay well below the 200 KB target on populated scopes.
+   */
+  getDashboardFinancials: requirePermission(
+    "solar-rec-dashboard",
+    "read"
+  ).query(async ({ ctx }) => {
+    const {
+      getOrBuildFinancialsAggregates,
+      FINANCIALS_RUNNER_VERSION,
+    } = await import("../services/solar/buildFinancialsAggregates");
+
+    const result = await getOrBuildFinancialsAggregates(ctx.scopeId);
+
+    return {
+      ...result,
+      _runnerVersion: FINANCIALS_RUNNER_VERSION,
+    };
+  }),
+
+  /**
    * Task 5.14 PR-4 (2026-04-27) — server-side reconciliation between
    * `srDsDeliverySchedule.trackingSystemRefId` (or `systemId` fallback)
    * and `srDsConvertedReads.monitoringSystemId`. Replaces the
