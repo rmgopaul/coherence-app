@@ -105,15 +105,22 @@ describe("CONTRACTED_DATE_PARSER", () => {
 
 describe("getDatasetParser", () => {
   it("returns the parser for `contractedDate`", () => {
-    const parser = getDatasetParser("contractedDate");
-    expect(parser).not.toBeNull();
+    expect(getDatasetParser("contractedDate")).not.toBeNull();
   });
 
-  it("returns null for unimplemented (Phase 4) dataset keys", () => {
-    // Whichever Phase 4 datasets remain null today — pick one
-    // that's expected to be unimplemented in this PR's scope.
-    expect(getDatasetParser("solarApplications")).toBeNull();
-    expect(getDatasetParser("abpReport")).toBeNull();
+  it("returns a parser for every dataset that supports CSV upload", () => {
+    // After Phase 4: every key returns a parser EXCEPT
+    // `deliveryScheduleBase`, which is populated by the Schedule
+    // B PDF scanner on the Delivery Tracker tab — not a direct
+    // CSV upload.
+    for (const key of DATASET_KEYS) {
+      const parser = getDatasetParser(key);
+      if (key === "deliveryScheduleBase") {
+        expect(parser).toBeNull();
+      } else {
+        expect(parser).not.toBeNull();
+      }
+    }
   });
 
   it("returns null for unknown keys", () => {
@@ -123,8 +130,13 @@ describe("getDatasetParser", () => {
 });
 
 describe("listImplementedDatasetParsers", () => {
-  it("includes contractedDate", () => {
-    expect(listImplementedDatasetParsers()).toContain("contractedDate");
+  it("returns 17 of 18 dataset keys (all but deliveryScheduleBase)", () => {
+    const list = listImplementedDatasetParsers();
+    expect(list).toHaveLength(17);
+    expect(list).not.toContain("deliveryScheduleBase");
+    expect(list).toContain("contractedDate");
+    expect(list).toContain("solarApplications");
+    expect(list).toContain("abpReport");
   });
 
   it("only returns DatasetKey values", () => {
@@ -132,5 +144,321 @@ describe("listImplementedDatasetParsers", () => {
     for (const key of listImplementedDatasetParsers()) {
       expect(known.has(key)).toBe(true);
     }
+  });
+});
+
+// ── Phase 4 — sample-row coverage for each parser ──────────────────
+//
+// One happy-path test per parser, plus the blank-row skip + the
+// missing-required-field error for the parsers that gate on a
+// required field. The full per-parser column matrix lives in the
+// schema; this suite is the wire-vocabulary sanity check.
+import {
+  ABP_CSG_PORTAL_DATABASE_ROWS_PARSER,
+  ABP_CSG_SYSTEM_MAPPING_PARSER,
+  ABP_ICC_REPORT_2_ROWS_PARSER,
+  ABP_ICC_REPORT_3_ROWS_PARSER,
+  ABP_PORTAL_INVOICE_MAP_ROWS_PARSER,
+  ABP_PROJECT_APPLICATION_ROWS_PARSER,
+  ABP_QUICK_BOOKS_ROWS_PARSER,
+  ABP_REPORT_PARSER,
+  ABP_UTILITY_INVOICE_ROWS_PARSER,
+  ACCOUNT_SOLAR_GENERATION_PARSER,
+  ANNUAL_PRODUCTION_ESTIMATES_PARSER,
+  CONVERTED_READS_PARSER,
+  GENERATION_ENTRY_PARSER,
+  GENERATOR_DETAILS_PARSER,
+  pickNumber,
+  SOLAR_APPLICATIONS_PARSER,
+  TRANSFER_HISTORY_PARSER,
+} from "./datasetUploadParsers";
+
+const baseCtx = { scopeId: "scope-1", batchId: "batch-1", rowIndex: 0 };
+
+describe("pickNumber", () => {
+  it("parses plain numbers", () => {
+    expect(pickNumber({ x: "42" }, ["x"])).toBe(42);
+    expect(pickNumber({ x: "-3.14" }, ["x"])).toBe(-3.14);
+  });
+
+  it("strips $ and , formatting", () => {
+    expect(pickNumber({ amount: "$1,234.56" }, ["amount"])).toBe(1234.56);
+    expect(pickNumber({ amount: "  1 000.5  " }, ["amount"])).toBe(1000.5);
+  });
+
+  it("returns null on non-numeric or missing values", () => {
+    expect(pickNumber({ x: "abc" }, ["x"])).toBeNull();
+    expect(pickNumber({}, ["x"])).toBeNull();
+    expect(pickNumber({ x: "" }, ["x"])).toBeNull();
+  });
+});
+
+describe("SOLAR_APPLICATIONS_PARSER", () => {
+  it("parses canonical headers + numeric coercion", () => {
+    const out = SOLAR_APPLICATIONS_PARSER.parseRow(
+      {
+        applicationId: "APP-1",
+        systemId: "SYS-1",
+        trackingSystemRefId: "GATS-1",
+        "Installed kW AC": "12.5",
+        "REC Price": "$120.00",
+        "Annual RECs": "10",
+        installerName: "Acme",
+        zipCode: "60601",
+      },
+      baseCtx
+    );
+    expect(out!.applicationId).toBe("APP-1");
+    expect(out!.systemId).toBe("SYS-1");
+    expect(out!.installedKwAc).toBe(12.5);
+    expect(out!.recPrice).toBe(120);
+    expect(out!.annualRecs).toBe(10);
+    expect(out!.zipCode).toBe("60601");
+    expect(out!.installerName).toBe("Acme");
+    // rawRow always carries the full source row.
+    const rawParsed = JSON.parse(out!.rawRow!);
+    expect(rawParsed.installerName).toBe("Acme");
+  });
+
+  it("returns null for blank rows", () => {
+    expect(SOLAR_APPLICATIONS_PARSER.parseRow({}, baseCtx)).toBeNull();
+  });
+});
+
+describe("ABP_REPORT_PARSER", () => {
+  it("parses application-level fields", () => {
+    const out = ABP_REPORT_PARSER.parseRow(
+      {
+        "Application ID": "APP-9",
+        projectName: "Sunny Acres",
+        "Inverter Size kW AC": "8.2",
+      },
+      baseCtx
+    );
+    expect(out!.applicationId).toBe("APP-9");
+    expect(out!.projectName).toBe("Sunny Acres");
+    expect(out!.inverterSizeKwAc).toBe(8.2);
+  });
+
+  it("returns null for empty rows", () => {
+    expect(ABP_REPORT_PARSER.parseRow({}, baseCtx)).toBeNull();
+  });
+});
+
+describe("GENERATION_ENTRY_PARSER", () => {
+  it("parses unit + monitoring fields", () => {
+    const out = GENERATION_ENTRY_PARSER.parseRow(
+      {
+        "Unit ID": "U-1",
+        "Facility Name": "Site A",
+        onlineMonitoring: "enphaseV4",
+        "Monitoring System ID": "1234",
+      },
+      baseCtx
+    );
+    expect(out!.unitId).toBe("U-1");
+    expect(out!.facilityName).toBe("Site A");
+    expect(out!.onlineMonitoring).toBe("enphaseV4");
+    expect(out!.onlineMonitoringSystemId).toBe("1234");
+  });
+});
+
+describe("ACCOUNT_SOLAR_GENERATION_PARSER", () => {
+  it("parses GATS gen + month of generation", () => {
+    const out = ACCOUNT_SOLAR_GENERATION_PARSER.parseRow(
+      {
+        "GATS Gen ID": "GEN-1",
+        "Facility Name": "Site B",
+        "Month of Generation": "2026-04",
+        "Last Meter Read kWh": "12345",
+      },
+      baseCtx
+    );
+    expect(out!.gatsGenId).toBe("GEN-1");
+    expect(out!.facilityName).toBe("Site B");
+    expect(out!.monthOfGeneration).toBe("2026-04");
+    expect(out!.lastMeterReadKwh).toBe("12345");
+  });
+});
+
+describe("CONVERTED_READS_PARSER", () => {
+  it("parses monitoring + meter-read fields", () => {
+    const out = CONVERTED_READS_PARSER.parseRow(
+      {
+        monitoring: "solaredge",
+        monitoring_system_id: "siteA",
+        monitoring_system_name: "Site A",
+        lifetime_meter_read_wh: "1500000",
+        read_date: "2026-04-01",
+      },
+      baseCtx
+    );
+    expect(out!.monitoring).toBe("solaredge");
+    expect(out!.monitoringSystemId).toBe("siteA");
+    expect(out!.lifetimeMeterReadWh).toBe(1500000);
+    expect(out!.readDate).toBe("2026-04-01");
+  });
+});
+
+describe("ANNUAL_PRODUCTION_ESTIMATES_PARSER", () => {
+  it("parses 12 month columns into typed doubles", () => {
+    const out = ANNUAL_PRODUCTION_ESTIMATES_PARSER.parseRow(
+      {
+        "Unit ID": "U-1",
+        Jan: "100",
+        Feb: "110",
+        Mar: "120",
+        Apr: "130",
+        May: "140",
+        Jun: "150",
+        Jul: "160",
+        Aug: "170",
+        Sep: "180",
+        Oct: "190",
+        Nov: "200",
+        Dec: "210",
+      },
+      baseCtx
+    );
+    expect(out!.unitId).toBe("U-1");
+    expect(out!.jan).toBe(100);
+    expect(out!.feb).toBe(110);
+    // The schema column is named `decMonth` because `dec` is reserved
+    // in some MySQL versions.
+    expect(out!.decMonth).toBe(210);
+  });
+});
+
+describe("GENERATOR_DETAILS_PARSER", () => {
+  it("parses gats + date online", () => {
+    const out = GENERATOR_DETAILS_PARSER.parseRow(
+      { "GATS Unit ID": "U-1", "Date Online": "2024-01-15" },
+      baseCtx
+    );
+    expect(out!.gatsUnitId).toBe("U-1");
+    expect(out!.dateOnline).toBe("2024-01-15");
+  });
+});
+
+describe("ABP_UTILITY_INVOICE_ROWS_PARSER", () => {
+  it("requires a systemId", () => {
+    expect(
+      ABP_UTILITY_INVOICE_ROWS_PARSER.parseRow({}, baseCtx)
+    ).toBeNull();
+    const out = ABP_UTILITY_INVOICE_ROWS_PARSER.parseRow(
+      { "System ID": "SYS-1", paymentNumber: "5" },
+      baseCtx
+    );
+    expect(out!.systemId).toBe("SYS-1");
+    // paymentNumber is not a typed column — survives in rawRow.
+    expect(JSON.parse(out!.rawRow!).paymentNumber).toBe("5");
+  });
+});
+
+describe("ABP_CSG_SYSTEM_MAPPING_PARSER", () => {
+  it("parses csgId + systemId", () => {
+    const out = ABP_CSG_SYSTEM_MAPPING_PARSER.parseRow(
+      { "CSG ID": "CSG-1", "System ID": "SYS-1" },
+      baseCtx
+    );
+    expect(out!.csgId).toBe("CSG-1");
+    expect(out!.systemId).toBe("SYS-1");
+  });
+});
+
+describe("ABP_QUICK_BOOKS_ROWS_PARSER", () => {
+  it("parses invoiceNumber from QuickBooks `Num` header", () => {
+    const out = ABP_QUICK_BOOKS_ROWS_PARSER.parseRow(
+      { Num: "INV-100", description: "REC payment" },
+      baseCtx
+    );
+    expect(out!.invoiceNumber).toBe("INV-100");
+  });
+
+  it("requires invoiceNumber", () => {
+    expect(ABP_QUICK_BOOKS_ROWS_PARSER.parseRow({}, baseCtx)).toBeNull();
+  });
+});
+
+describe("ABP_PROJECT_APPLICATION_ROWS_PARSER", () => {
+  it("requires applicationId", () => {
+    expect(
+      ABP_PROJECT_APPLICATION_ROWS_PARSER.parseRow({}, baseCtx)
+    ).toBeNull();
+    const out = ABP_PROJECT_APPLICATION_ROWS_PARSER.parseRow(
+      {
+        "Application ID": "APP-1",
+        "Part 1 Submission Date": "2024-03-01",
+      },
+      baseCtx
+    );
+    expect(out!.applicationId).toBe("APP-1");
+    expect(out!.part1SubmissionDate).toBe("2024-03-01");
+  });
+});
+
+describe("ABP_PORTAL_INVOICE_MAP_ROWS_PARSER", () => {
+  it("parses csgId + invoiceNumber", () => {
+    const out = ABP_PORTAL_INVOICE_MAP_ROWS_PARSER.parseRow(
+      { "CSG ID": "CSG-1", "Invoice Number": "INV-1" },
+      baseCtx
+    );
+    expect(out!.csgId).toBe("CSG-1");
+    expect(out!.invoiceNumber).toBe("INV-1");
+  });
+});
+
+describe("ABP_CSG_PORTAL_DATABASE_ROWS_PARSER", () => {
+  it("parses systemId + csgId", () => {
+    const out = ABP_CSG_PORTAL_DATABASE_ROWS_PARSER.parseRow(
+      { systemId: "SYS-1", csgId: "CSG-1" },
+      baseCtx
+    );
+    expect(out!.systemId).toBe("SYS-1");
+    expect(out!.csgId).toBe("CSG-1");
+  });
+});
+
+describe("ABP_ICC_REPORT_2_ROWS_PARSER", () => {
+  it("requires applicationId", () => {
+    expect(ABP_ICC_REPORT_2_ROWS_PARSER.parseRow({}, baseCtx)).toBeNull();
+    const out = ABP_ICC_REPORT_2_ROWS_PARSER.parseRow(
+      { "Application ID": "APP-2" },
+      baseCtx
+    );
+    expect(out!.applicationId).toBe("APP-2");
+  });
+});
+
+describe("ABP_ICC_REPORT_3_ROWS_PARSER", () => {
+  it("requires applicationId", () => {
+    expect(ABP_ICC_REPORT_3_ROWS_PARSER.parseRow({}, baseCtx)).toBeNull();
+    const out = ABP_ICC_REPORT_3_ROWS_PARSER.parseRow(
+      { "Application ID": "APP-3" },
+      baseCtx
+    );
+    expect(out!.applicationId).toBe("APP-3");
+  });
+});
+
+describe("TRANSFER_HISTORY_PARSER", () => {
+  it("parses transactionId + transferor/transferee + quantity", () => {
+    const out = TRANSFER_HISTORY_PARSER.parseRow(
+      {
+        "Transaction ID": "TXN-1",
+        "Unit ID": "U-1",
+        "Completion Date": "2026-04-01",
+        Quantity: "1000",
+        Transferor: "Alpha",
+        Transferee: "Beta",
+      },
+      baseCtx
+    );
+    expect(out!.transactionId).toBe("TXN-1");
+    expect(out!.unitId).toBe("U-1");
+    expect(out!.transferCompletionDate).toBe("2026-04-01");
+    expect(out!.quantity).toBe(1000);
+    expect(out!.transferor).toBe("Alpha");
+    expect(out!.transferee).toBe("Beta");
   });
 });

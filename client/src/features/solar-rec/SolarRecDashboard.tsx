@@ -458,18 +458,43 @@ const SCANNER_MANAGED_DATASET_KEYS = new Set<DatasetKey>(["deliveryScheduleBase"
 const CORE_REQUIRED_DATASET_KEYS: DatasetKey[] = ["abpReport"];
 
 /**
- * Phase 3 of the IndexedDB-removal refactor: datasets that have a
- * server-side parser wired (`server/services/core/datasetUploadParsers.ts`).
- * For these, the Step 1 panel renders a v2 upload button alongside
- * the legacy "Choose CSV" affordance. Phase 4 expands this set to
- * cover all 18 datasets; Phase 5 then removes the legacy
- * affordance entirely.
+ * Datasets that have a server-side parser wired
+ * (`server/services/core/datasetUploadParsers.ts`). For these,
+ * the Step 1 panel renders a v2 upload button alongside the
+ * legacy "Choose CSV" affordance.
+ *
+ * Phase 4 (2026-04-28) — expanded from {contractedDate} to every
+ * dataset that supports CSV upload. The single excluded key is
+ * `deliveryScheduleBase`, which is populated by the Schedule B
+ * PDF scanner on the Delivery Tracker tab — never a direct CSV
+ * upload.
+ *
+ * Phase 5 (forthcoming) removes the legacy affordance entirely
+ * and drops this set.
  *
  * Keep in lockstep with the parser registry. The check is on the
  * client only — the server still rejects an upload for an
  * unimplemented dataset with a clear error message.
  */
-const IMPLEMENTED_V2_DATASETS = new Set<DatasetKey>(["contractedDate"]);
+const IMPLEMENTED_V2_DATASETS = new Set<DatasetKey>([
+  "contractedDate",
+  "solarApplications",
+  "abpReport",
+  "generationEntry",
+  "accountSolarGeneration",
+  "convertedReads",
+  "annualProductionEstimates",
+  "generatorDetails",
+  "abpUtilityInvoiceRows",
+  "abpCsgSystemMapping",
+  "abpQuickBooksRows",
+  "abpProjectApplicationRows",
+  "abpPortalInvoiceMapRows",
+  "abpCsgPortalDatabaseRows",
+  "abpIccReport2Rows",
+  "abpIccReport3Rows",
+  "transferHistory",
+]);
 
 /**
  * Phase 16: per-tab dataset priority. When the dashboard mounts with
