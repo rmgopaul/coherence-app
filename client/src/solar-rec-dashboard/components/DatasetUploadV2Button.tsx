@@ -24,6 +24,7 @@
 import { useCallback, useRef, useState } from "react";
 import { Loader2, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { convertSpreadsheetFileToCsv } from "@/lib/csvParsing";
 import { useDatasetUploadController } from "../hooks/useDatasetUploadController";
 import { UploadProgressDialog } from "./UploadProgressDialog";
 
@@ -45,6 +46,19 @@ export interface DatasetUploadV2ButtonProps {
   /** Compact mode — same h-7 / text-xs sizing the dashboard uses elsewhere. */
   compact?: boolean;
   disabled?: boolean;
+  /**
+   * Phase 6 PR-A — opt into Excel (`.xlsx/.xlsm/.xlsb/.xls`) input
+   * for datasets that historically supported it on the legacy v1
+   * path (`abpIccReport2Rows`, `abpIccReport3Rows`). When true, the
+   * button widens its `<input accept>` and converts the Excel file
+   * to CSV in the browser via `convertSpreadsheetFileToCsv` before
+   * handing the bytes to the controller. The server runner is
+   * unchanged — it still receives a CSV.
+   *
+   * Defaults to `false` so the other 15 v2-enabled datasets keep
+   * their CSV-only UX.
+   */
+  acceptExcel?: boolean;
 }
 
 export function DatasetUploadV2Button({
@@ -54,10 +68,19 @@ export function DatasetUploadV2Button({
   variant = "default",
   compact = false,
   disabled = false,
+  acceptExcel = false,
 }: DatasetUploadV2ButtonProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const controller = useDatasetUploadController();
   const [dialogJobId, setDialogJobId] = useState<string | null>(null);
+  // Phase 6 PR-A — Excel-conversion error surfaces inline on the
+  // button (not in the upload dialog), because conversion runs
+  // BEFORE the controller starts; the dialog only opens once the
+  // controller is in a non-idle phase. A failed parse therefore
+  // never produces a job row and never reaches the dialog. The
+  // chip clears on the next pick attempt.
+  const [prepError, setPrepError] = useState<string | null>(null);
+  const [isPreparingFile, setIsPreparingFile] = useState(false);
 
   const handlePick = useCallback(() => {
     inputRef.current?.click();
@@ -65,13 +88,38 @@ export function DatasetUploadV2Button({
 
   const handleFileSelected = useCallback(
     async (event: React.ChangeEvent<HTMLInputElement>) => {
-      const file = event.target.files?.[0];
+      const picked = event.target.files?.[0];
       // Reset the input so picking the same file twice fires
       // onChange the second time too.
       event.currentTarget.value = "";
-      if (!file) return;
+      if (!picked) return;
 
-      const result = await controller.startUpload(datasetKey, file);
+      setPrepError(null);
+      let fileToUpload: File = picked;
+      if (acceptExcel) {
+        // `convertSpreadsheetFileToCsv` is a no-op for .csv inputs
+        // and parses Excel via the existing `parseTabularFile` helper
+        // for the 4 supported extensions. We always call it under
+        // `acceptExcel` so a user dropping a stray .xlsx onto the
+        // CSV-only `<input>` (which can happen on macOS with
+        // `accept` filtering bypassed) gets the same conversion path
+        // rather than a 500 from the server-side CSV parser.
+        setIsPreparingFile(true);
+        try {
+          fileToUpload = await convertSpreadsheetFileToCsv(picked, {
+            excelSheetMode: "first",
+          });
+        } catch (err) {
+          const message =
+            err instanceof Error ? err.message : String(err);
+          setPrepError(message);
+          setIsPreparingFile(false);
+          return;
+        }
+        setIsPreparingFile(false);
+      }
+
+      const result = await controller.startUpload(datasetKey, fileToUpload);
       // Even on failure, surface the dialog so the user sees the
       // error state — `controller.state.error` is the source of
       // truth pre-finalize. result?.jobId only exists post-finalize
@@ -79,7 +127,7 @@ export function DatasetUploadV2Button({
       // also reads `controllerState` for the pre-jobId phase.
       setDialogJobId(result?.jobId ?? null);
     },
-    [controller, datasetKey]
+    [acceptExcel, controller, datasetKey]
   );
 
   const handleClose = useCallback(() => {
@@ -103,6 +151,7 @@ export function DatasetUploadV2Button({
   }, [controller]);
 
   const isWorking =
+    isPreparingFile ||
     controller.state.phase === "starting" ||
     controller.state.phase === "uploading" ||
     controller.state.phase === "finalizing";
@@ -110,9 +159,26 @@ export function DatasetUploadV2Button({
   // The dialog renders when EITHER the controller has any non-idle
   // state to show OR a jobId is being polled. The `controllerState`
   // prop carries pre-finalize info; the jobId carries post-finalize.
+  // (Note: `isPreparingFile` is intentionally NOT a trigger here —
+  // a failed Excel parse should not strand an empty dialog; it
+  // surfaces inline via the `prepError` chip below.)
   const showDialog =
     dialogJobId !== null ||
     (controller.state.phase !== "idle" && controller.state.phase !== "done");
+
+  // ARIA + visible label: when the user drops an Excel file in,
+  // briefly say "Preparing…" instead of the regular label so the
+  // disabled state has a reason. Falls back to the configured
+  // label otherwise.
+  const buttonLabel = isPreparingFile ? "Preparing…" : label;
+
+  // CSV-only by default, widened on a per-dataset basis when the
+  // legacy v1 path used to take Excel for that key. We mirror v1's
+  // exact `accept` string for the Excel-enabled case so the file
+  // picker behaves identically on the OS picker.
+  const acceptString = acceptExcel
+    ? ".csv,.xlsx,.xls,.xlsm,.xlsb,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    : ".csv,text/csv";
 
   return (
     <>
@@ -134,15 +200,27 @@ export function DatasetUploadV2Button({
             className={compact ? "mr-1 h-3 w-3" : "mr-2 h-4 w-4"}
           />
         )}
-        {label}
+        {buttonLabel}
       </Button>
       <input
         ref={inputRef}
         type="file"
-        accept=".csv,text/csv"
+        accept={acceptString}
         className="hidden"
         onChange={handleFileSelected}
       />
+      {prepError ? (
+        <p
+          role="alert"
+          className={
+            compact
+              ? "text-[11px] text-rose-700"
+              : "text-xs text-rose-700"
+          }
+        >
+          {prepError}
+        </p>
+      ) : null}
       {showDialog && (
         <UploadProgressDialog
           jobId={dialogJobId}
