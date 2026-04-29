@@ -107,16 +107,18 @@ export function buildPerformanceSourceRows(
     const years = buildScheduleYearEntries(row as SolarRecCsvRow);
     if (years.length === 0) continue;
 
-    // The server's `transferDeliveryLookup.byTrackingId` is keyed by
-    // LOWERCASED unitId (see buildTransferDeliveryLookup.ts:242), so
-    // every consumer here must lowercase first. Mirrors the client
-    // memo at `SolarRecDashboard.tsx :: performanceSourceRows`,
-    // which did `transferDeliveryLookup.get(trackingSystemRefId
-    // .toLowerCase())` for both the per-year delivered overlay AND
-    // the firstTransferEnergyYear scan.
-    const trackingIdLower = trackingSystemRefId.toLowerCase();
+    // `getDeliveredForYear` is case-insensitive on trackingId
+    // (lowercases internally) since the case-fix in
+    // aggregatorHelpers; we still need to lowercase for the
+    // direct `byTrackingId[...]` access below because the
+    // firstTransferEnergyYear scan iterates the per-system year
+    // map directly rather than going through the helper. The
+    // server payload uses lowercase keys (see
+    // `buildTransferDeliveryLookup.ts:242`).
     const systemTransfersRecord =
-      transferDeliveryLookup.byTrackingId[trackingIdLower] ?? null;
+      transferDeliveryLookup.byTrackingId[
+        trackingSystemRefId.toLowerCase()
+      ] ?? null;
 
     let firstTransferEnergyYear: number | null = null as number | null;
     if (systemTransfersRecord) {
@@ -140,7 +142,7 @@ export function buildPerformanceSourceRows(
       const eyStartYear = year.startDate.getFullYear();
       year.delivered = getDeliveredForYear(
         transferDeliveryLookup,
-        trackingIdLower,
+        trackingSystemRefId,
         eyStartYear
       );
     }
@@ -180,7 +182,13 @@ const PERFORMANCE_SOURCE_DEPS = ["abpReport", "deliveryScheduleBase"] as const;
 const ARTIFACT_TYPE = "performanceSourceRows";
 
 export const PERFORMANCE_SOURCE_ROWS_RUNNER_VERSION =
-  "phase-5e-pr8-performancesourcerows@1";
+  // 2026-04-29 (@2): bumped alongside the
+  // `getDeliveredForYear` case-fix. The aggregator's behavior
+  // doesn't change (it was already lowercasing for the lookup),
+  // but its inputs go through the corrected helper now and the
+  // cache key bundles the runner version, so we bump for
+  // consistency with the sibling aggregators.
+  "phase-5e-pr8-performancesourcerows@2";
 
 async function computePerformanceSourceRowsInputHash(
   scopeId: string

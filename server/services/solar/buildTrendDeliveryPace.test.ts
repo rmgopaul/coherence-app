@@ -34,7 +34,12 @@ describe("buildTrendDeliveryPace (server-side)", () => {
   it("emits one row per active utility contract with required + delivered + paces", () => {
     const rows = buildTrendDeliveryPace(
       [scheduleRow()],
-      lookupFor({ NON100: { "2024": 50 } }),
+      // 2026-04-29: lookup keys are lowercased to match the prod
+      // payload shape (server builds via `unitId.toLowerCase()`).
+      // `getDeliveredForYear` lowercases the query internally so
+      // mixed-case row data (`tracking_system_ref_id: "NON100"`)
+      // still hits.
+      lookupFor({ non100: { "2024": 50 } }),
       NOW
     );
     expect(rows).toHaveLength(1);
@@ -103,8 +108,8 @@ describe("buildTrendDeliveryPace (server-side)", () => {
         }),
       ],
       lookupFor({
-        NON100: { "2024": 30 },
-        NON101: { "2024": 20 },
+        non100: { "2024": 30 },
+        non101: { "2024": 20 },
       }),
       NOW
     );
@@ -123,7 +128,7 @@ describe("buildTrendDeliveryPace (server-side)", () => {
           utility_contract_number: undefined,
         }),
       ],
-      lookupFor({ NON100: { "2024": 50 } }),
+      lookupFor({ non100: { "2024": 50 } }),
       NOW
     );
     expect(rows).toHaveLength(1);
@@ -174,7 +179,7 @@ describe("buildTrendDeliveryPace (server-side)", () => {
           year1_end_date: undefined,
         }),
       ],
-      lookupFor({ NON100: { "2024": 25 } }),
+      lookupFor({ non100: { "2024": 25 } }),
       NOW
     );
     expect(rows).toHaveLength(1);

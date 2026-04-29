@@ -158,22 +158,40 @@ describe("toPercentValue", () => {
 describe("getDeliveredForYear", () => {
   it("reads the (trackingId, energyYear) bucket from the lookup", () => {
     const lookup = lookupFor({
-      NON100: { "2024": 50, "2025": 30 },
-      NON200: { "2024": 10 },
+      // Server payload uses lowercase keys (built from
+      // `unitId.toLowerCase()` in buildTransferDeliveryLookup.ts).
+      // Test fixtures match prod shape.
+      non100: { "2024": 50, "2025": 30 },
+      non200: { "2024": 10 },
     });
-    expect(getDeliveredForYear(lookup, "NON100", 2024)).toBe(50);
-    expect(getDeliveredForYear(lookup, "NON100", 2025)).toBe(30);
-    expect(getDeliveredForYear(lookup, "NON200", 2024)).toBe(10);
+    // Callers can pass either case — helper lowercases internally.
+    expect(getDeliveredForYear(lookup, "non100", 2024)).toBe(50);
+    expect(getDeliveredForYear(lookup, "non100", 2025)).toBe(30);
+    expect(getDeliveredForYear(lookup, "non200", 2024)).toBe(10);
   });
 
   it("returns 0 for unknown tracking ID", () => {
-    const lookup = lookupFor({ NON100: { "2024": 50 } });
-    expect(getDeliveredForYear(lookup, "NON999", 2024)).toBe(0);
+    const lookup = lookupFor({ non100: { "2024": 50 } });
+    expect(getDeliveredForYear(lookup, "non999", 2024)).toBe(0);
   });
 
   it("returns 0 for unknown energy year on a known tracking ID", () => {
-    const lookup = lookupFor({ NON100: { "2024": 50 } });
-    expect(getDeliveredForYear(lookup, "NON100", 2099)).toBe(0);
+    const lookup = lookupFor({ non100: { "2024": 50 } });
+    expect(getDeliveredForYear(lookup, "non100", 2099)).toBe(0);
+  });
+
+  it("is case-insensitive on the trackingId", () => {
+    // Server lookup keys are lowercase; row data
+    // (`tracking_system_ref_id`) typically arrives mixed-case from
+    // Schedule B PDF parses. Helper must normalize so both work
+    // — this is the regression test for the pre-2026-04-29 bug
+    // where Contract Vintage / Forecast / TrendDeliveryPace
+    // silently returned 0 deliveries on every match in prod.
+    const lookup = lookupFor({ non100: { "2024": 50 } });
+    expect(getDeliveredForYear(lookup, "NON100", 2024)).toBe(50);
+    expect(getDeliveredForYear(lookup, "Non100", 2024)).toBe(50);
+    expect(getDeliveredForYear(lookup, "non100", 2024)).toBe(50);
+    expect(getDeliveredForYear(lookup, "NoN100", 2024)).toBe(50);
   });
 });
 

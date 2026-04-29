@@ -269,13 +269,31 @@ export function toPercentValue(
  * `Record<string, Record<string, number>>` (vs the client's
  * `Map<string, Map<number, number>>`); this helper hides the shape
  * so callers don't have to repeat the indirection.
+ *
+ * Case-insensitive on `trackingId`. The server payload is built
+ * with lowercased keys (see `buildTransferDeliveryLookup.ts:242` —
+ * `const key = unitId.toLowerCase()`), but the canonical row data
+ * (`tracking_system_ref_id` from a Schedule B PDF parse) typically
+ * arrives mixed-case. Helper lowercases internally so callers
+ * can pass either case and get the right answer. This is the
+ * single point that enforces the lookup-key contract; do NOT
+ * lowercase again at the call site.
+ *
+ * Pre-2026-04-29 several aggregators (Contract Vintage, Forecast's
+ * private buildPerformanceSourceRows, TrendDeliveryPace) passed
+ * raw mixed-case `tracking_system_ref_id` and silently got 0
+ * deliveries on every match in production. Fixed via this helper
+ * so the bug can't reappear at the call site. Test fixtures must
+ * also use lowercase keys to match the prod payload — the test
+ * suites in this directory were updated as part of the same
+ * commit.
  */
 export function getDeliveredForYear(
   lookup: TransferDeliveryLookupPayload,
   trackingId: string,
   energyYear: number
 ): number {
-  const byYear = lookup.byTrackingId[trackingId];
+  const byYear = lookup.byTrackingId[trackingId.toLowerCase()];
   if (!byYear) return 0;
   const value = byYear[String(energyYear)];
   return typeof value === "number" ? value : 0;

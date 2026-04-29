@@ -379,7 +379,13 @@ const FORECAST_DEPS = [
 
 const FORECAST_ARTIFACT_TYPE = "forecast";
 
-export const FORECAST_RUNNER_VERSION = "phase-5d-pr2-forecast@1";
+export const FORECAST_RUNNER_VERSION = "phase-5d-pr2-forecast@2";
+// 2026-04-29 (@2): bumped after `getDeliveredForYear`
+// case-sensitivity fix. The private `buildPerformanceSourceRows`
+// inside this file silently returned 0 deliveries in prod
+// (lookup keys lowercased, raw mixed-case trackingId passed).
+// Cache invalidation forces recompute against the corrected
+// helper.
 
 interface ForecastBatchIds {
   deliveryScheduleBaseBatchId: string | null;
