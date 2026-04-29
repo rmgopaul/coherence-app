@@ -105,6 +105,7 @@ export interface FinancialsTabProps {
   contractScanIsFetching: boolean;
   contractScanError: unknown;
   contractScanRefetch: () => Promise<unknown>;
+  financialsRefetch: () => Promise<unknown>;
 
   // CSG IDs feeding the contract scan query (debug panel reports the
   // length so the user can see where data is dropping).
@@ -173,6 +174,7 @@ export default memo(function FinancialsTab(props: FinancialsTabProps) {
     contractScanIsFetching,
     contractScanError,
     contractScanRefetch,
+    financialsRefetch,
     financialCsgIds,
     abpCsgSystemMapping,
     abpIccReport3Rows,
@@ -564,8 +566,14 @@ export default memo(function FinancialsTab(props: FinancialsTabProps) {
     }
 
     await contractScanRefetch();
+    await financialsRefetch();
     setBatchRescanRunning(false);
-  }, [contractScanRefetch, filteredFinancialRows, rescanSingleContract]);
+  }, [
+    contractScanRefetch,
+    filteredFinancialRows,
+    financialsRefetch,
+    rescanSingleContract,
+  ]);
 
   // -------------------------------------------------------------------------
   // Save edit-override dialog: call the mutation, optimistically update
@@ -602,7 +610,7 @@ export default memo(function FinancialsTab(props: FinancialsTabProps) {
       setEditingFinancialRow(null);
       // Background refetch to sync authoritative DB data, then clear
       // local overrides (the DB data now includes them).
-      contractScanRefetch().then(() => {
+      Promise.all([contractScanRefetch(), financialsRefetch()]).then(() => {
         setLocalOverrides((prev) => {
           const next = new Map(prev);
           next.delete(savedCsgId);
@@ -615,6 +623,7 @@ export default memo(function FinancialsTab(props: FinancialsTabProps) {
   }, [
     contractScanRefetch,
     editingFinancialRow,
+    financialsRefetch,
     setLocalOverrides,
     updateContractOverride,
   ]);
