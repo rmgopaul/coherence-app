@@ -3,11 +3,79 @@
  * the IndexedDB-removal refactor (docs/server-side-dashboard-
  * refactor.md).
  *
- * Phase 1 (this module) — types, validators, status state machine,
- * progress formatters. No DB, no DOM. Both the server-side runner
+ * Phase 1 — types, validators, status state machine, progress
+ * formatters.
+ * Phase 2 — chunk-plan helper + base64 length math for the
+ * client-side upload controller.
+ *
+ * No DB, no DOM. Both the server-side runner
  * (`server/services/core/datasetUploadJobRunner.ts`) and the client
  * progress dialog (Phase 2) consume from here.
  */
+
+/**
+ * Max raw bytes per upload chunk. Conservative against the
+ * server-side base64 limit of 320,000 chars: base64 expands by
+ * ~4/3 (every 3 bytes → 4 chars), so 240,000 raw bytes encodes to
+ * 320,000 base64 chars. Keep this in lockstep with
+ * `DATASET_UPLOAD_CHUNK_BASE64_LIMIT` in
+ * `server/routers/helpers/scheduleB.ts`.
+ */
+export const DATASET_UPLOAD_RAW_BYTES_PER_CHUNK = 240_000;
+
+export interface UploadChunkPlanItem {
+  chunkIndex: number;
+  /** Inclusive start offset into the file (bytes). */
+  byteStart: number;
+  /** Exclusive end offset into the file (bytes). */
+  byteEnd: number;
+}
+
+export interface UploadChunkPlan {
+  totalChunks: number;
+  rawBytesPerChunk: number;
+  chunks: UploadChunkPlanItem[];
+}
+
+/**
+ * Pre-compute the chunk plan for a file of `fileSizeBytes`.
+ * Returns:
+ *   - totalChunks (caller passes this to `startDatasetUpload` so the
+ *     server pre-allocates the row's `totalChunks`).
+ *   - one entry per chunk with byteStart / byteEnd, suitable for
+ *     `file.slice(byteStart, byteEnd)` on the client.
+ *
+ * `rawBytesPerChunk` defaults to `DATASET_UPLOAD_RAW_BYTES_PER_CHUNK`
+ * but is injectable for tests. Empty/zero/negative input produces
+ * an empty plan rather than throwing — caller decides how to
+ * surface the empty-file case.
+ */
+export function computeUploadChunkPlan(
+  fileSizeBytes: number,
+  rawBytesPerChunk = DATASET_UPLOAD_RAW_BYTES_PER_CHUNK
+): UploadChunkPlan {
+  if (
+    !Number.isFinite(fileSizeBytes) ||
+    fileSizeBytes <= 0 ||
+    !Number.isFinite(rawBytesPerChunk) ||
+    rawBytesPerChunk <= 0
+  ) {
+    return { totalChunks: 0, rawBytesPerChunk, chunks: [] };
+  }
+  const totalChunks = Math.ceil(fileSizeBytes / rawBytesPerChunk);
+  const chunks: UploadChunkPlanItem[] = [];
+  for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex += 1) {
+    chunks.push({
+      chunkIndex,
+      byteStart: chunkIndex * rawBytesPerChunk,
+      byteEnd: Math.min(
+        (chunkIndex + 1) * rawBytesPerChunk,
+        fileSizeBytes
+      ),
+    });
+  }
+  return { totalChunks, rawBytesPerChunk, chunks };
+}
 
 /**
  * Every dataset the dashboard hydrates. The 18 keys here are the
