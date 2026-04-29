@@ -527,12 +527,58 @@ export function ScheduleBImport({
         const mapping = contractIdMappingRef.current.size > 0 ? contractIdMappingRef.current : undefined;
         const rows = toDeliveryScheduleBaseRows(successful, mapping);
         if (rows.length === 0) return;
+
+        // Hybrid auto-apply: write to BOTH the server AND the client
+        // datasets state on every auto-apply tick.
+        //   • Server write (`applyScheduleBToDeliveryObligations`) is
+        //     the canonical persistence path — without it the rows
+        //     auto-applied during a long scan would be lost on refresh
+        //     or invisible to other users on the team.
+        //   • Client write (`onApply(rows)`) keeps `datasets
+        //     .deliveryScheduleBase.rows` in sync so the parent's
+        //     `performanceSourceRows` memo (still client-only as of
+        //     2026-04-29) doesn't go stale and break the REC
+        //     Performance Eval / Snapshot Log / createLogEntry path.
+        // The server mutation is best-effort: if it fails we still
+        // update client state so the UI doesn't appear stuck, and the
+        // user can click the manual "Apply as Delivery Schedule"
+        // button to retry. We deliberately skip `onApplyComplete()`
+        // here because the parent's full-cloud-reload is expensive and
+        // would fire every 30s during a long scan; the manual button
+        // remains the only auto-apply→cloud-reload trigger.
+        const activeJobId = scheduleBStatusQuery.data?.job?.id ?? undefined;
+        let serverResult: Awaited<
+          ReturnType<typeof applyScheduleBToDeliveryObligations.mutateAsync>
+        > | null = null;
+        try {
+          serverResult = await applyScheduleBToDeliveryObligations.mutateAsync(
+            activeJobId ? { jobId: activeJobId } : undefined
+          );
+        } catch (err) {
+          console.error(
+            "[ScheduleBImport] auto-apply server mutation failed",
+            err
+          );
+        }
+        if (cancelled) return;
+
         onApply(rows);
         autoApplyStateRef.current = { count: successful.length, time: Date.now() };
         setAutoApplyStatus({
           lastAppliedCount: rows.length,
           lastAppliedAt: Date.now(),
         });
+        if (serverResult) {
+          setLastServerApply({
+            incoming: serverResult.incoming,
+            inserted: serverResult.inserted,
+            updated: serverResult.updated,
+            unchanged: serverResult.unchanged,
+            errors: serverResult.errors,
+            totalRows: serverResult.totalRows,
+            at: Date.now(),
+          });
+        }
       } catch {
         // Best-effort — manual Apply button is still available.
       }
@@ -542,7 +588,13 @@ export function ScheduleBImport({
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [scheduleBResults, scheduleBStatusQuery.data?.job?.status, onApply]);
+  }, [
+    scheduleBResults,
+    scheduleBStatusQuery.data?.job?.status,
+    scheduleBStatusQuery.data?.job?.id,
+    onApply,
+    applyScheduleBToDeliveryObligations,
+  ]);
 
   // contract-id-mapping-v1: onChange is now a LOCAL-ONLY state update.
   // It parses the text into a Map for in-memory use (so Apply can
