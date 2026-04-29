@@ -2495,10 +2495,11 @@ async function enrichDockTitle(
       if (!eventId && eid) {
         // Decode base64 event ID. Format is "eventId calendarId"
         // (calendarId absent when the event lives on the primary
-        // calendar). Non-primary calendars require the calendar id
-        // in the API URL or the fetch 404s.
+        // calendar). Google's eid is URL-safe base64 — convert to
+        // standard base64 first so Node's decoder handles it.
         try {
-          const decoded = Buffer.from(eid, "base64").toString("utf-8");
+          const standardB64 = eid.replace(/-/g, "+").replace(/_/g, "/");
+          const decoded = Buffer.from(standardB64, "base64").toString("utf-8");
           const parts = decoded.split(" ");
           eventId = parts[0];
           if (!calendarId && parts[1]) calendarId = parts[1];
@@ -2516,19 +2517,86 @@ async function enrichDockTitle(
         return null;
       }
 
-      const targetCalendar = calendarId ?? "primary";
-      const response = await fetch(
-        `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(targetCalendar)}/events/${encodeURIComponent(eventId)}`,
-        { headers: { Authorization: `Bearer ${accessToken}` } }
-      );
-      if (!response.ok) {
+      // Helper: hit /events/{id} on a specific calendar. Returns the
+      // resolved event or null on non-OK so the caller can fall
+      // through to the next calendar.
+      const fetchEventOnCalendar = async (
+        calId: string
+      ): Promise<{ summary?: string } | null> => {
+        const r = await fetch(
+          `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calId)}/events/${encodeURIComponent(eventId!)}`,
+          { headers: { Authorization: `Bearer ${accessToken}` } }
+        );
+        if (r.ok) return r.json();
         console.log(
-          `[enrichDockTitle gcal] api-${response.status} cal=${targetCalendar} event=${eventId.slice(0, 12)}…`
+          `[enrichDockTitle gcal] api-${r.status} cal=${calId} event=${eventId!.slice(0, 12)}…`
+        );
+        return null;
+      };
+
+      // Step 1 — try the calendar from the eid (or the explicit
+      // meta.calendarId). Falls back to "primary" when neither
+      // surfaced one. Logs the resolved (eventId, calendarId) pair
+      // so prod logs reveal whether the eid carried calendarId.
+      const initialCalendar = calendarId ?? "primary";
+      console.log(
+        `[enrichDockTitle gcal] eid-decoded event=${eventId.slice(0, 12)}… cal=${initialCalendar}${calendarId ? "" : " (eid had no calendarId)"}`
+      );
+      let event = await fetchEventOnCalendar(initialCalendar);
+
+      // Step 2 — primary 404 fallback. Common shape: chip URL was
+      // an htmlLink for an event on a shared/delegated calendar
+      // (work calendar, family calendar, etc.) and the eid base64
+      // didn't include calendarId. Iterate calendarList and try
+      // each. Skip the calendar we already tried.
+      if (!event) {
+        try {
+          const listResp = await fetch(
+            `https://www.googleapis.com/calendar/v3/users/me/calendarList?fields=items(id,accessRole)`,
+            { headers: { Authorization: `Bearer ${accessToken}` } }
+          );
+          if (listResp.ok) {
+            const listData = await listResp.json();
+            const items: Array<{ id?: string; accessRole?: string }> =
+              listData.items ?? [];
+            const candidates = items
+              .map((c) => c.id)
+              .filter(
+                (id): id is string =>
+                  typeof id === "string" && id.length > 0 && id !== initialCalendar
+              );
+            console.log(
+              `[enrichDockTitle gcal] calendarList-fallback candidates=${candidates.length}`
+            );
+            for (const calId of candidates) {
+              const found = await fetchEventOnCalendar(calId);
+              if (found) {
+                console.log(
+                  `[enrichDockTitle gcal] resolved-from-other-calendar cal=${calId} event=${eventId.slice(0, 12)}…`
+                );
+                event = found;
+                break;
+              }
+            }
+          } else {
+            console.log(
+              `[enrichDockTitle gcal] calendarList-list-${listResp.status}`
+            );
+          }
+        } catch (err) {
+          console.log(
+            `[enrichDockTitle gcal] calendarList-error: ${err instanceof Error ? err.message : String(err)}`
+          );
+        }
+      }
+
+      if (!event) {
+        console.log(
+          `[enrichDockTitle gcal] not-found-in-any-calendar event=${eventId.slice(0, 12)}…`
         );
         return null;
       }
 
-      const event = await response.json();
       const result = cleanTitle(event.summary);
       if (!result) {
         console.log(
