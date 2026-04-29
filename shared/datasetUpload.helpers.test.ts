@@ -12,6 +12,7 @@ import {
   computeUploadChunkPlan,
   DATASET_KEYS,
   DATASET_UPLOAD_RAW_BYTES_PER_CHUNK,
+  defaultMergeStrategyForDataset,
   estimateRemainingMs,
   formatEstimatedRemaining,
   formatUploadProgress,
@@ -19,6 +20,7 @@ import {
   isTerminalUploadStatus,
   isUploadStatus,
   isValidUploadStatusTransition,
+  MULTI_APPEND_DATASET_KEYS,
   UPLOAD_STATUSES,
 } from "./datasetUpload.helpers";
 
@@ -451,5 +453,47 @@ describe("computeUploadChunkPlan", () => {
       expectedStart = chunk.byteEnd;
     }
     expect(expectedStart).toBe(fileSize);
+  });
+});
+
+describe("MULTI_APPEND_DATASET_KEYS / defaultMergeStrategyForDataset (Phase 6 PR-B)", () => {
+  it("the multi-append set has exactly 3 entries", () => {
+    expect(MULTI_APPEND_DATASET_KEYS.size).toBe(3);
+  });
+
+  it("the multi-append set is the canonical 3 keys", () => {
+    expect(MULTI_APPEND_DATASET_KEYS.has("accountSolarGeneration")).toBe(true);
+    expect(MULTI_APPEND_DATASET_KEYS.has("convertedReads")).toBe(true);
+    expect(MULTI_APPEND_DATASET_KEYS.has("transferHistory")).toBe(true);
+  });
+
+  it("returns 'append' for every multi-append key", () => {
+    for (const key of MULTI_APPEND_DATASET_KEYS) {
+      expect(defaultMergeStrategyForDataset(key)).toBe("append");
+    }
+  });
+
+  it("returns 'replace' for every non-multi-append dataset key", () => {
+    for (const key of DATASET_KEYS) {
+      if (MULTI_APPEND_DATASET_KEYS.has(key)) continue;
+      expect(defaultMergeStrategyForDataset(key)).toBe("replace");
+    }
+  });
+
+  it("returns 'replace' for unknown keys (defensive default)", () => {
+    expect(defaultMergeStrategyForDataset("notADataset")).toBe("replace");
+    expect(defaultMergeStrategyForDataset("")).toBe("replace");
+    // Case-sensitive — "ConvertedReads" with capital C is not a known key.
+    expect(defaultMergeStrategyForDataset("ConvertedReads")).toBe("replace");
+  });
+
+  it("every multi-append key is a recognized dataset key", () => {
+    // Drift guard — if a future dataset gets added to
+    // MULTI_APPEND_DATASET_KEYS but not DATASET_KEYS, the helper
+    // would silently return "replace" because of the
+    // `as DatasetKey` narrowing in the implementation.
+    for (const key of MULTI_APPEND_DATASET_KEYS) {
+      expect(isDatasetKey(key)).toBe(true);
+    }
   });
 });

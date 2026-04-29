@@ -30,6 +30,7 @@ import {
 import {
   activateDatasetVersion,
   createImportBatch,
+  getActiveBatchForDataset,
 } from "../../db/solarRecDatasets";
 import {
   getDatasetParser,
@@ -38,9 +39,24 @@ import {
 } from "./datasetUploadParsers";
 import { parseCsvText } from "../../routers/helpers/scheduleB";
 import {
+  cloneDatasetBatchRows,
+  loadExistingRowKeys,
+  partitionAppendRowsByKeySet,
+} from "../solar/datasetRowPersistence";
+import {
+  defaultMergeStrategyForDataset,
   isValidUploadStatusTransition,
+  type DatasetMergeStrategy,
   type UploadStatus,
 } from "../../../shared/datasetUpload.helpers";
+
+/**
+ * Local alias for the CSV row shape `loadExistingRowKeys` /
+ * `partitionAppendRowsByKeySet` use. Not exported from
+ * `datasetRowPersistence.ts`; keep the alias local so the server
+ * runner doesn't reach into client code for the type.
+ */
+type CsvRow = Record<string, string>;
 
 /** Rows-per-INSERT batch when streaming into srDs* tables. */
 const INSERT_BATCH_SIZE = 500;
@@ -54,7 +70,7 @@ const PARSE_PROGRESS_FLUSH = 250;
  * registry signature) so deploys with mixed-version Node processes
  * can be diagnosed via the job row.
  */
-export const DATASET_UPLOAD_RUNNER_VERSION = "phase-1-v1";
+export const DATASET_UPLOAD_RUNNER_VERSION = "phase-6b-append-v1";
 
 export interface RunDatasetUploadJobInput {
   scopeId: string;
@@ -160,25 +176,93 @@ export async function runDatasetUploadJob(
     throw err;
   }
 
-  const { rows: rawRows } = parseCsvText(csvText);
-  await updateDatasetUploadJob(scopeId, jobId, { totalRows: rawRows.length });
+  const { rows: parsedAllRows } = parseCsvText(csvText);
+  await updateDatasetUploadJob(scopeId, jobId, {
+    totalRows: parsedAllRows.length,
+  });
+
+  // Phase 6 PR-B — `mergeStrategy` is derived from the dataset key
+  // rather than passed by the client. Multi-append datasets
+  // (`accountSolarGeneration`, `convertedReads`, `transferHistory`)
+  // accumulate across uploads; everything else replaces the active
+  // batch. Until this PR the runner hardcoded "replace" for every
+  // upload, which silently truncated multi-append datasets — the
+  // user-facing bug Phase 6 PR-B fixes.
+  const mergeStrategy: DatasetMergeStrategy = defaultMergeStrategyForDataset(
+    job.datasetKey
+  );
+
+  // Append mode prep — clone the prior active batch's rows into the
+  // new batch FIRST so the dedup key-set we load below already
+  // includes them. Replace mode skips this; the new batch starts
+  // empty and supersedes the prior active batch wholesale on
+  // `activateDatasetVersion`.
+  let priorActiveBatchId: string | null = null;
+  let clonedRowCount = 0;
+  let appendDedupKeys: Set<string> | null = null;
+  let rowsToWrite: CsvRow[] = parsedAllRows;
+  let dedupedCount = 0;
+
+  if (mergeStrategy === "append") {
+    const activeBatch = await getActiveBatchForDataset(scopeId, job.datasetKey);
+    priorActiveBatchId = activeBatch?.id ?? null;
+  }
 
   // Create the import batch row that owns the srDs* writes. The
-  // batch starts in "processing"; activateDatasetVersion below
+  // batch starts in "processing"; `activateDatasetVersion` below
   // flips it to "active" + supersedes the prior active batch.
   // `ingestSource` records the upload pipeline so a future query
   // can distinguish v2-uploaded batches from legacy chunked-CSV
-  // ones; `mergeStrategy: "replace"` matches the existing v1
-  // semantics (each upload supersedes the prior active batch).
+  // ones.
   const batchId = await createImportBatch({
     scopeId,
     datasetKey: job.datasetKey,
     ingestSource: "upload-v2",
-    mergeStrategy: "replace",
+    mergeStrategy,
     status: "processing",
     importedBy: job.initiatedByUserId,
   });
   await updateDatasetUploadJob(scopeId, jobId, { batchId });
+
+  if (mergeStrategy === "append" && priorActiveBatchId) {
+    // Mirrors the v1 ingestDataset append path — clone prior active
+    // batch's rows into the new batch, then load the resulting
+    // key-set in one query so the per-row dedup check is in-memory.
+    // See `cloneDatasetBatchRows` / `loadExistingRowKeys` /
+    // `partitionAppendRowsByKeySet` in
+    // `server/services/solar/datasetRowPersistence.ts`.
+    clonedRowCount = await cloneDatasetBatchRows(
+      scopeId,
+      priorActiveBatchId,
+      batchId,
+      job.datasetKey
+    );
+    appendDedupKeys = await loadExistingRowKeys(
+      scopeId,
+      batchId,
+      job.datasetKey
+    );
+  } else if (mergeStrategy === "append") {
+    // Append mode with no prior active batch — first upload of this
+    // dataset for this scope. Nothing to clone; dedup runs against
+    // an empty set so we're effectively de-duplicating WITHIN the
+    // current upload only.
+    appendDedupKeys = new Set<string>();
+  }
+
+  // Filter incoming rows for append mode. CsvRow shape (raw header
+  // → string) feeds the partitioner; the parser then turns the
+  // surviving rows into typed `InsertSrDs*` shapes a few lines
+  // below.
+  if (mergeStrategy === "append" && appendDedupKeys) {
+    const partition = partitionAppendRowsByKeySet(
+      job.datasetKey,
+      parsedAllRows,
+      appendDedupKeys
+    );
+    rowsToWrite = partition.toInsert;
+    dedupedCount = partition.dedupedCount;
+  }
 
   // Parse + batch-insert.
   await transitionJobStatus(scopeId, jobId, "parsing", "writing");
@@ -202,8 +286,8 @@ export async function runDatasetUploadJob(
   };
 
   try {
-    for (let rowIndex = 0; rowIndex < rawRows.length; rowIndex += 1) {
-      const rawRow = rawRows[rowIndex];
+    for (let rowIndex = 0; rowIndex < rowsToWrite.length; rowIndex += 1) {
+      const rawRow = rowsToWrite[rowIndex];
       const ctx: DatasetParseContext = { scopeId, batchId, rowIndex };
       let parsed: unknown = null;
       try {
@@ -254,11 +338,28 @@ export async function runDatasetUploadJob(
     throw err;
   }
 
-  // Activate the new batch as the dataset's source of truth.
+  // Activate the new batch as the dataset's source of truth. For
+  // append mode the rowCount is `clonedRowCount + totalRowsWritten`
+  // because the new batch contains every prior row PLUS the
+  // newly-inserted ones; for replace mode `clonedRowCount` is 0.
+  const finalRowCount = clonedRowCount + totalRowsWritten;
   await activateDatasetVersion(scopeId, job.datasetKey, batchId, {
-    rowCount: totalRowsWritten,
+    rowCount: finalRowCount,
     completedAt: new Date(),
   });
+
+  // Diagnostic-only logging — the job row already carries
+  // `rowsWritten` and `totalRows`, but the dedup count is otherwise
+  // invisible. Surface it on stdout in case a confused user reports
+  // "I uploaded 1000 rows but only 200 landed."
+  if (mergeStrategy === "append" && (clonedRowCount > 0 || dedupedCount > 0)) {
+    // eslint-disable-next-line no-console
+    console.info(
+      `[runDatasetUploadJob] ${job.datasetKey} append: cloned ${clonedRowCount} prior, ` +
+        `inserted ${totalRowsWritten} new, deduped ${dedupedCount} duplicates ` +
+        `→ batch ${batchId} now has ${finalRowCount} rows total.`
+    );
+  }
 
   // Done.
   await transitionJobStatus(scopeId, jobId, "writing", "done", {
@@ -270,7 +371,7 @@ export async function runDatasetUploadJob(
 
   return {
     status: "done",
-    totalRows: rawRows.length,
+    totalRows: parsedAllRows.length,
     rowsWritten: totalRowsWritten,
     errorCount: totalErrorCount,
     batchId,
