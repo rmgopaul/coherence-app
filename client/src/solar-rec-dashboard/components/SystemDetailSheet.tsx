@@ -3,9 +3,9 @@
  *
  * Extracted from `SolarRecDashboard.tsx` in Phase 11. Pure reader
  * component: receives the selected key plus the two parent arrays
- * it needs (systems + converted-read rows) and renders a
+ * it needs (systems) and renders a
  * right-side sheet with identifiers, REC contract, status, system
- * details, and the last 20 converted meter reads for the system.
+ * details.
  *
  * The `selectedSystemKey` state stays in the parent because
  * ANY tab can open the sheet — the parent still owns
@@ -23,21 +23,10 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import {
   formatCapacityKw,
   formatNumber,
 } from "@/solar-rec-dashboard/lib/helpers";
-import type {
-  CsvDataset,
-  SystemRecord,
-} from "@/solar-rec-dashboard/state/types";
+import type { SystemRecord } from "@/solar-rec-dashboard/state/types";
 
 export interface SystemDetailSheetProps {
   /**
@@ -53,17 +42,10 @@ export interface SystemDetailSheetProps {
   onClose: () => void;
   /** All parent-known systems. Sheet looks up the selected one by key. */
   systems: SystemRecord[];
-  /**
-   * The parent's `convertedReads` dataset (or null if none
-   * uploaded). Used to render the "Recent Meter Reads" table at
-   * the bottom of the sheet — we filter the rows to just the ones
-   * that belong to the selected system and show the most recent 20.
-   */
-  convertedReads: CsvDataset | null;
 }
 
 export default function SystemDetailSheet(props: SystemDetailSheetProps) {
-  const { selectedSystemKey, onClose, systems, convertedReads } = props;
+  const { selectedSystemKey, onClose, systems } = props;
 
   return (
     <Sheet
@@ -83,17 +65,6 @@ export default function SystemDetailSheet(props: SystemDetailSheetProps) {
             return (
               <p className="text-sm text-slate-500 mt-4">System not found.</p>
             );
-
-          // Find converted reads for this system
-          const sysReads = (convertedReads?.rows ?? [])
-            .filter((r) => {
-              const rId = (r.monitoring_system_id || "").toLowerCase();
-              const rName = (r.monitoring_system_name || "").toLowerCase();
-              const sysId = (sys.systemId || "").toLowerCase();
-              const sysName = sys.systemName.toLowerCase();
-              return (sysId && rId === sysId) || (sysName && rName === sysName);
-            })
-            .slice(0, 20);
 
           return (
             <div className="space-y-4 mt-4">
@@ -225,36 +196,6 @@ export default function SystemDetailSheet(props: SystemDetailSheetProps) {
                 </div>
               </div>
 
-              {/* Recent Converted Reads */}
-              {sysReads.length > 0 && (
-                <div className="space-y-1">
-                  <h4 className="text-xs font-semibold uppercase text-slate-500">
-                    Recent Meter Reads ({sysReads.length})
-                  </h4>
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead className="text-xs">Date</TableHead>
-                        <TableHead className="text-xs">Platform</TableHead>
-                        <TableHead className="text-xs text-right">
-                          Lifetime (Wh)
-                        </TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {sysReads.map((r, i) => (
-                        <TableRow key={i}>
-                          <TableCell className="text-xs">{r.read_date}</TableCell>
-                          <TableCell className="text-xs">{r.monitoring}</TableCell>
-                          <TableCell className="text-xs text-right">
-                            {formatNumber(parseFloat(r.lifetime_meter_read_wh || "0"))}
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </div>
-              )}
             </div>
           );
         })()}
