@@ -132,6 +132,33 @@ export const DockChip = forwardRef<HTMLAnchorElement, DockChipProps>(
       // the mutation reference is stable.
     }, [item.id, hasResolvedTitle]);
 
+    // Manual retry — fires `dock.refreshTitle` and surfaces the
+    // result via toast. Visible only on chips with no resolved
+    // title; gives the user diagnostic feedback when auto-heal
+    // ran but couldn't resolve a title (token expired, source
+    // unsupported, upstream API down).
+    const handleManualRefresh = useCallback(() => {
+      refreshTitle.mutate(
+        { id: item.id },
+        {
+          onSuccess: (result) => {
+            if (result.title) {
+              toast.success(`Title resolved: ${result.title.slice(0, 60)}`);
+            } else {
+              const reasonMessage =
+                result.reason === "enrich-null"
+                  ? `Enrichment returned no title (source: ${("effectiveSource" in result && result.effectiveSource) || "unknown"}). Token may be expired or the source may be unreachable.`
+                  : result.reason === "not-found"
+                    ? "Chip not found"
+                    : "Couldn't resolve a title.";
+              toast.error(reasonMessage);
+            }
+          },
+          onError: (err) => toast.error(`Refresh failed: ${err.message}`),
+        }
+      );
+    }, [item.id, refreshTitle]);
+
     // Close popover on outside click. Listening at the document
     // level keeps us from having to hand-thread refs through every
     // chip; the popoverRef + chip anchor target are the only two
@@ -232,6 +259,33 @@ export const DockChip = forwardRef<HTMLAnchorElement, DockChipProps>(
             {stripMarkdownLinks(item.title ?? "").trim() ||
               chipFallbackLabel(item.source as DockSource, item.url)}
           </span>
+          {/* Manual retry — only visible while the chip has no
+              resolved title. Click triggers the same self-heal
+              mutation the useEffect fires on mount, but surfaces
+              the result via toast so failures (token expired,
+              source unsupported, upstream API down) become
+              visible instead of silent. */}
+          {!hasResolvedTitle && (
+            <button
+              type="button"
+              className="fp-dock-chip__due"
+              aria-label="Retry title fetch"
+              title={
+                refreshTitle.isPending
+                  ? "Fetching title…"
+                  : "Retry title fetch"
+              }
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (refreshTitle.isPending) return;
+                handleManualRefresh();
+              }}
+              disabled={refreshTitle.isPending}
+            >
+              {refreshTitle.isPending ? "…" : "↻"}
+            </button>
+          )}
           <button
             type="button"
             className={cn(

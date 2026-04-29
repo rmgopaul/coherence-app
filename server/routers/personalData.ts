@@ -2469,7 +2469,10 @@ async function enrichDockTitle(
 
     if (source === "gcal") {
       const googleIntegration = await getIntegrationByProvider(userId, "google");
-      if (!googleIntegration?.accessToken) return null;
+      if (!googleIntegration?.accessToken) {
+        console.log(`[enrichDockTitle gcal] no-google-token user=${userId}`);
+        return null;
+      }
       const accessToken = await getValidGoogleToken(userId);
 
       let eventId = meta?.eventId as string | undefined;
@@ -2500,20 +2503,39 @@ async function enrichDockTitle(
           eventId = parts[0];
           if (!calendarId && parts[1]) calendarId = parts[1];
         } catch {
+          console.log(
+            `[enrichDockTitle gcal] eid-decode-failed eid=${eid.slice(0, 12)}…`
+          );
           return null;
         }
       }
-      if (!eventId) return null;
+      if (!eventId) {
+        console.log(
+          `[enrichDockTitle gcal] no-event-id meta-keys=${Object.keys(meta ?? {}).join(",") || "none"} url=${url.slice(0, 80)}`
+        );
+        return null;
+      }
 
       const targetCalendar = calendarId ?? "primary";
       const response = await fetch(
         `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(targetCalendar)}/events/${encodeURIComponent(eventId)}`,
         { headers: { Authorization: `Bearer ${accessToken}` } }
       );
-      if (!response.ok) return null;
+      if (!response.ok) {
+        console.log(
+          `[enrichDockTitle gcal] api-${response.status} cal=${targetCalendar} event=${eventId.slice(0, 12)}…`
+        );
+        return null;
+      }
 
       const event = await response.json();
-      return cleanTitle(event.summary);
+      const result = cleanTitle(event.summary);
+      if (!result) {
+        console.log(
+          `[enrichDockTitle gcal] empty-summary event=${eventId.slice(0, 12)}…`
+        );
+      }
+      return result;
     }
 
     if (source === "gsheet") {
@@ -2538,7 +2560,12 @@ async function enrichDockTitle(
 
     if (source === "todoist") {
       const todoistIntegration = await getIntegrationByProvider(userId, "todoist");
-      if (!todoistIntegration?.accessToken) return null;
+      if (!todoistIntegration?.accessToken) {
+        console.log(
+          `[enrichDockTitle todoist] no-todoist-token user=${userId}`
+        );
+        return null;
+      }
 
       let taskId = meta?.taskId as string | undefined;
       if (!taskId) {
@@ -2556,7 +2583,12 @@ async function enrichDockTitle(
         const taskMatch = url.match(/\/task\/([A-Za-z0-9_-]+)/);
         taskId = taskMatch?.[1];
       }
-      if (!taskId) return null;
+      if (!taskId) {
+        console.log(
+          `[enrichDockTitle todoist] no-task-id meta-keys=${Object.keys(meta ?? {}).join(",") || "none"} url=${url.slice(0, 80)}`
+        );
+        return null;
+      }
 
       const response = await fetch(
         `https://api.todoist.com/api/v1/tasks/${encodeURIComponent(taskId)}`,
@@ -2642,13 +2674,24 @@ export const dockRouter = router({
       );
       const item = await getDockItemById(ctx.user.id, input.id);
       if (!item) {
-        return { title: null, refreshed: false as const };
+        console.log(
+          `[Dock.refreshTitle] id=${input.id} not-found user=${ctx.user.id}`
+        );
+        return {
+          title: null,
+          refreshed: false as const,
+          reason: "not-found" as const,
+        };
       }
       // Already-titled chips short-circuit. The client checks
       // `item.title` before calling, but a parallel paste might
       // have populated the title between render and dispatch.
       if (item.title?.trim()) {
-        return { title: item.title, refreshed: false as const };
+        return {
+          title: item.title,
+          refreshed: false as const,
+          reason: "already-titled" as const,
+        };
       }
 
       // Re-classify the stored URL with the current `classifyUrl`.
@@ -2659,24 +2702,19 @@ export const dockRouter = router({
       // www.google.com/calendar/event?eid=...).
       const reclassified = classifyUrl(item.url);
       const storedMeta = item.meta ? parseDockMeta(item.meta) : null;
-      // Prefer the re-classified source when it's more specific
-      // than the stored one. An "url" stored source is the
-      // generic catchall — any other source classification beats
-      // it. When the stored source is already specific (gmail /
-      // gcal / etc.), keep it.
       const useReclassifiedSource =
         reclassified.source !== "url" && item.source === "url";
       const effectiveSource = useReclassifiedSource
         ? reclassified.source
         : (item.source as "gmail" | "gcal" | "gsheet" | "todoist" | "url");
-      // Merge metas, preferring the re-classified one's keys when
-      // they fill in fields the stored meta is missing. Don't
-      // discard stored meta keys (they may include manually-added
-      // fields like calendarId).
       const effectiveMeta: Record<string, string> = {
         ...(reclassified.meta ?? {}),
         ...(storedMeta ?? {}),
       };
+
+      console.log(
+        `[Dock.refreshTitle] id=${input.id} stored-source=${item.source} reclassified=${reclassified.source} effective=${effectiveSource} meta-keys=${Object.keys(effectiveMeta).join(",") || "none"}`
+      );
 
       const title = await enrichDockTitle(
         ctx.user.id,
@@ -2685,7 +2723,15 @@ export const dockRouter = router({
         effectiveMeta
       );
       if (!title) {
-        return { title: null, refreshed: false as const };
+        console.log(
+          `[Dock.refreshTitle] id=${input.id} enrich-returned-null source=${effectiveSource}`
+        );
+        return {
+          title: null,
+          refreshed: false as const,
+          reason: "enrich-null" as const,
+          effectiveSource,
+        };
       }
       // Persist the corrected source + merged meta alongside the
       // title when the re-classification produced a more specific
@@ -2705,9 +2751,13 @@ export const dockRouter = router({
         title,
         updateOpts
       );
+      console.log(
+        `[Dock.refreshTitle] id=${input.id} resolved title-len=${title.length} persisted=${updated}`
+      );
       return {
         title,
         refreshed: updated,
+        reason: updated ? ("ok" as const) : ("persist-failed" as const),
       };
     }),
 
