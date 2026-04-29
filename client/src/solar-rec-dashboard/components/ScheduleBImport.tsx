@@ -143,7 +143,20 @@ export type ScheduleBImportProps = {
    * for the transition period.
    */
   onApplyComplete?: () => Promise<void> | void;
-  existingDeliverySchedule: CsvRow[] | null;
+  /**
+   * Server-driven row count of the active `deliveryScheduleBase`
+   * dataset (from `getDatasetSummariesAll`). Null while the
+   * summaries query is loading or no batch is active. Used only
+   * for the "Dataset has: N rows" diagnostic readout and the
+   * mapping-textarea visibility gate — neither needs the actual
+   * rows. Phase 5e Followup #1 step 1 (2026-04-29) replaced the
+   * prior `existingDeliverySchedule: CsvRow[] | null` prop, which
+   * was the last consumer of `datasets.deliveryScheduleBase.rows`
+   * inside this component. The parent's
+   * `datasets.deliveryScheduleBase.rows` is still read by the CSV
+   * merge upload handler (Followup #1 step 2 will migrate that).
+   */
+  existingDeliveryScheduleRowCount: number | null;
   /**
    * Called when the user clicks "Clear". The parent should wipe the
    * applied deliveryScheduleBase dataset so the tracker starts fresh.
@@ -163,7 +176,7 @@ export function ScheduleBImport({
   transferDeliveryLookup,
   onApply,
   onApplyComplete,
-  existingDeliverySchedule,
+  existingDeliveryScheduleRowCount,
   onClearAppliedSchedule,
 }: ScheduleBImportProps) {
   const [scheduleBResults, setScheduleBResults] = useState<ScheduleBResultRow[]>([]);
@@ -1927,7 +1940,7 @@ export function ScheduleBImport({
                   : ""}
               </span>
               <span>
-                <strong>Dataset has:</strong> {formatNumber(existingDeliverySchedule?.length ?? 0)} rows
+                <strong>Dataset has:</strong> {formatNumber(existingDeliveryScheduleRowCount ?? 0)} rows
               </span>
               <span>
                 <strong>Last apply:</strong> {formatNumber(autoApplyStatus.lastAppliedCount)}
@@ -2056,7 +2069,7 @@ export function ScheduleBImport({
             server-side and patches utility_contract_number on the
             cloud dataset, then reloads via onApplyComplete. */}
         {(scheduleBResults.length > 0 ||
-          (existingDeliverySchedule?.length ?? 0) > 0 ||
+          (existingDeliveryScheduleRowCount ?? 0) > 0 ||
           contractIdMappingText.length > 0) && (
           <div className="rounded-md border border-border/60 p-3 space-y-2">
             <div className="flex items-center justify-between">

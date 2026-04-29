@@ -6453,7 +6453,9 @@ const aiDataContext = useMemo(() => {
                     {/* ── Schedule B PDF Import ────────────────────────── */}
                     <ScheduleBImport
                       transferDeliveryLookup={transferDeliveryLookup}
-                      existingDeliverySchedule={datasets.deliveryScheduleBase?.rows ?? null}
+                      existingDeliveryScheduleRowCount={
+                        datasetSummariesByKey.deliveryScheduleBase?.rowCount ?? null
+                      }
                       onClearAppliedSchedule={() => {
                         // Phase 1a follow-up: Clear on the Schedule B card wipes
                         // the applied deliveryScheduleBase dataset so the tracker
