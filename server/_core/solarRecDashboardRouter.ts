@@ -253,6 +253,7 @@ import {
   runCsgScheduleBImportJob,
   isCsgScheduleBImportRunnerActive,
 } from "../services/core/csgScheduleBImportJobRunner";
+import { DATASET_UPLOAD_RUNNER_VERSION } from "../services/core/datasetUploadJobRunner";
 import {
   parseJsonMetadata,
   toNonEmptyString,
@@ -4277,7 +4278,11 @@ export const solarRecDashboardRouter = t.router({
         rowsParsed: 0,
         rowsWritten: 0,
       });
-      return { jobId, uploadId, _runnerVersion: "phase-1-v1" };
+      return {
+        jobId,
+        uploadId,
+        _runnerVersion: DATASET_UPLOAD_RUNNER_VERSION,
+      };
     }),
 
   uploadDatasetChunk: requirePermission("solar-rec-dashboard", "edit")
@@ -4434,7 +4439,7 @@ export const solarRecDashboardRouter = t.router({
           ? await listDatasetUploadJobErrors(job.id, { limit: 50 })
           : [];
       return {
-        _runnerVersion: "phase-1-v1",
+        _runnerVersion: DATASET_UPLOAD_RUNNER_VERSION,
         job: {
           id: job.id,
           datasetKey: job.datasetKey,
@@ -4490,7 +4495,7 @@ export const solarRecDashboardRouter = t.router({
         limit: input?.limit,
       });
       return {
-        _runnerVersion: "phase-1-v1",
+        _runnerVersion: DATASET_UPLOAD_RUNNER_VERSION,
         jobs: jobs.map((j) => ({
           id: j.id,
           datasetKey: j.datasetKey,
