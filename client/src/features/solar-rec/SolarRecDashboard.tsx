@@ -116,7 +116,6 @@ import { DatasetUploadV2Button } from "@/solar-rec-dashboard/components/DatasetU
 // @/solar-rec-dashboard/lib/buildSystems (worker-side).
 import type {
   AnnualContractVintageAggregate,
-  AnnualProductionProfile,
   AnnualVintageAggregate,
   ChangeOwnershipStatus,
   ChangeOwnershipSummary,
@@ -126,7 +125,6 @@ import type {
   DashboardLogEntry,
   DatasetKey,
   FinancialProfitData,
-  GenerationBaseline,
   MonitoringDetailsRecord,
   OfflineBreakdownRow,
   OwnershipStatus,
@@ -194,8 +192,6 @@ import {
   maxDate,
   resolveContractValueAmount,
   resolveValueGapAmount,
-  buildAnnualProductionByTrackingId,
-  buildGenerationBaselineByTrackingId,
   getMonitoringDetailsForSystem,
   createLogId,
   classifyMonitoringAccessType,
@@ -1851,7 +1847,6 @@ export default function SolarRecDashboard() {
   const isContractsTabActive = activeTab === "contracts";
   const isAnnualReviewTabActive = activeTab === "annual-review";
   const isPerformanceEvalTabActive = activeTab === "performance-eval" || activeTab === "snapshot-log";
-  const isPerformanceRatioTabActive = activeTab === "performance-ratio";
   const isForecastTabActive = activeTab === "forecast";
   const isOverviewTabActive = activeTab === "overview";
   const isPipelineTabActive = activeTab === "app-pipeline";
@@ -1859,7 +1854,9 @@ export default function SolarRecDashboard() {
   const isDeliveryTrackerTabActive = activeTab === "delivery-tracker";
   // Removed dead flags whose consumer memos moved out of the parent:
   // isTrendsTabActive, isAlertsTabActive, isComparisonsTabActive,
-  // isDataQualityTabActive, isOfflineTabActive.
+  // isDataQualityTabActive, isOfflineTabActive,
+  // isPerformanceRatioTabActive (Phase 5e — its only memos were the
+  // two tracking-ID-keyed maps deleted alongside this).
   const handleActiveTabChange = useCallback(
     (nextTabValue: string) => {
       if (!isDashboardTabId(nextTabValue)) return;
@@ -3609,24 +3606,19 @@ export default function SolarRecDashboard() {
     return mapping;
   }, [datasets.solarApplications]);
 
-  // Gate: only compute when perf-ratio or forecast tab is active.
-  // These tabs have heavy internal memos that process this data — computing
-  // eagerly caused browser crashes from cascading O(n²) operations.
-  const annualProductionByTrackingId = useMemo(() => {
-    if (!isPerformanceRatioTabActive && !isForecastTabActive) return new Map<string, AnnualProductionProfile>();
-    return buildAnnualProductionByTrackingId(datasets.annualProductionEstimates?.rows ?? []);
-  }, [datasets.annualProductionEstimates, isPerformanceRatioTabActive, isForecastTabActive]);
-
-  // Shared between the Performance Ratio tab (via props) and Forecast tab
-  // (directly in forecastProjections). Stays in the parent so both callers
-  // share one computation when both tabs use the same dataset snapshot.
-  const generationBaselineByTrackingId = useMemo(() => {
-    if (!isPerformanceRatioTabActive && !isForecastTabActive) return new Map<string, GenerationBaseline>();
-    return buildGenerationBaselineByTrackingId(
-      datasets.generationEntry?.rows ?? [],
-      datasets.accountSolarGeneration?.rows ?? [],
-    );
-  }, [datasets.accountSolarGeneration, datasets.generationEntry, isPerformanceRatioTabActive, isForecastTabActive]);
+  // Phase 5e (2026-04-29): the parent's two tracking-ID-keyed memos
+  // — `annualProductionByTrackingId` and `generationBaselineByTrack
+  // ingId` — are gone. Both became orphaned after Salvage PR B
+  // (#272) dropped the props that fed them through to
+  // PerformanceRatioTab + ForecastTab. The server-side
+  // `getDashboardPerformanceRatio` and `getDashboardForecast`
+  // aggregators (PR #263, #265) own the equivalent computations
+  // now. The pure helpers `buildAnnualProductionByTrackingId` /
+  // `buildGenerationBaselineByTrackingId` remain in
+  // `@shared/solarRecPerformanceRatio` (used by the server
+  // aggregators) and are re-exported through
+  // `@/solar-rec-dashboard/lib/helpers/system` for any future
+  // client consumer.
 
   // generatorDateOnlineByTrackingId, portalMonitoringCandidates, performanceRatioMatchIndexes,
   // convertedReadRows, performanceRatioResult, performanceRatioMonitoringOptions, filteredPerformanceRatioRows,
