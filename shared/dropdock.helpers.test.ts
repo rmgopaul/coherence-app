@@ -142,6 +142,37 @@ describe("classifyUrl", () => {
     expect(r.meta.taskId).toBe("42");
   });
 
+  it("classifies modern Todoist slug-prefixed task URLs", () => {
+    // Todoist's modern web app produces URLs where the path
+    // segment after `/task/` is `<human-readable-slug>-<id>`. The
+    // ID is the trailing alphanumeric chunk after the last hyphen;
+    // the slug before is derived from the task content. Our
+    // classifier needs to extract just the trailing ID — the full
+    // slug+id was being passed to the API, which then rejected it
+    // with a 400 (the bug from the 2026-04-29 dock-chip thread).
+    const r = classifyUrl(
+      "https://app.todoist.com/app/task/connect-with-anish-1-line-diagram-workshop-6g9W9CJJpFQmWQ6p"
+    );
+    expect(r.source).toBe("todoist");
+    expect(r.meta.taskId).toBe("6g9W9CJJpFQmWQ6p");
+  });
+
+  it("handles a slug-prefixed Todoist URL on the bare todoist.com host", () => {
+    const r = classifyUrl(
+      "https://todoist.com/app/task/finish-deck-6XQGW9V25M3GG6XX"
+    );
+    expect(r.source).toBe("todoist");
+    expect(r.meta.taskId).toBe("6XQGW9V25M3GG6XX");
+  });
+
+  it("handles a Todoist URL where the path segment has no slug", () => {
+    // Legacy /app/task/<numeric-id> URLs split to a single-element
+    // array; pop() returns the unchanged ID.
+    const r = classifyUrl("https://todoist.com/app/task/2995104339");
+    expect(r.source).toBe("todoist");
+    expect(r.meta.taskId).toBe("2995104339");
+  });
+
   it("falls back to source: url for anything else", () => {
     const r = classifyUrl("https://news.ycombinator.com/item?id=1");
     expect(r.source).toBe("url");
