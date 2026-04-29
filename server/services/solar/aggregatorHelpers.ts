@@ -297,6 +297,16 @@ export type SnapshotSystem = {
   systemId: string | null;
   stateApplicationRefId: string | null;
   trackingSystemRefId: string | null;
+  /**
+   * `SystemRecord.systemName` from the client snapshot. Required
+   * non-empty string at the source — falls back to `""` if the
+   * snapshot payload is missing/wrong-typed (defensive only;
+   * downstream aggregators should never see an empty string in
+   * practice). Added 2026-04-29 for `buildPerformanceSourceRows`,
+   * which forwards it into the per-row `systemName` fallback chain
+   * (row.system_name → snapshot.systemName → trackingSystemRefId).
+   */
+  systemName: string;
   recPrice: number | null;
   isReporting: boolean;
 };
@@ -335,6 +345,7 @@ export function extractSnapshotSystems(
         typeof r.trackingSystemRefId === "string"
           ? r.trackingSystemRefId
           : null,
+      systemName: typeof r.systemName === "string" ? r.systemName : "",
       recPrice: typeof r.recPrice === "number" ? r.recPrice : null,
       isReporting: r.isReporting === true,
     });

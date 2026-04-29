@@ -2898,6 +2898,49 @@ export const solarRecDashboardRouter = t.router({
   }),
 
   /**
+   * Phase 5e PR (2026-04-29) — server-side aggregator for the
+   * `performanceSourceRows` shape consumed by RecPerformanceEvaluation
+   * Tab + Snapshot Log + the parent's `recPerformanceSnapshotContracts
+   * 2025` + createLogEntry. Replaces the parent useMemo at
+   * `client/src/features/solar-rec/SolarRecDashboard.tsx :: performance
+   * SourceRows` that walked `datasets.deliveryScheduleBase.rows` ×
+   * eligibleTrackingIds × systemsByTrackingId × transferDeliveryLookup
+   * to produce one row per (trackingId, scheduleRowIndex) pair with
+   * required + transfer-history-derived delivered values per Schedule
+   * year.
+   *
+   * Cache key bundles 4 inputs: abpReport batch, deliveryScheduleBase
+   * batch, transferHistory batch, system snapshot hash. superjson
+   * serde because each row's `years[i].{startDate, endDate}` are
+   * `Date | null` and need to round-trip cleanly.
+   *
+   * Tab gating happens client-side: the query is `enabled: is
+   * PerformanceEvalTabActive` so the cache only warms when the user
+   * is on the perf-eval / snapshot-log tab.
+   *
+   * Sets up the unblock for Salvage PR C (#273)'s next phase: once
+   * `performanceSourceRows` is fully server-driven, ScheduleBImport's
+   * auto-apply hybrid can drop its `onApply(rows)` client-state side
+   * effect.
+   */
+  getDashboardPerformanceSourceRows: requirePermission(
+    "solar-rec-dashboard",
+    "read"
+  ).query(async ({ ctx }) => {
+    const {
+      getOrBuildPerformanceSourceRows,
+      PERFORMANCE_SOURCE_ROWS_RUNNER_VERSION,
+    } = await import("../services/solar/buildPerformanceSourceRows");
+
+    const result = await getOrBuildPerformanceSourceRows(ctx.scopeId);
+
+    return {
+      ...result,
+      _runnerVersion: PERFORMANCE_SOURCE_ROWS_RUNNER_VERSION,
+    };
+  }),
+
+  /**
    * Task 5.14 PR-4 (2026-04-27) — server-side reconciliation between
    * `srDsDeliverySchedule.trackingSystemRefId` (or `systemId` fallback)
    * and `srDsConvertedReads.monitoringSystemId`. Replaces the

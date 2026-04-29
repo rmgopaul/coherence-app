@@ -34,6 +34,7 @@ function snapshotSystem(
     systemId: "SYS-1",
     stateApplicationRefId: null,
     trackingSystemRefId: null,
+    systemName: "",
     recPrice: null,
     isReporting: false,
     ...overrides,

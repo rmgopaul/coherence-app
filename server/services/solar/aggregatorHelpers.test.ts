@@ -178,12 +178,13 @@ describe("getDeliveredForYear", () => {
 });
 
 describe("extractSnapshotSystems", () => {
-  it("extracts the 5-field SnapshotSystem subset", () => {
+  it("extracts the 6-field SnapshotSystem subset", () => {
     const out = extractSnapshotSystems([
       {
         systemId: "id-1",
         stateApplicationRefId: "app-1",
         trackingSystemRefId: "trk-1",
+        systemName: "Smith Residence",
         recPrice: 50,
         isReporting: true,
         // Extra fields the snapshot may include — ignored.
@@ -196,6 +197,7 @@ describe("extractSnapshotSystems", () => {
         systemId: "id-1",
         stateApplicationRefId: "app-1",
         trackingSystemRefId: "trk-1",
+        systemName: "Smith Residence",
         recPrice: 50,
         isReporting: true,
       },
@@ -208,6 +210,7 @@ describe("extractSnapshotSystems", () => {
         // No systemId
         stateApplicationRefId: 12345, // wrong type
         trackingSystemRefId: "trk-1",
+        systemName: 99, // wrong type (number instead of string)
         recPrice: "50", // wrong type (string instead of number)
         isReporting: "yes", // wrong type (string instead of boolean)
       },
@@ -217,6 +220,7 @@ describe("extractSnapshotSystems", () => {
         systemId: null,
         stateApplicationRefId: null,
         trackingSystemRefId: "trk-1",
+        systemName: "",
         recPrice: null,
         isReporting: false,
       },

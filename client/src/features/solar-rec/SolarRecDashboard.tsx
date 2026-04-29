@@ -444,6 +444,13 @@ const TABULAR_DATASET_KEYS = new Set<DatasetKey>(["abpIccReport2Rows", "abpIccRe
 const SCANNER_MANAGED_DATASET_KEYS = new Set<DatasetKey>(["deliveryScheduleBase"]);
 const CORE_REQUIRED_DATASET_KEYS: DatasetKey[] = ["abpReport"];
 
+// Phase 5e (2026-04-29) — stable empty fallback for the
+// `getDashboardPerformanceSourceRows` server query. Mirrors the
+// EMPTY_DELIVERY_TRACKER_DATA / FINANCIAL_PROFIT_EMPTY pattern: a
+// module-level singleton so React reconciliation sees the same
+// array reference across renders before the query lands.
+const EMPTY_PERFORMANCE_SOURCE_ROWS: PerformanceSourceRow[] = [];
+
 // Phase 6 PR-C (2026-04-29) — `IMPLEMENTED_V2_DATASETS` deleted.
 // It existed to gate the v2 upload button while only some datasets
 // had server-side parsers; with all 17 CSV-uploadable datasets
@@ -535,43 +542,13 @@ function getTabFromSearch(search: string): DashboardTabId | null {
 // RecPerformanceThreeYearValues, deriveRecPerformanceThreeYearValues
 // — moved to @/solar-rec-dashboard/lib/helpers/recPerformance
 
-function buildScheduleYearEntries(row: CsvRow): ScheduleYearEntry[] {
-  const entries: ScheduleYearEntry[] = [];
-
-  for (let yearIndex = 1; yearIndex <= 15; yearIndex += 1) {
-    const requiredRaw = row[`year${yearIndex}_quantity_required`];
-    const deliveredRaw = row[`year${yearIndex}_quantity_delivered`];
-    const startRaw = clean(row[`year${yearIndex}_start_date`]);
-    const endRaw = clean(row[`year${yearIndex}_end_date`]);
-
-    const required = parseNumber(requiredRaw) ?? 0;
-    const delivered = parseNumber(deliveredRaw) ?? 0;
-    const startDate = parseDate(startRaw);
-    const endDate = parseDate(endRaw);
-
-    if (!startRaw && !endRaw && required === 0 && delivered === 0) continue;
-
-    const key = startDate ? startDate.toISOString().slice(0, 10) : `${startRaw}-${yearIndex}`;
-
-    entries.push({
-      yearIndex,
-      required,
-      delivered,
-      startDate,
-      endDate,
-      startRaw,
-      endRaw,
-      key,
-    });
-  }
-
-  return entries.sort((a, b) => {
-    const aTime = a.startDate?.getTime() ?? Number.POSITIVE_INFINITY;
-    const bTime = b.startDate?.getTime() ?? Number.POSITIVE_INFINITY;
-    if (aTime !== bTime) return aTime - bTime;
-    return a.yearIndex - b.yearIndex;
-  });
-}
+// Phase 5e (2026-04-29): `buildScheduleYearEntries` moved off the
+// client. The byte-identical helper lives at
+// `@shared/solarRecPerformanceRatio`. The parent's
+// `performanceSourceRows` useMemo was the only client caller, and it
+// went server-side too — so the local copy here is gone. Future
+// client callers should `import { buildScheduleYearEntries } from
+// "@shared/solarRecPerformanceRatio";`.
 
 function buildSystemSnapshotKey(system: SystemRecord): string {
   if (system.systemId) return `id:${system.systemId}`;
@@ -3743,25 +3720,15 @@ export default function SolarRecDashboard() {
     return mapping;
   }, [isContractsComputationActive, part2EligibleSystemsForSizeReporting]);
 
-  const eligibleTrackingIds = useMemo(() => {
-    if (!isContractsComputationActive) return new Set<string>();
-    const ids = new Set<string>();
-    part2EligibleSystemsForSizeReporting.forEach((system) => {
-      if (!system.trackingSystemRefId) return;
-      ids.add(system.trackingSystemRefId);
-    });
-    return ids;
-  }, [isContractsComputationActive, part2EligibleSystemsForSizeReporting]);
-
-  const systemsByTrackingId = useMemo(() => {
-    if (!isContractsComputationActive) return new Map<string, SystemRecord>();
-    const mapping = new Map<string, SystemRecord>();
-    part2EligibleSystemsForSizeReporting.forEach((system) => {
-      if (!system.trackingSystemRefId) return;
-      mapping.set(system.trackingSystemRefId, system);
-    });
-    return mapping;
-  }, [isContractsComputationActive, part2EligibleSystemsForSizeReporting]);
+  // Phase 5e (2026-04-29): the parent's `eligibleTrackingIds` and
+  // `systemsByTrackingId` useMemos went orphaned along with
+  // `performanceSourceRows`. Both fed only that one memo (server now
+  // computes them inside `getOrBuildPerformanceSourceRows` from the
+  // cached snapshot + abpReport eligibility). Note: the
+  // `systemsByTrackingId` declarations at L~3011 and L~3305 are
+  // unrelated locals inside other useMemo bodies (multi-index
+  // SystemRecord[] maps for the buildSystems-style joins) — those
+  // stay.
 
   // ── Transfer-Based Delivery Lookup (shared by Perf Eval + Forecast + Delivery Tracker) ──
   //
@@ -3790,59 +3757,36 @@ export default function SolarRecDashboard() {
     [serverTransferDeliveryLookup.lookup]
   );
 
-  const performanceSourceRows = useMemo<PerformanceSourceRow[]>(() => {
-    if (!isPerformanceEvalTabActive && !isForecastTabActive) return [];
-    // Phase 1a: obligations come from deliveryScheduleBase exclusively.
-    // Deliveries are always derived from transferDeliveryLookup (which
-    // is itself derived from transferHistory). No more conditional
-    // override — if transferHistory is empty, delivered = 0 across
-    // the board, which matches the user's expectation.
-    return (datasets.deliveryScheduleBase?.rows ?? [])
-      .map((row, rowIndex) => {
-        const trackingSystemRefId = clean(row.tracking_system_ref_id);
-        if (!trackingSystemRefId || !eligibleTrackingIds.has(trackingSystemRefId)) return null;
-        const system = systemsByTrackingId.get(trackingSystemRefId);
-        const years = buildScheduleYearEntries(row);
-        if (years.length === 0) return null;
-
-        // transferHistory is always the source of truth for delivered values.
-        // The delivery year label matches the schedule start year's energy
-        // year directly (2023-06-01 → "2023-2024" → EY 2023 transfers).
-        const systemTransfers = transferDeliveryLookup.get(trackingSystemRefId.toLowerCase());
-
-        // Find the earliest energy year with a positive transfer (delivery to utility).
-        let firstTransferEnergyYear = null as number | null;
-        if (systemTransfers) {
-          systemTransfers.forEach((qty, ey) => {
-            if (qty > 0 && (firstTransferEnergyYear === null || ey < firstTransferEnergyYear)) {
-              firstTransferEnergyYear = ey;
-            }
-          });
-        }
-
-        for (const year of years) {
-          if (!year.startDate) {
-            year.delivered = 0;
-            continue;
-          }
-          const eyStartYear = year.startDate.getFullYear();
-          year.delivered = systemTransfers?.get(eyStartYear) ?? 0;
-        }
-
-        return {
-          key: `${trackingSystemRefId}-${rowIndex}`,
-          contractId: clean(row.utility_contract_number) || "Unassigned",
-          systemId: system?.systemId ?? null,
-          trackingSystemRefId,
-          systemName: clean(row.system_name) || system?.systemName || trackingSystemRefId,
-          batchId: clean(row.batch_id) || clean(row.state_certification_number) || null,
-          recPrice: system?.recPrice ?? null,
-          years,
-          firstTransferEnergyYear,
-        } satisfies PerformanceSourceRow;
-      })
-      .filter((row): row is PerformanceSourceRow => row !== null);
-  }, [datasets.deliveryScheduleBase, eligibleTrackingIds, isPerformanceEvalTabActive, isForecastTabActive, systemsByTrackingId, transferDeliveryLookup]);
+  // Phase 5e (2026-04-29) — `performanceSourceRows` migrated to a
+  // server-side aggregator (`getDashboardPerformanceSourceRows`).
+  // The client memo that used to walk `datasets.deliveryScheduleBase
+  // .rows × eligibleTrackingIds × systemsByTrackingId × transfer
+  // DeliveryLookup` is gone. Server reads the same inputs from
+  // `srDsDeliverySchedule` + `srDsAbpReport` + the cached system
+  // snapshot + the cached transfer-delivery lookup, runs the same
+  // pure aggregator (`buildPerformanceSourceRows`), and returns the
+  // identical `PerformanceSourceRow[]` shape via superjson (Date
+  // round-trip preservation for `years[i].{startDate,endDate}`).
+  //
+  // The query is gated on `isPerformanceEvalTabActive` (perf-eval
+  // OR snapshot-log) — the only consumers are RecPerformanceEvaluation
+  // Tab, the parent's `recPerformanceSnapshotContracts2025` rollup,
+  // createLogEntry, and the AskAI panel's perf-eval context. Forecast
+  // tab no longer needs this — it has its own `getDashboardForecast`
+  // server query that does its own internal `performanceSourceRows`
+  // pre-pass.
+  const performanceSourceRowsQuery =
+    solarRecTrpc.solarRecDashboard.getDashboardPerformanceSourceRows.useQuery(
+      undefined,
+      {
+        enabled: isPerformanceEvalTabActive,
+        staleTime: 60_000,
+      }
+    );
+  const performanceSourceRows = useMemo<PerformanceSourceRow[]>(
+    () => performanceSourceRowsQuery.data?.rows ?? EMPTY_PERFORMANCE_SOURCE_ROWS,
+    [performanceSourceRowsQuery.data]
+  );
 
   // performanceContractOptions, effectivePerformanceContractId,
   // performanceDeliveryYearOptions, defaultPerformanceDeliveryYearKey,
