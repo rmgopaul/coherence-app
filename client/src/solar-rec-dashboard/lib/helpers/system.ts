@@ -1,10 +1,22 @@
 /**
- * System-level aggregation helpers. Contract value resolution and
- * the tracking-ID-keyed map builders shared between the Performance
- * Ratio and Forecast tabs.
+ * System-level aggregation helpers. Contract value resolution stays
+ * client-local (depends on the client's `SystemRecord`); the
+ * tracking-ID-keyed map builders re-export from
+ * `@shared/solarRecPerformanceRatio` so the server aggregator and
+ * this tab share one implementation.
+ *
+ * 2026-04-29 — PR D follow-up to PR #271 (Salvage A): the three
+ * `build*ByTrackingId` bodies were byte-identical to their shared
+ * counterparts after PR A's hoist; this file now re-exports them
+ * directly. The function-level cast on
+ * `buildGenerationBaselineByTrackingId` re-types the return Map's
+ * value as the client's `GenerationBaseline` (which has `valueWh:
+ * number | null`) — the shared type is stricter (`valueWh: number`)
+ * and the function never produces null at runtime, so the cast is
+ * sound. Map<K, V> is invariant in V, which is why a pure re-export
+ * would not type-check at the call sites.
  */
 
-import { clean } from "@/lib/helpers";
 import type {
   AnnualProductionProfile,
   CsvRow,
@@ -12,17 +24,10 @@ import type {
   SystemRecord,
 } from "@/solar-rec-dashboard/state/types";
 import {
-  GENERATION_BASELINE_DATE_HEADERS,
-  GENERATION_BASELINE_VALUE_HEADERS,
-  MONTH_HEADERS,
-} from "@/solar-rec-dashboard/lib/constants";
-import {
-  parseDate,
-  parseDateOnlineAsMidMonth,
-  parseEnergyToWh,
-  parseNumber,
-} from "./parsing";
-import { resolveLastMeterReadRawValue } from "./csvIdentity";
+  buildAnnualProductionByTrackingId as sharedBuildAnnualProductionByTrackingId,
+  buildGenerationBaselineByTrackingId as sharedBuildGenerationBaselineByTrackingId,
+  buildGeneratorDateOnlineByTrackingId as sharedBuildGeneratorDateOnlineByTrackingId,
+} from "@shared/solarRecPerformanceRatio";
 import { firstNonNull } from "./misc";
 
 export function resolveContractValueAmount(system: SystemRecord): number {
@@ -35,164 +40,39 @@ export function resolveValueGapAmount(system: SystemRecord): number {
 
 /**
  * Build a Map<trackingSystemRefId, AnnualProductionProfile> from the
- * annual-production-estimates CSV.  Pure function — same inputs always
- * yield the same output.  Used by both the Performance Ratio tab and the
- * Forecast tab; each tab owns its own useMemo and calls this independently.
+ * annual-production-estimates CSV. The shared and client
+ * `AnnualProductionProfile` shapes are identical, so this is a pure
+ * re-export.
  */
-export function buildAnnualProductionByTrackingId(
-  rows: CsvRow[],
-): Map<string, AnnualProductionProfile> {
-  const mapping = new Map<string, AnnualProductionProfile>();
-
-  rows.forEach((row) => {
-    const trackingSystemRefId = clean(row["Unit ID"]) || clean(row.unit_id);
-    if (!trackingSystemRefId) return;
-
-    const monthlyKwh = MONTH_HEADERS.map(
-      (month) => parseNumber(row[month] ?? row[month.toLowerCase()]) ?? 0,
-    );
-    const current = mapping.get(trackingSystemRefId);
-    if (!current) {
-      mapping.set(trackingSystemRefId, {
-        trackingSystemRefId,
-        facilityName: clean(row.Facility) || clean(row["Facility Name"]),
-        monthlyKwh,
-      });
-      return;
-    }
-
-    const mergedMonthly = current.monthlyKwh.map((value, index) => {
-      const candidate = monthlyKwh[index] ?? 0;
-      return candidate > 0 ? candidate : value;
-    });
-    mapping.set(trackingSystemRefId, {
-      trackingSystemRefId,
-      facilityName:
-        current.facilityName ||
-        clean(row.Facility) ||
-        clean(row["Facility Name"]),
-      monthlyKwh: mergedMonthly,
-    });
-  });
-
-  return mapping;
-}
+export const buildAnnualProductionByTrackingId: (
+  rows: CsvRow[]
+) => Map<string, AnnualProductionProfile> =
+  sharedBuildAnnualProductionByTrackingId;
 
 /**
- * Build a Map<trackingSystemRefId, GenerationBaseline> from generation-entry
- * and account-solar-generation CSVs.  "Generation Entry" takes priority over
- * "Account Solar Generation" when both have the same date, and newer dates
- * always win.  Pure function.
+ * Build a Map<trackingSystemRefId, GenerationBaseline> from
+ * generation-entry and account-solar-generation CSVs. "Generation
+ * Entry" takes priority over "Account Solar Generation" when both have
+ * the same date, and newer dates always win.
+ *
+ * Cast widens the shared `valueWh: number` return type to the client's
+ * `valueWh: number | null` — the function never produces null at
+ * runtime (early-bails on null parse), but `Map<K, V>` is invariant in
+ * V so a direct re-export with the client return type would not
+ * type-check at call sites that store the result into a
+ * `Map<string, ClientGenerationBaseline>`.
  */
-export function buildGenerationBaselineByTrackingId(
+export const buildGenerationBaselineByTrackingId = sharedBuildGenerationBaselineByTrackingId as (
   generationEntryRows: CsvRow[],
-  accountSolarGenerationRows: CsvRow[],
-): Map<string, GenerationBaseline> {
-  const mapping = new Map<string, GenerationBaseline>();
-
-  const updateBaseline = (
-    trackingSystemRefId: string,
-    candidate: GenerationBaseline,
-  ) => {
-    const existing = mapping.get(trackingSystemRefId);
-    if (!existing) {
-      mapping.set(trackingSystemRefId, candidate);
-      return;
-    }
-
-    const existingTime = existing.date?.getTime() ?? Number.NEGATIVE_INFINITY;
-    const candidateTime = candidate.date?.getTime() ?? Number.NEGATIVE_INFINITY;
-    if (candidateTime > existingTime) {
-      mapping.set(trackingSystemRefId, candidate);
-      return;
-    }
-    if (candidateTime === existingTime) {
-      const existingRank = existing.source === "Generation Entry" ? 2 : 1;
-      const candidateRank = candidate.source === "Generation Entry" ? 2 : 1;
-      if (candidateRank > existingRank) {
-        mapping.set(trackingSystemRefId, candidate);
-      }
-    }
-  };
-
-  generationEntryRows.forEach((row) => {
-    const trackingSystemRefId = clean(row["Unit ID"]);
-    if (!trackingSystemRefId) return;
-
-    let valueWh: number | null = null;
-    for (const header of GENERATION_BASELINE_VALUE_HEADERS) {
-      valueWh = parseEnergyToWh(row[header], header, "kwh");
-      if (valueWh !== null) break;
-    }
-    if (valueWh === null) return;
-
-    let date: Date | null = null;
-    for (const header of GENERATION_BASELINE_DATE_HEADERS) {
-      date = parseDate(row[header]);
-      if (date) break;
-    }
-
-    updateBaseline(trackingSystemRefId, {
-      valueWh,
-      date,
-      source: "Generation Entry",
-    });
-  });
-
-  accountSolarGenerationRows.forEach((row) => {
-    const trackingSystemRefId = clean(row["GATS Gen ID"]);
-    if (!trackingSystemRefId) return;
-
-    const valueWh = parseEnergyToWh(
-      resolveLastMeterReadRawValue(row),
-      "Last Meter Read (kWh)",
-      "kwh",
-    );
-    if (valueWh === null) return;
-
-    const date =
-      parseDate(row["Last Meter Read Date"]) ??
-      parseDate(row["Month of Generation"]);
-    updateBaseline(trackingSystemRefId, {
-      valueWh,
-      date,
-      source: "Account Solar Generation",
-    });
-  });
-
-  return mapping;
-}
+  accountSolarGenerationRows: CsvRow[]
+) => Map<string, GenerationBaseline>;
 
 /**
- * Build a Map<trackingSystemRefId, Date> from the generator-details CSV,
- * using the Date Online column snapped to the 15th of the given month.
- * Performance Ratio uses this as a fallback baseline when no generation
- * reading exists.
+ * Build a Map<trackingSystemRefId, Date> from the generator-details
+ * CSV using the Date Online column snapped to the 15th of the given
+ * month. Performance Ratio uses this as a fallback baseline when no
+ * generation reading exists.
  */
-export function buildGeneratorDateOnlineByTrackingId(
-  rows: CsvRow[],
-): Map<string, Date> {
-  const mapping = new Map<string, Date>();
-
-  rows.forEach((row) => {
-    const trackingSystemRefId =
-      clean(row["GATS Unit ID"]) ||
-      clean(row.gats_unit_id) ||
-      clean(row["Unit ID"]);
-    if (!trackingSystemRefId) return;
-    const dateOnline = parseDateOnlineAsMidMonth(
-      row["Date Online"] ??
-        row["Date online"] ??
-        row.date_online ??
-        row.date_online_month_year,
-    );
-    if (!dateOnline) return;
-
-    const existing = mapping.get(trackingSystemRefId);
-    if (!existing || dateOnline < existing) {
-      mapping.set(trackingSystemRefId, dateOnline);
-    }
-  });
-
-  return mapping;
-}
+export const buildGeneratorDateOnlineByTrackingId: (
+  rows: CsvRow[]
+) => Map<string, Date> = sharedBuildGeneratorDateOnlineByTrackingId;
