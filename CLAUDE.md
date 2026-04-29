@@ -706,6 +706,96 @@ bridge call. Single-flight in `coreDatasetSyncJobs` coalesces
 multiple bridge writes (e.g., the 17-vendor monitoring batch) into
 one sync job per scope.
 
+### Upload v2 pipeline (the IndexedDB-removal refactor — Phases 1–5c shipped)
+
+A second client→server upload path lives alongside the legacy
+`saveDataset` proc. It writes directly to `srDs*` row tables and
+bypasses the chunked-CSV manifest entirely. As of 2026-04-28 the v2
+button is mounted on every dataset card in `SolarRecDashboard.tsx`
+alongside the legacy "Choose CSV" input; the legacy input is still
+the only path for multi-append (3 datasets) and Excel parsing (2
+datasets) — see Phase 6 in `docs/server-side-dashboard-refactor.md`.
+
+**Server-side surface** (`server/_core/solarRecDashboardRouter.ts`):
+
+- `startDatasetUpload({ datasetKey, fileName, fileSize,
+  totalChunks })` → `{ jobId, uploadId, _runnerVersion }`. Inserts
+  a row into `datasetUploadJobs` with status `queued`.
+  `_runnerVersion` is currently `"phase-1-v1"` and lives on every
+  v2 response — bump it on parser/job-shape changes.
+- `uploadDatasetChunk({ jobId, uploadId, chunkIndex, totalChunks,
+  chunkBase64 })` — receives one base64-encoded chunk (≤240 KB raw
+  bytes per chunk; see `DATASET_UPLOAD_RAW_BYTES_PER_CHUNK` in
+  `shared/datasetUpload.helpers.ts`; the proc-side base64 cap is
+  320 KB), staged on disk under `<DATASET_UPLOAD_TMP_ROOT>/<scopeId>/<jobId>/<uploadId>.csv`.
+  Same chunked-base64 pattern as the existing Schedule B PDF
+  upload flow — chosen over multipart POST so the same auth +
+  scope middleware as the rest of `/solar-rec/api/trpc/*` applies
+  without a second mount point. Out-of-order chunks throw;
+  duplicate chunks (`chunkIndex < expected`) acknowledge with
+  `skipped: true` so the client can retry safely after a network
+  blip.
+- `finalizeDatasetUpload({ jobId, uploadId })` — flips the job to
+  `uploading`, hands off to `runDatasetUploadJob`
+  (fire-and-forget), returns the job row immediately.
+- `getDatasetUploadStatus({ jobId })` — the row.
+- `listDatasetUploadJobs({ datasetKey?, limit? })` — recent
+  uploads list for the dialog's history view.
+
+**Job runner** (`server/services/core/datasetUploadJobRunner.ts`):
+status flow `queued → uploading → parsing → writing → done | failed`,
+with atomic counter columns (`rowsParsed`, `rowsWritten`,
+`errorCount`) on the job row. Stream-parses CSV via `parseCsvText`,
+batches inserts in 500-row chunks (`writeBuffer` flush), writes per-
+row error records to `datasetUploadJobErrors` for the dialog to
+surface. On success: creates a fresh import batch in
+`solarRecImportBatches` (`ingestSource: "upload-v2"`,
+`mergeStrategy: "replace"`), populates `srDs*` rows, calls
+`activateDatasetVersion` to flip the new batch active and supersede
+the prior one. **Multi-append is not supported** — `mergeStrategy`
+is hard-coded to `"replace"`. Phase 6 PR-B will add `"append"` mode
+with the same `datasetAppendRowKey` dedup semantics as v1.
+
+**Parser registry** (`server/services/core/datasetUploadParsers.ts`):
+17 parsers, one per CSV-uploadable dataset key (`deliveryScheduleBase`
+is scanner-managed and excluded). Each parser uses `pickField` /
+`pickNumber` for header-alias-tolerant column resolution; output
+shape matches the corresponding `InsertSrDs*` Drizzle type.
+**Adding a new dataset to v2** = (a) write a parser following the
+existing 17 examples, (b) add the key to `IMPLEMENTED_V2_DATASETS`
+in `SolarRecDashboard.tsx`, (c) register the parser in the registry
+map. The runner picks it up automatically — no router change needed.
+
+**Client controller**
+(`client/src/solar-rec-dashboard/hooks/useDatasetUploadController.ts`):
+drives the chunk loop via `utils.client.solarRecDashboard.
+startDatasetUpload.mutate` → N × `uploadDatasetChunk.mutate` →
+`finalizeDatasetUpload.mutate`. FileReader-based base64 encoding,
+cancellable via the controller's `cancel()` (sets local state and
+the next chunk loop iteration short-circuits). The companion
+`useDatasetUploadStatus` hook polls `getDatasetUploadStatus` every
+2 s and halts on terminal status.
+
+**Component**
+(`client/src/solar-rec-dashboard/components/DatasetUploadV2Button.tsx`):
+compound widget — hidden file input + `<UploadProgressDialog>`. On
+the `done` status, calls the parent's `onSuccess(jobId)` callback;
+the dataset-card slot wires it to invalidate
+`getDatasetSummariesAll`, `getSystemSnapshot`,
+`getDatasetCloudStatuses`, and `listDatasetUploadJobs`. (No
+`getDataset` invalidation — it's a mutation, not a query.)
+
+**Diagnostic markers:** every v2 proc returns `_runnerVersion`. The
+job row's `errorMessage` field carries finalize-time errors;
+per-row errors live in `datasetUploadJobErrors`. Use
+`debugDatasetPersistenceRaw(datasetKey)` after a v2 upload to verify
+the new active batch lines up with the row-table count — the
+verdict will read `"consistent"` when `activeBatchRowCount` matches
+the actual `srDs*` row count. v2 does not write to the chunked-CSV
+storage layer at all; on a row-backed dataset the chunked-CSV
+presence is ignored by the verdict logic, so `"consistent"` is the
+expected post-upload state even with no chunked blob present.
+
 ### Diagnostic surface
 
 - **`debugDatasetPersistenceRaw(datasetKey)`** — raw row from every
