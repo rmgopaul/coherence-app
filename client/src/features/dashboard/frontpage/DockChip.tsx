@@ -132,11 +132,20 @@ export const DockChip = forwardRef<HTMLAnchorElement, DockChipProps>(
       // the mutation reference is stable.
     }, [item.id, hasResolvedTitle]);
 
+    // Removal mutation — used both by the × button and by the
+    // "Unpin chip" affordance the failure toast offers when a chip
+    // is stuck on a deleted/expired upstream source.
+    const removeItem = trpc.dock.remove.useMutation({
+      onSuccess: () => {
+        void utils.dock.list.invalidate();
+        void utils.dock.listUpcoming.invalidate();
+      },
+    });
+
     // Manual retry — fires `dock.refreshTitle` and surfaces the
-    // result via toast. Visible only on chips with no resolved
-    // title; gives the user diagnostic feedback when auto-heal
-    // ran but couldn't resolve a title (token expired, source
-    // unsupported, upstream API down).
+    // specific failure reason via toast. Visible only on chips
+    // with no resolved title; gives the user actionable feedback
+    // when auto-heal ran but couldn't resolve a title.
     const handleManualRefresh = useCallback(() => {
       refreshTitle.mutate(
         { id: item.id },
@@ -144,20 +153,84 @@ export const DockChip = forwardRef<HTMLAnchorElement, DockChipProps>(
           onSuccess: (result) => {
             if (result.title) {
               toast.success(`Title resolved: ${result.title.slice(0, 60)}`);
+              return;
+            }
+            const reason = result.reason;
+            const detail =
+              "enrichDetail" in result && result.enrichDetail
+                ? ` (${result.enrichDetail})`
+                : "";
+
+            // Map the specific reason to a human-readable message.
+            // Terminal failures (task/event genuinely gone) get an
+            // "Unpin chip" action toast so the user can clean up.
+            const isTerminalGone =
+              reason === "todoist-not-found-anywhere" ||
+              reason === "gcal-not-found-in-any-calendar";
+
+            const message = (() => {
+              switch (reason) {
+                case "no-google-token":
+                  return "Google not connected. Connect Google in Settings.";
+                case "no-todoist-token":
+                  return "Todoist not connected. Connect Todoist in Settings.";
+                case "no-message-id":
+                  return "Couldn't find a Gmail message ID in the URL.";
+                case "no-event-id":
+                  return "Couldn't find a Calendar event ID in the URL.";
+                case "no-spreadsheet-id":
+                  return "Couldn't find a spreadsheet ID in the URL.";
+                case "no-task-id":
+                  return "Couldn't find a Todoist task ID in the URL.";
+                case "eid-decode-failed":
+                  return "Calendar event ID couldn't be decoded.";
+                case "gmail-api-error":
+                  return `Gmail API rejected the request${detail}. The message may be deleted or the token's scope may be insufficient.`;
+                case "gsheet-api-error":
+                  return `Drive API rejected the request${detail}. The sheet may be deleted or shared without access.`;
+                case "gcal-not-found-in-any-calendar":
+                  return `Calendar event not found${detail}. Likely deleted from Google Calendar.`;
+                case "gcal-empty-summary":
+                  return "Calendar event has no title set.";
+                case "gmail-empty-subject":
+                  return "Gmail message has no subject.";
+                case "gsheet-empty-name":
+                  return "Spreadsheet has no name set.";
+                case "todoist-empty-content":
+                  return "Todoist task has no content set.";
+                case "todoist-not-found-anywhere":
+                  return `Todoist task not found${detail}. Likely deleted (or completed >365d ago).`;
+                case "todoist-completed-lookup-failed":
+                  return `Todoist completed-tasks lookup failed${detail}.`;
+                case "unsupported-source":
+                  return "This URL source isn't supported for title enrichment.";
+                case "thrown-error":
+                  return `Enrichment crashed${detail}.`;
+                case "not-found":
+                  return "Chip not found in the dock.";
+                case "persist-failed":
+                  return "Resolved a title but the database update failed.";
+                default:
+                  return "Couldn't resolve a title.";
+              }
+            })();
+
+            if (isTerminalGone) {
+              toast.error(message, {
+                action: {
+                  label: "Unpin chip",
+                  onClick: () => removeItem.mutate({ id: item.id }),
+                },
+                duration: 10_000,
+              });
             } else {
-              const reasonMessage =
-                result.reason === "enrich-null"
-                  ? `Enrichment returned no title (source: ${("effectiveSource" in result && result.effectiveSource) || "unknown"}). Token may be expired or the source may be unreachable.`
-                  : result.reason === "not-found"
-                    ? "Chip not found"
-                    : "Couldn't resolve a title.";
-              toast.error(reasonMessage);
+              toast.error(message);
             }
           },
           onError: (err) => toast.error(`Refresh failed: ${err.message}`),
         }
       );
-    }, [item.id, refreshTitle]);
+    }, [item.id, refreshTitle, removeItem]);
 
     // Close popover on outside click. Listening at the document
     // level keeps us from having to hand-thread refs through every
