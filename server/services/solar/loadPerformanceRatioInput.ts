@@ -577,83 +577,98 @@ export async function loadPerformanceRatioInput(
   scopeId: string,
   batchIds: PerformanceRatioInputBatchIds
 ): Promise<PerformanceRatioInput> {
-  const [
-    snapshot,
-    convertedReadsRows,
-    annualProductionRows,
-    generationEntryRows,
-    accountSolarGenerationRows,
-    generatorDetailsRows,
-    abpReportRows,
-    solarApplicationsRows,
-  ] = await Promise.all([
-    getOrBuildSystemSnapshot(scopeId),
-    batchIds.convertedReadsBatchId
-      ? loadDatasetRows(
-          scopeId,
-          batchIds.convertedReadsBatchId,
-          srDsConvertedReads
-        )
-      : Promise.resolve([] as CsvRow[]),
-    batchIds.annualProductionBatchId
-      ? loadDatasetRows(
-          scopeId,
-          batchIds.annualProductionBatchId,
-          srDsAnnualProductionEstimates
-        )
-      : Promise.resolve([] as CsvRow[]),
-    batchIds.generationEntryBatchId
-      ? loadDatasetRows(
-          scopeId,
-          batchIds.generationEntryBatchId,
-          srDsGenerationEntry
-        )
-      : Promise.resolve([] as CsvRow[]),
-    batchIds.accountSolarGenerationBatchId
-      ? loadDatasetRows(
-          scopeId,
-          batchIds.accountSolarGenerationBatchId,
-          srDsAccountSolarGeneration
-        )
-      : Promise.resolve([] as CsvRow[]),
-    batchIds.generatorDetailsBatchId
-      ? loadDatasetRows(
-          scopeId,
-          batchIds.generatorDetailsBatchId,
-          srDsGeneratorDetails
-        )
-      : Promise.resolve([] as CsvRow[]),
-    batchIds.abpReportBatchId
-      ? loadDatasetRows(scopeId, batchIds.abpReportBatchId, srDsAbpReport)
-      : Promise.resolve([] as CsvRow[]),
-    batchIds.solarApplicationsBatchId
-      ? loadDatasetRows(
-          scopeId,
-          batchIds.solarApplicationsBatchId,
-          srDsSolarApplications
-        )
-      : Promise.resolve([] as CsvRow[]),
-  ]);
+  // 2026-04-29 OOM hotfix (PR 2.5) — load datasets sequentially
+  // with explicit array-drop between phases. The previous
+  // `Promise.all` approach kept up to 8 datasets in memory
+  // simultaneously, peaking at ~300-500 MB on populated scopes
+  // (`srDsConvertedReads` alone is hundreds of MB) and crashing
+  // Render's 3 GB heap soft-limit on the first cold compute.
+  //
+  // Strategy: build each small lookup map first, drop the source
+  // array. Load the BIG dataset (`convertedReads`) LAST, so peak
+  // memory is roughly "convertedReads + final maps" rather than
+  // "all 8 datasets at once".
 
-  // Build the 5 derived maps + monitoring-details-by-system-key.
+  process.stdout.write(
+    `[loadPerformanceRatioInput] cache miss for scope=${scopeId} — sequential dataset loads beginning. ` +
+      `heapUsed=${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB\n`
+  );
+
+  // Phase 1: system snapshot (cached by getOrBuildSystemSnapshot).
+  const snapshot = await getOrBuildSystemSnapshot(scopeId);
+
+  // Phase 2: small-to-medium datasets, one at a time. Each map is
+  // built immediately and the source array goes out of scope so V8
+  // can reclaim it before the next load.
+
+  let annualProductionRows = batchIds.annualProductionBatchId
+    ? await loadDatasetRows(
+        scopeId,
+        batchIds.annualProductionBatchId,
+        srDsAnnualProductionEstimates
+      )
+    : ([] as CsvRow[]);
   const annualProductionByTrackingId = buildAnnualProductionByTrackingId(
     annualProductionRows
   );
+  // Help V8 by clearing the local reference. The aggregator only
+  // needs the map.
+  annualProductionRows = [];
+
+  let generationEntryRows = batchIds.generationEntryBatchId
+    ? await loadDatasetRows(
+        scopeId,
+        batchIds.generationEntryBatchId,
+        srDsGenerationEntry
+      )
+    : ([] as CsvRow[]);
+  let accountSolarGenerationRows = batchIds.accountSolarGenerationBatchId
+    ? await loadDatasetRows(
+        scopeId,
+        batchIds.accountSolarGenerationBatchId,
+        srDsAccountSolarGeneration
+      )
+    : ([] as CsvRow[]);
   const generationBaselineByTrackingId = buildGenerationBaselineByTrackingId(
     generationEntryRows,
     accountSolarGenerationRows
   );
+  generationEntryRows = [];
+  accountSolarGenerationRows = [];
+
+  let generatorDetailsRows = batchIds.generatorDetailsBatchId
+    ? await loadDatasetRows(
+        scopeId,
+        batchIds.generatorDetailsBatchId,
+        srDsGeneratorDetails
+      )
+    : ([] as CsvRow[]);
   const generatorDateOnlineByTrackingId = buildGeneratorDateOnlineByTrackingId(
     generatorDetailsRows
   );
+  generatorDetailsRows = [];
+
+  let abpReportRows = batchIds.abpReportBatchId
+    ? await loadDatasetRows(scopeId, batchIds.abpReportBatchId, srDsAbpReport)
+    : ([] as CsvRow[]);
   const abpAcSizeKwByApplicationId = buildAbpAcSizeKwByApplicationId(
     abpReportRows
   );
   const abpPart2VerificationDateByApplicationId =
     buildAbpPart2VerificationDateByApplicationId(abpReportRows);
+  abpReportRows = [];
+
+  let solarApplicationsRows = batchIds.solarApplicationsBatchId
+    ? await loadDatasetRows(
+        scopeId,
+        batchIds.solarApplicationsBatchId,
+        srDsSolarApplications
+      )
+    : ([] as CsvRow[]);
   const monitoringDetailsBySystemKey = buildMonitoringDetailsBySystemKey(
     solarApplicationsRows
   );
+  solarApplicationsRows = [];
 
   // Tokenize systems. Filter to part-2-eligible-for-size-reporting
   // + has-trackingSystemRefId (matches the client's
@@ -671,10 +686,29 @@ export async function loadPerformanceRatioInput(
       )
     );
 
+  process.stdout.write(
+    `[loadPerformanceRatioInput] small datasets loaded; ` +
+      `systems=${systems.length} ` +
+      `heapUsed=${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB. ` +
+      `Loading convertedReads now (the big one)...\n`
+  );
+
+  // Phase 3: the BIG dataset, last. Memory peak is roughly
+  // "convertedReads rows + final maps" rather than "all 8 datasets".
+  const convertedReadsRows = batchIds.convertedReadsBatchId
+    ? await loadDatasetRows(
+        scopeId,
+        batchIds.convertedReadsBatchId,
+        srDsConvertedReads
+      )
+    : ([] as CsvRow[]);
+
   // Reshape convertedReads rows into the aggregator's expected
   // shape. `loadDatasetRows` returns CsvRow with both typed-column
   // names AND CSV-header keys (via the rawRow merge); we pick the
   // canonical lower_snake_case names the aggregator iterates.
+  // Map-and-replace via reassign so the original reshape source can
+  // be GC'd as soon as the projected array is built.
   const convertedReadsForAggregator = convertedReadsRows.map((row) => ({
     monitoring: clean(row.monitoring),
     monitoring_system_id: clean(row.monitoring_system_id),
@@ -682,6 +716,13 @@ export async function loadPerformanceRatioInput(
     lifetime_meter_read_wh: clean(row.lifetime_meter_read_wh),
     read_date: clean(row.read_date),
   }));
+
+  process.stdout.write(
+    `[loadPerformanceRatioInput] convertedReads loaded; ` +
+      `rows=${convertedReadsForAggregator.length} ` +
+      `heapUsed=${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB. ` +
+      `Aggregator running next.\n`
+  );
 
   // Note on the cast: the shared `PerformanceRatioGenerationBaseline`
   // declares `date: Date` (non-null), but our local

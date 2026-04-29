@@ -610,56 +610,77 @@ export async function getOrBuildForecastAggregates(scopeId: string): Promise<
     serde: jsonSerde<ForecastAggregates>(),
     rowCount: (data) => data.rows.length,
     recompute: async () => {
-      const [
-        snapshot,
-        scheduleRows,
-        annualProductionRows,
-        generationEntryRows,
-        accountSolarGenerationRows,
-        abpReportRows,
-        transferDeliveryLookup,
-      ] = await Promise.all([
-        getOrBuildSystemSnapshot(scopeId),
-        loadDatasetRows(
-          scopeId,
-          batchIds.deliveryScheduleBaseBatchId,
-          srDsDeliverySchedule
-        ),
-        batchIds.annualProductionBatchId
-          ? loadDatasetRows(
-              scopeId,
-              batchIds.annualProductionBatchId,
-              srDsAnnualProductionEstimates
-            )
-          : Promise.resolve([] as CsvRow[]),
-        batchIds.generationEntryBatchId
-          ? loadDatasetRows(
-              scopeId,
-              batchIds.generationEntryBatchId,
-              srDsGenerationEntry
-            )
-          : Promise.resolve([] as CsvRow[]),
-        batchIds.accountSolarGenerationBatchId
-          ? loadDatasetRows(
-              scopeId,
-              batchIds.accountSolarGenerationBatchId,
-              srDsAccountSolarGeneration
-            )
-          : Promise.resolve([] as CsvRow[]),
-        batchIds.abpReportBatchId
-          ? loadDatasetRows(scopeId, batchIds.abpReportBatchId, srDsAbpReport)
-          : Promise.resolve([] as CsvRow[]),
-        buildTransferDeliveryLookupForScope(scopeId),
-      ]);
+      // 2026-04-29 OOM hotfix (PR 2.5) — load datasets sequentially
+      // with explicit array-drop between phases. Same pattern as
+      // `loadPerformanceRatioInput`: build each small lookup map
+      // first, drop the source array, then load the next. Forecast
+      // doesn't have a single huge table like convertedReads, but
+      // sequential loading keeps peak memory predictable and
+      // prevents the aggregator from racing the `getOrBuildSystem
+      // Snapshot` cache miss on first compute.
+      process.stdout.write(
+        `[forecastAggregates] cache miss for scope=${scopeId} — sequential dataset loads beginning. ` +
+          `heapUsed=${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB\n`
+      );
 
+      const snapshot = await getOrBuildSystemSnapshot(scopeId);
+
+      let annualProductionRows = batchIds.annualProductionBatchId
+        ? await loadDatasetRows(
+            scopeId,
+            batchIds.annualProductionBatchId,
+            srDsAnnualProductionEstimates
+          )
+        : ([] as CsvRow[]);
       const annualProductionByTrackingId = buildAnnualProductionByTrackingId(
         annualProductionRows
       );
+      annualProductionRows = [];
+
+      let generationEntryRows = batchIds.generationEntryBatchId
+        ? await loadDatasetRows(
+            scopeId,
+            batchIds.generationEntryBatchId,
+            srDsGenerationEntry
+          )
+        : ([] as CsvRow[]);
+      let accountSolarGenerationRows = batchIds.accountSolarGenerationBatchId
+        ? await loadDatasetRows(
+            scopeId,
+            batchIds.accountSolarGenerationBatchId,
+            srDsAccountSolarGeneration
+          )
+        : ([] as CsvRow[]);
       const generationBaselineByTrackingId =
         buildGenerationBaselineByTrackingId(
           generationEntryRows,
           accountSolarGenerationRows
         );
+      generationEntryRows = [];
+      accountSolarGenerationRows = [];
+
+      let abpReportRows = batchIds.abpReportBatchId
+        ? await loadDatasetRows(
+            scopeId,
+            batchIds.abpReportBatchId,
+            srDsAbpReport
+          )
+        : ([] as CsvRow[]);
+
+      const transferDeliveryLookup =
+        await buildTransferDeliveryLookupForScope(scopeId);
+
+      const scheduleRows = await loadDatasetRows(
+        scopeId,
+        batchIds.deliveryScheduleBaseBatchId,
+        srDsDeliverySchedule
+      );
+
+      process.stdout.write(
+        `[forecastAggregates] all datasets loaded. ` +
+          `heapUsed=${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB. ` +
+          `Aggregator running next.\n`
+      );
 
       // Validate snapshot systems → minimal forecast shape.
       const systems: SnapshotSystemForForecast[] = [];
@@ -712,6 +733,9 @@ export async function getOrBuildForecastAggregates(scopeId: string): Promise<
         abpReportRows,
         extractSnapshotSystems(snapshot.systems)
       );
+      // abpReportRows no longer needed; help V8 reclaim the array
+      // before the (smaller) buildPerformanceSourceRows pass.
+      abpReportRows = [];
       part2Eligibility.eligibleTrackingIds.forEach((id) =>
         eligibleTrackingIds.add(id)
       );
