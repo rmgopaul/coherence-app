@@ -2406,25 +2406,56 @@ export const dataExportRouter = router({
 });
 
 /**
+ * Specific failure reasons for `enrichDockTitle`. Surfaced through
+ * `dock.refreshTitle` so the client can format an actionable toast
+ * instead of the generic "token may be expired" guess.
+ */
+export type DockEnrichReason =
+  | "ok"
+  | "no-google-token"
+  | "no-todoist-token"
+  | "no-message-id"
+  | "no-event-id"
+  | "no-spreadsheet-id"
+  | "no-task-id"
+  | "eid-decode-failed"
+  | "gmail-api-error"
+  | "gsheet-api-error"
+  | "gcal-not-found-in-any-calendar"
+  | "gcal-empty-summary"
+  | "gmail-empty-subject"
+  | "gsheet-empty-name"
+  | "todoist-empty-content"
+  | "todoist-not-found-anywhere"
+  | "todoist-completed-lookup-failed"
+  | "unsupported-source"
+  | "thrown-error";
+
+export interface DockEnrichOutcome {
+  title: string | null;
+  reason: DockEnrichReason;
+  /** Optional human-readable detail (e.g. "404 from cal=primary"). */
+  detail?: string;
+}
+
+/**
  * Enrich a dock item — given source/url/meta, fetch the upstream
- * source's display title and return it (or null if anything fails).
- * Pure-IO; no side effects. Used by:
- *   - `dock.getItemDetails` — called during the paste/drop flow
- *   - `dock.refreshTitle` — called by chips that were stored without
- *     a title (e.g. before the gcal-htmlLink classification fix
- *     landed; or when SignalActions drops a Todoist task whose
- *     content was null at the source row)
+ * source's display title. Returns `{title, reason}` so the caller
+ * can format actionable error messages when the title is null.
  *
- * Returns null on every defensive path — token missing, source
- * unsupported, upstream HTTP failure, or upstream returns an empty
- * value. Callers fall back to `chipFallbackLabel` for display.
+ * Used by:
+ *   - `dock.getItemDetails` — called during the paste/drop flow
+ *   - `dock.refreshTitle` — called by chips stored without a title
+ *
+ * Every defensive path returns a specific reason code; the proc
+ * layer routes those to user-friendly toast messages.
  */
 async function enrichDockTitle(
   userId: number,
   source: "gmail" | "gcal" | "gsheet" | "todoist" | "url",
   url: string,
   meta: Record<string, unknown> | null | undefined
-): Promise<string | null> {
+): Promise<DockEnrichOutcome> {
   const { stripMarkdownLinks } = await import("@shared/dropdock.helpers");
   const cleanTitle = (raw: string | null | undefined): string | null => {
     if (!raw) return null;
@@ -2435,7 +2466,9 @@ async function enrichDockTitle(
   try {
     if (source === "gmail") {
       const googleIntegration = await getIntegrationByProvider(userId, "google");
-      if (!googleIntegration?.accessToken) return null;
+      if (!googleIntegration?.accessToken) {
+        return { title: null, reason: "no-google-token" };
+      }
       const accessToken = await getValidGoogleToken(userId);
 
       let messageId = meta?.messageId as string | undefined;
@@ -2452,36 +2485,42 @@ async function enrichDockTitle(
           messageId = undefined;
         }
       }
-      if (!messageId) return null;
+      if (!messageId) {
+        return { title: null, reason: "no-message-id" };
+      }
 
       const response = await fetch(
         `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(messageId)}?format=metadata&metadataHeaders=Subject`,
         { headers: { Authorization: `Bearer ${accessToken}` } }
       );
-      if (!response.ok) return null;
+      if (!response.ok) {
+        return {
+          title: null,
+          reason: "gmail-api-error",
+          detail: `${response.status}`,
+        };
+      }
 
       const data = await response.json();
       const subject = data.payload?.headers?.find(
         (h: { name: string; value: string }) => h.name === "Subject"
       )?.value;
-      return cleanTitle(subject);
+      const result = cleanTitle(subject);
+      if (!result) return { title: null, reason: "gmail-empty-subject" };
+      return { title: result, reason: "ok" };
     }
 
     if (source === "gcal") {
       const googleIntegration = await getIntegrationByProvider(userId, "google");
       if (!googleIntegration?.accessToken) {
         console.log(`[enrichDockTitle gcal] no-google-token user=${userId}`);
-        return null;
+        return { title: null, reason: "no-google-token" };
       }
       const accessToken = await getValidGoogleToken(userId);
 
       let eventId = meta?.eventId as string | undefined;
       let calendarId = meta?.calendarId as string | undefined;
 
-      // Try `eid` from meta first (set by classifyUrl). For chips
-      // stored before the www.google.com/calendar host fix, meta
-      // could be empty — in that case try parsing `eid` directly
-      // off the URL as a defensive fallback.
       let eid = meta?.eid as string | undefined;
       if (!eventId && !eid) {
         try {
@@ -2493,10 +2532,8 @@ async function enrichDockTitle(
       }
 
       if (!eventId && eid) {
-        // Decode base64 event ID. Format is "eventId calendarId"
-        // (calendarId absent when the event lives on the primary
-        // calendar). Google's eid is URL-safe base64 — convert to
-        // standard base64 first so Node's decoder handles it.
+        // Google's eid is URL-safe base64 — convert to standard
+        // base64 first so Node's decoder handles it.
         try {
           const standardB64 = eid.replace(/-/g, "+").replace(/_/g, "/");
           const decoded = Buffer.from(standardB64, "base64").toString("utf-8");
@@ -2507,19 +2544,16 @@ async function enrichDockTitle(
           console.log(
             `[enrichDockTitle gcal] eid-decode-failed eid=${eid.slice(0, 12)}…`
           );
-          return null;
+          return { title: null, reason: "eid-decode-failed" };
         }
       }
       if (!eventId) {
         console.log(
           `[enrichDockTitle gcal] no-event-id meta-keys=${Object.keys(meta ?? {}).join(",") || "none"} url=${url.slice(0, 80)}`
         );
-        return null;
+        return { title: null, reason: "no-event-id" };
       }
 
-      // Helper: hit /events/{id} on a specific calendar. Returns the
-      // resolved event or null on non-OK so the caller can fall
-      // through to the next calendar.
       const fetchEventOnCalendar = async (
         calId: string
       ): Promise<{ summary?: string } | null> => {
@@ -2534,21 +2568,13 @@ async function enrichDockTitle(
         return null;
       };
 
-      // Step 1 — try the calendar from the eid (or the explicit
-      // meta.calendarId). Falls back to "primary" when neither
-      // surfaced one. Logs the resolved (eventId, calendarId) pair
-      // so prod logs reveal whether the eid carried calendarId.
       const initialCalendar = calendarId ?? "primary";
       console.log(
         `[enrichDockTitle gcal] eid-decoded event=${eventId.slice(0, 12)}… cal=${initialCalendar}${calendarId ? "" : " (eid had no calendarId)"}`
       );
       let event = await fetchEventOnCalendar(initialCalendar);
+      const calendarsTried: string[] = [initialCalendar];
 
-      // Step 2 — primary 404 fallback. Common shape: chip URL was
-      // an htmlLink for an event on a shared/delegated calendar
-      // (work calendar, family calendar, etc.) and the eid base64
-      // didn't include calendarId. Iterate calendarList and try
-      // each. Skip the calendar we already tried.
       if (!event) {
         try {
           const listResp = await fetch(
@@ -2569,6 +2595,7 @@ async function enrichDockTitle(
               `[enrichDockTitle gcal] calendarList-fallback candidates=${candidates.length}`
             );
             for (const calId of candidates) {
+              calendarsTried.push(calId);
               const found = await fetchEventOnCalendar(calId);
               if (found) {
                 console.log(
@@ -2594,7 +2621,11 @@ async function enrichDockTitle(
         console.log(
           `[enrichDockTitle gcal] not-found-in-any-calendar event=${eventId.slice(0, 12)}…`
         );
-        return null;
+        return {
+          title: null,
+          reason: "gcal-not-found-in-any-calendar",
+          detail: `tried ${calendarsTried.length} calendar${calendarsTried.length === 1 ? "" : "s"}`,
+        };
       }
 
       const result = cleanTitle(event.summary);
@@ -2602,28 +2633,41 @@ async function enrichDockTitle(
         console.log(
           `[enrichDockTitle gcal] empty-summary event=${eventId.slice(0, 12)}…`
         );
+        return { title: null, reason: "gcal-empty-summary" };
       }
-      return result;
+      return { title: result, reason: "ok" };
     }
 
     if (source === "gsheet") {
       const googleIntegration = await getIntegrationByProvider(userId, "google");
-      if (!googleIntegration?.accessToken) return null;
+      if (!googleIntegration?.accessToken) {
+        return { title: null, reason: "no-google-token" };
+      }
       const accessToken = await getValidGoogleToken(userId);
 
       const spreadsheetId =
         (meta?.spreadsheetId as string | undefined) ??
         (meta?.sheetId as string | undefined);
-      if (!spreadsheetId) return null;
+      if (!spreadsheetId) {
+        return { title: null, reason: "no-spreadsheet-id" };
+      }
 
       const response = await fetch(
         `https://www.googleapis.com/drive/v3/files/${spreadsheetId}?fields=name`,
         { headers: { Authorization: `Bearer ${accessToken}` } }
       );
-      if (!response.ok) return null;
+      if (!response.ok) {
+        return {
+          title: null,
+          reason: "gsheet-api-error",
+          detail: `${response.status}`,
+        };
+      }
 
       const file = await response.json();
-      return cleanTitle(file.name);
+      const result = cleanTitle(file.name);
+      if (!result) return { title: null, reason: "gsheet-empty-name" };
+      return { title: result, reason: "ok" };
     }
 
     if (source === "todoist") {
@@ -2632,7 +2676,7 @@ async function enrichDockTitle(
         console.log(
           `[enrichDockTitle todoist] no-todoist-token user=${userId}`
         );
-        return null;
+        return { title: null, reason: "no-todoist-token" };
       }
 
       let taskId = meta?.taskId as string | undefined;
@@ -2652,12 +2696,10 @@ async function enrichDockTitle(
         console.log(
           `[enrichDockTitle todoist] no-task-id meta-keys=${Object.keys(meta ?? {}).join(",") || "none"} url=${url.slice(0, 80)}`
         );
-        return null;
+        return { title: null, reason: "no-task-id" };
       }
 
-      // Step 1 — single-task lookup. Returns active tasks; some
-      // accounts get a 404 for tasks the user CAN access via the
-      // list endpoint, so we fall through to listing on non-OK.
+      // Step 1 — single-task lookup.
       const response = await fetch(
         `https://api.todoist.com/api/v1/tasks/${encodeURIComponent(taskId)}`,
         {
@@ -2673,12 +2715,14 @@ async function enrichDockTitle(
           console.log(
             `[enrichDockTitle todoist] empty-content task=${taskId.slice(0, 12)}…`
           );
+          return { title: null, reason: "todoist-empty-content" };
         }
-        return result;
+        return { title: result, reason: "ok" };
       }
 
+      const singleTaskStatus = response.status;
       console.log(
-        `[enrichDockTitle todoist] api-${response.status} task=${taskId.slice(0, 12)}… — falling back to list`
+        `[enrichDockTitle todoist] api-${singleTaskStatus} task=${taskId.slice(0, 12)}… — falling back to list`
       );
 
       // Step 2 — active-task list lookup.
@@ -2686,20 +2730,14 @@ async function enrichDockTitle(
       const activeTask = tasks.find((t) => t.id === taskId);
       if (activeTask) {
         const result = cleanTitle(activeTask.content);
-        if (result) return result;
+        if (result) return { title: result, reason: "ok" };
         console.log(
           `[enrichDockTitle todoist] active-list-empty-content task=${taskId.slice(0, 12)}…`
         );
-        return null;
+        return { title: null, reason: "todoist-empty-content" };
       }
 
-      // Step 3 — completed-task lookup. This is the common case
-      // for stuck dock chips: the user pinned a task, completed
-      // it later, and the chip stays in the dock with no title
-      // because the active-task fallback can't find it.
-      // Range over the last 365 days; Todoist's by-completion-date
-      // endpoint is bounded and the fetch is cheap enough at the
-      // sub-100-task scale.
+      // Step 3 — completed-task lookup over the last 365 days.
       console.log(
         `[enrichDockTitle todoist] not-in-active task=${taskId.slice(0, 12)}… — checking completed tasks`
       );
@@ -2723,24 +2761,38 @@ async function enrichDockTitle(
             console.log(
               `[enrichDockTitle todoist] resolved-from-completed task=${taskId.slice(0, 12)}…`
             );
-            return result;
+            return { title: result, reason: "ok" };
           }
         }
         console.log(
-          `[enrichDockTitle todoist] not-found-anywhere task=${taskId.slice(0, 12)}…`
+          `[enrichDockTitle todoist] not-found-anywhere task=${taskId.slice(0, 12)}… (single-task=${singleTaskStatus}, active-list-miss, completed-365d-miss)`
         );
+        return {
+          title: null,
+          reason: "todoist-not-found-anywhere",
+          detail: `single-task=${singleTaskStatus}, active-list-miss, completed-365d-miss`,
+        };
       } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
         console.log(
-          `[enrichDockTitle todoist] completed-lookup-failed task=${taskId.slice(0, 12)}…: ${err instanceof Error ? err.message : String(err)}`
+          `[enrichDockTitle todoist] completed-lookup-failed task=${taskId.slice(0, 12)}…: ${message}`
         );
+        return {
+          title: null,
+          reason: "todoist-completed-lookup-failed",
+          detail: message,
+        };
       }
-      return null;
     }
 
-    return null;
+    return { title: null, reason: "unsupported-source" };
   } catch (error) {
     console.error(`[Dock] enrichDockTitle ${source} failed:`, error);
-    return null;
+    return {
+      title: null,
+      reason: "thrown-error",
+      detail: error instanceof Error ? error.message : String(error),
+    };
   }
 }
 
@@ -2756,13 +2808,13 @@ export const dockRouter = router({
       // the self-heal `refreshTitle` flow share one enrichment
       // implementation. Returns `{ title: null }` on every defensive
       // path so the chip render falls back to `chipFallbackLabel`.
-      const title = await enrichDockTitle(
+      const outcome = await enrichDockTitle(
         ctx.user.id,
         input.source,
         input.url,
         input.meta ?? null
       );
-      return { title };
+      return { title: outcome.title };
     }),
 
   /**
@@ -2842,20 +2894,21 @@ export const dockRouter = router({
         `[Dock.refreshTitle] id=${input.id} stored-source=${item.source} reclassified=${reclassified.source} effective=${effectiveSource} meta-keys=${Object.keys(effectiveMeta).join(",") || "none"}`
       );
 
-      const title = await enrichDockTitle(
+      const outcome = await enrichDockTitle(
         ctx.user.id,
         effectiveSource,
         item.url,
         effectiveMeta
       );
-      if (!title) {
+      if (!outcome.title) {
         console.log(
-          `[Dock.refreshTitle] id=${input.id} enrich-returned-null source=${effectiveSource}`
+          `[Dock.refreshTitle] id=${input.id} enrich-returned-null source=${effectiveSource} enrich-reason=${outcome.reason}${outcome.detail ? ` detail=${outcome.detail}` : ""}`
         );
         return {
           title: null,
           refreshed: false as const,
-          reason: "enrich-null" as const,
+          reason: outcome.reason,
+          enrichDetail: outcome.detail ?? null,
           effectiveSource,
         };
       }
@@ -2874,16 +2927,20 @@ export const dockRouter = router({
       const updated = await updateDockItemTitle(
         ctx.user.id,
         input.id,
-        title,
+        outcome.title,
         updateOpts
       );
       console.log(
-        `[Dock.refreshTitle] id=${input.id} resolved title-len=${title.length} persisted=${updated}`
+        `[Dock.refreshTitle] id=${input.id} resolved title-len=${outcome.title.length} persisted=${updated}`
       );
       return {
-        title,
+        title: outcome.title,
         refreshed: updated,
-        reason: updated ? ("ok" as const) : ("persist-failed" as const),
+        reason: updated
+          ? ("ok" as const)
+          : ("persist-failed" as const),
+        enrichDetail: outcome.detail ?? null,
+        effectiveSource,
       };
     }),
 
