@@ -5689,182 +5689,26 @@ const financialsQuery =
 
 // ProfitRow — moved to @/solar-rec-dashboard/state/types
 
-const _clientFallbackFinancialProfitData = useMemo<FinancialProfitData>(() => {
-  const empty = { rows: [] as ProfitRow[], totalProfit: 0, avgProfit: 0, totalCollateralization: 0, totalUtilityCollateral: 0, totalAdditionalCollateral: 0, totalCcAuth: 0, systemsWithData: 0 };
-  if (!isFinancialsTabActive && !isOverviewTabActive) return empty;
-
-  const scanResults = contractScanResultsQuery.data ?? [];
-  if (scanResults.length === 0) return empty;
-
-  // Build lookup maps
-  const scanByCsgId = new Map<string, (typeof scanResults)[number]>();
-  for (const r of scanResults) {
-    scanByCsgId.set(r.csgId, r);
-  }
-
-  const mappingRows = datasets.abpCsgSystemMapping?.rows ?? [];
-  const csgIdByAppId = new Map<string, string>();
-  const appIdByCsgId = new Map<string, string>();
-  for (const row of mappingRows) {
-    const csgId = (row.csgId || row["CSG ID"] || "").trim();
-    const systemId = (row.systemId || row["System ID"] || "").trim();
-    if (csgId && systemId) {
-      csgIdByAppId.set(systemId, csgId);
-      appIdByCsgId.set(csgId, systemId);
-    }
-  }
-
-  // Build ICC Report 3 lookup by applicationId → grossContractValue
-  const iccRows = datasets.abpIccReport3Rows?.rows ?? [];
-  // 2026-04-11: replaced raw parseFloat with parseNumber (line 793)
-  // which strips $, commas, %, and whitespace before parsing. The ICC
-  // Report 3 CSV uses currency-formatted values like "$1,234.56" that
-  // parseFloat can't handle — every row returned NaN, gross was
-  // always 0, and no appIds made it into iccByAppId.
-  const iccByAppId = new Map<string, { grossContractValue: number; recQuantity: number; recPrice: number }>();
-  for (const row of iccRows) {
-    const appId = (
-      row["Application ID"] || row.Application_ID || row.application_id || ""
-    ).trim();
-    if (!appId) continue;
-    const gcv =
-      parseNumber(
-        row["Total REC Delivery Contract Value"] ||
-        row["REC Delivery Contract Value"] ||
-        row["Total Contract Value"]
-      ) ?? 0;
-    const rq =
-      parseNumber(
-        row["Total Quantity of RECs Contracted"] ||
-        row["Contracted SRECs"] ||
-        row.SRECs
-      ) ?? 0;
-    const rp = parseNumber(row["REC Price"]) ?? 0;
-    const gross = gcv > 0 ? gcv : rq * rp;
-    if (gross > 0) {
-      iccByAppId.set(appId, { grossContractValue: gross, recQuantity: rq, recPrice: rp });
-    }
-  }
-
-  // Build Part I submit date lookup from ABP report rows
-  const abpRows = datasets.abpReport?.rows ?? [];
-  const part1DateByAppId = new Map<string, Date>();
-  for (const row of abpRows) {
-    const appId = (row.Application_ID || row.application_id || "").trim();
-    if (!appId) continue;
-    const raw = row.Part_1_Submission_Date || row.Part_1_submission_date || row.Part_1_Original_Submission_Date || "";
-    if (raw) {
-      const d = new Date(raw);
-      if (!Number.isNaN(d.getTime())) part1DateByAppId.set(appId, d);
-    }
-  }
-
-  const profitRows: ProfitRow[] = [];
-  const APPLICATION_FEE_CUTOFF = new Date("2024-06-01");
-
-  for (const abpRow of part2VerifiedAbpRows) {
-    const appId = (abpRow.Application_ID || abpRow.application_id || "").trim();
-    if (!appId) continue;
-
-    const csgId = csgIdByAppId.get(appId);
-    if (!csgId) continue;
-
-    const scan = scanByCsgId.get(csgId);
-    const icc = iccByAppId.get(appId);
-    if (!scan || !icc) continue;
-
-    const gcv = icc.grossContractValue;
-    const localOv = localOverrides.get(csgId);
-    const hasOverride = localOv != null || scan.overriddenAt != null;
-    const vfp = localOv?.vfp ?? scan.overrideVendorFeePercent ?? scan.vendorFeePercent ?? 0;
-    const vendorFeeAmount = roundMoney(gcv * (vfp / 100));
-    const utilityCollateral = roundMoney(gcv * 0.05);
-    const acp = localOv?.acp ?? scan.overrideAdditionalCollateralPercent ?? scan.additionalCollateralPercent ?? 0;
-    const additionalCollateralAmount = roundMoney(gcv * (acp / 100));
-
-    // CC auth 5%: if CC auth not completed AND not absent from contract, apply 5%
-    const ccAuthCompleted = scan.ccAuthorizationCompleted;
-    const ccAuth5Percent = ccAuthCompleted === false ? roundMoney(gcv * 0.05) : 0;
-
-    // Application fee
-    const acSizeKw = scan.acSizeKw ?? 0;
-    const part1Date = part1DateByAppId.get(appId);
-    let applicationFee = 0;
-    if (part1Date && acSizeKw > 0) {
-      if (part1Date < APPLICATION_FEE_CUTOFF) {
-        applicationFee = Math.min(roundMoney(10 * acSizeKw), 5000);
-      } else {
-        applicationFee = Math.min(roundMoney(20 * acSizeKw), 15000);
-      }
-    }
-
-    const totalDeductions = roundMoney(
-      vendorFeeAmount + utilityCollateral + additionalCollateralAmount + ccAuth5Percent + applicationFee
-    );
-    // 2026-04-12: profit = vendor fee (what Carbon Solutions earns),
-    // NOT gross minus all deductions. The vendor fee is the revenue;
-    // the rest (collateral, app fees) are borne by the project.
-    const profit = vendorFeeAmount;
-    const totalCollateralization = roundMoney(utilityCollateral + additionalCollateralAmount + ccAuth5Percent);
-
-    // Validation: flag rows where collateral > 30% of GCV.
-    const collateralPercent = gcv > 0 ? totalCollateralization / gcv : 0;
-    const needsReview = collateralPercent > 0.30;
-    const reviewReason = needsReview
-      ? `Collateral is ${(collateralPercent * 100).toFixed(1)}% of GCV`
-      : "";
-
-    profitRows.push({
-      systemName: scan.systemName ?? appId,
-      applicationId: appId,
-      csgId,
-      grossContractValue: gcv,
-      vendorFeePercent: vfp,
-      vendorFeeAmount,
-      utilityCollateral,
-      additionalCollateralPercent: acp,
-      additionalCollateralAmount,
-      ccAuth5Percent,
-      applicationFee,
-      totalDeductions,
-      profit,
-      totalCollateralization,
-      needsReview,
-      reviewReason,
-      hasOverride,
-    });
-  }
-
-  const totalProfit = profitRows.reduce((a, r) => a + r.profit, 0);
-  const totalColl = profitRows.reduce((a, r) => a + r.totalCollateralization, 0);
-  const totalUtilColl = profitRows.reduce((a, r) => a + r.utilityCollateral, 0);
-  const totalAddlColl = profitRows.reduce((a, r) => a + r.additionalCollateralAmount, 0);
-  const totalCcAuthColl = profitRows.reduce((a, r) => a + r.ccAuth5Percent, 0);
-
-  return {
-    rows: profitRows.sort((a, b) => b.profit - a.profit),
-    totalProfit: roundMoney(totalProfit),
-    avgProfit: profitRows.length > 0 ? roundMoney(totalProfit / profitRows.length) : 0,
-    totalCollateralization: roundMoney(totalColl),
-    totalUtilityCollateral: roundMoney(totalUtilColl),
-    totalAdditionalCollateral: roundMoney(totalAddlColl),
-    totalCcAuth: roundMoney(totalCcAuthColl),
-    systemsWithData: profitRows.length,
-  };
-}, [
-  isFinancialsTabActive,
-  isOverviewTabActive,
-  part2VerifiedAbpRows,
-  contractScanResultsQuery.data,
-  datasets.abpCsgSystemMapping,
-  datasets.abpIccReport3Rows,
-  datasets.abpReport,
-  localOverrides,
-]);
+// Salvage PR B (2026-04-29) — `_clientFallbackFinancialProfitData`
+// (~170 LOC) is gone. The server aggregator
+// (`getDashboardFinancials`, Phase 5d PR 3) is the only source of
+// truth. During cold load, before the query lands, the tab renders
+// empty — the empty-state matches the EMPTY_FINANCIALS sentinel
+// the server returns when it has no data either.
+const FINANCIAL_PROFIT_EMPTY: FinancialProfitData = {
+  rows: [],
+  totalProfit: 0,
+  avgProfit: 0,
+  totalCollateralization: 0,
+  totalUtilityCollateral: 0,
+  totalAdditionalCollateral: 0,
+  totalCcAuth: 0,
+  systemsWithData: 0,
+};
 
 const financialProfitData = useMemo<FinancialProfitData>(() => {
   const data = financialsQuery.data;
-  if (!data) return _clientFallbackFinancialProfitData;
+  if (!data) return FINANCIAL_PROFIT_EMPTY;
 
   let rows = data.rows as ProfitRow[];
 
@@ -5936,7 +5780,7 @@ const financialProfitData = useMemo<FinancialProfitData>(() => {
     totalCcAuth: roundMoney(totalCcAuthColl),
     systemsWithData: rows.length,
   };
-}, [financialsQuery.data, _clientFallbackFinancialProfitData, localOverrides]);
+}, [financialsQuery.data, localOverrides]);
 
 // ── Pipeline: Cash Flow by Month (M+1 from Part II verification) ──
 // pipelineCashFlowRows, cashFlowRows3Year, cashFlowRows12Month, cashFlowRows12MonthRef — moved to @/solar-rec-dashboard/components/AppPipelineTab
@@ -6707,19 +6551,28 @@ const aiDataContext = useMemo(() => {
           {visitedTabsRef.current.has("performance-ratio") && (
             <div style={{ display: activeTab === "performance-ratio" ? "contents" : "none" }}>
               <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading performance ratio tab...</div>}>
+                {/* Salvage PR B (2026-04-29) — 6 prop forwards
+                    dropped (`generatorDetails`,
+                    `monitoringDetailsBySystemKey`,
+                    `abpAcSizeKwByApplicationId`,
+                    `abpPart2VerificationDateByApplicationId`,
+                    `annualProductionByTrackingId`,
+                    `generationBaselineByTrackingId`). The tab
+                    consumes exclusively from the server
+                    `getDashboardPerformanceRatio` aggregator. The
+                    parent memos still feed RecPerformanceEvaluation
+                    + Snapshot Log; only the PerformanceRatio
+                    forwarding is dropped here. The remaining 4
+                    dataset / 2 lookup props feed the dataset-
+                    existence empty-state check + the size-reporting
+                    sub-memo. */}
                 <PerformanceRatioTabLazy
                   convertedReads={datasets.convertedReads ?? null}
                   annualProductionEstimates={datasets.annualProductionEstimates ?? null}
-                  generatorDetails={datasets.generatorDetails ?? null}
                   convertedReadsLabel={DATASET_DEFINITIONS.convertedReads.label}
                   annualProductionEstimatesLabel={DATASET_DEFINITIONS.annualProductionEstimates.label}
                   part2EligibleSystemsForSizeReporting={part2EligibleSystemsForSizeReporting}
-                  monitoringDetailsBySystemKey={monitoringDetailsBySystemKey}
-                  abpAcSizeKwByApplicationId={abpAcSizeKwByApplicationId}
-                  abpPart2VerificationDateByApplicationId={abpPart2VerificationDateByApplicationId}
                   abpAcSizeKwBySystemKey={abpAcSizeKwBySystemKey}
-                  annualProductionByTrackingId={annualProductionByTrackingId}
-                  generationBaselineByTrackingId={generationBaselineByTrackingId}
                 />
               </Suspense>
             </div>
@@ -6766,12 +6619,16 @@ const aiDataContext = useMemo(() => {
           {visitedTabsRef.current.has("forecast") && (
             <div style={{ display: activeTab === "forecast" ? "contents" : "none" }}>
               <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading forecast tab...</div>}>
-                <ForecastTabLazy
-                  performanceSourceRows={performanceSourceRows}
-                  systems={systems}
-                  annualProductionByTrackingId={annualProductionByTrackingId}
-                  generationBaselineByTrackingId={generationBaselineByTrackingId}
-                />
+                {/* Salvage PR B (2026-04-29) — the 4 prop forwards
+                    (performanceSourceRows / systems /
+                    annualProductionByTrackingId /
+                    generationBaselineByTrackingId) are gone. The
+                    tab consumes exclusively from the server
+                    `getDashboardForecast` aggregator. The parent
+                    memos still feed RecPerformanceEvaluationTab
+                    + Snapshot Log; only the Forecast forwarding
+                    is dropped. */}
+                <ForecastTabLazy />
               </Suspense>
             </div>
           )}
