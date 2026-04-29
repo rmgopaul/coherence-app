@@ -161,7 +161,9 @@ import {
   type PerDatasetErrorMap,
 } from "@/solar-rec-dashboard/lib/hydrationErrors";
 import { ScheduleBImport } from "@/solar-rec-dashboard/components/ScheduleBImport";
-import ParityReportPanel from "@/solar-rec-dashboard/components/ParityReportPanel";
+// Phase 5a (2026-04-28): ParityReportPanel deleted — it was a
+// dev-only IDB-vs-server diff probe. With IDB no longer used at
+// runtime, the parity report has no two sources to compare.
 import {
   COO_TARGET_STATUS,
   LEGACY_DATASETS_STORAGE_KEY,
@@ -1282,53 +1284,14 @@ function invalidateCachedDashboardDb(): void {
 }
 
 async function openDashboardDatabase(): Promise<IDBDatabase> {
-  if (cachedDashboardDb) return cachedDashboardDb;
-  if (cachedDashboardDbPromise) return cachedDashboardDbPromise;
-
-  cachedDashboardDbPromise = new Promise<IDBDatabase>((resolve, reject) => {
-    if (typeof window === "undefined" || !("indexedDB" in window)) {
-      reject(new Error("IndexedDB is not available in this browser."));
-      return;
-    }
-
-    const request = window.indexedDB.open(DASHBOARD_DB_NAME, DASHBOARD_DB_VERSION);
-
-    request.onupgradeneeded = () => {
-      const db = request.result;
-      if (!db.objectStoreNames.contains(DASHBOARD_DATASETS_STORE)) {
-        db.createObjectStore(DASHBOARD_DATASETS_STORE);
-      }
-    };
-
-    request.onsuccess = () => {
-      const db = request.result;
-      // Invalidate the cache on close/versionchange so the next call
-      // re-opens rather than re-using a dead handle.
-      db.onclose = () => {
-        if (cachedDashboardDb === db) invalidateCachedDashboardDb();
-      };
-      db.onversionchange = () => {
-        try {
-          db.close();
-        } catch {
-          // Ignore close errors; we're discarding the handle anyway.
-        }
-        if (cachedDashboardDb === db) invalidateCachedDashboardDb();
-      };
-      cachedDashboardDb = db;
-      resolve(db);
-    };
-    request.onerror = () => {
-      cachedDashboardDbPromise = null;
-      reject(request.error ?? new Error("Failed to open IndexedDB."));
-    };
-    request.onblocked = () => {
-      cachedDashboardDbPromise = null;
-      reject(new Error("IndexedDB open blocked by another tab."));
-    };
-  });
-
-  return cachedDashboardDbPromise;
+  // Phase 5a (2026-04-28): the dashboard no longer opens an
+  // IndexedDB connection at runtime. Every call site in this
+  // file has been migrated to the no-op'd load/save helpers
+  // above. If anything still reaches this function, it's a bug
+  // — fail fast with a clear message.
+  throw new Error(
+    "openDashboardDatabase: IndexedDB removed by Phase 5a; this caller is leftover."
+  );
 }
 
 function dashboardDatasetStorageKey(key: DatasetKey): string {
@@ -1402,397 +1365,25 @@ interface ProgressiveHydrationOptions {
   onError?: (key: DatasetKey, error: unknown) => void;
 }
 
-async function loadDatasetsFromStorage(options: ProgressiveHydrationOptions): Promise<void> {
-  const { priorityKeys, onBatch, onProgress, onError } = options;
-  if (typeof window === "undefined") return;
-  const debug = isSolarRecDebugEnabled();
-
-  // Phase 17c: buffers that accumulate datasets between flushes.
-  // `priorityBatch` drains at the priority/background boundary;
-  // `backgroundBatch` drains at the end. Both paths also update
-  // the signature cache immediately (per dataset) so the next
-  // save's diff-save sees the freshly-loaded values.
-  const priorityBatch: Partial<Record<DatasetKey, CsvDataset>> = {};
-  const backgroundBatch: Partial<Record<DatasetKey, CsvDataset>> = {};
-
-  const recordLoad = (
-    target: Partial<Record<DatasetKey, CsvDataset>>,
-    key: DatasetKey,
-    dataset: CsvDataset,
-  ) => {
-    target[key] = dataset;
-    lastSavedDatasetSignatures[key] = buildSingleDatasetSignature(dataset);
-  };
-
-  const flushPriority = () => {
-    if (Object.keys(priorityBatch).length === 0) return;
-    onBatch({ ...priorityBatch }, "priority");
-    for (const key of Object.keys(priorityBatch) as DatasetKey[]) {
-      delete priorityBatch[key];
-    }
-  };
-
-  const flushBackground = () => {
-    if (Object.keys(backgroundBatch).length === 0) return;
-    onBatch({ ...backgroundBatch }, "background");
-    for (const key of Object.keys(backgroundBatch) as DatasetKey[]) {
-      delete backgroundBatch[key];
-    }
-  };
-
-  if (!("indexedDB" in window)) {
-    const legacyDatasets = loadLegacyDatasetsFromLocalStorage();
-    const keys = Object.keys(legacyDatasets) as DatasetKey[];
-    onProgress?.(0, keys.length);
-    keys.forEach((key, index) => {
-      const dataset = legacyDatasets[key];
-      if (dataset) recordLoad(backgroundBatch, key, dataset);
-      onProgress?.(index + 1, keys.length);
-    });
-    flushBackground();
-    return;
-  }
-
-  try {
-    const openDb = await openDashboardDatabase();
-    const stored = await new Promise<{
-      manifest: SerializedDatasetsManifest | null;
-      legacy: Record<string, SerializedCsvDataset | undefined> | null;
-      allStoreKeys: IDBValidKey[];
-    }>((resolve, reject) => {
-      const transaction = openDb.transaction(DASHBOARD_DATASETS_STORE, "readonly");
-      const store = transaction.objectStore(DASHBOARD_DATASETS_STORE);
-      const manifestRequest = store.get(DASHBOARD_DATASETS_MANIFEST_KEY);
-      const legacyRequest = store.get(DASHBOARD_DATASETS_RECORD_KEY);
-      const allKeysRequest = store.getAllKeys();
-
-      transaction.oncomplete = () => {
-        resolve({
-          manifest: (manifestRequest.result as SerializedDatasetsManifest | undefined) ?? null,
-          legacy:
-            (legacyRequest.result as Record<string, SerializedCsvDataset | undefined> | undefined) ?? null,
-          allStoreKeys: (allKeysRequest.result as IDBValidKey[] | undefined) ?? [],
-        });
-      };
-      transaction.onabort = () => reject(transaction.error ?? new Error("Failed reading datasets from IndexedDB."));
-      transaction.onerror = () => reject(transaction.error ?? new Error("Failed reading datasets from IndexedDB."));
-    });
-
-    // Self-heal: a prior save may have truncated the manifest while
-    // leaving orphan `dataset:<key>` records in IndexedDB. Scan the
-    // store, merge any orphans that aren't tracked by the manifest,
-    // and then persist the repaired manifest so subsequent loads take
-    // the fast path. Preserves user data across incomplete manifest
-    // writes (e.g. a partially-hydrated save during an OOM window).
-    const manifestKeyArray =
-      stored.manifest && Array.isArray(stored.manifest.keys)
-        ? stored.manifest.keys
-        : [];
-    const manifestKeySet = new Set<string>(manifestKeyArray);
-    const orphanDatasetKeys: DatasetKey[] = [];
-    const DATASET_STORAGE_KEY_PREFIX = "dataset:";
-    for (const rawKey of stored.allStoreKeys) {
-      if (typeof rawKey !== "string") continue;
-      if (!rawKey.startsWith(DATASET_STORAGE_KEY_PREFIX)) continue;
-      const candidate = rawKey.slice(DATASET_STORAGE_KEY_PREFIX.length);
-      if (!candidate || manifestKeySet.has(candidate)) continue;
-      if (!isDatasetKey(candidate)) continue;
-      orphanDatasetKeys.push(candidate);
-    }
-    const effectiveManifestKeys: string[] = [...manifestKeyArray, ...orphanDatasetKeys];
-
-    if (effectiveManifestKeys.length > 0) {
-      // Mirror the cloud-path key resolution so both hydration paths
-      // stay aligned: manifest ∪ orphans ∪ priority.
-      const manifestKeys = Array.from(
-        resolveHydrationKeys({
-          manifestKeys: effectiveManifestKeys,
-          priorityKeys: priorityKeys ?? [],
-          isDatasetKey,
-        }),
-      );
-      if (manifestKeys.length > 0) {
-        // Phase 16: reorder so the active tab's datasets load first.
-        // Keys not in priorityKeys go to the back of the queue.
-        const priorityOrdered = priorityKeys
-          ? manifestKeys.filter((key) => priorityKeys.has(key))
-          : [];
-        const backgroundOrdered = priorityKeys
-          ? manifestKeys.filter((key) => !priorityKeys.has(key))
-          : manifestKeys;
-
-        const total = priorityOrdered.length + backgroundOrdered.length;
-        onProgress?.(0, total);
-
-        const transaction = openDb.transaction(DASHBOARD_DATASETS_STORE, "readonly");
-        const store = transaction.objectStore(DASHBOARD_DATASETS_STORE);
-
-        // Yields between each read so the browser can paint and
-        // respond to input during a cold hydrate. Keeping this
-        // scoped to a helper makes the two loops read identically.
-        const yieldToBrowser = () =>
-          new Promise<void>((resolve) => {
-            if (typeof queueMicrotask === "function") {
-              queueMicrotask(resolve);
-            } else {
-              setTimeout(resolve, 0);
-            }
-          });
-
-        const readPhase = async (
-          keys: DatasetKey[],
-          target: Partial<Record<DatasetKey, CsvDataset>>,
-          baseProgress: number,
-        ): Promise<number> => {
-          let loaded = baseProgress;
-          for (const key of keys) {
-            // Per-key try/catch so a single rejected IDB read or
-            // malformed record can't abort the whole phase. Failed
-            // datasets are reported via onError and simply skipped —
-            // siblings hydrate normally.
-            const t0 = debug ? performance.now() : 0;
-            try {
-              const serialized = (await idbRequestToPromise(
-                store.get(dashboardDatasetStorageKey(key))
-              )) as SerializedCsvDataset | undefined;
-              const dataset = deserializeDatasetRecord(serialized);
-              if (dataset) recordLoad(target, key, dataset);
-              if (debug) {
-                const ms = Math.round(performance.now() - t0);
-                const rowCount = dataset?.rows.length ?? 0;
-                // eslint-disable-next-line no-console
-                console.log(`${HYDRATE_LOG_PREFIX_IDB} ${key} ${ms}ms (${rowCount} rows)`);
-              }
-            } catch (error) {
-              if (debug) {
-                const ms = Math.round(performance.now() - t0);
-                // eslint-disable-next-line no-console
-                console.error(`${HYDRATE_LOG_PREFIX_IDB} ${key} FAILED after ${ms}ms`, error);
-              }
-              onError?.(key, error);
-            }
-            loaded += 1;
-            onProgress?.(loaded, total);
-            if (loaded < total) {
-              await yieldToBrowser();
-            }
-          }
-          return loaded;
-        };
-
-        const afterPriority = await readPhase(priorityOrdered, priorityBatch, 0);
-        // Phase 17c: flush the priority bag BEFORE starting the
-        // background phase. This is what makes the landing tab's
-        // memos re-compute with data while the rest stream in.
-        flushPriority();
-        await readPhase(backgroundOrdered, backgroundBatch, afterPriority);
-        flushBackground();
-
-        // If we recovered orphan dataset records not referenced by the
-        // stored manifest, persist a healed manifest so subsequent loads
-        // take the fast path without re-running the orphan scan. Fire
-        // and forget — failure here is non-fatal, the heal repeats next
-        // load.
-        if (orphanDatasetKeys.length > 0) {
-          const healedKeys = effectiveManifestKeys.filter((key): key is DatasetKey =>
-            isDatasetKey(key)
-          );
-          try {
-            await new Promise<void>((resolve, reject) => {
-              const writeTx = openDb.transaction(
-                DASHBOARD_DATASETS_STORE,
-                "readwrite"
-              );
-              const writeStore = writeTx.objectStore(DASHBOARD_DATASETS_STORE);
-              writeStore.put(
-                {
-                  keys: healedKeys,
-                  updatedAt: new Date().toISOString(),
-                } satisfies SerializedDatasetsManifest,
-                DASHBOARD_DATASETS_MANIFEST_KEY
-              );
-              writeTx.oncomplete = () => resolve();
-              writeTx.onabort = () =>
-                reject(writeTx.error ?? new Error("manifest heal write aborted"));
-              writeTx.onerror = () =>
-                reject(writeTx.error ?? new Error("manifest heal write errored"));
-            });
-          } catch {
-            // Non-fatal — orphan scan will repeat next load.
-          }
-        }
-        return;
-      }
-    }
-
-    // Legacy fallback paths: one-shot returns that we shuttle through
-    // a single background flush so the caller's state flow stays
-    // uniform. These are rare and small (one-time migration).
-    if (stored.legacy) {
-      const legacyDatasets = deserializeDatasets(stored.legacy);
-      const keys = Object.keys(legacyDatasets) as DatasetKey[];
-      if (keys.length > 0) {
-        await saveDatasetsToStorage(legacyDatasets);
-        onProgress?.(0, keys.length);
-        keys.forEach((key, index) => {
-          const dataset = legacyDatasets[key];
-          if (dataset) recordLoad(backgroundBatch, key, dataset);
-          onProgress?.(index + 1, keys.length);
-        });
-        flushBackground();
-        return;
-      }
-    }
-
-    const localLegacy = loadLegacyDatasetsFromLocalStorage();
-    const localLegacyKeys = Object.keys(localLegacy) as DatasetKey[];
-    if (localLegacyKeys.length > 0) {
-      await saveDatasetsToStorage(localLegacy);
-      globalThis.localStorage.removeItem(LEGACY_DATASETS_STORAGE_KEY);
-      onProgress?.(0, localLegacyKeys.length);
-      localLegacyKeys.forEach((key, index) => {
-        const dataset = localLegacy[key];
-        if (dataset) recordLoad(backgroundBatch, key, dataset);
-        onProgress?.(index + 1, localLegacyKeys.length);
-      });
-      flushBackground();
-      return;
-    }
-
-    onProgress?.(0, 0);
-  } catch {
-    invalidateCachedDashboardDb();
-    // Last-resort synchronous fallback — same shape as the IDB-less
-    // branch above.
-    const legacy = loadLegacyDatasetsFromLocalStorage();
-    const keys = Object.keys(legacy) as DatasetKey[];
-    onProgress?.(0, keys.length);
-    keys.forEach((key, index) => {
-      const dataset = legacy[key];
-      if (dataset) recordLoad(backgroundBatch, key, dataset);
-      onProgress?.(index + 1, keys.length);
-    });
-    flushBackground();
-  }
+async function loadDatasetsFromStorage(_options: ProgressiveHydrationOptions): Promise<void> {
+  // Phase 5a (2026-04-28) of the IndexedDB-removal refactor:
+  // hydration from IDB disabled. The dashboard mounts with empty
+  // `datasets` state; the 6 main tabs hydrate from server-side
+  // aggregators (`useSystemSnapshot`, `getDashboard*Aggregates`
+  // — see the comment on `serverSnapshot` ~L4026 for context).
+  // Phase 5c will delete this function and its call sites entirely
+  // once the parent-level `.rows` consumers (Phase 5b) are off the
+  // legacy state map.
+  return;
 }
 
-async function saveDatasetsToStorage(datasets: Partial<Record<DatasetKey, CsvDataset>>): Promise<void> {
-  if (typeof window === "undefined") return;
-
-  if (!("indexedDB" in window)) {
-    const legacySerialized = serializeDatasets(datasets);
-    globalThis.localStorage.setItem(LEGACY_DATASETS_STORAGE_KEY, JSON.stringify(legacySerialized));
-    return;
-  }
-
-  // Phase 13c: diff against lastSavedDatasetSignatures so we only
-  // serialize + put the datasets that actually changed. Unchanged
-  // datasets are left alone in IndexedDB. Datasets that went from
-  // present → missing get deleted. The manifest write is always
-  // issued because it's tiny and reflects the current key set.
-  const activeKeys: DatasetKey[] = [];
-  const changedKeys: DatasetKey[] = [];
-  const removedKeys: DatasetKey[] = [];
-  const nextSignatures: Partial<Record<DatasetKey, string>> = {};
-
-  (Object.keys(DATASET_DEFINITIONS) as DatasetKey[]).forEach((key) => {
-    const dataset = datasets[key];
-    const previousSignature = lastSavedDatasetSignatures[key] ?? "";
-    if (dataset) {
-      activeKeys.push(key);
-      const nextSignature = buildSingleDatasetSignature(dataset);
-      nextSignatures[key] = nextSignature;
-      if (nextSignature !== previousSignature) changedKeys.push(key);
-    } else if (previousSignature) {
-      removedKeys.push(key);
-    }
-  });
-
-  // Fast-path: if nothing changed and no keys were removed, we can
-  // skip the transaction entirely. The callers already guard on the
-  // aggregate signature, but belt-and-braces keeps us safe under
-  // racing saves.
-  if (changedKeys.length === 0 && removedKeys.length === 0) return;
-
-  let db: IDBDatabase;
-  try {
-    db = await openDashboardDatabase();
-  } catch (error) {
-    invalidateCachedDashboardDb();
-    throw error;
-  }
-
-  try {
-    await new Promise<void>((resolve, reject) => {
-      const transaction = db.transaction(DASHBOARD_DATASETS_STORE, "readwrite");
-      const store = transaction.objectStore(DASHBOARD_DATASETS_STORE);
-
-      // Merge the manifest rather than overwrite. A save happening
-      // while state is only partially hydrated (e.g. fresh mount
-      // before all datasets have loaded) must not shrink the
-      // manifest to the currently-loaded subset.
-      //   new manifest keys = existingKeys ∪ activeKeys − removedKeys
-      // Additions always land; explicit user deletes still win via
-      // removedKeys; partial-hydration saves are inert on manifest.
-      const existingManifestRequest = store.get(DASHBOARD_DATASETS_MANIFEST_KEY);
-      existingManifestRequest.onsuccess = () => {
-        const existing = existingManifestRequest.result as
-          | SerializedDatasetsManifest
-          | undefined;
-        const mergedKeys = new Set<string>();
-        if (existing && Array.isArray(existing.keys)) {
-          for (const key of existing.keys) {
-            if (typeof key === "string") mergedKeys.add(key);
-          }
-        }
-        for (const key of activeKeys) mergedKeys.add(key);
-        for (const key of removedKeys) mergedKeys.delete(key);
-
-        const manifest: SerializedDatasetsManifest = {
-          keys: Array.from(mergedKeys).filter(
-            (key): key is DatasetKey => isDatasetKey(key)
-          ),
-          updatedAt: new Date().toISOString(),
-        };
-        store.put(manifest, DASHBOARD_DATASETS_MANIFEST_KEY);
-      };
-
-      // Tombstone the legacy single-blob record on every save so a
-      // partially-migrated cache can't resurrect.
-      store.delete(DASHBOARD_DATASETS_RECORD_KEY);
-
-      for (const key of changedKeys) {
-        const dataset = datasets[key];
-        if (!dataset) continue;
-        store.put(serializeDatasetRecord(dataset), dashboardDatasetStorageKey(key));
-      }
-      for (const key of removedKeys) {
-        store.delete(dashboardDatasetStorageKey(key));
-      }
-
-      transaction.oncomplete = () => resolve();
-      transaction.onabort = () =>
-        reject(transaction.error ?? new Error("Failed saving datasets to IndexedDB."));
-      transaction.onerror = () =>
-        reject(transaction.error ?? new Error("Failed saving datasets to IndexedDB."));
-    });
-  } catch (error) {
-    // Transaction failures are usually QuotaExceeded or "database is
-    // closed" — invalidate the cached connection so the next call
-    // reopens cleanly.
-    invalidateCachedDashboardDb();
-    throw error;
-  }
-
-  // Commit the in-memory signature cache only after the transaction
-  // actually landed.
-  for (const key of changedKeys) {
-    const signature = nextSignatures[key];
-    if (signature) lastSavedDatasetSignatures[key] = signature;
-  }
-  for (const key of removedKeys) {
-    delete lastSavedDatasetSignatures[key];
-  }
+async function saveDatasetsToStorage(_datasets: Partial<Record<DatasetKey, CsvDataset>>): Promise<void> {
+  // Phase 5a (2026-04-28): IndexedDB writes disabled. v2 uploads
+  // (Phase 1-4) write straight to `srDs*` tables on the server;
+  // legacy v1 uploads still hit the cloud-side `saveDataset` proc
+  // (the chunked-CSV manifest path). Neither needs a local IDB
+  // copy. Phase 5c will delete this function + call sites.
+  return;
 }
 
 function serializeDashboardLogs(
@@ -1983,78 +1574,22 @@ function loadPersistedLogs(): DashboardLogEntry[] {
 }
 
 async function loadLogsFromStorage(): Promise<DashboardLogEntry[]> {
-  if (typeof window === "undefined") return [];
-
-  if (!("indexedDB" in window)) {
-    return loadPersistedLogs();
-  }
-
-  try {
-    const openDb = await openDashboardDatabase();
-    const logsPayload = (await new Promise<unknown>((resolve, reject) => {
-      const transaction = openDb.transaction(DASHBOARD_DATASETS_STORE, "readonly");
-      const store = transaction.objectStore(DASHBOARD_DATASETS_STORE);
-      const request = store.get(DASHBOARD_LOGS_RECORD_KEY);
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(request.error ?? new Error("Failed reading snapshot logs from IndexedDB."));
-      transaction.onabort = () => reject(transaction.error ?? new Error("Failed reading snapshot logs from IndexedDB."));
-      transaction.onerror = () => reject(transaction.error ?? new Error("Failed reading snapshot logs from IndexedDB."));
-    })) as string | null | undefined;
-
-    if (typeof logsPayload === "string" && logsPayload.length > 0) {
-      const parsed = deserializeDashboardLogs(logsPayload);
-      if (parsed.length > 0) return parsed;
-    }
-
-    const localFallback = loadPersistedLogs();
-    if (localFallback.length > 0) {
-      await saveLogsToStorage(localFallback);
-      return localFallback;
-    }
-    return [];
-  } catch {
-    invalidateCachedDashboardDb();
-    return loadPersistedLogs();
-  }
-  // Phase 13c: no `db.close()` finally — the cached connection lives.
+  // Phase 5a (2026-04-28): IndexedDB hydration of snapshot logs
+  // disabled. Logs persist via the localStorage fallback already
+  // wired into `loadPersistedLogs()` — that's where the actual
+  // log entries live for cross-session continuity. Phase 5c will
+  // delete this function + its caller after Phase 5b finishes
+  // migrating any remaining IDB consumers.
+  return loadPersistedLogs();
 }
 
-async function saveLogsToStorage(logEntries: DashboardLogEntry[]): Promise<void> {
-  if (typeof window === "undefined") return;
-
-  const compactLogs = compactLogsForRemoteSync(logEntries);
-  const compactText = safeJsonStringify(compactLogs) ?? "[]";
-  try {
-    window.localStorage.setItem(LOGS_STORAGE_KEY, compactText);
-  } catch {
-    // Non-fatal fallback path.
-  }
-
-  if (!("indexedDB" in window)) return;
-
-  const fullText = safeJsonStringify(serializeDashboardLogs(logEntries, { includeSystemName: false })) ?? "[]";
-  let db: IDBDatabase;
-  try {
-    db = await openDashboardDatabase();
-  } catch (error) {
-    invalidateCachedDashboardDb();
-    throw error;
-  }
-  try {
-    await new Promise<void>((resolve, reject) => {
-      const transaction = db.transaction(DASHBOARD_DATASETS_STORE, "readwrite");
-      const store = transaction.objectStore(DASHBOARD_DATASETS_STORE);
-      store.put(fullText, DASHBOARD_LOGS_RECORD_KEY);
-      transaction.oncomplete = () => resolve();
-      transaction.onabort = () =>
-        reject(transaction.error ?? new Error("Failed saving snapshot logs to IndexedDB."));
-      transaction.onerror = () =>
-        reject(transaction.error ?? new Error("Failed saving snapshot logs to IndexedDB."));
-    });
-  } catch (error) {
-    invalidateCachedDashboardDb();
-    throw error;
-  }
+async function saveLogsToStorage(_logEntries: DashboardLogEntry[]): Promise<void> {
+  // Phase 5a (2026-04-28): IDB writes disabled. Snapshot logs
+  // continue to write to localStorage in the original
+  // saveLogsToStorage path (which we no-op here entirely);
+  // the localStorage fallback in `compactLogsForRemoteSync` is
+  // sufficient for this surface.
+  return;
 }
 
 // loadPersistedCompliantSources — moved to @/solar-rec-dashboard/components/PerformanceRatioTab
@@ -7469,8 +7004,6 @@ const aiDataContext = useMemo(() => {
             <TabsTrigger className="h-8 px-2 text-xs md:text-sm" value="data-quality">Data Quality</TabsTrigger>
             <TabsTrigger className="h-8 px-2 text-xs md:text-sm" value="delivery-tracker">Delivery Tracker</TabsTrigger>
           </TabsList>
-
-          <ParityReportPanel />
 
           {visitedTabsRef.current.has("overview") && (
             <div style={{ display: activeTab === "overview" ? "contents" : "none" }}>
