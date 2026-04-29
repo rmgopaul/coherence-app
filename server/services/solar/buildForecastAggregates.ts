@@ -14,11 +14,12 @@
  *
  * Helpers (`buildRecReviewDeliveryYearLabel`,
  * `deriveRecPerformanceThreeYearValues`,
- * `buildScheduleYearEntries`) are inlined byte-for-byte from
- * `client/src/solar-rec-dashboard/lib/helpers/recPerformance.ts`
- * and `client/src/features/solar-rec/SolarRecDashboard.tsx ::
- * buildScheduleYearEntries` so a follow-up can hoist them to
- * shared without touching this file.
+ * `buildScheduleYearEntries`) live in
+ * `@shared/solarRecPerformanceRatio` (hoisted in Phase 5d Salvage
+ * A, #271). The `buildPerformanceSourceRows` aggregator was
+ * private here through PR #278; consolidated with the shared
+ * `server/services/solar/buildPerformanceSourceRows.ts` module in
+ * Phase 5e Followup #2 (2026-04-29).
  */
 
 import { createHash } from "node:crypto";
@@ -31,13 +32,14 @@ import {
 } from "../../../drizzle/schemas/solar";
 import { getActiveVersionsForKeys } from "../../db/solarRecDatasets";
 import {
-  getDeliveredForYear,
+  extractSnapshotSystems,
   type CsvRow,
+  type SnapshotSystem,
 } from "./aggregatorHelpers";
-import type { TransferDeliveryLookupPayload } from "./buildTransferDeliveryLookup";
 import {
   buildPart2EligibilityMaps,
 } from "./buildContractVintageAggregates";
+import { buildPerformanceSourceRows } from "./buildPerformanceSourceRows";
 import {
   loadDatasetRows,
   getOrBuildSystemSnapshot,
@@ -51,24 +53,11 @@ import {
 } from "./loadPerformanceRatioInput";
 import {
   buildRecReviewDeliveryYearLabel,
-  buildScheduleYearEntries,
   calculateExpectedWhForRange,
-  clean,
   deriveRecPerformanceThreeYearValues,
-  parseDate,
-  parseNumber,
   type PerformanceSourceRow,
-  type ScheduleYearEntry,
-  type SolarRecCsvRow,
 } from "@shared/solarRecPerformanceRatio";
 import { jsonSerde, withArtifactCache } from "./withArtifactCache";
-
-// Salvage PR A (2026-04-29) — `ScheduleYearEntry`,
-// `PerformanceSourceRow`, `RecPerformanceThreeYearValues` types and
-// the `buildRecReviewDeliveryYearLabel`,
-// `deriveRecPerformanceThreeYearValues`, `buildScheduleYearEntries`
-// helpers all hoisted to `@shared/solarRecPerformanceRatio.ts`.
-// Imported above; the inlined copies are gone.
 
 export interface ForecastContractRow {
   contract: string;
@@ -119,114 +108,13 @@ function computeEnergyYearWindow(now: Date = new Date()): EnergyYearWindow {
 }
 
 // ---------------------------------------------------------------------------
-// performanceSourceRows builder — server-side mirror of the parent's
-// `performanceSourceRows` useMemo in SolarRecDashboard.tsx (~L3983).
-// ---------------------------------------------------------------------------
-
-interface SnapshotSystemForForecast {
-  systemId: string | null;
-  trackingSystemRefId: string | null;
-  systemName: string;
-  recPrice: number | null;
-  isReporting: boolean;
-}
-
-interface BuildPerformanceSourceRowsInput {
-  scheduleRows: CsvRow[];
-  eligibleTrackingIds: ReadonlySet<string>;
-  systemsByTrackingId: ReadonlyMap<string, SnapshotSystemForForecast>;
-  transferDeliveryLookup: TransferDeliveryLookupPayload;
-}
-
-function buildPerformanceSourceRows(
-  input: BuildPerformanceSourceRowsInput
-): PerformanceSourceRow[] {
-  const {
-    scheduleRows,
-    eligibleTrackingIds,
-    systemsByTrackingId,
-    transferDeliveryLookup,
-  } = input;
-
-  const out: PerformanceSourceRow[] = [];
-  for (let rowIndex = 0; rowIndex < scheduleRows.length; rowIndex += 1) {
-    const row = scheduleRows[rowIndex]!;
-    const trackingSystemRefId = clean(row.tracking_system_ref_id);
-    if (
-      !trackingSystemRefId ||
-      !eligibleTrackingIds.has(trackingSystemRefId)
-    ) {
-      continue;
-    }
-    const system = systemsByTrackingId.get(trackingSystemRefId);
-    const years = buildScheduleYearEntries(row);
-    if (years.length === 0) continue;
-
-    // The transfer-delivery payload is keyed by lowercased
-    // trackingId; we walk it via the `getDeliveredForYear` helper
-    // which encapsulates the lookup contract. For the
-    // first-transfer-year scan we iterate the per-system year map
-    // directly.
-    const systemTransfersRecord =
-      transferDeliveryLookup.byTrackingId[trackingSystemRefId.toLowerCase()] ??
-      null;
-
-    let firstTransferEnergyYear: number | null = null as number | null;
-    if (systemTransfersRecord) {
-      for (const [yearStr, qty] of Object.entries(systemTransfersRecord)) {
-        const ey = Number(yearStr);
-        if (!Number.isFinite(ey)) continue;
-        if (
-          qty > 0 &&
-          (firstTransferEnergyYear === null || ey < firstTransferEnergyYear)
-        ) {
-          firstTransferEnergyYear = ey;
-        }
-      }
-    }
-
-    for (const year of years) {
-      if (!year.startDate) {
-        year.delivered = 0;
-        continue;
-      }
-      const eyStartYear = year.startDate.getFullYear();
-      year.delivered = getDeliveredForYear(
-        transferDeliveryLookup,
-        trackingSystemRefId,
-        eyStartYear
-      );
-    }
-
-    out.push({
-      key: `${trackingSystemRefId}-${rowIndex}`,
-      contractId: clean(row.utility_contract_number) || "Unassigned",
-      systemId: system?.systemId ?? null,
-      trackingSystemRefId,
-      systemName:
-        clean(row.system_name) ||
-        system?.systemName ||
-        trackingSystemRefId,
-      batchId:
-        clean(row.batch_id) ||
-        clean(row.state_certification_number) ||
-        null,
-      recPrice: system?.recPrice ?? null,
-      years,
-      firstTransferEnergyYear,
-    });
-  }
-  return out;
-}
-
-// ---------------------------------------------------------------------------
 // Pure aggregator — byte-for-byte mirror of `forecastProjections` in
 // ForecastTab.tsx (~L200-330).
 // ---------------------------------------------------------------------------
 
 export interface ForecastAggregatorInput {
   performanceSourceRows: PerformanceSourceRow[];
-  systems: SnapshotSystemForForecast[];
+  systems: SnapshotSystem[];
   annualProductionByTrackingId: ReadonlyMap<
     string,
     ServerAnnualProductionProfile
@@ -379,7 +267,12 @@ const FORECAST_DEPS = [
 
 const FORECAST_ARTIFACT_TYPE = "forecast";
 
-export const FORECAST_RUNNER_VERSION = "phase-5d-pr2-forecast@2";
+export const FORECAST_RUNNER_VERSION = "phase-5d-pr2-forecast@3";
+// 2026-04-29 (@3): consolidated this file's private
+// `buildPerformanceSourceRows` with the shared module at
+// `server/services/solar/buildPerformanceSourceRows.ts`. Output is
+// identical post-#279, but the cache key bundles the runner version
+// — bump for traceability.
 // 2026-04-29 (@2): bumped after `getDeliveredForYear`
 // case-sensitivity fix. The private `buildPerformanceSourceRows`
 // inside this file silently returned 0 deliveries in prod
@@ -542,63 +435,28 @@ export async function getOrBuildForecastAggregates(scopeId: string): Promise<
           `Aggregator running next.\n`
       );
 
-      // Validate snapshot systems → minimal forecast shape.
-      const systems: SnapshotSystemForForecast[] = [];
-      const systemsByTrackingId = new Map<
-        string,
-        SnapshotSystemForForecast
-      >();
-      for (const raw of snapshot.systems) {
-        if (!raw || typeof raw !== "object") continue;
-        const r = raw as Record<string, unknown>;
-        const stringOrEmpty = (v: unknown): string =>
-          typeof v === "string" ? v : "";
-        const stringOrNull = (v: unknown): string | null =>
-          typeof v === "string" && v.length > 0 ? v : null;
-        const numberOrNull = (v: unknown): number | null =>
-          typeof v === "number" && Number.isFinite(v) ? v : null;
-        const boolOr = (v: unknown, fallback: boolean): boolean =>
-          typeof v === "boolean" ? v : fallback;
-
-        const sys: SnapshotSystemForForecast = {
-          systemId: stringOrNull(r.systemId),
-          trackingSystemRefId: stringOrNull(r.trackingSystemRefId),
-          systemName: stringOrEmpty(r.systemName),
-          recPrice: numberOrNull(r.recPrice),
-          isReporting: boolOr(r.isReporting, false),
-        };
-        systems.push(sys);
+      // `extractSnapshotSystems` produces the canonical
+      // `SnapshotSystem` shape that both
+      // `buildPart2EligibilityMaps` and the shared
+      // `buildPerformanceSourceRows` consume. Reusing it (instead of
+      // inlining a validator) keeps the contract-vintage / forecast
+      // pipelines honoring the same field defaults.
+      const systems = extractSnapshotSystems(snapshot.systems);
+      const systemsByTrackingId = new Map<string, SnapshotSystem>();
+      for (const sys of systems) {
         if (sys.trackingSystemRefId) {
           systemsByTrackingId.set(sys.trackingSystemRefId, sys);
         }
       }
 
-      // Use existing eligibility builder for tracking-id eligibility
-      // — it accepts the same SnapshotSystem subset
-      // `buildContractVintageAggregates` uses (systemId,
-      // stateApplicationRefId, trackingSystemRefId, recPrice,
-      // isReporting). Forecast doesn't need recPrice/eligibility
-      // beyond the trackingId set, but the helper is the canonical
-      // source for "Part-2-verified eligible tracking IDs".
-      // We re-extract via a minimal validator here to avoid coupling
-      // to the contract-vintage SnapshotSystem shape.
-      const eligibleTrackingIds = new Set<string>();
-      // `extractSnapshotSystems` produces the exact
-      // `SnapshotSystem` shape `buildPart2EligibilityMaps` expects;
-      // reusing it (instead of inlining a validator) keeps both
-      // sides of the contract-vintage / forecast aggregator
-      // pipeline honoring the same field defaults.
-      const { extractSnapshotSystems } = await import("./aggregatorHelpers");
       const part2Eligibility = buildPart2EligibilityMaps(
         abpReportRows,
-        extractSnapshotSystems(snapshot.systems)
+        systems
       );
       // abpReportRows no longer needed; help V8 reclaim the array
       // before the (smaller) buildPerformanceSourceRows pass.
       abpReportRows = [];
-      part2Eligibility.eligibleTrackingIds.forEach((id) =>
-        eligibleTrackingIds.add(id)
-      );
+      const eligibleTrackingIds = part2Eligibility.eligibleTrackingIds;
 
       const performanceSourceRows = buildPerformanceSourceRows({
         scheduleRows,
