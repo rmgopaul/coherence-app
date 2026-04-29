@@ -140,7 +140,6 @@ import type {
 } from "@/solar-rec-dashboard/state/types";
 import {
   buildCsv,
-  matchesExpectedHeaders,
   parseCsv,
   timestampForCsvFileName,
   toCsvFileSlug,
@@ -184,7 +183,6 @@ import {
   MAX_LOCAL_LOG_STORAGE_CHARS,
   REMOTE_DATASET_KEY_MANIFEST,
   REMOTE_SNAPSHOT_LOGS_KEY,
-  MAX_SINGLE_CSV_UPLOAD_BYTES,
   DASHBOARD_TAB_VALUES,
   DEFAULT_DASHBOARD_TAB,
   DASHBOARD_TAB_VALUE_SET,
@@ -459,44 +457,15 @@ const TABULAR_DATASET_KEYS = new Set<DatasetKey>(["abpIccReport2Rows", "abpIccRe
 const SCANNER_MANAGED_DATASET_KEYS = new Set<DatasetKey>(["deliveryScheduleBase"]);
 const CORE_REQUIRED_DATASET_KEYS: DatasetKey[] = ["abpReport"];
 
-/**
- * Datasets that have a server-side parser wired
- * (`server/services/core/datasetUploadParsers.ts`). For these,
- * the Step 1 panel renders a v2 upload button alongside the
- * legacy "Choose CSV" affordance.
- *
- * Phase 4 (2026-04-28) — expanded from {contractedDate} to every
- * dataset that supports CSV upload. The single excluded key is
- * `deliveryScheduleBase`, which is populated by the Schedule B
- * PDF scanner on the Delivery Tracker tab — never a direct CSV
- * upload.
- *
- * Phase 5 (forthcoming) removes the legacy affordance entirely
- * and drops this set.
- *
- * Keep in lockstep with the parser registry. The check is on the
- * client only — the server still rejects an upload for an
- * unimplemented dataset with a clear error message.
- */
-const IMPLEMENTED_V2_DATASETS = new Set<DatasetKey>([
-  "contractedDate",
-  "solarApplications",
-  "abpReport",
-  "generationEntry",
-  "accountSolarGeneration",
-  "convertedReads",
-  "annualProductionEstimates",
-  "generatorDetails",
-  "abpUtilityInvoiceRows",
-  "abpCsgSystemMapping",
-  "abpQuickBooksRows",
-  "abpProjectApplicationRows",
-  "abpPortalInvoiceMapRows",
-  "abpCsgPortalDatabaseRows",
-  "abpIccReport2Rows",
-  "abpIccReport3Rows",
-  "transferHistory",
-]);
+// Phase 6 PR-C (2026-04-29) — `IMPLEMENTED_V2_DATASETS` deleted.
+// It existed to gate the v2 upload button while only some datasets
+// had server-side parsers; with all 17 CSV-uploadable datasets
+// (every key except scanner-managed `deliveryScheduleBase`) wired
+// to v2 and the legacy "Choose CSV" `<input>` retired, the gate is
+// always true and the v2 button renders unconditionally for non-
+// scanner-managed datasets. The server-side parser registry in
+// `server/services/core/datasetUploadParsers.ts` is the canonical
+// list of supported datasets going forward.
 
 /**
  * Phase 16: per-tab dataset priority. When the dashboard mounts with
@@ -1523,11 +1492,14 @@ export default function SolarRecDashboard() {
     });
   }, []);
   const [storageNotice, setStorageNotice] = useState<string | null>(null);
-  const uploadQueueTailRef = useRef<Promise<void>>(Promise.resolve());
-  const activeUploadTaskRef = useRef(false);
-  const queuedUploadTaskCountRef = useRef(0);
-  const [activeUploadTaskLabel, setActiveUploadTaskLabel] = useState<string | null>(null);
-  const [queuedUploadTaskCount, setQueuedUploadTaskCount] = useState(0);
+  // Phase 6 PR-C (2026-04-29) — `uploadQueueTailRef`,
+  // `activeUploadTaskRef`, `queuedUploadTaskCountRef`,
+  // `activeUploadTaskLabel`, `queuedUploadTaskCount` deleted. They
+  // serialised v1 client uploads ("Processing X (N queued)") so
+  // Chrome stayed responsive during multi-megabyte CSV parses.
+  // v2 uploads are server-side; the v2 progress dialog owns the
+  // per-job state and there is no second-tier serialisation
+  // required.
   const [localOnlyDatasets, setLocalOnlyDatasets] = useState<Partial<Record<DatasetKey, boolean>>>({});
   const [datasetCloudSyncStatus, setDatasetCloudSyncStatus] = useState<
     Partial<Record<DatasetKey, DatasetCloudSyncStatus>>
@@ -2982,295 +2954,16 @@ export default function SolarRecDashboard() {
     target.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
-  const enqueueDatasetUploadTask = async <T,>(
-    label: string,
-    task: () => Promise<T>
-  ): Promise<T> => {
-    const previousTail = uploadQueueTailRef.current;
-    const queuedBehindAnotherTask =
-      activeUploadTaskRef.current || queuedUploadTaskCountRef.current > 0;
-
-    if (queuedBehindAnotherTask) {
-      queuedUploadTaskCountRef.current += 1;
-      setQueuedUploadTaskCount(queuedUploadTaskCountRef.current);
-      setStorageNotice(
-        `${label} queued. Uploads now run one at a time to keep Chrome stable.`
-      );
-    }
-
-    const wrappedTask = previousTail.catch(() => undefined).then(async () => {
-      if (queuedBehindAnotherTask) {
-        queuedUploadTaskCountRef.current = Math.max(
-          0,
-          queuedUploadTaskCountRef.current - 1
-        );
-        setQueuedUploadTaskCount(queuedUploadTaskCountRef.current);
-      }
-
-      activeUploadTaskRef.current = true;
-      setActiveUploadTaskLabel(label);
-
-      try {
-        return await task();
-      } finally {
-        activeUploadTaskRef.current = false;
-        setActiveUploadTaskLabel((current) =>
-          current === label ? null : current
-        );
-      }
-    });
-
-    uploadQueueTailRef.current = wrappedTask.then(
-      () => undefined,
-      () => undefined
-    );
-
-    return wrappedTask;
-  };
-
   // saveCompliantSourceEntry, removeCompliantSourceEntry, importCompliantSourceCsv — moved to @/solar-rec-dashboard/components/PerformanceRatioTab
 
-  const handleUpload = async (key: DatasetKey, file: File | null, mode: "replace" | "append" = "replace") => {
-    if (!file) return;
-
-    const config = DATASET_DEFINITIONS[key];
-    if (file.size > MAX_SINGLE_CSV_UPLOAD_BYTES) {
-      setUploadErrors((previous) => ({
-        ...previous,
-        [key]: `${file.name} is too large (${formatNumber(file.size / 1024 / 1024, 1)} MB). Please split files larger than ${formatNumber(MAX_SINGLE_CSV_UPLOAD_BYTES / 1024 / 1024)} MB.`,
-      }));
-      return;
-    }
-
-    try {
-      await enqueueDatasetUploadTask(`${config.label} upload`, async () => {
-        const parsed = TABULAR_DATASET_KEYS.has(key)
-          ? file.name.toLowerCase().endsWith(".csv")
-            ? await parseCsvFileAsync(file)
-            : await parseTabularFile(file)
-          : await parseCsvFileAsync(file);
-        const isValid = config.requiredHeaderSets.some((set) =>
-          matchesExpectedHeaders(parsed.headers, set)
-        );
-
-        if (!isValid) {
-          setUploadErrors((previous) => ({
-            ...previous,
-            [key]: `This file does not match the expected ${config.label} format.`,
-          }));
-          return;
-        }
-
-        const uploadedAt = new Date();
-        const shouldAppend =
-          MULTI_APPEND_DATASET_KEYS.has(key) && mode === "append";
-        setUploadErrors((previous) => ({ ...previous, [key]: undefined }));
-        setDatasets((previous) => ({
-          ...previous,
-          [key]: (() => {
-            const existing = previous[key];
-
-            if (shouldAppend && existing) {
-              const combinedHeaders = Array.from(
-                new Set([...existing.headers, ...parsed.headers])
-              );
-              const existingRows = existing.rows;
-              const dedupeKeys = new Set(
-                existingRows.map((row) => datasetAppendRowKey(key, row))
-              );
-              const appendedRows = parsed.rows.filter((row) => {
-                const dedupeKey = datasetAppendRowKey(key, row);
-                if (!dedupeKey) return true;
-                if (dedupeKeys.has(dedupeKey)) return false;
-                dedupeKeys.add(dedupeKey);
-                return true;
-              });
-
-              const existingSources =
-                existing.sources && existing.sources.length > 0
-                  ? existing.sources
-                  : [
-                      {
-                        fileName: existing.fileName,
-                        uploadedAt: existing.uploadedAt,
-                        rowCount: existing.rows.length,
-                      },
-                    ];
-              const sources = [
-                ...existingSources,
-                {
-                  fileName: file.name,
-                  uploadedAt,
-                  rowCount: parsed.rows.length,
-                },
-              ];
-
-              const combinedRows = [...existingRows, ...appendedRows];
-              return {
-                fileName: `${sources.length} files loaded`,
-                uploadedAt,
-                headers: combinedHeaders,
-                rows: combinedRows,
-                rowCount: combinedRows.length,
-                sources,
-              } satisfies CsvDataset;
-            }
-
-            return {
-              fileName: file.name,
-              uploadedAt,
-              headers: parsed.headers,
-              rows: parsed.rows,
-              rowCount: parsed.rows.length,
-              sources: MULTI_APPEND_DATASET_KEYS.has(key)
-                ? [
-                    {
-                      fileName: file.name,
-                      uploadedAt,
-                      rowCount: parsed.rows.length,
-                    },
-                  ]
-                : undefined,
-            } satisfies CsvDataset;
-          })(),
-        }));
-
-        await persistDatasetSourceFilesToCloud(
-          key,
-          shouldAppend ? "append" : "replace",
-          [{ file, uploadedAt, rowCount: parsed.rows.length }]
-        );
-      });
-    } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Unknown error while reading CSV.";
-      setUploadErrors((previous) => ({ ...previous, [key]: message }));
-    }
-  };
-
-  const handleMultiCsvUploads = async (key: DatasetKey, files: File[]) => {
-    if (files.length === 0) return;
-    if (!MULTI_APPEND_DATASET_KEYS.has(key)) {
-      await handleUpload(key, files[0] ?? null, "replace");
-      return;
-    }
-
-    const config = DATASET_DEFINITIONS[key];
-    const parsedFiles: Array<{ file: File; fileName: string; uploadedAt: Date; headers: string[]; rows: CsvRow[] }> = [];
-
-    try {
-      await enqueueDatasetUploadTask(`${config.label} upload`, async () => {
-        for (const file of files) {
-          if (file.size > MAX_SINGLE_CSV_UPLOAD_BYTES) {
-            setUploadErrors((previous) => ({
-              ...previous,
-              [key]: `${file.name} is too large (${formatNumber(file.size / 1024 / 1024, 1)} MB). Please split files larger than ${formatNumber(MAX_SINGLE_CSV_UPLOAD_BYTES / 1024 / 1024)} MB.`,
-            }));
-            return;
-          }
-          const parsed = await parseCsvFileAsync(file);
-          const isValid = config.requiredHeaderSets.some((set) =>
-            matchesExpectedHeaders(parsed.headers, set)
-          );
-          if (!isValid) {
-            setUploadErrors((previous) => ({
-              ...previous,
-              [key]: `${file.name} does not match the expected ${config.label} format.`,
-            }));
-            return;
-          }
-
-          parsedFiles.push({
-            file,
-            fileName: file.name,
-            uploadedAt: new Date(),
-            headers: parsed.headers,
-            rows: parsed.rows,
-          });
-
-          // Yield between files to keep the browser responsive during large multi-upload batches.
-          await new Promise<void>((resolve) => {
-            window.setTimeout(() => resolve(), 0);
-          });
-        }
-
-        setUploadErrors((previous) => ({ ...previous, [key]: undefined }));
-        setDatasets((previous) => {
-          const existing = previous[key];
-          const combinedHeaders = existing ? [...existing.headers] : [];
-          parsedFiles.forEach((parsedFile) => {
-            parsedFile.headers.forEach((header) => {
-              if (!combinedHeaders.includes(header)) combinedHeaders.push(header);
-            });
-          });
-
-          const combinedRows = existing ? [...existing.rows] : [];
-          const dedupeKeys = new Set(
-            combinedRows.map((row) => datasetAppendRowKey(key, row))
-          );
-          parsedFiles.forEach((parsedFile) => {
-            parsedFile.rows.forEach((row) => {
-              const dedupeKey = datasetAppendRowKey(key, row);
-              if (dedupeKey && dedupeKeys.has(dedupeKey)) return;
-              if (dedupeKey) dedupeKeys.add(dedupeKey);
-              combinedRows.push(row);
-            });
-          });
-
-          const existingSources =
-            existing?.sources && existing.sources.length > 0
-              ? existing.sources
-              : existing
-                ? [
-                    {
-                      fileName: existing.fileName,
-                      uploadedAt: existing.uploadedAt,
-                      rowCount: existing.rows.length,
-                    },
-                  ]
-                : [];
-
-          const newSources = parsedFiles.map((parsedFile) => ({
-            fileName: parsedFile.fileName,
-            uploadedAt: parsedFile.uploadedAt,
-            rowCount: parsedFile.rows.length,
-          }));
-          const sources = [...existingSources, ...newSources];
-
-          const uploadedAt =
-            parsedFiles[parsedFiles.length - 1]?.uploadedAt ?? new Date();
-
-          return {
-            ...previous,
-            [key]: {
-              fileName: `${sources.length} files loaded`,
-              uploadedAt,
-              headers: combinedHeaders,
-              rows: combinedRows,
-              rowCount: combinedRows.length,
-              sources,
-            } satisfies CsvDataset,
-          };
-        });
-
-        await persistDatasetSourceFilesToCloud(
-          key,
-          "append",
-          parsedFiles.map((parsedFile) => ({
-            file: parsedFile.file,
-            uploadedAt: parsedFile.uploadedAt,
-            rowCount: parsedFile.rows.length,
-          }))
-        );
-      });
-    } catch (error) {
-      const message =
-        error instanceof Error
-          ? error.message
-          : "Unknown error while reading CSV files.";
-      setUploadErrors((previous) => ({ ...previous, [key]: message }));
-    }
-  };
+  // Phase 6 PR-C (2026-04-29) — `handleUpload` and
+  // `handleMultiCsvUploads` deleted. Both were the v1 client
+  // upload path: parse CSV/Excel in the browser → push rows to
+  // chunked-CSV cloud storage → server-side migration job
+  // materialized to `srDs*`. v2 (`<DatasetUploadV2Button>`) now
+  // owns every dataset upload — Excel parity shipped in PR-A
+  // (#251) and append-mode parity in PR-B (#253). The legacy
+  // `<input type="file">` slot in the dataset card is gone too.
 
   const clearDataset = (key: DatasetKey) => {
     setDatasets((previous) => ({ ...previous, [key]: undefined }));
@@ -5763,19 +5456,21 @@ export default function SolarRecDashboard() {
       }
     }
 
-    const syncStatus = activeUploadTaskLabel
-      ? queuedUploadTaskCount > 0
-        ? `Processing ${activeUploadTaskLabel} (${formatNumber(queuedUploadTaskCount)} queued)`
-        : `Processing ${activeUploadTaskLabel}`
-      : remoteDashboardStateQuery.status === "pending"
-        ? "Checking cloud sync..."
-        : saveRemoteDashboardState.isPending || saveRemoteDataset.isPending
-          ? "Syncing to cloud..."
-          : remoteDashboardStateQuery.status === "error"
-            ? "Cloud sync currently unavailable"
-            : incompleteCount > 0
-              ? `Cloud sync incomplete (${formatNumber(incompleteCount)} dataset${incompleteCount === 1 ? "" : "s"})`
-              : "Cloud sync healthy";
+    // Phase 6 PR-C — `activeUploadTaskLabel` /
+    // `queuedUploadTaskCount` removed. They surfaced the v1
+    // upload-queue state ("Processing X (N queued)"); the v2
+    // pipeline drives its own per-job dialog and doesn't need a
+    // dashboard-wide "uploads in progress" indicator since the
+    // dialog itself stays open for the active upload.
+    const syncStatus = remoteDashboardStateQuery.status === "pending"
+      ? "Checking cloud sync..."
+      : saveRemoteDashboardState.isPending || saveRemoteDataset.isPending
+        ? "Syncing to cloud..."
+        : remoteDashboardStateQuery.status === "error"
+          ? "Cloud sync currently unavailable"
+          : incompleteCount > 0
+            ? `Cloud sync incomplete (${formatNumber(incompleteCount)} dataset${incompleteCount === 1 ? "" : "s"})`
+            : "Cloud sync healthy";
 
     return {
       loadedDatasetCount: loadedDatasetKeys.length,
@@ -5798,8 +5493,6 @@ export default function SolarRecDashboard() {
     datasets.abpIccReport2Rows, datasets.abpIccReport3Rows,
     datasets.deliveryScheduleBase, datasets.transferHistory,
     missingCoreDatasets.length,
-    activeUploadTaskLabel,
-    queuedUploadTaskCount,
     remoteDashboardStateQuery.status,
     saveRemoteDashboardState.isPending,
     saveRemoteDataset.isPending,
@@ -7435,68 +7128,51 @@ const aiDataContext = useMemo(() => {
                       </div>
                     ) : (
                       <div className="flex items-center gap-2">
-                        <label className="inline-flex items-center gap-2 rounded-md border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50">
-                          <Upload className="h-4 w-4" />
-                          {isMultiAppend ? "Add CSV(s)" : (TABULAR_DATASET_KEYS.has(key) ? "Choose File" : "Choose CSV")}
-                          <input
-                            type="file"
-                            accept={TABULAR_DATASET_KEYS.has(key) ? ".csv,.xlsx,.xls,.xlsm,.xlsb,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" : ".csv,text/csv"}
-                            className="hidden"
-                            multiple={isMultiAppend}
-                            onChange={(event) => {
-                              if (isMultiAppend) {
-                                const files = Array.from(event.target.files ?? []);
-                                void handleMultiCsvUploads(key, files);
-                                event.currentTarget.value = "";
-                                return;
-                              }
-
-                              const file = event.target.files?.[0] ?? null;
-                              void handleUpload(key, file, "replace");
-                              event.currentTarget.value = "";
-                            }}
-                          />
-                        </label>
-                        {/* Phase 3 of the IndexedDB-removal refactor:
-                            ONE dataset has a server-side parser
-                            wired (`contractedDate`). Show the v2
-                            button alongside the legacy CTA so the
-                            team can dogfood without losing the
-                            fallback. Phase 4 expands to the rest;
-                            Phase 5 removes the legacy affordance. */}
-                        {IMPLEMENTED_V2_DATASETS.has(key) ? (
-                          <DatasetUploadV2Button
-                            datasetKey={key}
-                            label="Upload (v2)"
-                            variant="secondary"
-                            // Phase 6 PR-A — give v2 the same Excel
-                            // file-type tolerance v1 has for the 2
-                            // tabular datasets. Conversion happens
-                            // in the browser via `parseTabularFile`
-                            // (same code path v1 uses) and the
-                            // server runner still receives a CSV.
-                            acceptExcel={TABULAR_DATASET_KEYS.has(key)}
-                            onSuccess={() => {
-                              // Refresh every server-side query
-                              // that reads from this dataset. Per
-                              // CLAUDE.md "Solar REC Dashboard data
-                              // flow", the server is the source of
-                              // truth — invalidating these queries
-                              // pulls fresh counts + snapshot in
-                              // automatically.
-                              // `getDataset` is a mutation (the
-                              // chunked-CSV reader) so it isn't
-                              // invalidatable; the queries below
-                              // are what the dashboard actually
-                              // reads to hydrate row counts +
-                              // system records.
-                              void solarRecTrpcUtils.solarRecDashboard.getDatasetSummariesAll.invalidate();
-                              void solarRecTrpcUtils.solarRecDashboard.getSystemSnapshot.invalidate();
-                              void solarRecTrpcUtils.solarRecDashboard.getDatasetCloudStatuses.invalidate();
-                              void solarRecTrpcUtils.solarRecDashboard.listDatasetUploadJobs.invalidate();
-                            }}
-                          />
-                        ) : null}
+                        {/* Phase 6 PR-C — v2 is the only upload
+                            path. Excel parity (PR-A) and append-
+                            mode parity (PR-B) shipped first; the
+                            legacy `<input type="file">` + v1
+                            handlers (handleUpload /
+                            handleMultiCsvUploads) are gone. The
+                            label adapts via DatasetUploadV2Button's
+                            existing knobs:
+                              - acceptExcel for the 2 TABULAR keys
+                              - the upcoming PR-B-2 will add a
+                                multi-file picker for the 3
+                                MULTI_APPEND keys; until then,
+                                multi-append datasets accept one
+                                file at a time and the server's
+                                append mode (PR-B) accumulates
+                                rows correctly across uploads. */}
+                        <DatasetUploadV2Button
+                          datasetKey={key}
+                          label={
+                            isMultiAppend
+                              ? "Add CSV"
+                              : TABULAR_DATASET_KEYS.has(key)
+                                ? "Choose File"
+                                : "Choose CSV"
+                          }
+                          variant="default"
+                          acceptExcel={TABULAR_DATASET_KEYS.has(key)}
+                          onSuccess={() => {
+                            // Refresh every server-side query that
+                            // reads from this dataset. Per CLAUDE.md
+                            // "Solar REC Dashboard data flow", the
+                            // server is the source of truth —
+                            // invalidating these queries pulls fresh
+                            // counts + snapshot in automatically.
+                            // `getDataset` is a mutation (the
+                            // chunked-CSV reader) so it isn't
+                            // invalidatable; the queries below are
+                            // what the dashboard actually reads to
+                            // hydrate row counts + system records.
+                            void solarRecTrpcUtils.solarRecDashboard.getDatasetSummariesAll.invalidate();
+                            void solarRecTrpcUtils.solarRecDashboard.getSystemSnapshot.invalidate();
+                            void solarRecTrpcUtils.solarRecDashboard.getDatasetCloudStatuses.invalidate();
+                            void solarRecTrpcUtils.solarRecDashboard.listDatasetUploadJobs.invalidate();
+                          }}
+                        />
                         {dataset ? (
                           <AlertDialog>
                             <AlertDialogTrigger asChild>
