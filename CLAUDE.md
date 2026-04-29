@@ -1,6 +1,6 @@
 # Productivity Hub
 
-> **Last updated:** 2026-04-27
+> **Last updated:** 2026-04-29
 
 Full-stack personal productivity dashboard integrating Google Calendar, Gmail, Drive, Todoist, ChatGPT, health tracking (Whoop, Samsung Health), and 25+ solar energy monitoring systems.
 
@@ -591,13 +591,13 @@ A checklist distilled from painful experience (see
 
 ---
 
-## Solar REC Dashboard data flow (canonical, post 2026-04-27 — Tasks 5.12 + 5.13 + 5.14 complete)
+## Solar REC Dashboard data flow (canonical, post 2026-04-29 — Tasks 5.12 + 5.13 + 5.14 + Phase 5d/5e complete)
 
-This section locks down the architecture established by PRs #120–#175
-(the data-flow series + Task 5.12 + Task 5.13 + Task 5.14). Read this
-before adding any new tRPC procedure that touches dashboard data,
-before changing how rows are loaded, or before extending
-`getSystemSnapshot`.
+This section locks down the architecture established by PRs #120–#276
+(the data-flow series + Task 5.12 + Task 5.13 + Task 5.14 + Phase 5d
+deferred-tab migrations + Phase 5e dead-code sweep). Read this before
+adding any new tRPC procedure that touches dashboard data, before
+changing how rows are loaded, or before extending `getSystemSnapshot`.
 
 ### Source of truth per dataset
 
@@ -648,7 +648,7 @@ Each maps 1:1 to a `srDs*` table in `drizzle/schemas/solar.ts`.
 | `getDataset` (per-key chunk-pointer reader) | One chunk of a chunked-CSV blob | ≤250 KB per call |
 | `getDatasetCloudStatuses` | Recoverability per dataset | ~10 KB |
 | `debugDatasetPersistenceRaw` | Raw rows from every layer + verdict | ~2 KB |
-| `getDashboard<TabName>Aggregates` (DeliveryTracker / TrendDeliveryPace / TrendsProduction / ContractVintage / AppPipelineMonthly / AppPipelineCashFlow) | Per-tab aggregate result | ~10–500 KB |
+| `getDashboard<TabName>Aggregates` (DeliveryTracker / TrendDeliveryPace / TrendsProduction / ContractVintage / AppPipelineMonthly / AppPipelineCashFlow / PerformanceRatio / Forecast / Financials) | Per-tab aggregate result | ~10–500 KB |
 
 **No tRPC response in the dashboard data path exceeds 1 MB
 uncompressed.** The 50–150 MB responses that caused the 2026-04-26
@@ -659,7 +659,7 @@ takes the per-key `getDataset` route, capped at 250 KB per chunk.
 
 ### Tabs migration — DONE
 
-All 6 dashboard tabs scheduled in Task 5.13 are off raw rows:
+All 9 dashboard tabs scheduled in Task 5.13 + Phase 5d are off raw rows:
 
 | Tab | PR | Server aggregator |
 |---|---|---|
@@ -670,6 +670,31 @@ All 6 dashboard tabs scheduled in Task 5.13 are off raw rows:
 | ContractsTab | #146 (PR-3, shared) | `buildContractVintageAggregates.ts` |
 | AnnualReviewTab | #146 (PR-3, shared) | `buildContractVintageAggregates.ts` |
 | ApplicationPipelineTab | #156 (PR-5) | `buildAppPipelineMonthly.ts` + `buildAppPipelineCashFlow.ts` |
+| PerformanceRatioTab | #263 (Phase 5d PR-1) | `buildPerformanceRatioAggregates.ts` |
+| ForecastTab | #265 (Phase 5d PR-2) | `buildForecastAggregates.ts` |
+| FinancialsTab | #266 (Phase 5d PR-3) | `buildFinancialsAggregates.ts` |
+
+Phase 5d salvage trio (#271/#272/#273) followed: PR A hoisted helpers
++ types to `@shared/solarRecPerformanceRatio` so the server
+aggregators and client tabs share one source of truth; PR B dropped
+the now-orphaned client fallback memos + their parent props
+(net −661 LOC); PR C wired the Schedule B auto-apply effect to
+write to BOTH the server (`applyScheduleBToDeliveryObligations`) AND
+client `datasets.deliveryScheduleBase.rows` on every 30s-throttled
+tick — the hybrid keeps `performanceSourceRows` (still client-only)
+fresh for REC Performance Eval / Snapshot Log / createLogEntry until
+that memo migrates server-side too.
+
+Phase 5e dead-code sweep (#274/#275/#276): −690 LOC. PR D dropped
+duplicate spine-helper bodies in
+`client/src/solar-rec-dashboard/lib/helpers/{system,recPerformance}
+.ts`, replacing them with re-exports from
+`@shared/solarRecPerformanceRatio`. PR E deleted the entire dead
+IDB-serialization chain (`lazyDataset.ts` + 5 functions in
+`SolarRecDashboard.tsx` + 7 dead constants — net −491 LOC). PR F
+removed two parent-level useMemos
+(`annualProductionByTrackingId`, `generationBaselineByTrackingId`)
+that became orphaned when Salvage PR B dropped their consumer props.
 
 Pattern for any new tab aggregate:
 - Aggregates → extend `getSystemSnapshot` to include the per-tab
@@ -706,7 +731,7 @@ bridge call. Single-flight in `coreDatasetSyncJobs` coalesces
 multiple bridge writes (e.g., the 17-vendor monitoring batch) into
 one sync job per scope.
 
-### Upload v2 pipeline (the IndexedDB-removal refactor — Phases 1–5c shipped)
+### Upload v2 pipeline (the IndexedDB-removal refactor — Phases 1–5e shipped)
 
 A second client→server upload path lives alongside the legacy
 `saveDataset` proc. It writes directly to `srDs*` row tables and
