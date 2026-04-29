@@ -219,12 +219,132 @@ function splitTextIntoChunks(text: string, limit: number): string[] {
 }
 
 /**
+ * Stable source ID for legacy plain-CSV payloads that get auto-migrated
+ * the first time the bridge writes after them. Tagged as server-managed
+ * so the dashboard's user-source sync path leaves it alone.
+ */
+export const LEGACY_PLAIN_CSV_SOURCE_ID = "legacy_plain_csv";
+
+/**
+ * Pure classifier for the existing payload at `dataset:convertedReads`.
+ * Exported for unit tests; callers that need to act on a "plain-csv"
+ * verdict should run `migrateLegacyPlainCsvIfPresent` first.
+ *
+ *   - "missing"     → no payload stored
+ *   - "manifest"    → already in `_rawSourcesV1` form; the bridge can
+ *                     read sources directly
+ *   - "plain-csv"   → looks like a CSV (first line has commas, no JSON);
+ *                     written by an older bridge version, a direct CSV
+ *                     upload that bypassed the manifest path, or a
+ *                     server-side migration. **Must be migrated to a
+ *                     synthetic source before any bridge write**, or
+ *                     the write would clobber it. This was the bug
+ *                     surfaced 2026-04-29 when a SolarEdge bulk push
+ *                     erased an entire convertedReads dataset.
+ *   - "garbage"     → JSON-parsable but not a manifest, or unparsable
+ *                     non-CSV. Nothing to preserve.
+ */
+export function detectExistingPayloadKind(
+  payload: string | null
+): "missing" | "manifest" | "plain-csv" | "garbage" {
+  if (!payload) return "missing";
+  // Manifest: parse-able JSON with the v1 marker.
+  try {
+    const parsed = JSON.parse(payload);
+    if (
+      parsed &&
+      parsed._rawSourcesV1 === true &&
+      Array.isArray(parsed.sources)
+    ) {
+      return "manifest";
+    }
+    // JSON but not manifest — treat as garbage; nothing to migrate.
+    return "garbage";
+  } catch {
+    // Not JSON — could be plain CSV. Sanity check: header line has a comma.
+    const firstNewline = payload.indexOf("\n");
+    const firstLine = firstNewline === -1 ? payload : payload.slice(0, firstNewline);
+    if (firstLine.includes(",")) return "plain-csv";
+    return "garbage";
+  }
+}
+
+/**
+ * If the existing payload at `dataset:convertedReads` is a plain CSV
+ * (the pre-manifest format), migrate it to a synthetic
+ * `legacy_plain_csv` source so the next manifest write doesn't
+ * overwrite the data. Idempotent — does nothing if the payload is
+ * already in manifest form (or missing, or garbage).
+ *
+ * Self-healing: the very first bridge write after a plain payload
+ * exists triggers this migration. Subsequent writes find the manifest
+ * with the legacy source preserved and pass through normally.
+ */
+async function migrateLegacyPlainCsvIfPresent(userId: number): Promise<void> {
+  const payload = await getSolarRecDashboardPayload(userId, DB_STORAGE_KEY);
+  const kind = detectExistingPayloadKind(payload);
+  if (kind !== "plain-csv") return;
+
+  const csvText = payload!;
+  const { rows } = parseCsvText(csvText);
+  if (rows.length === 0) {
+    console.warn(
+      `[convertedReadsBridge] migrateLegacyPlainCsvIfPresent: payload looked like CSV but parsed to 0 rows; leaving DB_STORAGE_KEY alone so admin can inspect.`
+    );
+    return;
+  }
+
+  const storageKey = buildSourceStorageKey(DATASET_KEY, LEGACY_PLAIN_CSV_SOURCE_ID);
+  const chunks = splitTextIntoChunks(csvText, CHUNK_CHAR_LIMIT);
+  const chunkKeys = chunks.map((_, i) => buildChunkKey(storageKey, i));
+  for (let i = 0; i < chunks.length; i += 1) {
+    await saveSolarRecDashboardPayload(
+      userId,
+      `dataset:${chunkKeys[i]}`,
+      chunks[i]
+    );
+  }
+  await saveSolarRecDashboardPayload(
+    userId,
+    `dataset:${storageKey}`,
+    buildChunkPointerPayload(chunkKeys)
+  );
+
+  const legacySource: RemoteDatasetSourceRef = {
+    id: LEGACY_PLAIN_CSV_SOURCE_ID,
+    fileName: `Legacy plain CSV (auto-migrated, ${rows.length} rows)`,
+    uploadedAt: new Date().toISOString(),
+    rowCount: rows.length,
+    sizeBytes: csvText.length,
+    storageKey,
+    chunkKeys,
+    encoding: "utf8",
+    contentType: "text/csv",
+  };
+
+  const manifest: RemoteDatasetSourceManifestPayload = {
+    _rawSourcesV1: true,
+    version: 1,
+    sources: [legacySource],
+  };
+  await saveSolarRecDashboardPayload(
+    userId,
+    DB_STORAGE_KEY,
+    JSON.stringify(manifest)
+  );
+
+  console.warn(
+    `[convertedReadsBridge] auto-migrated plain CSV (${rows.length} rows) to ${LEGACY_PLAIN_CSV_SOURCE_ID} so the next manifest write doesn't clobber it.`
+  );
+}
+
+/**
  * Read the current manifest from `dataset:convertedReads`. Returns the
  * parsed sources array. Handles three cases:
  *   - Source-manifest format (`_rawSourcesV1`) → parse and return sources
- *   - Plain format (old bridge writes, no sources tracked) → treat as empty
- *     (the plain data in the main key is orphaned by design; the dashboard's
- *     local state holds it in memory until next full reload)
+ *   - Plain format → returns []. Callers that are about to perform a
+ *     write must run `migrateLegacyPlainCsvIfPresent` BEFORE this read,
+ *     so the plain-format data is converted to a synthetic source first.
  *   - Missing/null → empty sources array
  */
 async function readExistingManifest(userId: number): Promise<RemoteDatasetSourceRef[]> {
@@ -304,6 +424,13 @@ async function writeSourceToManifest(
   sourceFileName: string,
   rows: ConvertedReadRow[]
 ): Promise<{ sourceId: string; storageKey: string; rowCount: number }> {
+  // Self-heal: if the existing payload at DB_STORAGE_KEY is a plain CSV
+  // (older bridge format, direct upload, or migration), preserve it as
+  // a synthetic `legacy_plain_csv` source BEFORE we overwrite the
+  // payload with our new manifest. Without this, the data the user
+  // sees in the dashboard would silently disappear on first write.
+  await migrateLegacyPlainCsvIfPresent(userId);
+
   const csvText = buildCsvText(CONVERTED_READS_HEADERS, rows);
   const storageKey = buildSourceStorageKey(DATASET_KEY, sourceId);
   const chunks = splitTextIntoChunks(csvText, CHUNK_CHAR_LIMIT);
@@ -443,6 +570,7 @@ export async function pushMonitoringRunsToConvertedReads(
   );
 
   const sourceId = providerSourceId(providerKey);
+  await migrateLegacyPlainCsvIfPresent(userId);
   const existingSources = await readExistingManifest(userId);
   const priorSource = existingSources.find((s) => s.id === sourceId);
   const priorRows = priorSource ? await loadSourceRows(userId, priorSource) : [];
@@ -515,6 +643,9 @@ export async function pushIndividualRunsToConvertedReads(
 
   const sourceId = individualSourceId(providerKey);
 
+  // Self-heal a plain-CSV payload before any reads so subsequent
+  // bridge calls find the legacy data preserved as a manifest source.
+  await migrateLegacyPlainCsvIfPresent(userId);
   const existingSources = await readExistingManifest(userId);
   const priorSource = existingSources.find((s) => s.id === sourceId);
   const priorRows = priorSource ? await loadSourceRows(userId, priorSource) : [];
@@ -557,7 +688,9 @@ export type { ConvertedReadRow, RemoteDatasetSourceRef, RemoteDatasetSourceManif
  */
 export function isServerManagedConvertedReadsSourceId(sourceId: string): boolean {
   return (
-    sourceId.startsWith("mon_batch_") || sourceId.startsWith("individual_")
+    sourceId.startsWith("mon_batch_") ||
+    sourceId.startsWith("individual_") ||
+    sourceId === LEGACY_PLAIN_CSV_SOURCE_ID
   );
 }
 
