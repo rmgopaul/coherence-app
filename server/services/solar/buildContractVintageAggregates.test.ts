@@ -31,7 +31,13 @@ describe("buildContractVintageAggregates", () => {
       eligibleTrackingIds: new Set(["NON100"]),
       recPriceByTrackingId: new Map([["NON100", 50]]),
       isReportingByTrackingId: new Set(["NON100"]),
-      transferDeliveryLookup: lookupFor({ NON100: { "2024": 40 } }),
+      // 2026-04-29: lookup keys are lowercased (server payload
+      // is built via `unitId.toLowerCase()` in
+      // buildTransferDeliveryLookup.ts). `getDeliveredForYear`
+      // lowercases queries internally, so mixed-case row data
+      // (e.g. "NON100" from a Schedule B parse) hits these
+      // lowercase entries.
+      transferDeliveryLookup: lookupFor({ non100: { "2024": 40 } }),
     });
     expect(rows).toHaveLength(1);
     const r = rows[0];
@@ -80,8 +86,8 @@ describe("buildContractVintageAggregates", () => {
       recPriceByTrackingId: new Map([["NON100", 50]]),
       isReportingByTrackingId: new Set(["NON101"]),
       transferDeliveryLookup: lookupFor({
-        NON100: { "2024": 30 },
-        NON101: { "2024": 20 },
+        non100: { "2024": 30 },
+        non101: { "2024": 20 },
       }),
     });
     expect(rows).toHaveLength(1);
@@ -173,7 +179,7 @@ describe("buildContractVintageAggregates", () => {
       eligibleTrackingIds: new Set(["NON100"]),
       recPriceByTrackingId: new Map([["NON100", 50]]),
       isReportingByTrackingId: new Set(),
-      transferDeliveryLookup: lookupFor({ NON100: { "2024": 25 } }),
+      transferDeliveryLookup: lookupFor({ non100: { "2024": 25 } }),
     });
     expect(rows[0].delivered).toBe(25);
     expect(rows[0].deliveredValue).toBe(25 * 50);

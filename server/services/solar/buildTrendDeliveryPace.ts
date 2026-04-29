@@ -144,7 +144,12 @@ const TREND_DELIVERY_PACE_DEPS = ["deliveryScheduleBase"] as const;
 const ARTIFACT_TYPE = "trendDeliveryPace";
 
 export const TREND_DELIVERY_PACE_RUNNER_VERSION =
-  "data-flow-pr5_13_trenddeliverypace@1";
+  // 2026-04-29 (@2): bumped after `getDeliveredForYear`
+  // case-sensitivity fix. Pre-fix, the `actualPace` numerator
+  // was always 0 in production because raw mixed-case trackingId
+  // missed lowercase lookup keys. The cache must invalidate so
+  // every active scope recomputes pace with real delivered values.
+  "data-flow-pr5_13_trenddeliverypace@2";
 
 /** UTC YYYY-MM-DD bucket — narrow enough for daily pace shifts. */
 function dateBucket(now: Date): string {

@@ -293,7 +293,13 @@ const CONTRACT_VINTAGE_DEPS = ["abpReport", "deliveryScheduleBase"] as const;
 const ARTIFACT_TYPE = "contractVintage";
 
 export const CONTRACT_VINTAGE_RUNNER_VERSION =
-  "data-flow-pr5_13_contractvintage@1";
+  // 2026-04-29 (@2): bumped after `getDeliveredForYear`
+  // case-sensitivity fix in aggregatorHelpers. Existing cache
+  // entries silently returned 0 deliveries on every match in
+  // production (lookup keys are lowercase, callers passed raw
+  // mixed-case `tracking_system_ref_id`). Cache invalidation
+  // forces a recompute against the corrected helper.
+  "data-flow-pr5_13_contractvintage@2";
 
 async function computeContractVintageInputHash(
   scopeId: string
