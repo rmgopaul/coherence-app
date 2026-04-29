@@ -282,3 +282,83 @@ export function findHeaderByAliases(headers: string[], aliases: string[]): strin
 
   return null;
 }
+
+/** Excel extensions the dashboard recognises (case-insensitive). */
+const EXCEL_EXTENSION_RE = /\.(xlsx|xlsm|xlsb|xls)$/i;
+
+/** True when `file` looks like one of our supported Excel formats. */
+export function isExcelFile(file: File): boolean {
+  return EXCEL_EXTENSION_RE.test(file.name);
+}
+
+/**
+ * Render headers + row records as a CSV string. Mirrors
+ * `client/src/solar-rec-dashboard/lib/csvIo.ts#buildCsv`, but lives
+ * here so `convertSpreadsheetFileToCsv` doesn't have to reach into a
+ * dashboard-feature module.
+ *
+ * Escaping rules: any cell containing `"`, `,`, `\n`, or `\r` is
+ * wrapped in double quotes and embedded `"` is doubled. Empty /
+ * nullish values render as the empty string.
+ */
+function csvEscapeCell(value: string): string {
+  if (/["\r\n,]/.test(value)) {
+    return `"${value.replaceAll('"', '""')}"`;
+  }
+  return value;
+}
+
+function buildCsvText(headers: string[], rows: CsvRow[]): string {
+  const headerLine = headers.map((header) => csvEscapeCell(header)).join(",");
+  const bodyLines = rows.map((row) =>
+    headers.map((header) => csvEscapeCell(row[header] ?? "")).join(",")
+  );
+  return [headerLine, ...bodyLines].join("\n");
+}
+
+/**
+ * Phase 6 PR-A — convert an Excel file to a synthesized CSV `File`
+ * suitable for the v2 upload pipeline. Pure passthrough for `.csv`.
+ *
+ * The v2 upload runner only knows how to parse CSV bytes. The
+ * legacy v1 path supported Excel by parsing in the browser via
+ * `parseTabularFile` and then operating on the parsed rows
+ * client-side. To keep the v2 server runner simple and identical
+ * for every dataset, we run the same browser-side parse here and
+ * then synthesize a CSV file with the same `{headers, rows}`. The
+ * server then sees a normal CSV.
+ *
+ * Throws when:
+ *   - `file` is neither CSV nor a recognised Excel extension
+ *     (caller should have filtered via the input's `accept`, but
+ *     guard anyway so a manual drop produces a clean message).
+ *   - The Excel parse returns zero headers AND zero rows — almost
+ *     always means the workbook is empty or password-protected.
+ */
+export async function convertSpreadsheetFileToCsv(
+  file: File,
+  options: ParseTabularFileOptions = {}
+): Promise<File> {
+  const lowerName = file.name.toLowerCase();
+  if (lowerName.endsWith(".csv")) {
+    return file;
+  }
+  if (!EXCEL_EXTENSION_RE.test(lowerName)) {
+    throw new Error(
+      `Unsupported file type for ${file.name}. Upload CSV or Excel (.xlsx, .xlsm, .xlsb, .xls).`
+    );
+  }
+  const parsed = await parseTabularFile(file, options);
+  if (parsed.headers.length === 0 && parsed.rows.length === 0) {
+    throw new Error(
+      `Could not extract any rows from ${file.name}. The workbook may be empty or password-protected.`
+    );
+  }
+  const csvText = buildCsvText(parsed.headers, parsed.rows);
+  const csvBytes = new TextEncoder().encode(csvText);
+  const csvName = file.name.replace(EXCEL_EXTENSION_RE, ".csv");
+  return new File([csvBytes], csvName, {
+    type: "text/csv",
+    lastModified: file.lastModified,
+  });
+}

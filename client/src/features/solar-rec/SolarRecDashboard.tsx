@@ -7469,6 +7469,13 @@ const aiDataContext = useMemo(() => {
                             datasetKey={key}
                             label="Upload (v2)"
                             variant="secondary"
+                            // Phase 6 PR-A — give v2 the same Excel
+                            // file-type tolerance v1 has for the 2
+                            // tabular datasets. Conversion happens
+                            // in the browser via `parseTabularFile`
+                            // (same code path v1 uses) and the
+                            // server runner still receives a CSV.
+                            acceptExcel={TABULAR_DATASET_KEYS.has(key)}
                             onSuccess={() => {
                               // Refresh every server-side query
                               // that reads from this dataset. Per
