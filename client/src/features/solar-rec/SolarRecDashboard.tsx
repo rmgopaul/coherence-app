@@ -4668,8 +4668,30 @@ export default function SolarRecDashboard() {
           }
         }
 
+        // 2026-04-29 Force-load hotfix — skip the 3 multi-append
+        // datasets (`accountSolarGeneration`, `convertedReads`,
+        // `transferHistory`) when force-loading. Browser-side proof
+        // (Chrome MCP, 2026-04-29): a populated scope's force-load
+        // succeeds at the network layer (1000+ chunked GETs all
+        // 200 OK) but freezes the renderer's main thread under the
+        // CSV parse load — `convertedReads` alone can be 50–150 MB
+        // assembled. Skipping these 3 keeps force-load useful for
+        // the small / medium datasets (the long tail of admin /
+        // mapping / report tables) without locking the tab. The
+        // 3 deferred Phase-5d tabs that need them (PerformanceRatio,
+        // Forecast, Financials) hydrate via their tab-priority
+        // path, not via force-load. Phase 5d PR 1 onward replaces
+        // those with server-side aggregators so this skip can come
+        // off the moment those land.
+        if (isForceLoadAll) {
+          MULTI_APPEND_DATASET_KEYS.forEach((heavyKey) => {
+            keysToLoad.delete(heavyKey);
+          });
+        }
+
         // Seed the force-load progress bar AFTER we know the final
-        // key count (manifest fallback above can grow `keysToLoad`).
+        // key count (manifest fallback above can grow `keysToLoad`,
+        // and the multi-append filter above can shrink it).
         if (isForceLoadAll && !cancelled) {
           setForceLoadProgress({ loaded: 0, total: keysToLoad.size });
         }
@@ -6157,10 +6179,17 @@ const aiDataContext = useMemo(() => {
                 {/* 2026-04-29 — Force-load-all hydration.
                     Re-triggers the cloud-fallback hydration with
                     every manifest key (instead of the active tab's
-                    priority subset). The progress bar fills as each
-                    key's chunked-CSV blob lands and parses; per-card
-                    hydration errors stay separate so a failing
-                    dataset doesn't stall the bar. */}
+                    priority subset). The 3 multi-append datasets
+                    (`accountSolarGeneration`, `convertedReads`,
+                    `transferHistory`) are deliberately skipped —
+                    parsing their assembled chunked-CSV blobs locks
+                    the renderer's main thread on populated scopes.
+                    The deferred Phase-5d tabs that need them
+                    hydrate via their tab-priority path. The
+                    button label below subtracts the 3 skipped keys
+                    from the "remaining" count so the number is
+                    honest about what force-load will actually
+                    fetch. */}
                 {forceLoadProgress !== null ? (
                   <div className="mt-2 space-y-1">
                     <Progress
@@ -6188,22 +6217,38 @@ const aiDataContext = useMemo(() => {
                         : ""}
                     </p>
                   </div>
-                ) : dataHealthSummary.loadedDatasetCount <
-                    dataHealthSummary.totalDatasetCount ? (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={requestForceLoadAll}
-                    className="mt-2 h-7 w-full px-2 text-[11px]"
-                  >
-                    Force load all (
-                    {formatNumber(
+                ) : (() => {
+                    // Subtract the 3 force-load-skipped multi-append
+                    // keys from the remaining count IF any of them
+                    // are unloaded. They won't be picked up by
+                    // force-load, so showing them as "remaining"
+                    // would mislead the user into thinking the
+                    // button will fetch them.
+                    const totalRemaining =
                       dataHealthSummary.totalDatasetCount -
-                        dataHealthSummary.loadedDatasetCount
-                    )}{" "}
-                    remaining)
-                  </Button>
-                ) : null}
+                      dataHealthSummary.loadedDatasetCount;
+                    const skippedHeavyUnloaded = Array.from(
+                      MULTI_APPEND_DATASET_KEYS
+                    ).filter((key) => !datasets[key]).length;
+                    const forceLoadable =
+                      totalRemaining - skippedHeavyUnloaded;
+                    if (forceLoadable <= 0) return null;
+                    return (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={requestForceLoadAll}
+                        className="mt-2 h-7 w-full px-2 text-[11px]"
+                        title={
+                          skippedHeavyUnloaded > 0
+                            ? `Skips ${skippedHeavyUnloaded} large dataset${skippedHeavyUnloaded === 1 ? "" : "s"} (convertedReads / accountSolarGeneration / transferHistory) — load those by visiting the relevant tab`
+                            : undefined
+                        }
+                      >
+                        Force load all ({formatNumber(forceLoadable)} remaining)
+                      </Button>
+                    );
+                  })()}
               </div>
               <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
                 <p className="text-xs uppercase tracking-wide text-slate-500">Rows Loaded</p>
