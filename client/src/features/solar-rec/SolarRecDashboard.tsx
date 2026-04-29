@@ -7137,24 +7137,26 @@ const aiDataContext = useMemo(() => {
                             label adapts via DatasetUploadV2Button's
                             existing knobs:
                               - acceptExcel for the 2 TABULAR keys
-                              - the upcoming PR-B-2 will add a
-                                multi-file picker for the 3
-                                MULTI_APPEND keys; until then,
-                                multi-append datasets accept one
-                                file at a time and the server's
-                                append mode (PR-B) accumulates
-                                rows correctly across uploads. */}
+                              - acceptMultiple for the 3 MULTI_APPEND
+                                keys (Phase 6 PR-B-2): the picker
+                                takes N files; the button uploads
+                                them sequentially, deferring each
+                                next file until the prior file's
+                                server job reaches `done`. PR-B's
+                                append mode (#253) preserves rows
+                                across the batch. */}
                         <DatasetUploadV2Button
                           datasetKey={key}
                           label={
                             isMultiAppend
-                              ? "Add CSV"
+                              ? "Add CSV(s)"
                               : TABULAR_DATASET_KEYS.has(key)
                                 ? "Choose File"
                                 : "Choose CSV"
                           }
                           variant="default"
                           acceptExcel={TABULAR_DATASET_KEYS.has(key)}
+                          acceptMultiple={isMultiAppend}
                           onSuccess={() => {
                             // Refresh every server-side query that
                             // reads from this dataset. Per CLAUDE.md
