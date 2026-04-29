@@ -15,11 +15,14 @@ import type { DatasetKey } from "../state/types";
 export type PerDatasetErrorMap = Partial<Record<DatasetKey, string>>;
 
 /**
- * Log-prefix constants used by the hydration pipeline's debug
- * output. Exported so future log-reader / test-grep tooling has one
+ * Log-prefix constant used by the hydration pipeline's debug output.
+ * Exported so future log-reader / test-grep tooling has one
  * authoritative source.
+ *
+ * Phase 5e (2026-04-29): `HYDRATE_LOG_PREFIX_IDB` deleted along with
+ * the IDB hydration path. The cloud-only hydration path is the only
+ * remaining consumer of these prefixes.
  */
-export const HYDRATE_LOG_PREFIX_IDB = "[hydrate:idb]";
 export const HYDRATE_LOG_PREFIX_CLOUD = "[hydrate:cloud]";
 
 export function toUserFacingHydrationMessage(error: unknown): string {
