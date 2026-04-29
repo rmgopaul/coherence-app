@@ -849,6 +849,9 @@ export const srDsTransferHistory = mysqlTable(
   })
 );
 
+export type SrDsTransferHistory = typeof srDsTransferHistory.$inferSelect;
+export type InsertSrDsTransferHistory = typeof srDsTransferHistory.$inferInsert;
+
 // Task 5.12 PR-1 (2026-04-27): Generator Details row table.
 // Added when migrating the 11 non-row-backed dashboard datasets to srDs*.
 // `gatsUnitId` and `dateOnline` are the only stable typed columns — both come
