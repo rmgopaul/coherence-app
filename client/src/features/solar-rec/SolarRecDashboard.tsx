@@ -107,6 +107,11 @@ import {
 } from "@/solar-rec-dashboard/lib/buildDeliveryTrackerData";
 import { useSystemSnapshot } from "@/solar-rec-dashboard/hooks/useSystemSnapshot";
 import { useTransferDeliveryLookup } from "@/solar-rec-dashboard/hooks/useTransferDeliveryLookup";
+// Phase 3 of the IndexedDB-removal refactor (docs/server-side-
+// dashboard-refactor.md): the v2 server-side upload button. ONE
+// dataset (`contractedDate`) is wired through it in this PR;
+// Phase 4 expands to the other 17.
+import { DatasetUploadV2Button } from "@/solar-rec-dashboard/components/DatasetUploadV2Button";
 // transferHistoryDeliveries helpers are now used only by
 // @/solar-rec-dashboard/lib/buildSystems (worker-side).
 import type {
@@ -451,6 +456,20 @@ const TABULAR_DATASET_KEYS = new Set<DatasetKey>(["abpIccReport2Rows", "abpIccRe
  */
 const SCANNER_MANAGED_DATASET_KEYS = new Set<DatasetKey>(["deliveryScheduleBase"]);
 const CORE_REQUIRED_DATASET_KEYS: DatasetKey[] = ["abpReport"];
+
+/**
+ * Phase 3 of the IndexedDB-removal refactor: datasets that have a
+ * server-side parser wired (`server/services/core/datasetUploadParsers.ts`).
+ * For these, the Step 1 panel renders a v2 upload button alongside
+ * the legacy "Choose CSV" affordance. Phase 4 expands this set to
+ * cover all 18 datasets; Phase 5 then removes the legacy
+ * affordance entirely.
+ *
+ * Keep in lockstep with the parser registry. The check is on the
+ * client only — the server still rejects an upload for an
+ * unimplemented dataset with a clear error message.
+ */
+const IMPLEMENTED_V2_DATASETS = new Set<DatasetKey>(["contractedDate"]);
 
 /**
  * Phase 16: per-tab dataset priority. When the dashboard mounts with
@@ -8210,6 +8229,39 @@ const aiDataContext = useMemo(() => {
                             }}
                           />
                         </label>
+                        {/* Phase 3 of the IndexedDB-removal refactor:
+                            ONE dataset has a server-side parser
+                            wired (`contractedDate`). Show the v2
+                            button alongside the legacy CTA so the
+                            team can dogfood without losing the
+                            fallback. Phase 4 expands to the rest;
+                            Phase 5 removes the legacy affordance. */}
+                        {IMPLEMENTED_V2_DATASETS.has(key) ? (
+                          <DatasetUploadV2Button
+                            datasetKey={key}
+                            label="Upload (v2)"
+                            variant="secondary"
+                            onSuccess={() => {
+                              // Refresh every server-side query
+                              // that reads from this dataset. Per
+                              // CLAUDE.md "Solar REC Dashboard data
+                              // flow", the server is the source of
+                              // truth — invalidating these queries
+                              // pulls fresh counts + snapshot in
+                              // automatically.
+                              // `getDataset` is a mutation (the
+                              // chunked-CSV reader) so it isn't
+                              // invalidatable; the queries below
+                              // are what the dashboard actually
+                              // reads to hydrate row counts +
+                              // system records.
+                              void solarRecTrpcUtils.solarRecDashboard.getDatasetSummariesAll.invalidate();
+                              void solarRecTrpcUtils.solarRecDashboard.getSystemSnapshot.invalidate();
+                              void solarRecTrpcUtils.solarRecDashboard.getDatasetCloudStatuses.invalidate();
+                              void solarRecTrpcUtils.solarRecDashboard.listDatasetUploadJobs.invalidate();
+                            }}
+                          />
+                        ) : null}
                         {dataset ? (
                           <AlertDialog>
                             <AlertDialogTrigger asChild>
