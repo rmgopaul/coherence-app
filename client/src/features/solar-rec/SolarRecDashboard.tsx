@@ -1270,121 +1270,21 @@ function loadLegacyDatasetsFromLocalStorage(): Partial<Record<DatasetKey, CsvDat
   }
 }
 
-// Phase 13c: cache the IndexedDB connection at module scope so every
-// save doesn't pay the ~10–50ms open handshake. The connection stays
-// open for the life of the tab unless the browser forcibly closes it
-// (versionchange from another tab, tab goes into BFCache, etc.), at
-// which point we null the cache and the next call reopens cleanly.
-let cachedDashboardDb: IDBDatabase | null = null;
-let cachedDashboardDbPromise: Promise<IDBDatabase> | null = null;
-
-function invalidateCachedDashboardDb(): void {
-  cachedDashboardDb = null;
-  cachedDashboardDbPromise = null;
-}
-
-async function openDashboardDatabase(): Promise<IDBDatabase> {
-  // Phase 5a (2026-04-28): the dashboard no longer opens an
-  // IndexedDB connection at runtime. Every call site in this
-  // file has been migrated to the no-op'd load/save helpers
-  // above. If anything still reaches this function, it's a bug
-  // — fail fast with a clear message.
-  throw new Error(
-    "openDashboardDatabase: IndexedDB removed by Phase 5a; this caller is leftover."
-  );
-}
-
-function dashboardDatasetStorageKey(key: DatasetKey): string {
-  return `dataset:${key}`;
-}
-
-// Phase 13c: per-dataset signature for the diff-save path. Same
-// shape as buildDatasetStorageSignature for a single entry so the
-// two can't drift out of sync.
-function buildSingleDatasetSignature(dataset: CsvDataset | undefined): string {
-  if (!dataset) return "";
-  // Prefer the cached columnar rowCount so we don't trigger lazy-rows
-  // materialization for every save-diff pass. Freshly uploaded
-  // datasets without a columnar source fall back to reading the
-  // materialized rows (cheap — they're already real arrays).
-  const columnarSource = getDatasetColumnarSource(dataset);
-  const rowCount = columnarSource ? columnarSource.rowCount : dataset.rows.length;
-  return `${dataset.fileName}|${dataset.uploadedAt.toISOString()}|${rowCount}|${dataset.sources?.length ?? 0}`;
-}
-
-// Module-level cache of "what we last wrote to IndexedDB per key",
-// used by saveDatasetsToStorage to skip store.put calls for datasets
-// that didn't change. Hydrated either by loadDatasetsFromStorage
-// (after a successful initial read) or by saveDatasetsToStorage
-// itself (after a successful write). Missing keys = never saved.
-const lastSavedDatasetSignatures: Partial<Record<DatasetKey, string>> = {};
-
-function idbRequestToPromise<T>(request: IDBRequest<T>): Promise<T> {
-  return new Promise((resolve, reject) => {
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error ?? new Error("IndexedDB request failed."));
-  });
-}
-
-/**
- * Phase 16 + 17c: progressive, prioritized, **batched** dataset hydration.
- *
- * The hydration still walks IndexedDB one dataset at a time with a
- * microtask yield between each read so the main thread stays
- * responsive for input/scroll during a cold load. But instead of
- * landing each dataset with its own `setDatasets` call (which made
- * the expensive `systems` memo re-fire on every progress tick), we
- * **batch** the commits into at most two flushes:
- *
- *   - PRIORITY batch: flushed as soon as every priority key has
- *     been read. This is what makes the user's landing tab
- *     interactive ASAP.
- *   - BACKGROUND batch: flushed when everything else is loaded.
- *
- * With ~6 dataset slots feeding the `systems` memo, the pre-17c
- * flow fired `systems` ~6 times during hydrate. With 17c it fires
- * at most 2 times — close to the theoretical minimum for
- * progressive-plus-priority loading.
- *
- * `onProgress(loaded, total)` still fires per dataset so the UI
- * can show a fine-grained counter.
- *
- * Legacy record fallbacks still flush once through `onBatch`.
- */
-interface ProgressiveHydrationOptions {
-  priorityKeys?: Set<DatasetKey>;
-  onBatch: (batch: Partial<Record<DatasetKey, CsvDataset>>, phase: "priority" | "background") => void;
-  onProgress?: (loaded: number, total: number) => void;
-  /**
-   * Fires when a single dataset fails to hydrate. Siblings continue —
-   * this is a signal, not a halt. Caller typically records the error
-   * in state so the card for that key can surface it instead of
-   * showing "Not uploaded" (which would misleadingly suggest the
-   * user had never uploaded it).
-   */
-  onError?: (key: DatasetKey, error: unknown) => void;
-}
-
-async function loadDatasetsFromStorage(_options: ProgressiveHydrationOptions): Promise<void> {
-  // Phase 5a (2026-04-28) of the IndexedDB-removal refactor:
-  // hydration from IDB disabled. The dashboard mounts with empty
-  // `datasets` state; the 6 main tabs hydrate from server-side
-  // aggregators (`useSystemSnapshot`, `getDashboard*Aggregates`
-  // — see the comment on `serverSnapshot` ~L4026 for context).
-  // Phase 5c will delete this function and its call sites entirely
-  // once the parent-level `.rows` consumers (Phase 5b) are off the
-  // legacy state map.
-  return;
-}
-
-async function saveDatasetsToStorage(_datasets: Partial<Record<DatasetKey, CsvDataset>>): Promise<void> {
-  // Phase 5a (2026-04-28): IndexedDB writes disabled. v2 uploads
-  // (Phase 1-4) write straight to `srDs*` tables on the server;
-  // legacy v1 uploads still hit the cloud-side `saveDataset` proc
-  // (the chunked-CSV manifest path). Neither needs a local IDB
-  // copy. Phase 5c will delete this function + call sites.
-  return;
-}
+// Phase 5c (2026-04-28): the IndexedDB dataset-storage layer is gone.
+// What used to live here:
+//   - `cachedDashboardDb` / `cachedDashboardDbPromise` /
+//     `invalidateCachedDashboardDb` — module-level connection cache
+//   - `openDashboardDatabase` — opened the connection
+//   - `dashboardDatasetStorageKey` / `lastSavedDatasetSignatures` /
+//     `buildSingleDatasetSignature` / `idbRequestToPromise` —
+//     diff-save plumbing
+//   - `ProgressiveHydrationOptions` interface +
+//     `loadDatasetsFromStorage` / `saveDatasetsToStorage` — the
+//     progressive hydration + diff-save path
+// Phase 5a no-op'd the load/save bodies; Phase 5b verified no parent-
+// level `.rows` consumer needed them; Phase 5c deletes the lot.
+// Server-side aggregators (`useSystemSnapshot`,
+// `getDashboard*Aggregates`) are now the canonical source for tabs.
 
 function serializeDashboardLogs(
   logEntries: DashboardLogEntry[],
@@ -1573,24 +1473,13 @@ function loadPersistedLogs(): DashboardLogEntry[] {
   return deserializeDashboardLogs(raw);
 }
 
-async function loadLogsFromStorage(): Promise<DashboardLogEntry[]> {
-  // Phase 5a (2026-04-28): IndexedDB hydration of snapshot logs
-  // disabled. Logs persist via the localStorage fallback already
-  // wired into `loadPersistedLogs()` — that's where the actual
-  // log entries live for cross-session continuity. Phase 5c will
-  // delete this function + its caller after Phase 5b finishes
-  // migrating any remaining IDB consumers.
-  return loadPersistedLogs();
-}
-
-async function saveLogsToStorage(_logEntries: DashboardLogEntry[]): Promise<void> {
-  // Phase 5a (2026-04-28): IDB writes disabled. Snapshot logs
-  // continue to write to localStorage in the original
-  // saveLogsToStorage path (which we no-op here entirely);
-  // the localStorage fallback in `compactLogsForRemoteSync` is
-  // sufficient for this surface.
-  return;
-}
+// Phase 5c (2026-04-28): `loadLogsFromStorage` / `saveLogsToStorage`
+// stubs deleted. Snapshot-log hydration is handled by
+// `loadPersistedLogs()` (synchronous localStorage read) seeded into
+// `useState(() => loadPersistedLogs())` at mount; cloud-side sync
+// runs via the `getRemoteDataset(REMOTE_SNAPSHOT_LOGS_KEY)` /
+// `saveRemoteDashboardState` pair. There is no IDB layer in either
+// path.
 
 // loadPersistedCompliantSources — moved to @/solar-rec-dashboard/components/PerformanceRatioTab
 
@@ -1601,21 +1490,16 @@ export default function SolarRecDashboard() {
   const trpcUtils = trpc.useUtils();
   const solarRecTrpcUtils = solarRecTrpc.useUtils();
   const [datasets, setDatasets] = useState<Partial<Record<DatasetKey, CsvDataset>>>({});
-  const [datasetsHydrated, setDatasetsHydrated] = useState(false);
-  // Phase 16: progress counter for the streaming hydration path, so
-  // the data-health header can show "Loading 3/15 datasets…" while
-  // the active tab is already interactive.
-  const [hydrationProgress, setHydrationProgress] = useState<{ loaded: number; total: number }>({
-    loaded: 0,
-    total: 0,
-  });
-  // "Load all" toggle state. Default mount hydration prioritizes the
-  // active tab's datasets; Load All forces every manifest entry into
-  // state for cross-tab work / exports.
-  const [loadingAllDatasets, setLoadingAllDatasets] = useState(false);
-  const [loadAllProgress, setLoadAllProgress] = useState<{ loaded: number; total: number } | null>(
-    null
-  );
+  // Phase 5c (2026-04-28): `datasetsHydrated` used to flip true after
+  // the IndexedDB load mount effect resolved. Phase 5a no-op'd that
+  // load, and Phase 5c deletes the effect entirely — there is no
+  // local hydration to wait for, so we initialize to `true`. The
+  // remote-state path at L~5273 still calls `setDatasetsHydrated(true)`
+  // (now a no-op in practice), and ~5 downstream effects still gate
+  // on the flag together with `remoteStateHydrated`. Keeping the
+  // flag means those gates collapse to "remote ready" without
+  // touching every consumer.
+  const [datasetsHydrated, setDatasetsHydrated] = useState(true);
   const [logEntries, setLogEntries] = useState<DashboardLogEntry[]>(() => loadPersistedLogs());
   const [uploadErrors, setUploadErrors] = useState<Partial<Record<DatasetKey, string>>>({});
   // Per-dataset hydration failures. Value is a user-facing message
@@ -2209,8 +2093,9 @@ export default function SolarRecDashboard() {
   const remoteStateHydratedRef = useRef(false);
   const remoteLogsSignatureRef = useRef<string>("0");
   const remoteLogsChunkKeysRef = useRef<string[]>([]);
-  const localDatasetSignatureRef = useRef<string>("");
-  const localLogsSignatureRef = useRef<string>("0");
+  // Phase 5c (2026-04-28): `localDatasetSignatureRef` /
+  // `localLogsSignatureRef` deleted — they only gated the no-op'd
+  // local IDB save calls.
   // Phase 14: CSV parser worker pool. A single parser worker used
   // to queue up every parse request (cold hydrate of 15 datasets ran
   // one at a time on one worker — slow). We now spin up
@@ -4700,113 +4585,24 @@ export default function SolarRecDashboard() {
     }
   }, [datasets, clearHydrationErrorsForKeys]);
 
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      try {
-        // Progressive hydration: every manifest entry is fetched
-        // (lazy rows keep it cheap), priority keys determine ORDER
-        // so the active tab lands first. Datasets flush in two
-        // batches — priority, then background — so downstream memos
-        // re-fire at most twice during hydrate.
-        const priorityKeys = buildHydrationPriorityKeys(
-          getTabFromSearch(search) ?? DEFAULT_DASHBOARD_TAB,
-        );
+  // Phase 5c (2026-04-28): the mount-time IDB hydration effect is
+  // gone. Phase 5a no-op'd `loadDatasetsFromStorage`, so this effect
+  // had become "await two no-ops, then setDatasetsHydrated(true)";
+  // we now initialize `datasetsHydrated = true` at state declaration.
+  //
+  // Snapshot logs still want their localStorage fallback hydrated
+  // once at mount in case the cloud-side log sync hasn't finished
+  // (or the user is offline). `loadPersistedLogs()` is sync, but we
+  // already seed `logEntries` from it at `useState(() => loadPersistedLogs())`,
+  // so no extra effect is required here.
 
-        const [, loadedLogs] = await Promise.all([
-          loadDatasetsFromStorage({
-            priorityKeys,
-            onBatch: (batch, _phase) => {
-              if (cancelled) return;
-              const landedKeys = Object.keys(batch) as DatasetKey[];
-              setDatasets((current) => {
-                const next = { ...current };
-                let changed = false;
-                for (const [key, dataset] of Object.entries(batch) as Array<
-                  [DatasetKey, CsvDataset]
-                >) {
-                  if (next[key]) continue;
-                  next[key] = dataset;
-                  changed = true;
-                }
-                return changed ? next : current;
-              });
-              clearHydrationErrorsForKeys(landedKeys);
-            },
-            onProgress: (loaded, total) => {
-              if (cancelled) return;
-              setHydrationProgress({ loaded, total });
-            },
-            onError: recordHydrationError,
-          }),
-          loadLogsFromStorage(),
-        ]);
-        if (cancelled) return;
-        if (loadedLogs.length > 0) {
-          setLogEntries((current) => {
-            if (current.length === 0) return loadedLogs;
-            return loadedLogs.length >= current.length ? loadedLogs : current;
-          });
-        }
-        setStorageNotice(null);
-      } catch {
-        if (cancelled) return;
-        setStorageNotice("Could not load saved file data.");
-      } finally {
-        if (!cancelled) setDatasetsHydrated(true);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [activeTab, search]);
-
-  /**
-   * User-invoked hydration with explicit progress, no priority
-   * ordering. Mount hydration already pulls every manifest entry
-   * (lazy rows keep it cheap), but it interleaves priority and
-   * background batches; this path runs a single-flush hydrate with
-   * a visible N/total counter so the user can wait for all rows to
-   * materialize before starting cross-tab work.
-   */
-  const loadAllDatasets = useCallback(async () => {
-    if (loadingAllDatasets) return;
-    setLoadingAllDatasets(true);
-    setLoadAllProgress({ loaded: 0, total: 0 });
-    try {
-      await loadDatasetsFromStorage({
-        // No priority ordering — previously-loaded keys are skipped
-        // inside onBatch via `if (next[key]) continue`.
-        onBatch: (batch) => {
-          const landedKeys = Object.keys(batch) as DatasetKey[];
-          setDatasets((current) => {
-            const next = { ...current };
-            let changed = false;
-            for (const [key, dataset] of Object.entries(batch) as Array<
-              [DatasetKey, CsvDataset]
-            >) {
-              if (next[key]) continue;
-              next[key] = dataset;
-              changed = true;
-            }
-            return changed ? next : current;
-          });
-          clearHydrationErrorsForKeys(landedKeys);
-        },
-        onError: recordHydrationError,
-        onProgress: (loaded, total) => {
-          setLoadAllProgress({ loaded, total });
-        },
-      });
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error("[loadAllDatasets] failed:", err);
-      setStorageNotice("Could not finish loading all datasets. Try again.");
-    } finally {
-      setLoadingAllDatasets(false);
-      setLoadAllProgress(null);
-    }
-  }, [loadingAllDatasets]);
+  // Phase 5c (2026-04-28): removed the user-invoked `loadAllDatasets`
+  // callback. It was the only consumer of `loadDatasetsFromStorage`
+  // outside the mount effect — and that helper became a no-op in
+  // Phase 5a. The dashboard now hydrates the 6 main tabs from
+  // server-side aggregators, so "load every IDB-backed dataset into
+  // the legacy `datasets` state map" no longer corresponds to any
+  // user-visible benefit.
 
   useEffect(() => {
     let cancelled = false;
@@ -5314,90 +5110,29 @@ export default function SolarRecDashboard() {
     };
   }, [remoteDashboardStateQuery.refetch]);
 
-  useEffect(() => {
-    const flushLocalPersistence = () => {
-      if (!datasetsHydratedRef.current && Object.keys(datasetsRef.current).length === 0) return;
-
-      void (async () => {
-        try {
-          const nextDatasetSignature = buildDatasetStorageSignature(datasetsRef.current);
-          if (localDatasetSignatureRef.current !== nextDatasetSignature) {
-            await saveDatasetsToStorage(datasetsRef.current);
-            localDatasetSignatureRef.current = nextDatasetSignature;
-          }
-
-          const nextLogSignature = buildLogSyncSignature(logEntriesRef.current);
-          if (localLogsSignatureRef.current !== nextLogSignature) {
-            await saveLogsToStorage(logEntriesRef.current);
-            localLogsSignatureRef.current = nextLogSignature;
-          }
-        } catch {
-          // Best-effort flush on navigation.
-        }
-      })();
-    };
-
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === "hidden") {
-        flushLocalPersistence();
-      }
-    };
-
-    window.addEventListener("pagehide", flushLocalPersistence);
-    window.addEventListener("beforeunload", flushLocalPersistence);
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-
-    return () => {
-      window.removeEventListener("pagehide", flushLocalPersistence);
-      window.removeEventListener("beforeunload", flushLocalPersistence);
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-    };
-  }, []);
+  // Phase 5c (2026-04-28): removed the `flushLocalPersistence`
+  // pagehide/beforeunload/visibilitychange effect. It existed solely
+  // to flush IDB writes before the tab went away; both writers are
+  // no-ops post-Phase-5a, so the effect is dead. The cloud-side
+  // sync is debounced inside the effect below and runs on its own
+  // schedule.
 
   useEffect(() => {
     if (!datasetsHydrated && Object.keys(datasets).length === 0) return;
+    // Phase 5c (2026-04-28): the debounced local-IDB save block that
+    // used to live here is gone — `saveDatasetsToStorage` /
+    // `saveLogsToStorage` are no-ops post-Phase-5a. Cloud sync of
+    // dashboard state is the only persistence path left, and runs
+    // below.
 
-    // Debounced local persistence — defers heavy JSON.stringify off the render path
-    const localSaveTimeout = window.setTimeout(() => {
-      void (async () => {
-        try {
-          const nextDatasetSignature = buildDatasetStorageSignature(datasets);
-          if (localDatasetSignatureRef.current !== nextDatasetSignature) {
-            await saveDatasetsToStorage(datasets);
-            localDatasetSignatureRef.current = nextDatasetSignature;
-          }
-
-          const nextLogSignature = buildLogSyncSignature(logEntries);
-          if (localLogsSignatureRef.current !== nextLogSignature) {
-            await saveLogsToStorage(logEntries);
-            localLogsSignatureRef.current = nextLogSignature;
-          }
-        } catch {
-          setStorageNotice(
-            "Local browser storage is full or unavailable. Keeping data in cloud sync may take longer for large uploads."
-          );
-        }
-      })();
-    }, 250);
-
-    if (!datasetsHydrated || !remoteStateHydrated) {
-      return () => {
-        window.clearTimeout(localSaveTimeout);
-      };
-    }
+    if (!datasetsHydrated || !remoteStateHydrated) return;
 
     if (remoteDashboardStateQuery.status === "error") {
       setStorageNotice(null);
-      return () => {
-        window.clearTimeout(localSaveTimeout);
-      };
+      return;
     }
 
-    if (remoteDashboardStateQuery.status !== "success") {
-      return () => {
-        window.clearTimeout(localSaveTimeout);
-      };
-    }
+    if (remoteDashboardStateQuery.status !== "success") return;
 
     let cancelled = false;
     const timeout = window.setTimeout(() => {
@@ -5425,7 +5160,6 @@ export default function SolarRecDashboard() {
 
     return () => {
       cancelled = true;
-      window.clearTimeout(localSaveTimeout);
       window.clearTimeout(timeout);
     };
   }, [
@@ -6668,35 +6402,14 @@ const aiDataContext = useMemo(() => {
                 <p className="text-lg font-semibold text-slate-900">
                   {formatNumber(dataHealthSummary.loadedDatasetCount)} / {formatNumber(dataHealthSummary.totalDatasetCount)}
                 </p>
-                {/* Phase 16: progressive hydration progress. Disappears
-                    once hydration finishes or no records exist. */}
-                {!datasetsHydrated && hydrationProgress.total > 0 ? (
-                  <p className="mt-1 text-[11px] text-sky-700">
-                    Loading cache: {formatNumber(hydrationProgress.loaded)} / {formatNumber(hydrationProgress.total)}
-                  </p>
-                ) : null}
-                {/* Load All toggle — only shown after initial hydration
-                    settled AND there are still unloaded datasets. Mount
-                    hydration is tab-priority-filtered; this bypasses
-                    that filter and hydrates the rest. */}
-                {datasetsHydrated &&
-                dataHealthSummary.loadedDatasetCount < dataHealthSummary.totalDatasetCount ? (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={loadingAllDatasets}
-                    onClick={() => void loadAllDatasets()}
-                    className="mt-2 h-7 w-full px-2 text-[11px]"
-                  >
-                    {loadingAllDatasets
-                      ? loadAllProgress && loadAllProgress.total > 0
-                        ? `Loading ${formatNumber(loadAllProgress.loaded)}/${formatNumber(loadAllProgress.total)}…`
-                        : "Loading…"
-                      : `Load all (${formatNumber(
-                          dataHealthSummary.totalDatasetCount - dataHealthSummary.loadedDatasetCount
-                        )} remaining)`}
-                  </Button>
-                ) : null}
+                {/* Phase 5c: removed the "Loading cache: x/y" progress
+                    counter and the "Load all (n remaining)" button.
+                    Both were tied to the IndexedDB hydration path
+                    that Phase 5a no-op'd. The dashboard now mounts
+                    with `datasets={}` and the 6 main tabs hydrate
+                    from server-side aggregators, so there is no
+                    local cache to progress through and no second
+                    pass to trigger. */}
               </div>
               <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
                 <p className="text-xs uppercase tracking-wide text-slate-500">Rows Loaded</p>
