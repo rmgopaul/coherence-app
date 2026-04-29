@@ -1,9 +1,26 @@
 # Server-Side Dashboard Refactor Plan
 
-> **Status:** Draft, awaiting approval.
+> **Status:** **In progress — Phases 1–5c shipped (PRs #241, #243,
+> #244, #245, #246, #247, #249). Phase 5d / 6 / 7 outstanding.**
+> Last updated: 2026-04-28 after PR #249.
 > **Author:** Claude (post-PR-#236 conversation, 2026-04-28).
 > **Goal:** Eliminate IndexedDB from the Solar REC dashboard. Make the
 > server the single source of truth and the client a thin renderer.
+
+## Status snapshot
+
+| Phase | PR | Status | Notes |
+|---|---|---|---|
+| 1 — server-side upload job runner | #241 | ✅ shipped | `datasetUploadJobs` + `datasetUploadJobErrors` tables (migration 0057), `runDatasetUploadJob` runner, 5 tRPC procs, chunked-base64 upload pattern (matches Schedule B PDF flow) |
+| 2 — UploadProgressDialog + hooks | #243 | ✅ shipped | `useDatasetUploadController` + `useDatasetUploadStatus` + `<UploadProgressDialog>` |
+| 3 — wire `contractedDate` to v2 (live) | #244 | ✅ shipped | `<DatasetUploadV2Button>` mounted alongside legacy "Choose CSV" on the contractedDate slot |
+| 4 — parsers for all 17 v2 datasets | #245 | ✅ shipped | Every dataset key except `deliveryScheduleBase` (scanner-managed) has a registered parser; `IMPLEMENTED_V2_DATASETS` covers all 17 |
+| 5a — stop reading + writing IndexedDB | #246 | ✅ shipped | All 5 IDB load/save helpers no-op'd; comments left for Phase 5c deletion |
+| 5b — drop dead client `transferDeliveryLookup` fallback | #247 | ✅ shipped | Tightly scoped — most parent-level `.rows` consumers needed deferred work (see Phase 5d) |
+| 5c — delete the no-op'd IDB stubs | #249 | ✅ shipped | −287 lines from `SolarRecDashboard.tsx`; removed all helpers, mount effect, "Load all" UI, flush effect, debounced local-save block |
+| 5d — migrate parent-level `.rows` consumers | TBD | ⏳ deferred | PerformanceRatioTab + ForecastTab + FinancialsTab + Schedule B import flow each still read `datasets[k].rows`; `lazyDataset.ts` survives until they migrate |
+| 6 — remove the legacy upload pipeline | TBD | ⏳ blocked on parity | v2 has no multi-append (3 datasets) or Excel-parse (2 datasets) support yet; v1 stays alongside until both gaps close |
+| 7 — cleanup + docs | TBD | ⏳ pending | This file + `CLAUDE.md` data-flow section + new-upload runbook |
 
 ---
 
@@ -254,53 +271,143 @@ the 18 dataset → table mappings are already declared in
 **Verification:** All 18 datasets uploadable via v2. Tested per
 dataset that row counts in `srDs*` match the file's row count.
 
-### Phase 5 — Remove the IndexedDB read path ✦ ~3 hrs
+### Phase 5 — Remove the IndexedDB read path ✦ ~3 hrs (actual: split into 5a/5b/5c)
 
-Delete:
-- `client/src/solar-rec-dashboard/lib/readIndexedDb.ts`
-- `client/src/solar-rec-dashboard/lib/lazyDataset.ts` (column-major
-  cache no longer needed when nothing is hydrated client-side)
-- IDB read calls in `SolarRecDashboard.tsx`
-- The `dataset:*` IDB writes from the legacy upload path
-- The `__dataset_manifest_v2__` and `__snapshot_logs_v2__` keys
+The original plan called for a single "delete the IDB read path"
+PR. In execution this had to split because the IDB hydration code
+fed into ~30 downstream call sites scattered across 8000+ LOC of
+`SolarRecDashboard.tsx`. The deletion-in-one-PR diff was reviewable
+only by also cutting the parent-level `.rows` consumers, which in
+turn pulled in tab refactors. The split:
 
-Replace dashboard mount logic with eager `getDatasetSummariesAll`
-+ `getSystemSnapshot` queries; tabs hydrate their own data via
-existing aggregator queries.
+**Phase 5a (#246) — stop reading + writing IDB.** Replace every
+load/save helper body with `return;`. `openDashboardDatabase`
+becomes a `throw` so any leftover caller fails fast. No call sites
+deleted yet — kept the surface area for Phase 5b's migration to
+work against. (~5 LOC functions, 5 of them.)
 
-`SolarRecDashboard.tsx` should drop ~500 LOC of hydration glue.
+**Phase 5b (#247) — drop the dead `transferDeliveryLookup` client
+fallback.** The only parent-level `.rows` consumer that turned out
+to be safely removable in one go: a fallback lookup that fed a
+panel that already had a server-aggregator alternative. The
+remaining parent-level consumers (PerformanceRatioTab, ForecastTab,
+FinancialsTab, the Schedule B import flow) all need their own tab
+refactors and got deferred to Phase 5d.
 
-**Verification:** Hard-refresh the dashboard with empty browser
-storage → all 18 dataset summaries populate from the server within
-~2s; tabs render correctly when clicked; no IDB writes observed in
-DevTools.
+**Phase 5c (#249) — delete the no-op'd stubs.** With Phase 5b's
+discoveries reducing the scope, 5c was pure mechanical cleanup:
+delete the 5 stub function definitions, the orphaned helpers
+(`cachedDashboardDb`, `idbRequestToPromise`, …), the 8 call sites
+(mount effect, flush effect, debounced local-save block, "Load
+all" button + 3 state vars + callback), and the
+`ProgressiveHydrationOptions` interface. **−287 net lines** from
+`SolarRecDashboard.tsx`.
 
-### Phase 6 — Remove the legacy upload path ✦ ~2 hrs
+**Phase 5d (deferred) — migrate parent-level `.rows` consumers.**
+Three tabs still read `datasets[k].rows` directly:
+- `PerformanceRatioTab` — uses `getDatasetColumnarSource(dataset)`
+  on `convertedReads`; needs a server-side aggregator for compliant
+  vs. non-compliant period-bucketed production.
+- `ForecastTab` — reads `convertedReads` + `accountSolarGeneration`
+  for its 12-month forecast curve.
+- `FinancialsTab` — reads `accountSolarGeneration` +
+  `abpReport` for invoice modeling.
 
-Delete:
-- `saveDataset` tRPC proc (rename to `saveDatasetLegacy` for one
-  release as a kill-switch; remove next release)
-- `client/src/workers/csvParser.ts` web worker
-- `client/public/recover-core-dataset-from-idb.js`
-- The chunked-CSV manifest write path (server-side)
-- `convertedReadsBridge.ts`'s chunked-CSV manifest write —
-  **CHECK**: this is used by the monitoring batch and writes 17
-  vendors per day. Need to verify it has a row-table-only
-  alternative. Defer this sub-step if not.
+Plus the Schedule B import flow reads `datasets.deliveryScheduleBase
+.rows` for its diff-vs-imported staging. Once those four migrate,
+`lazyDataset.ts` and `getDatasetColumnarSource` can also delete.
 
-**Verification:** No remaining `saveDataset` call sites; full test
-suite passes; daily monitoring batch still produces
-`srDsConvertedReads` rows.
+`__dataset_manifest_v2__` and `__snapshot_logs_v2__` IDB keys are
+already orphaned by Phase 5a's no-op write helpers — no new keys
+land. Existing keys in user browsers will age out over time; a
+proactive `indexedDB.deleteDatabase("solarRecDashboardDb")` on
+mount can be done as a one-time migration in Phase 5e if desired.
+
+**Verification (5a/5b/5c):** Hard-refresh the dashboard with empty
+browser storage → 6 main tabs render from server aggregators
+without local IDB; `tsc --noEmit --incremental false` clean;
+1278/1278 tests pass; no IDB writes observed in DevTools after
+Phase 5a.
+
+### Phase 6 — Remove the legacy upload path ✦ ~3 hrs (revised)
+
+**Blocked on v2 feature parity.** Audit during Phase 6 prep
+turned up two gaps:
+
+1. **Multi-append upload mode.** Three datasets
+   (`accountSolarGeneration`, `convertedReads`, `transferHistory`)
+   accept multiple files in one upload and dedupe-merge their
+   rows (see `MULTI_APPEND_DATASET_KEYS` in
+   `SolarRecDashboard.tsx`). v2 currently runs only
+   `mergeStrategy: "replace"` (see
+   `server/services/core/datasetUploadJobRunner.ts` L177).
+2. **Excel parsing.** Two datasets (`abpIccReport2Rows`,
+   `abpIccReport3Rows`) accept `.xlsx/.xls/.xlsm/.xlsb` files
+   and convert them in the browser via `parseTabularFile`. v2
+   only accepts `.csv,text/csv` (see
+   `client/src/solar-rec-dashboard/components/DatasetUploadV2Button.tsx`).
+
+Fill these in **before** deleting v1:
+
+- **Phase 6 PR-A:** add browser-side Excel-to-CSV conversion to
+  `useDatasetUploadController` so v2 accepts the same Excel
+  formats v1 does. Server runner unchanged — it still receives
+  CSV bytes.
+- **Phase 6 PR-B:** add `mergeStrategy: "append"` to
+  `runDatasetUploadJob` (deduping on the same row-key as v1's
+  `datasetAppendRowKey` helper); thread a multi-file picker
+  through the v2 button for the 3 multi-append datasets.
+
+**Phase 6 PR-C audit (already done — 2026-04-28):**
+`server/solar/convertedReadsBridge.ts` writes via
+`getSolarRecDashboardPayload` / `saveSolarRecDashboardPayload`
+**directly**, not via the `saveDataset` tRPC proc. So the
+chunked-CSV storage path stays alive (the bridge is a daily
+producer with 17 vendor sources merged into one
+`_rawSourcesV1` manifest), but the proc itself can be deleted
+once all client callers are gone.
+
+**Phase 6 PR-D — actual deletion.** After PR-A + PR-B + the
+client-side flip:
+- Delete `saveDataset` tRPC proc.
+- Delete `client/src/workers/csvParser.ts` web worker.
+- Delete `parseCsvFileAsync` / `parseTabularFile` browser-side
+  parser helpers.
+- Delete `persistDatasetSourceFilesToCloud` from
+  `SolarRecDashboard.tsx` along with the `<input type="file">`
+  inside the dataset-card legacy slot.
+- Delete the `IMPLEMENTED_V2_DATASETS` set (no longer needed
+  once v1 is gone).
+- Keep `client/scripts/recover-core-dataset-from-idb.js` —
+  still useful for users who haven't visited the dashboard
+  post-Phase-5a (their IDB still holds data that pre-dated the
+  write disable).
+- Keep server-side `saveSolarRecDashboardPayload` /
+  `getSolarRecDashboardPayload` — `convertedReadsBridge.ts` and
+  `serverSideMigration.ts` and the Schedule B import flow all
+  still need them.
+
+**Verification:** No client-side `saveDataset` call sites (only
+`convertedReadsBridge.ts`'s direct write); full test suite
+passes; the daily monitoring batch still produces
+`srDsConvertedReads` rows; uploading a multi-append dataset via
+v2 deduplicates correctly against the prior batch.
 
 ### Phase 7 — Cleanup + docs ✦ ~1 hr
 
 - Update `CLAUDE.md`'s "Solar REC Dashboard data flow" section to
-  reflect server-of-truth.
+  reflect server-of-truth + add a section on the v2 upload
+  pipeline (job runner, chunk-base64 upload, polling lifecycle).
 - Delete the data-flow contract sections referencing the chunked-
   CSV manifest.
 - Remove the `__dataset_manifest_v2__` / `dataset:*` references
   from any remaining helpers.
-- Add a runbook doc for the new upload flow.
+- Add a runbook doc for the new upload flow ("how to add v2
+  upload support to a new dataset" — already implicit in the
+  parser registry but undocumented).
+- Decide whether to ship a one-time
+  `indexedDB.deleteDatabase("solarRecDashboardDb")` mount migration
+  to clear orphaned IDB blobs in user browsers.
 
 ---
 
@@ -351,3 +458,60 @@ each diff small enough to review carefully.
    caught fast.
 4. Phase 6 (remove legacy upload) is the irreversible cleanup —
    only do it after Phase 4 has been stable for a week.
+
+---
+
+## Lessons learned during execution
+
+Notes captured during Phases 1–5c that are worth preserving for
+future server-of-truth refactors of similar size.
+
+1. **The plan's "Phase 5" was three PRs in execution.** Replacing
+   the IDB load/save bodies with no-op'd stubs (5a) before
+   deleting them (5c) gave a clear two-step path: Phase 5a verified
+   "no caller actually needed the data" and Phase 5c verified
+   "no caller still references the symbols." Trying to do both in
+   one PR would have produced an unreviewable diff against an
+   8000+ LOC orchestrator file.
+2. **Most parent-level `.rows` consumers are tab-internal.** The
+   dashboard's `datasets[k].rows` reads at the orchestrator level
+   are mostly forwarded into tab components that haven't yet
+   migrated to server aggregators. Phase 5b discovered this the
+   hard way after assuming "delete the parent-level reads" was a
+   small task. The corollary: budget Phase 5d as a series of
+   tab-by-tab refactors, not a single PR.
+3. **Multi-source feature parity is not optional.** The user's
+   actual workflow on `convertedReads` and `accountSolarGeneration`
+   uses the multi-append flow heavily — uploading 17 vendor files
+   over a month. v2 was designed for replace-only because that's
+   what the simplest spec says; the gap surfaced only after audit
+   for Phase 6. Lesson: enumerate the v1 modes FIRST when sketching
+   the v2 surface, not after.
+4. **Bridge and proc share storage but not call paths.**
+   `convertedReadsBridge.ts` writes via the chunked-CSV storage
+   helpers DIRECTLY (`saveSolarRecDashboardPayload`), not via the
+   `saveDataset` tRPC proc. This means Phase 6 can delete the
+   client-facing proc without touching server-internal callers —
+   but only if the audit catches the distinction. (It almost
+   didn't.)
+5. **`tsc --noEmit --incremental false` clean ≠ shipped working.**
+   PR #223 (PWA shell) compiled clean, passed CI, and broke
+   `/solar-rec/` for every team member because `<Toaster />`
+   tried to call `useTheme()` outside a `<ThemeProvider>`. Phase
+   2 of this refactor added a CLAUDE.md rule (rule 6, "component
+   context-dependency check") that caught a similar issue early.
+   Compile-clean cuts the search space; it does not certify
+   behavior.
+6. **`datasetsHydrated` is now meaningless.** Phase 5c initialized
+   it to `true` rather than rip it out, because ~5 downstream
+   gates compose with `remoteStateHydrated` via `&&`. Deleting
+   the flag would have meant editing 5 effects and 2 conditionals
+   in 5 different code regions; flipping the initializer was a
+   one-line change with the same runtime effect. When a flag is
+   read from many places but produced from one place, change the
+   producer.
+7. **Phase 6 is gated on parity, not deletion appetite.** The
+   "delete the legacy upload" work depends on v2 supporting
+   multi-append + Excel; the deletion itself is mechanical once
+   parity ships. Track the parity gap in this doc rather than
+   queueing the delete and discovering blockers mid-PR.
