@@ -144,13 +144,27 @@ function splitRawCandidates(value: string | undefined): string[] {
 // Per-dataset builders — byte-for-byte mirrors of the 3 client
 // `system.ts` builders. Take CsvRow[] (the loadDatasetRows shape)
 // and return the maps the aggregator consumes.
+//
+// Exported so Phase 5d PR 2+ aggregators (Forecast, REC perf eval)
+// can reuse these without duplicating the byte-for-byte logic. A
+// future Phase-5d cleanup can hoist these to shared and the client
+// can re-export from there.
 // ---------------------------------------------------------------------------
 
-type AnnualProductionProfile = {
+export type ServerAnnualProductionProfile = {
   monthlyKwh: number[];
 };
 
-function buildAnnualProductionByTrackingId(
+export type ServerGenerationBaseline = {
+  valueWh: number;
+  date: Date | null;
+  source: string;
+};
+
+type AnnualProductionProfile = ServerAnnualProductionProfile;
+type GenerationBaseline = ServerGenerationBaseline;
+
+export function buildAnnualProductionByTrackingId(
   rows: CsvRow[]
 ): Map<string, AnnualProductionProfile> {
   const mapping = new Map<string, AnnualProductionProfile>();
@@ -175,13 +189,7 @@ function buildAnnualProductionByTrackingId(
   return mapping;
 }
 
-type GenerationBaseline = {
-  valueWh: number;
-  date: Date | null;
-  source: string;
-};
-
-function buildGenerationBaselineByTrackingId(
+export function buildGenerationBaselineByTrackingId(
   generationEntryRows: CsvRow[],
   accountSolarGenerationRows: CsvRow[]
 ): Map<string, GenerationBaseline> {
@@ -254,7 +262,7 @@ function buildGenerationBaselineByTrackingId(
   return mapping;
 }
 
-function buildGeneratorDateOnlineByTrackingId(
+export function buildGeneratorDateOnlineByTrackingId(
   rows: CsvRow[]
 ): Map<string, Date> {
   const mapping = new Map<string, Date>();

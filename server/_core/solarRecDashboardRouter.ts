@@ -2834,6 +2834,39 @@ export const solarRecDashboardRouter = t.router({
   }),
 
   /**
+   * Phase 5d PR 2 (2026-04-29) — server-side aggregator for the
+   * Forecast tab. Replaces the client `forecastProjections` useMemo
+   * that walked `performanceSourceRows` × annualProductionByTrackingId
+   * × generationBaselineByTrackingId for every system, projecting
+   * remaining RECs in the current energy year via
+   * `calculateExpectedWhForRange`.
+   *
+   * Cache key bundles 5 active batch IDs (deliveryScheduleBase,
+   * annualProductionEstimates, generationEntry,
+   * accountSolarGeneration, abpReport) + the current energy year
+   * label, so May 1 boundary crossings invalidate the cache
+   * automatically without any clock-skew handling. Wire payload is
+   * tiny (~7.5 KB on a typical portfolio: ~50 contract rows × 10
+   * numeric fields).
+   */
+  getDashboardForecast: requirePermission(
+    "solar-rec-dashboard",
+    "read"
+  ).query(async ({ ctx }) => {
+    const {
+      getOrBuildForecastAggregates,
+      FORECAST_RUNNER_VERSION,
+    } = await import("../services/solar/buildForecastAggregates");
+
+    const result = await getOrBuildForecastAggregates(ctx.scopeId);
+
+    return {
+      ...result,
+      _runnerVersion: FORECAST_RUNNER_VERSION,
+    };
+  }),
+
+  /**
    * Task 5.14 PR-4 (2026-04-27) — server-side reconciliation between
    * `srDsDeliverySchedule.trackingSystemRefId` (or `systemId` fallback)
    * and `srDsConvertedReads.monitoringSystemId`. Replaces the
