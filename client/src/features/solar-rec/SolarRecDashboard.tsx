@@ -5402,16 +5402,21 @@ const part2VerifiedSystemIds = useMemo(() => {
 
 // part2VerifiedSystems, financialRevenueAtRisk — moved to @/solar-rec-dashboard/components/FinancialsTab
 // ── Financials: Profit & Collateralization ──────────────────────
-const financialCsgIds = useMemo(() => {
-  if (!isFinancialsTabActive && !isPipelineTabActive && !isOverviewTabActive) return [];
-  const mappingRows = datasets.abpCsgSystemMapping?.rows ?? [];
-  const ids = new Set<string>();
-  for (const row of mappingRows) {
-    const csgId = (row.csgId || row["CSG ID"] || "").trim();
-    if (csgId) ids.add(csgId);
-  }
-  return Array.from(ids);
-}, [isFinancialsTabActive, isPipelineTabActive, isOverviewTabActive, datasets.abpCsgSystemMapping]);
+// Phase 5e Followup #4 step 4 PR-B (2026-04-30) — `financialCsgIds`
+// + the FinancialsTab debug panel's static fields now come from
+// `getDashboardFinancials`. Gating extended to include the Pipeline
+// tab (which uses csgIds to drive `contractScanResultsQuery`) so
+// the data is available to all 3 consumer tabs.
+const financialsQuery =
+  solarRecTrpc.solarRecDashboard.getDashboardFinancials.useQuery(undefined, {
+    enabled:
+      isFinancialsTabActive || isOverviewTabActive || isPipelineTabActive,
+    staleTime: 60_000,
+  });
+const financialCsgIds = useMemo<string[]>(
+  () => financialsQuery.data?.csgIds ?? [],
+  [financialsQuery.data]
+);
 
 // Task 5.7 PR-B (2026-04-26): getContractScanResultsByCsgIds moved
 // from main `abpSettlementRouter` to standalone `contractScan` —
@@ -5421,11 +5426,6 @@ const contractScanResultsQuery = solarRecTrpc.contractScan.getContractScanResult
   { csgIds: financialCsgIds },
   { enabled: (isFinancialsTabActive || isPipelineTabActive || isOverviewTabActive) && financialCsgIds.length > 0 }
 );
-const financialsQuery =
-  solarRecTrpc.solarRecDashboard.getDashboardFinancials.useQuery(undefined, {
-    enabled: isFinancialsTabActive || isOverviewTabActive,
-    staleTime: 60_000,
-  });
 // updateContractOverride, rescanSingleContract mutations + editingFinancialRow state
 // — moved to @/solar-rec-dashboard/components/FinancialsTab
 
@@ -5527,192 +5527,11 @@ const financialProfitData = useMemo<FinancialProfitData>(() => {
 // ── Pipeline: Cash Flow by Month (M+1 from Part II verification) ──
 // pipelineCashFlowRows, cashFlowRows3Year, cashFlowRows12Month, cashFlowRows12MonthRef — moved to @/solar-rec-dashboard/components/AppPipelineTab
 
-// ── Financials: debug panel data (drive the collapsible diagnostic
-//    block under the profit table). Walks the same join chain as
-//    financialProfitData and counts attrition at every step so the
-//    user can see EXACTLY which dataset is missing or mis-keyed.
-//    Pure: gated on isFinancialsTabActive so it doesn't run on
-//    other tabs.
-const financialProfitDebug = useMemo(() => {
-  if (!isFinancialsTabActive) {
-    return null;
-  }
-
-  const mappingRows = datasets.abpCsgSystemMapping?.rows ?? [];
-  const iccRows = datasets.abpIccReport3Rows?.rows ?? [];
-  const scanResults = contractScanResultsQuery.data ?? [];
-
-  // Step 1: parse the mapping into both directions
-  const csgIdByAppId = new Map<string, string>();
-  const appIdByCsgId = new Map<string, string>();
-  for (const row of mappingRows) {
-    const csgId = (row.csgId || row["CSG ID"] || "").trim();
-    const systemId = (row.systemId || row["System ID"] || "").trim();
-    if (csgId && systemId) {
-      csgIdByAppId.set(systemId, csgId);
-      appIdByCsgId.set(csgId, systemId);
-    }
-  }
-
-  // Step 2: scan-by-csgId
-  const scanByCsgId = new Map<string, (typeof scanResults)[number]>();
-  for (const r of scanResults) {
-    scanByCsgId.set(r.csgId, r);
-  }
-
-  // Step 3: ICC by appId — match the same field-name fallbacks AND
-  // use parseNumber (not parseFloat) to mirror the fix in
-  // financialProfitData. Raw parseFloat chokes on currency-formatted
-  // strings like "$1,234.56", making every row's gross === 0 and
-  // dropping the appId entirely.
-  const iccAppIds = new Set<string>();
-  for (const row of iccRows) {
-    const appId = (
-      row["Application ID"] || row.Application_ID || row.application_id || ""
-    ).trim();
-    if (!appId) continue;
-    const gcv =
-      parseNumber(
-        row["Total REC Delivery Contract Value"] ||
-          row["REC Delivery Contract Value"] ||
-          row["Total Contract Value"]
-      ) ?? 0;
-    const rq =
-      parseNumber(
-        row["Total Quantity of RECs Contracted"] ||
-          row["Contracted SRECs"] ||
-          row.SRECs
-      ) ?? 0;
-    const rp = parseNumber(row["REC Price"]) ?? 0;
-    const gross = gcv > 0 ? gcv : rq * rp;
-    if (gross > 0) iccAppIds.add(appId);
-  }
-
-  // Step 4: walk the join chain on part2VerifiedAbpRows and count
-  // attrition at every step.
-  let withAppId = 0;
-  let withCsgId = 0;
-  let withScan = 0;
-  let withIcc = 0;
-  let final = 0;
-  for (const abpRow of part2VerifiedAbpRows) {
-    const appId = (abpRow.Application_ID || abpRow.application_id || "").trim();
-    if (!appId) continue;
-    withAppId += 1;
-
-    const csgId = csgIdByAppId.get(appId);
-    if (!csgId) continue;
-    withCsgId += 1;
-
-    if (scanByCsgId.has(csgId)) {
-      withScan += 1;
-    }
-    if (iccAppIds.has(appId)) {
-      withIcc += 1;
-    }
-
-    if (scanByCsgId.has(csgId) && iccAppIds.has(appId)) {
-      final += 1;
-    }
-  }
-
-  // Sample IDs from each side for the user to eyeball mismatches
-  const sample = <T,>(arr: T[], n: number) => arr.slice(0, n);
-  const mappingCsgIdSamples = sample(
-    Array.from(appIdByCsgId.keys()),
-    5
-  );
-  const scanCsgIdSamples = sample(
-    scanResults.map((r) => r.csgId),
-    5
-  );
-  const mappingAppIdSamples = sample(
-    Array.from(csgIdByAppId.keys()),
-    5
-  );
-  const iccAppIdSamples = sample(Array.from(iccAppIds), 5);
-  const part2AppIdSamples = sample(
-    part2VerifiedAbpRows
-      .map((r) => (r.Application_ID || r.application_id || "").trim())
-      .filter((id) => id.length > 0),
-    5
-  );
-
-  // ICC Report headers: surface the actual column names from the CSV
-  // so the user can see if the expected field names (Application ID,
-  // Total REC Delivery Contract Value, etc.) match what's in the file.
-  const iccHeaders = datasets.abpIccReport3Rows?.headers ?? [];
-  const iccFirstRow = iccRows.length > 0 ? iccRows[0] : null;
-  // Try ALL known variants of the appId field to show which one works.
-  const iccAppIdFieldFound =
-    iccFirstRow
-      ? ["Application ID", "Application_ID", "application_id"]
-          .filter((key) => key in iccFirstRow && (iccFirstRow[key] ?? "").trim().length > 0)
-      : [];
-  const iccContractValueFieldFound =
-    iccFirstRow
-      ? [
-          "Total REC Delivery Contract Value",
-          "REC Delivery Contract Value",
-          "Total Contract Value",
-        ].filter(
-          (key) =>
-            key in iccFirstRow &&
-            (iccFirstRow[key] ?? "").trim().length > 0
-        )
-      : [];
-  const queryError = contractScanResultsQuery.error;
-  const queryErrorMessage =
-    queryError instanceof Error
-      ? queryError.message
-      : queryError
-        ? String(queryError)
-        : null;
-
-  return {
-    queryStatus: contractScanResultsQuery.status,
-    queryFetching: contractScanResultsQuery.isFetching,
-    queryEnabled: isFinancialsTabActive && financialCsgIds.length > 0,
-    queryErrorMessage,
-    counts: {
-      part2VerifiedAbpRows: part2VerifiedAbpRows.length,
-      mappingRows: mappingRows.length,
-      iccReport3Rows: iccRows.length,
-      financialCsgIdsCount: financialCsgIds.length,
-      scanResultsReturned: scanResults.length,
-    },
-    chain: {
-      iterated: part2VerifiedAbpRows.length,
-      withAppId,
-      withCsgId,
-      withScan,
-      withIcc,
-      final,
-    },
-    samples: {
-      mappingCsgIds: mappingCsgIdSamples,
-      scanCsgIds: scanCsgIdSamples,
-      mappingAppIds: mappingAppIdSamples,
-      iccAppIds: iccAppIdSamples,
-      part2AppIds: part2AppIdSamples,
-    },
-    icc: {
-      headers: iccHeaders.slice(0, 20),
-      appIdFieldFound: iccAppIdFieldFound,
-      contractValueFieldFound: iccContractValueFieldFound,
-    },
-  };
-}, [
-  isFinancialsTabActive,
-  part2VerifiedAbpRows,
-  contractScanResultsQuery.data,
-  contractScanResultsQuery.status,
-  contractScanResultsQuery.isFetching,
-  financialCsgIds,
-  datasets.abpCsgSystemMapping,
-  datasets.abpIccReport3Rows,
-]);
-
+// (Phase 5e Followup #4 step 4 PR-B, 2026-04-30): the parent's
+// `financialProfitDebug` useMemo — never consumed by any caller —
+// was deleted alongside the `financialProfitDebug` migration to
+// `getDashboardFinancials.debug`. The actual debug panel lives in
+// FinancialsTab and now consumes the server-derived shape.
 
 // ── Data Quality: Freshness ─────────────────────────────────────
 // dataQualityFreshness, dataQualityUnmatched — moved to @/solar-rec-dashboard/components/DataQualityTab
@@ -6404,7 +6223,6 @@ const aiDataContext = useMemo(() => {
               <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading financials tab...</div>}>
                 <FinancialsTabLazy
                   systems={systems}
-                  part2VerifiedAbpRows={part2VerifiedAbpRows}
                   financialProfitData={financialProfitData}
                   contractScanResults={contractScanResultsQuery.data ?? []}
                   contractScanStatus={contractScanResultsQuery.status}
@@ -6413,8 +6231,7 @@ const aiDataContext = useMemo(() => {
                   contractScanRefetch={contractScanResultsQuery.refetch}
                   financialsRefetch={financialsQuery.refetch}
                   financialCsgIds={financialCsgIds}
-                  abpCsgSystemMapping={datasets.abpCsgSystemMapping ?? null}
-                  abpIccReport3Rows={datasets.abpIccReport3Rows ?? null}
+                  financialsDebug={financialsQuery.data?.debug ?? null}
                   localOverrides={localOverrides}
                   setLocalOverrides={setLocalOverrides}
                   onSelectSystem={setSelectedSystemKey}
