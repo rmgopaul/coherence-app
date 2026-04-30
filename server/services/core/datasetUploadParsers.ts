@@ -381,8 +381,21 @@ export const ACCOUNT_SOLAR_GENERATION_PARSER: DatasetUploadParser<InsertSrDsAcco
         "Last Meter Read Date",
         "Meter Read Date",
       ]),
+      // 2026-04-30 — added the 4 parenthesised header aliases the
+      // CSG portal export actually uses ("(kWh)", "(kWh/Btu)",
+      // "(kW)", and the bare "Last Meter Read"). Pre-fix the parser
+      // only matched "Last Meter Read kWh" (no parens), so every
+      // row from the actual portal export landed with this typed
+      // column null + the value only present in `rawRow`. That
+      // forced the snapshot builder to keep rawRow loaded for the
+      // whole table, which on a populated scope blew Render's 4 GB
+      // heap.
       lastMeterReadKwh: pickField(rawRow, [
         "lastMeterReadKwh",
+        "Last Meter Read (kWh)",
+        "Last Meter Read (kWh/Btu)",
+        "Last Meter Read (kW)",
+        "Last Meter Read",
         "Last Meter Read kWh",
         "Meter Read kWh",
       ]),
