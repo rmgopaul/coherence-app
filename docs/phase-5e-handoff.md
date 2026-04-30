@@ -109,7 +109,7 @@ server reads changes the timing).
 
 ### #2 — Forecast aggregator: replace its private `buildPerformanceSourceRows` with import from the new shared module
 
-**Status:** Easy win. Pure refactor.
+**Status:** ✅ DONE 2026-04-29 in [#281](https://github.com/rmgopaul/coherence-app/pull/281).
 
 `server/services/solar/buildForecastAggregates.ts` has a private
 `buildPerformanceSourceRows` (around L141–L220) that's now
@@ -133,8 +133,7 @@ type which is a strict subset of `SnapshotSystem` (no
 
 ### #3 — Force-Load multi-append skip cleanup
 
-**Status:** Possibly safe to remove, possibly latently relied on.
-Needs careful audit.
+**Status:** ✅ DONE 2026-04-29 in [#283](https://github.com/rmgopaul/coherence-app/pull/283) (path b — dropped `accountSolarGeneration`/`transferHistory` from tab priority lists) and [#287](https://github.com/rmgopaul/coherence-app/pull/287) (dropped `convertedReads` once SystemDetailSheet migrated in [#286](https://github.com/rmgopaul/coherence-app/pull/286)).
 
 `SolarRecDashboard.tsx :: MULTI_APPEND_DATASET_KEYS` is
 `new Set(["accountSolarGeneration", "convertedReads", "transferHistory"])`.
@@ -176,7 +175,11 @@ migrates to a server query (`getSystemRecentMeterReads(systemKey)`).
 
 ### #4 — Cloud-fallback hydration path retirement (the big one)
 
-**Status:** Significant scope. Audit-heavy.
+**Status:** Steps 1–3 shipped. Step 4 (the actual delete) is **NOT
+unblocked yet** — a 2026-04-30 re-audit found three additional
+client-side memo chains that still read `datasets[k].rows`. The
+original handoff missed them. See the audit table below for what's
+left.
 
 `SolarRecDashboard.tsx` has ~500 LOC of cloud-fallback hydration
 logic (`loadRemoteDatasets`, `deserializeRemoteDatasetPayload`,
@@ -190,28 +193,39 @@ either:
   `TAB_PRIORITY_DATASETS` mapping includes a dataset that
   hasn't been loaded yet.
 
-After all the Phase 5d/5e migrations, most tabs use server
-aggregators and never read `datasets[k].rows`. The remaining
-genuine consumers (post-Followup #3 audit):
-- `SystemDetailSheet`'s `convertedReads.rows` access
-- The CSV merge upload handler's `deliveryScheduleBase.rows` access
-- A few per-card empty-state checks (`!datasets.x` to render
-  "Not uploaded" vs. "Loaded N rows")
+#### Step status
 
-The empty-state checks could move to `getDatasetSummariesAll`
-counts. The two genuine row-readers need targeted server queries
-(see Followup #1 for delivery schedule, plus a new
-`getSystemRecentMeterReads` for Detail Sheet).
+1. ✅ Empty-state checks driven by summaries — [#285](https://github.com/rmgopaul/coherence-app/pull/285)
+2. ✅ SystemDetailSheet's recent reads via server query — [#286](https://github.com/rmgopaul/coherence-app/pull/286)
+3. ✅ Followup #1 step 2 — `onApply` parallel client merge dropped — [#290](https://github.com/rmgopaul/coherence-app/pull/290)
+4. 🚧 **Blocked.** Three more client-row-reader chains discovered in the 2026-04-30 audit (below). Each is its own PR.
 
-Once those are migrated, the entire cloud-fallback hydration
-pipeline can be deleted. Probably another 400+ LOC reduction
-plus a `parseCsvFileAsync` / `parseCsvTextAsync` cleanup.
+#### Remaining `datasets[k].rows` consumers (2026-04-30 audit)
 
-**Don't try to do this in one PR.** Stage it:
-1. Migrate empty-state checks to summaries query
-2. Migrate SystemDetailSheet's recent reads to a server query
-3. Followup #1 (CSV merge handler)
-4. Delete the cloud-fallback hydration code
+| Chain | Source | Tab/consumer | Server equivalent | Migration shape |
+|---|---|---|---|---|
+| `part2VerifiedAbpRows` (+~20 downstream memos) | `datasets.abpReport.rows` (`SolarRecDashboard.tsx:2918`) | Many — eligibility maps, summary, application-pipeline derivations, OfflineMonitoring chain | Partial — `buildPart2EligibilityMaps` (server) covers the eligibility set; downstream client derivations don't have direct server equivalents yet | Heavy. Migrate downstream consumers tab-by-tab; the memo can only retire when its last client reader is gone. |
+| `monitoringDetailsBySystemKey` | `datasets.solarApplications.rows` (`SolarRecDashboard.tsx:3568`) | OfflineMonitoringTab | Yes — `buildMonitoringDetailsBySystemKey` already on server in `loadPerformanceRatioInput.ts:175` | Add `getDashboardOfflineMonitoring` aggregator returning the 4 tab inputs; drop client memos. ~250 LOC. **Smallest wedge — recommended next.** |
+| `financialCsgIds` + `financialProfitDebug` | `datasets.abpCsgSystemMapping.rows` + `datasets.abpIccReport3Rows.rows` (`SolarRecDashboard.tsx:5443` + `:5577`) | FinancialsTab | Partial — `getDashboardFinancials` (#266) exists; these two memos drive a `contractScanResults` query + a debug panel that aren't covered | Extend `getDashboardFinancials` (or add a sibling proc) to surface the CSG-ID list + profit-debug aggregate. ~150 LOC. |
+
+The empty-state checks were already migrated to `getDatasetSummariesAll`
+counts in #285. Per-card slot-existence reads
+(`!datasets.x ? "Not uploaded" : ...`) come from the summaries
+query, not from cloud-fallback hydration.
+
+Once the three chains above are server-backed, the entire
+cloud-fallback hydration pipeline can be deleted. Probably another
+400+ LOC reduction plus a `parseCsvFileAsync` / `parseCsvTextAsync`
+cleanup.
+
+**Don't try to do this in one PR.** Updated stage list:
+1. ✅ Migrate empty-state checks to summaries query (#285)
+2. ✅ Migrate SystemDetailSheet's recent reads to a server query (#286)
+3. ✅ Followup #1 (CSV merge handler / `onApply` drop) (#290)
+4. 🚧 PR-A — `getDashboardOfflineMonitoring` aggregator + drop 4 client memos (smallest wedge)
+5. 🚧 PR-B — extend `getDashboardFinancials` to cover `financialCsgIds` + `financialProfitDebug`
+6. 🚧 PR-C — trace `part2VerifiedAbpRows` chain, migrate remaining client consumers
+7. 🚧 PR-D — delete the cloud-fallback hydration code itself
 
 ### #5 — Force Load All button removal
 
@@ -237,14 +251,18 @@ into the call site. PR #274's commit message documented this.
 
 ### #7 — Audit other latent transferLookup case bugs
 
-**Status:** PR #279 fixed `getDeliveredForYear`. But there's
-one direct `byTrackingId[trackingSystemRefId.toLowerCase()]`
-access in `buildPerformanceSourceRows.ts` at L119 (the
-firstTransferEnergyYear scan iterates the per-system year map
-directly rather than going through the helper). The lowercase
-is correct here — but if you find another aggregator doing
-`byTrackingId[X]` without lowercasing, that's another silent-zero
-bug to fix.
+**Status:** ✅ DONE 2026-04-30. Audit clean — no findings. Five
+sites checked: `buildPerformanceSourceRows.ts:119`,
+`buildTransferDeliveryLookup.ts:243`, `aggregatorHelpers.ts:296`,
+`server/routers/helpers/scheduleB.ts:474`, and
+`client/src/lib/scheduleBScanner.ts:457`. All lowercase consistently
+on both write and read sides. The convention established by #279 is
+solid.
+
+(Wider Map-style lookups like `systemsByTrackingId` and
+`eligibleTrackingIds` use the same source-of-truth case on set
+and get sides — the audit was scoped to the transferLookup-payload
+shape per the original ask.)
 
 ### Lower-priority cleanup list (no urgency, ship opportunistically)
 
@@ -394,31 +412,48 @@ Confirmed across this session:
   it separately.
 - **Don't read `datasets[k].rows` from a new tab.** Use the
   per-tab aggregator query or the summaries query for counts.
-- **Don't assume Forecast aggregator's behavior matches the new
-  PerformanceSourceRows aggregator.** Forecast still has its own
-  private `buildPerformanceSourceRows` at L141 — until Followup #2
-  consolidates them, they're divergent (Forecast pre-dates the
-  PR #279 case-fix; #279 only fixed the PUBLIC `getDeliveredForYear`
-  helper which Forecast uses but its private firstTransferEnergyYear
-  scan also has a `byTrackingId.toLowerCase()` access that's already
-  correct).
+- **Don't read `datasets[k].rows` from a new tab.** Use the
+  per-tab aggregator query or the summaries query for counts.
+  (Old guidance about Forecast's divergent private
+  `buildPerformanceSourceRows` is obsolete — #281 consolidated it.)
 
 ---
 
-## Recommended first move
+## Recommended next move (post 2026-04-30 audit)
 
-Followup #2 (consolidate Forecast's private `buildPerformanceSourceRows`
-into the shared one). It's the smallest scope that ships value
-and reduces duplication. After that, Followup #1 step 1 (replace
-`existingDeliverySchedule` with summaries-query rowCount) is the
-next clean wedge.
+**Step 4 PR-A** — `getDashboardOfflineMonitoring` server aggregator.
 
-If the user says "mc" or "continue", that's the order I'd take.
+Why this one:
+- Smallest single-tab wedge among the remaining `datasets[k].rows`
+  consumers (see #4 audit table above).
+- 80% of the server-side work already exists — `buildPart2EligibilityMaps`
+  in `buildContractVintageAggregates.ts` covers the eligibility set;
+  `buildMonitoringDetailsBySystemKey` is in
+  `loadPerformanceRatioInput.ts:175` waiting to be promoted to a
+  shared helper.
+- One PR, ~250 LOC across server + tests + client. Mirrors the
+  `buildContractVintageAggregates.ts` template (multi-input, joins
+  through the system snapshot's eligibility filter).
+- Drops 4 client useMemos + 4 prop forwards from
+  `SolarRecDashboard.tsx` → `<OfflineMonitoringTab>`.
+- Tab-active gated on `isOfflineMonitoringTabActive` (already
+  declared, currently used to gate other queries).
+
+After PR-A lands, PR-B (extend `getDashboardFinancials` for
+`financialCsgIds` / `financialProfitDebug`) is the next wedge,
+followed by the heavier PR-C (the `part2VerifiedAbpRows` chain).
+Only after C is the cloud-fallback delete (PR-D) genuinely
+unblocked.
 
 ---
 
-## Last commit on this branch
+## Session log
 
-`docs/phase-5e-handoff` — adds this file. Open as a separate PR.
-Per merge-authority rule, you can self-merge once green
-(tsc clean is sufficient — no test or build changes).
+| Session | Date | What shipped |
+|---|---|---|
+| #271–#279 | 2026-04-29 | Phase 5d salvage trio + Phase 5e dead-code sweep + performanceSourceRows server aggregator + transferLookup case fix |
+| #280 | 2026-04-29 | This handoff doc (initial version) |
+| #281–#287 | 2026-04-29/30 | Followups #2, #1 step 1, #3, ErrorBoundary, #4 step 1, #4 step 2, dropped convertedReads from priorities |
+| #289 | 2026-04-30 | OOM hotfix — Performance Ratio convertedReads streaming |
+| #290 | 2026-04-30 | Followup #1 step 2 — dropped `onApply` parallel client merge |
+| (current) | 2026-04-30 | This refresh: marked #2/#3/#7 ✅, expanded #4 with the real audit table, bumped recommended next move to "PR-A `getDashboardOfflineMonitoring`" |
