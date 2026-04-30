@@ -37,11 +37,11 @@ import {
   type DatasetParseContext,
   type DatasetUploadParser,
 } from "./datasetUploadParsers";
-import { parseCsvText } from "../../routers/helpers/scheduleB";
+import { streamCsvRowsFromFile } from "./csvStreamParser";
 import {
+  buildAppendRowKey,
   cloneDatasetBatchRows,
   loadExistingRowKeys,
-  partitionAppendRowsByKeySet,
 } from "../solar/datasetRowPersistence";
 import {
   defaultMergeStrategyForDataset,
@@ -70,7 +70,11 @@ const PARSE_PROGRESS_FLUSH = 250;
  * registry signature) so deploys with mixed-version Node processes
  * can be diagnosed via the job row.
  */
-export const DATASET_UPLOAD_RUNNER_VERSION = "phase-6b-append-v1";
+export const DATASET_UPLOAD_RUNNER_VERSION =
+  // 2026-04-30 — switched to streaming CSV parser
+  // (`streamCsvRowsFromFile`); job no longer materialises the full
+  // row array in memory. Dedup runs row-by-row.
+  "phase-6b-append-v2-streaming";
 
 export interface RunDatasetUploadJobInput {
   scopeId: string;
@@ -159,35 +163,20 @@ export async function runDatasetUploadJob(
     });
   }
 
-  // Read the assembled file. For Phase 1 we load it whole (fits in
-  // memory for any CSV the dashboard cares about; the largest
-  // dataset is Solar Apps at ~30MB). True streaming lands later.
-  let csvText: string;
-  try {
-    csvText = await fs.readFile(job.storageKey, "utf8");
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    await failJob(
-      scopeId,
-      jobId,
-      "parsing",
-      `Could not read assembled CSV at ${job.storageKey}: ${message}`
-    );
-    throw err;
-  }
-
-  const { rows: parsedAllRows } = parseCsvText(csvText);
-  await updateDatasetUploadJob(scopeId, jobId, {
-    totalRows: parsedAllRows.length,
-  });
+  // Phase 5e step 4 PR-D follow-up (2026-04-30) — stream the CSV
+  // file row-by-row instead of `fs.readFile` + `parseCsvText` +
+  // a `parsedAllRows: CsvRow[]` array. The previous "load it whole"
+  // approach pushed Render's heap past 4 GB on multi-hundred-MB
+  // Converted Reads uploads (the comment in the prior version
+  // promised "true streaming lands later" — it just landed).
+  // Memory budget per job is now O(rowSize + INSERT_BATCH_SIZE +
+  // appendDedupKeys), not O(file).
 
   // Phase 6 PR-B — `mergeStrategy` is derived from the dataset key
   // rather than passed by the client. Multi-append datasets
   // (`accountSolarGeneration`, `convertedReads`, `transferHistory`)
   // accumulate across uploads; everything else replaces the active
-  // batch. Until this PR the runner hardcoded "replace" for every
-  // upload, which silently truncated multi-append datasets — the
-  // user-facing bug Phase 6 PR-B fixes.
+  // batch.
   const mergeStrategy: DatasetMergeStrategy = defaultMergeStrategyForDataset(
     job.datasetKey
   );
@@ -200,7 +189,6 @@ export async function runDatasetUploadJob(
   let priorActiveBatchId: string | null = null;
   let clonedRowCount = 0;
   let appendDedupKeys: Set<string> | null = null;
-  let rowsToWrite: CsvRow[] = parsedAllRows;
   let dedupedCount = 0;
 
   if (mergeStrategy === "append") {
@@ -228,9 +216,6 @@ export async function runDatasetUploadJob(
     // Mirrors the v1 ingestDataset append path — clone prior active
     // batch's rows into the new batch, then load the resulting
     // key-set in one query so the per-row dedup check is in-memory.
-    // See `cloneDatasetBatchRows` / `loadExistingRowKeys` /
-    // `partitionAppendRowsByKeySet` in
-    // `server/services/solar/datasetRowPersistence.ts`.
     clonedRowCount = await cloneDatasetBatchRows(
       scopeId,
       priorActiveBatchId,
@@ -244,32 +229,21 @@ export async function runDatasetUploadJob(
     );
   } else if (mergeStrategy === "append") {
     // Append mode with no prior active batch — first upload of this
-    // dataset for this scope. Nothing to clone; dedup runs against
-    // an empty set so we're effectively de-duplicating WITHIN the
-    // current upload only.
+    // dataset for this scope.
     appendDedupKeys = new Set<string>();
   }
 
-  // Filter incoming rows for append mode. CsvRow shape (raw header
-  // → string) feeds the partitioner; the parser then turns the
-  // surviving rows into typed `InsertSrDs*` shapes a few lines
-  // below.
-  if (mergeStrategy === "append" && appendDedupKeys) {
-    const partition = partitionAppendRowsByKeySet(
-      job.datasetKey,
-      parsedAllRows,
-      appendDedupKeys
-    );
-    rowsToWrite = partition.toInsert;
-    dedupedCount = partition.dedupedCount;
-  }
-
-  // Parse + batch-insert.
+  // Stream → parse → dedup → write. The transition to `writing`
+  // happens before any rows land so the user-visible status flips
+  // promptly; row counters update as rows flow through. The prior
+  // version transitioned only after building the full row array.
   await transitionJobStatus(scopeId, jobId, "parsing", "writing");
 
   let parsedSinceFlush = 0;
+  let totalRowsParsed = 0;
   let totalRowsWritten = 0;
   let totalErrorCount = 0;
+  let rowIndex = 0;
   const writeBuffer: unknown[] = [];
 
   const flushBuffer = async () => {
@@ -286,8 +260,23 @@ export async function runDatasetUploadJob(
   };
 
   try {
-    for (let rowIndex = 0; rowIndex < rowsToWrite.length; rowIndex += 1) {
-      const rawRow = rowsToWrite[rowIndex];
+    for await (const rawRow of streamCsvRowsFromFile(job.storageKey)) {
+      // Per-row append dedup. `appendDedupKeys` is mutated in-place
+      // so duplicates within the current upload also collapse —
+      // matches `partitionAppendRowsByKeySet` semantics.
+      if (mergeStrategy === "append" && appendDedupKeys) {
+        const key = buildAppendRowKey(job.datasetKey, rawRow);
+        if (key) {
+          if (appendDedupKeys.has(key)) {
+            dedupedCount += 1;
+            totalRowsParsed += 1;
+            rowIndex += 1;
+            continue;
+          }
+          appendDedupKeys.add(key);
+        }
+      }
+
       const ctx: DatasetParseContext = { scopeId, batchId, rowIndex };
       let parsed: unknown = null;
       try {
@@ -304,6 +293,8 @@ export async function runDatasetUploadJob(
       }
 
       parsedSinceFlush += 1;
+      totalRowsParsed += 1;
+      rowIndex += 1;
       if (parsedSinceFlush >= PARSE_PROGRESS_FLUSH) {
         await incrementDatasetUploadJobCounter(
           scopeId,
@@ -332,6 +323,14 @@ export async function runDatasetUploadJob(
       );
     }
     await flushBuffer();
+
+    // Update totalRows now that the stream is fully consumed. The
+    // prior version set this immediately after `parseCsvText`
+    // returned the full row count; with streaming we don't know
+    // the count until the file's been fully read.
+    await updateDatasetUploadJob(scopeId, jobId, {
+      totalRows: totalRowsParsed,
+    });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     await failJob(scopeId, jobId, "writing", message);
@@ -371,7 +370,7 @@ export async function runDatasetUploadJob(
 
   return {
     status: "done",
-    totalRows: parsedAllRows.length,
+    totalRows: totalRowsParsed,
     rowsWritten: totalRowsWritten,
     errorCount: totalErrorCount,
     batchId,
