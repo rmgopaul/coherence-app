@@ -3500,59 +3500,17 @@ export default function SolarRecDashboard() {
 
   // offlineDetailPage clamping useEffect — moved to OfflineMonitoringTab
 
-  // Phase E: depend on individual dataset slots instead of the entire
-  // `datasets` object to avoid recomputation when unrelated datasets change.
-  const localDatasetManifest = useMemo<Partial<Record<DatasetKey, RemoteDatasetManifestEntry>>>(
-    () => {
-      const manifest: Partial<Record<DatasetKey, RemoteDatasetManifestEntry>> = {};
-      (Object.keys(DATASET_DEFINITIONS) as DatasetKey[]).forEach((key) => {
-        const dataset = datasets[key];
-        if (!dataset) return;
-        manifest[key] = {
-          fileName: dataset.fileName,
-          uploadedAt: dataset.uploadedAt.toISOString(),
-          headers: dataset.headers,
-          rowCount: dataset.rows.length,
-          sources: dataset.sources?.map((source) => ({
-            fileName: source.fileName,
-            uploadedAt: source.uploadedAt.toISOString(),
-            rowCount: source.rowCount,
-          })),
-        };
-      });
-      return manifest;
-    },
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally
-    // listing individual slots instead of the whole `datasets` object so
-    // unchanged slots don't trigger recomputation.
-    [
-      datasets.solarApplications, datasets.abpReport, datasets.generationEntry,
-      datasets.accountSolarGeneration, datasets.contractedDate, datasets.convertedReads,
-      datasets.annualProductionEstimates, datasets.generatorDetails,
-      datasets.abpUtilityInvoiceRows, datasets.abpCsgSystemMapping,
-      datasets.abpQuickBooksRows, datasets.abpProjectApplicationRows,
-      datasets.abpPortalInvoiceMapRows, datasets.abpCsgPortalDatabaseRows,
-      datasets.abpIccReport2Rows, datasets.abpIccReport3Rows,
-      datasets.deliveryScheduleBase, datasets.transferHistory,
-    ]
-  );
-
-  // Phase 5e step 4 PR-D (2026-04-30): `mergedRemoteDatasetManifest`
-  // simplified — the cloud-side manifest seed
-  // (`serverCloudDatasetManifest`) is gone. This now just exposes
-  // the in-session `localDatasetManifest` (built from live
-  // uploads). The cloud-recoverability story is told via
-  // `serverDatasetCloudStatusByKey` below.
-  const mergedRemoteDatasetManifest = useMemo<
-    Partial<Record<DatasetKey, RemoteDatasetManifestEntry>>
-  >(() => {
-    const merged: Partial<Record<DatasetKey, RemoteDatasetManifestEntry>> = {};
-    allDatasetKeys.forEach((key) => {
-      const localEntry = localDatasetManifest[key];
-      if (localEntry) merged[key] = localEntry;
-    });
-    return merged;
-  }, [allDatasetKeys, localDatasetManifest]);
+  // Phase 5e post-PR-D cleanup (2026-04-30) — `localDatasetManifest`
+  // and `mergedRemoteDatasetManifest` deleted. Both built data
+  // structures consumed by:
+  //   (a) the `manifestEntry` branch of the per-card render
+  //       (always redundant with `dataset` post-PR-D since the
+  //       cloud-side manifest seed was gone, leaving only
+  //       in-session entries that implied `dataset !== undefined`);
+  //   (b) the `manifestOnlyRemoteStatePayload` JSON string sent
+  //       to `saveRemoteDashboardState` — write-only since
+  //       nothing READ `parsed.datasetManifest` post-PR-D.
+  // Both consumers + both useMemos removed below.
 
   const serverDatasetCloudStatusByKey = useMemo(() => {
     const entries = datasetCloudStatusesQuery.data?.statuses ?? [];
@@ -3600,21 +3558,21 @@ export default function SolarRecDashboard() {
     });
   }, [allDatasetKeys, serverDatasetCloudStatusByKey]);
 
-  const manifestOnlyRemoteStatePayload = useMemo(() => {
-    return (
-      safeJsonStringify({
-        datasetManifest: mergedRemoteDatasetManifest,
-        logs: [],
-      }) ?? "{\"datasetManifest\":{},\"logs\":[]}"
-    );
-  }, [mergedRemoteDatasetManifest]);
-
-  const remoteStatePayload = useMemo(() => {
-    return {
-      payload: manifestOnlyRemoteStatePayload,
+  // Phase 5e post-PR-D cleanup (2026-04-30) — payload simplified
+  // to `{logs: []}`. Snapshot-log persistence runs on a separate
+  // `saveRemoteDataset(REMOTE_SNAPSHOT_LOGS_KEY)` channel, so the
+  // logs field is always [] here. The prior `datasetManifest`
+  // field was never READ on the server side post-PR-D and has
+  // been removed. The mutation now functions as a heartbeat /
+  // cloud-reachability ping.
+  const REMOTE_STATE_PAYLOAD_HEARTBEAT = '{"logs":[]}';
+  const remoteStatePayload = useMemo(
+    () => ({
+      payload: REMOTE_STATE_PAYLOAD_HEARTBEAT,
       usedManifestOnly: false,
-    };
-  }, [manifestOnlyRemoteStatePayload]);
+    }),
+    []
+  );
 
   useEffect(() => {
     datasetsHydratedRef.current = datasetsHydrated;
@@ -3735,20 +3693,10 @@ export default function SolarRecDashboard() {
         try {
           await saveRemoteDashboardStateRef.current.mutateAsync({ payload: remoteStatePayload.payload });
           if (cancelled) return;
-          if (remoteStatePayload.usedManifestOnly) {
-            setStorageNotice("Cloud sync saved dataset metadata only; snapshot history was too large to sync.");
-            return;
-          }
           setStorageNotice(null);
         } catch {
-          try {
-            await saveRemoteDashboardStateRef.current.mutateAsync({ payload: manifestOnlyRemoteStatePayload });
-            if (cancelled) return;
-            setStorageNotice("Cloud sync saved dataset metadata only; snapshot history was too large to sync.");
-          } catch {
-            if (cancelled) return;
-            setStorageNotice("Could not sync dashboard state metadata to cloud storage.");
-          }
+          if (cancelled) return;
+          setStorageNotice("Could not sync dashboard state metadata to cloud storage.");
         }
       })();
     }, 900);
@@ -3760,11 +3708,9 @@ export default function SolarRecDashboard() {
   }, [
     datasets,
     datasetsHydrated,
-    manifestOnlyRemoteStatePayload,
     remoteDashboardStateQuery.status,
     remoteStateHydrated,
     remoteStatePayload.payload,
-    remoteStatePayload.usedManifestOnly,
     logEntries,
   ]);
 
@@ -5568,7 +5514,6 @@ const aiDataContext = useMemo(() => {
               {(Object.keys(DATASET_DEFINITIONS) as DatasetKey[]).map((key) => {
                 const config = DATASET_DEFINITIONS[key];
                 const dataset = datasets[key];
-                const manifestEntry = mergedRemoteDatasetManifest[key];
                 const error = uploadErrors[key];
                 const isMultiAppend = MULTI_APPEND_DATASET_KEYS.has(key);
                 const isScannerManaged = SCANNER_MANAGED_DATASET_KEYS.has(key);
@@ -5589,7 +5534,7 @@ const aiDataContext = useMemo(() => {
                     // still show amber; see the effect that clears the
                     // override when the server catches up.
                     cloudStatusForDataset = "synced";
-                  } else if (dataset || manifestEntry || hasCloudBackfillMarker) {
+                  } else if (dataset || hasCloudBackfillMarker) {
                     cloudStatusForDataset = "not-synced";
                   }
                 }

@@ -13,7 +13,9 @@
  *
  * Spec: handoff CLAUDE_CODE_PROMPT §"Phase F4" + wireframe §triage.
  */
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
+import { Pin } from "lucide-react";
+import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
 import type { TodoistTask } from "../types";
 import {
@@ -47,6 +49,8 @@ interface BandProps {
    *  so we make ONE batched count query for the whole feed
    *  rather than N separate listForExternal calls. */
   noteCountsByTaskId: Record<string, number>;
+  onPin: (task: TodoistTask) => void;
+  pinningTaskId: string | null;
 }
 
 function Band({
@@ -57,6 +61,8 @@ function Band({
   onComplete,
   busyTaskId,
   noteCountsByTaskId,
+  onPin,
+  pinningTaskId,
 }: BandProps) {
   if (items.length === 0) return null;
   return (
@@ -109,6 +115,20 @@ function Band({
                 count={noteCountsByTaskId[task.id]}
                 className="fp-triage-row__notes inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
               />
+              <button
+                type="button"
+                aria-label={`Pin "${task.content}" to dock`}
+                title="Pin to dock"
+                className="fp-triage-row__pin inline-flex h-6 w-6 items-center justify-center rounded-sm text-muted-foreground transition hover:bg-accent hover:text-foreground disabled:opacity-50"
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onPin(task);
+                }}
+                disabled={pinningTaskId === task.id}
+              >
+                <Pin className="h-3.5 w-3.5" />
+              </button>
               {/* Task 10.1: cross-cutting actions (Drop to Dock /
                   Pin as King / Defer to tomorrow). The bx button
                   keeps "Mark complete" because it's the most-used
@@ -139,6 +159,25 @@ export function TasksTriage({ tasks }: TasksTriageProps) {
       void utils.todoist.getCompletedCount.invalidate();
     },
   });
+
+  const [pinningTaskId, setPinningTaskId] = useState<string | null>(null);
+  const dockAdd = trpc.dock.add.useMutation({
+    onSuccess: () => {
+      void utils.dock.list.invalidate();
+      toast.success("Dropped to dock");
+    },
+    onError: (err) => toast.error(err.message),
+    onSettled: () => setPinningTaskId(null),
+  });
+
+  const handlePin = (task: TodoistTask) => {
+    setPinningTaskId(task.id);
+    dockAdd.mutate({
+      source: "todoist",
+      url: `https://todoist.com/showTask?id=${encodeURIComponent(task.id)}`,
+      title: task.content,
+    });
+  };
 
   const { overdue, today } = useMemo(
     () => splitTriageBands(tasks.dueToday),
@@ -208,6 +247,8 @@ export function TasksTriage({ tasks }: TasksTriageProps) {
             onComplete={(taskId) => completeMut.mutate({ taskId })}
             busyTaskId={busyId}
             noteCountsByTaskId={noteCountsByTaskId}
+            onPin={handlePin}
+            pinningTaskId={pinningTaskId}
           />
           <Band
             variant="today"
@@ -217,6 +258,8 @@ export function TasksTriage({ tasks }: TasksTriageProps) {
             onComplete={(taskId) => completeMut.mutate({ taskId })}
             busyTaskId={busyId}
             noteCountsByTaskId={noteCountsByTaskId}
+            onPin={handlePin}
+            pinningTaskId={pinningTaskId}
           />
         </div>
       )}
