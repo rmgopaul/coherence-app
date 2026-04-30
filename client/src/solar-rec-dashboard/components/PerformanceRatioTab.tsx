@@ -90,7 +90,6 @@ import type {
   CompliantSourceEntry,
   CompliantSourceEvidence,
   CompliantSourceTableRow,
-  CsvDataset,
   PerformanceRatioMatchType,
   PerformanceRatioRow,
   SystemRecord,
@@ -109,11 +108,18 @@ export interface PerformanceRatioTabProps {
   // `generationBaselineByTrackingId`) are gone. The tab now reads
   // exclusively from `getDashboardPerformanceRatio`.
 
-  // Raw CSV datasets — used only for the empty-state check below
-  // ("Upload these CSVs to populate"). The compute itself runs
-  // server-side.
-  convertedReads: CsvDataset | null;
-  annualProductionEstimates: CsvDataset | null;
+  // Server-driven existence sentinels for the two datasets the
+  // empty-state check below cares about ("Upload these CSVs to
+  // populate"). The compute itself runs server-side via
+  // `getDashboardPerformanceRatio`. Phase 5e Followup #4 step 1
+  // (2026-04-29) — replaced the prior `convertedReads: CsvDataset
+  // | null` + `annualProductionEstimates: CsvDataset | null`
+  // props, which forced the parent to hydrate
+  // `datasets.convertedReads.rows` (50–150 MB on a populated
+  // scope) just to know whether the file existed. Driven by
+  // `getDatasetSummariesAll`'s rowCount.
+  hasConvertedReads: boolean;
+  hasAnnualProductionEstimates: boolean;
   convertedReadsLabel: string;
   annualProductionEstimatesLabel: string;
 
@@ -170,8 +176,8 @@ function loadPersistedCompliantSources(): CompliantSourceEntry[] {
 
 export default memo(function PerformanceRatioTab(props: PerformanceRatioTabProps) {
   const {
-    convertedReads,
-    annualProductionEstimates,
+    hasConvertedReads,
+    hasAnnualProductionEstimates,
     convertedReadsLabel,
     annualProductionEstimatesLabel,
     part2EligibleSystemsForSizeReporting,
@@ -1109,7 +1115,7 @@ export default memo(function PerformanceRatioTab(props: PerformanceRatioTabProps
         </CardHeader>
       </Card>
 
-      {!convertedReads || !annualProductionEstimates ? (
+      {!hasConvertedReads || !hasAnnualProductionEstimates ? (
         <Card className="border-amber-200 bg-amber-50/60">
           <CardHeader>
             <CardTitle className="text-base text-amber-900">
@@ -1118,8 +1124,8 @@ export default memo(function PerformanceRatioTab(props: PerformanceRatioTabProps
             <CardDescription className="text-amber-800">
               Upload these files in Step 1:{" "}
               {[
-                !convertedReads ? convertedReadsLabel : null,
-                !annualProductionEstimates
+                !hasConvertedReads ? convertedReadsLabel : null,
+                !hasAnnualProductionEstimates
                   ? annualProductionEstimatesLabel
                   : null,
               ]
@@ -1853,10 +1859,8 @@ export default memo(function PerformanceRatioTab(props: PerformanceRatioTabProps
         title="Ask AI about Performance Ratio"
         contextGetter={() => ({
           inputs: {
-            convertedReadsProvided: Boolean(convertedReads),
-            annualProductionEstimatesProvided: Boolean(
-              annualProductionEstimates
-            ),
+            convertedReadsProvided: hasConvertedReads,
+            annualProductionEstimatesProvided: hasAnnualProductionEstimates,
             // Salvage PR B — `generatorDetailsProvided` removed.
             // Generator details flow through the server aggregator
             // now; the AI panel doesn't need a client-side
