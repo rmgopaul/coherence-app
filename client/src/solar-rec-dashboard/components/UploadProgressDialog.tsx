@@ -228,15 +228,48 @@ export function UploadProgressDialog({
 
           {showSuccess && job && (
             <div className="text-sm text-muted-foreground">
-              {job.rowsWritten?.toLocaleString() ?? 0} rows written.
-              {job.totalRows != null && job.rowsWritten != null &&
-                job.totalRows > job.rowsWritten && (
+              {(() => {
+                const rowsWritten = job.rowsWritten ?? 0;
+                const totalRows = job.totalRows ?? null;
+                const erroredCount = errors.length;
+                const skippedCount =
+                  totalRows != null
+                    ? Math.max(0, totalRows - rowsWritten)
+                    : 0;
+                const dedupedCount = Math.max(
+                  0,
+                  skippedCount - erroredCount
+                );
+
+                return (
                   <>
-                    {" "}
-                    {job.totalRows - job.rowsWritten} rows skipped — see
-                    error list below.
+                    <span>
+                      {rowsWritten.toLocaleString()} rows written.
+                    </span>
+                    {erroredCount > 0 && (
+                      <>
+                        {" "}
+                        <span>
+                          {erroredCount.toLocaleString()} row
+                          {erroredCount === 1 ? "" : "s"} had errors —
+                          see list below.
+                        </span>
+                      </>
+                    )}
+                    {dedupedCount > 0 && (
+                      <>
+                        {" "}
+                        <span>
+                          {dedupedCount.toLocaleString()} duplicate row
+                          {dedupedCount === 1 ? "" : "s"} skipped
+                          (already present in this dataset from a prior
+                          upload).
+                        </span>
+                      </>
+                    )}
                   </>
-                )}
+                );
+              })()}
             </div>
           )}
 
