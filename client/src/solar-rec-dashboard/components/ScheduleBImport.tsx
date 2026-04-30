@@ -11,8 +11,9 @@
  *  - hydrating previously-uploaded results on mount
  *  - letting the user paste a GATS-ID → Contract-ID mapping that
  *    patches existing delivery schedule rows in place
- *  - converting the scan results into deliveryScheduleBase rows via
- *    the caller-provided onApply callback
+ *  - converting the scan results into deliveryScheduleBase rows and
+ *    notifying the parent (via `onApplyComplete`) to reload the
+ *    dataset from the server after a successful apply
  *
  * Self-contained helpers (waitMs, getErrorMessage, ScheduleBResultRow,
  * SCHEDULE_B_* constants) live at the top of this file rather than in
@@ -126,23 +127,14 @@ type ScheduleBResultRow = {
 export type ScheduleBImportProps = {
   transferDeliveryLookup: Map<string, Map<number, number>>;
   /**
-   * @deprecated Kept for backward compatibility during the
-   * apply-track-v1 rollout. New code should prefer onApplyComplete,
-   * which signals the parent to reload deliveryScheduleBase from the
-   * server (the authoritative source) instead of running a parallel
-   * client-side merge. Safe to remove once onApplyComplete is
-   * battle-tested in prod.
-   */
-  onApply: (rows: CsvRow[]) => void;
-  /**
    * Called after a successful server-side apply mutation. The parent
    * should reload datasets.deliveryScheduleBase from the cloud so
-   * local state matches the server. Eliminates the client/server
-   * merge divergence that made "Dataset has: N" stale and
-   * unpredictable. If omitted, the component falls back to onApply
-   * for the transition period.
+   * local state matches the server. Phase 5e Followup #1 step 2
+   * (2026-04-30) made this the sole apply notification — the prior
+   * `onApply(rows)` parallel client-side merge was deleted now that
+   * `performanceSourceRows` is server-driven (#278).
    */
-  onApplyComplete?: () => Promise<void> | void;
+  onApplyComplete: () => Promise<void> | void;
   /**
    * Server-driven row count of the active `deliveryScheduleBase`
    * dataset (from `getDatasetSummariesAll`). Null while the
@@ -174,7 +166,6 @@ const AUTO_APPLY_MIN_INTERVAL_MS = 30_000;
 
 export function ScheduleBImport({
   transferDeliveryLookup,
-  onApply,
   onApplyComplete,
   existingDeliveryScheduleRowCount,
   onClearAppliedSchedule,
@@ -541,23 +532,14 @@ export function ScheduleBImport({
         const rows = toDeliveryScheduleBaseRows(successful, mapping);
         if (rows.length === 0) return;
 
-        // Hybrid auto-apply: write to BOTH the server AND the client
-        // datasets state on every auto-apply tick.
-        //   • Server write (`applyScheduleBToDeliveryObligations`) is
-        //     the canonical persistence path — without it the rows
-        //     auto-applied during a long scan would be lost on refresh
-        //     or invisible to other users on the team.
-        //   • Client write (`onApply(rows)`) keeps `datasets
-        //     .deliveryScheduleBase.rows` in sync so the parent's
-        //     `performanceSourceRows` memo (still client-only as of
-        //     2026-04-29) doesn't go stale and break the REC
-        //     Performance Eval / Snapshot Log / createLogEntry path.
-        // The server mutation is best-effort: if it fails we still
-        // update client state so the UI doesn't appear stuck, and the
-        // user can click the manual "Apply as Delivery Schedule"
-        // button to retry. We deliberately skip `onApplyComplete()`
-        // here because the parent's full-cloud-reload is expensive and
-        // would fire every 30s during a long scan; the manual button
+        // Auto-apply: server-write only. The
+        // `applyScheduleBToDeliveryObligations` mutation is the
+        // canonical persistence path — without it, rows auto-applied
+        // during a long scan would be lost on refresh or invisible to
+        // other users on the team. We deliberately skip
+        // `onApplyComplete()` here because the parent's full-cloud-
+        // reload is expensive and would fire every 30s during a long
+        // scan; the manual "Apply as Delivery Schedule" button
         // remains the only auto-apply→cloud-reload trigger.
         const activeJobId = scheduleBStatusQuery.data?.job?.id ?? undefined;
         let serverResult: Awaited<
@@ -575,7 +557,6 @@ export function ScheduleBImport({
         }
         if (cancelled) return;
 
-        onApply(rows);
         autoApplyStateRef.current = { count: successful.length, time: Date.now() };
         setAutoApplyStatus({
           lastAppliedCount: rows.length,
@@ -605,7 +586,6 @@ export function ScheduleBImport({
     scheduleBResults,
     scheduleBStatusQuery.data?.job?.status,
     scheduleBStatusQuery.data?.job?.id,
-    onApply,
     applyScheduleBToDeliveryObligations,
   ]);
 
@@ -616,10 +596,10 @@ export function ScheduleBImport({
   // dataset merge. Persistence happens only when the user clicks the
   // explicit "Save & Apply mapping" button (handleSaveAndApplyContractIdMapping).
   //
-  // The previous behavior — calling onApply(updatedRows) on every
-  // keystroke — was broken: it went through the deprecated local-merge
-  // path, didn't persist to cloud reliably, and on refresh the 24k
-  // mapping was lost entirely.
+  // The previous behavior — calling the (now-deleted) onApply prop
+  // with updatedRows on every keystroke — was broken: it went through
+  // a parallel local-merge path, didn't persist to cloud reliably,
+  // and on refresh the 24k mapping was lost entirely.
   const handleContractIdMappingChange = useCallback(
     async (text: string) => {
       setContractIdMappingText(text);
@@ -960,7 +940,6 @@ export function ScheduleBImport({
       );
 
       if (rows.length > 0) {
-        onApply(rows);
         autoApplyStateRef.current = { count: successful.length, time: Date.now() };
         setAutoApplyStatus({ lastAppliedCount: rows.length, lastAppliedAt: Date.now() });
       }
@@ -972,18 +951,16 @@ export function ScheduleBImport({
       // toDeliveryScheduleBaseRows but present in the DB via other paths),
       // and in any case the parent needs to reload the cloud dataset to
       // stay in sync with the server's post-apply state.
-      if (onApplyComplete) {
-        try {
-          await onApplyComplete();
-        } catch (applyCompleteErr) {
-          console.error(
-            "[ScheduleBImport] onApplyComplete failed",
-            applyCompleteErr
-          );
-          toast.error(
-            "Applied on server but failed to reload the local dataset. Refresh the page to see the latest state."
-          );
-        }
+      try {
+        await onApplyComplete();
+      } catch (applyCompleteErr) {
+        console.error(
+          "[ScheduleBImport] onApplyComplete failed",
+          applyCompleteErr
+        );
+        toast.error(
+          "Applied on server but failed to reload the local dataset. Refresh the page to see the latest state."
+        );
       }
 
       if (serverResult.incoming === 0) {
@@ -1041,7 +1018,6 @@ export function ScheduleBImport({
     }
   }, [
     scheduleBResults,
-    onApply,
     onApplyComplete,
     scheduleBStatusQuery,
     scheduleBResultsQuery,
