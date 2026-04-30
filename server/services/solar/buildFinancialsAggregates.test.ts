@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { buildFinancialsAggregates } from "./buildFinancialsAggregates";
+import {
+  buildFinancialsAggregates,
+  buildFinancialsDebug,
+} from "./buildFinancialsAggregates";
 import type { CsvRow } from "./aggregatorHelpers";
 
 describe("buildFinancialsAggregates", () => {
@@ -214,5 +217,116 @@ describe("buildFinancialsAggregates", () => {
       reviewReason: "Collateral is 45.0% of GCV",
       hasOverride: true,
     });
+  });
+});
+
+describe("buildFinancialsDebug", () => {
+  it("returns zero counts/empty samples for empty input", () => {
+    const debug = buildFinancialsDebug({
+      mappingRows: [],
+      iccRows: [],
+      abpRows: [],
+      scanResults: [],
+      financialCsgIds: [],
+    });
+    expect(debug.counts).toEqual({
+      part2VerifiedAbpRows: 0,
+      mappingRows: 0,
+      iccReport3Rows: 0,
+      financialCsgIdsCount: 0,
+      scanResultsReturned: 0,
+    });
+    expect(debug.chain).toEqual({
+      iterated: 0,
+      withAppId: 0,
+      withCsgId: 0,
+      withScan: 0,
+      withIcc: 0,
+      final: 0,
+    });
+    expect(debug.samples.mappingCsgIds).toEqual([]);
+    expect(debug.icc.headers).toEqual([]);
+  });
+
+  it("walks the join chain and counts per-step attrition", () => {
+    const debug = buildFinancialsDebug({
+      mappingRows: [
+        { csgId: "CSG-1", systemId: "APP-1" },
+        { csgId: "CSG-2", systemId: "APP-2" },
+      ],
+      iccRows: [
+        {
+          "Application ID": "APP-1",
+          "Total REC Delivery Contract Value": "$100,000.00",
+        },
+      ],
+      abpRows: [
+        {
+          Application_ID: "APP-1",
+          Part_2_App_Verification_Date: "2024-03-15",
+        },
+        {
+          Application_ID: "APP-2",
+          Part_2_App_Verification_Date: "2024-04-01",
+        },
+        {
+          // Not part2-verified — excluded from chain.iterated
+          Application_ID: "APP-3",
+        },
+      ],
+      scanResults: [{ csgId: "CSG-1" }],
+      financialCsgIds: ["CSG-1", "CSG-2"],
+    });
+
+    expect(debug.counts.part2VerifiedAbpRows).toBe(2);
+    expect(debug.counts.mappingRows).toBe(2);
+    expect(debug.counts.iccReport3Rows).toBe(1);
+    expect(debug.counts.financialCsgIdsCount).toBe(2);
+    expect(debug.counts.scanResultsReturned).toBe(1);
+
+    expect(debug.chain.iterated).toBe(2);
+    expect(debug.chain.withAppId).toBe(2);
+    expect(debug.chain.withCsgId).toBe(2);
+    expect(debug.chain.withScan).toBe(1); // only CSG-1
+    expect(debug.chain.withIcc).toBe(1); // only APP-1
+    expect(debug.chain.final).toBe(1); // CSG-1 + APP-1
+  });
+
+  it("derives ICC headers + field-found arrays from the first row's keys", () => {
+    const debug = buildFinancialsDebug({
+      mappingRows: [],
+      iccRows: [
+        {
+          "Application ID": "APP-1",
+          "Total REC Delivery Contract Value": "$100,000.00",
+          "Some Other Header": "ignored",
+        },
+      ],
+      abpRows: [],
+      scanResults: [],
+      financialCsgIds: [],
+    });
+    expect(debug.icc.headers).toContain("Application ID");
+    expect(debug.icc.headers).toContain("Total REC Delivery Contract Value");
+    expect(debug.icc.appIdFieldFound).toEqual(["Application ID"]);
+    expect(debug.icc.contractValueFieldFound).toEqual([
+      "Total REC Delivery Contract Value",
+    ]);
+  });
+
+  it("caps each sample array at 5 entries", () => {
+    const mappingRows: CsvRow[] = [];
+    for (let i = 0; i < 10; i += 1) {
+      mappingRows.push({ csgId: `CSG-${i}`, systemId: `APP-${i}` });
+    }
+    const debug = buildFinancialsDebug({
+      mappingRows,
+      iccRows: [],
+      abpRows: [],
+      scanResults: [],
+      financialCsgIds: mappingRows.map((r) => r.csgId as string),
+    });
+    expect(debug.samples.mappingCsgIds).toHaveLength(5);
+    expect(debug.samples.mappingAppIds).toHaveLength(5);
   });
 });

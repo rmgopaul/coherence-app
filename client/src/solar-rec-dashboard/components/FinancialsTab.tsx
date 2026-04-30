@@ -74,12 +74,74 @@ import {
 } from "@/solar-rec-dashboard/lib/helpers";
 import type {
   ContractScanResultRow,
-  CsvDataset,
-  CsvRow,
   FinancialProfitData,
   ProfitRow,
   SystemRecord,
 } from "@/solar-rec-dashboard/state/types";
+
+// Mirrors `FinancialsDebugAggregate` returned by
+// `getDashboardFinancials` (Phase 5e step 4 PR-B). The shape is small
+// enough to keep in lock-step inline rather than cross-importing from
+// `server/services/solar/buildFinancialsAggregates.ts`.
+const FINANCIALS_DEBUG_EMPTY: FinancialsDebugData = {
+  counts: {
+    part2VerifiedAbpRows: 0,
+    mappingRows: 0,
+    iccReport3Rows: 0,
+    financialCsgIdsCount: 0,
+    scanResultsReturned: 0,
+  },
+  chain: {
+    iterated: 0,
+    withAppId: 0,
+    withCsgId: 0,
+    withScan: 0,
+    withIcc: 0,
+    final: 0,
+  },
+  samples: {
+    mappingCsgIds: [],
+    scanCsgIds: [],
+    mappingAppIds: [],
+    iccAppIds: [],
+    part2AppIds: [],
+  },
+  icc: {
+    headers: [],
+    appIdFieldFound: [],
+    contractValueFieldFound: [],
+  },
+};
+
+export type FinancialsDebugData = {
+  counts: {
+    part2VerifiedAbpRows: number;
+    mappingRows: number;
+    iccReport3Rows: number;
+    financialCsgIdsCount: number;
+    scanResultsReturned: number;
+  };
+  chain: {
+    iterated: number;
+    withAppId: number;
+    withCsgId: number;
+    withScan: number;
+    withIcc: number;
+    final: number;
+  };
+  samples: {
+    mappingCsgIds: string[];
+    scanCsgIds: string[];
+    mappingAppIds: string[];
+    iccAppIds: string[];
+    part2AppIds: string[];
+  };
+  icc: {
+    headers: string[];
+    appIdFieldFound: string[];
+    contractValueFieldFound: string[];
+  };
+};
 
 // ---------------------------------------------------------------------------
 // Props
@@ -88,9 +150,6 @@ import type {
 export interface FinancialsTabProps {
   // Master system list (parent-owned)
   systems: SystemRecord[];
-  // Part-II-verified ABP rows used by the debug panel (parent-owned,
-  // shared across many tabs)
-  part2VerifiedAbpRows: CsvRow[];
 
   // Financials profit/collateralization data. Computed by the parent's
   // `financialProfitData` useMemo, which is gated on `isFinancialsTabActive
@@ -111,10 +170,13 @@ export interface FinancialsTabProps {
   // length so the user can see where data is dropping).
   financialCsgIds: string[];
 
-  // Raw datasets for the debug panel's "input row counts" and ICC
-  // Report column analysis.
-  abpCsgSystemMapping: CsvDataset | null;
-  abpIccReport3Rows: CsvDataset | null;
+  // Phase 5e step 4 PR-B (2026-04-30) — server-driven static debug
+  // shape from `getDashboardFinancials.debug`. Replaces the prior
+  // client memo that walked `datasets.abpCsgSystemMapping.rows` +
+  // `datasets.abpIccReport3Rows.rows`. Null while the query is
+  // loading. The dynamic React-Query state fields
+  // (queryStatus/queryFetching/etc.) are composed in by the tab.
+  financialsDebug: FinancialsDebugData | null;
 
   // Local optimistic overrides. State lives in the parent because
   // the Pipeline tab's cash flow aggregator also reads it.
@@ -167,7 +229,6 @@ type EditingFinancialRow = {
 export default memo(function FinancialsTab(props: FinancialsTabProps) {
   const {
     systems,
-    part2VerifiedAbpRows,
     financialProfitData,
     contractScanResults,
     contractScanStatus,
@@ -176,8 +237,7 @@ export default memo(function FinancialsTab(props: FinancialsTabProps) {
     contractScanRefetch,
     financialsRefetch,
     financialCsgIds,
-    abpCsgSystemMapping,
-    abpIccReport3Rows,
+    financialsDebug,
     localOverrides,
     setLocalOverrides,
     onSelectSystem,
@@ -276,167 +336,34 @@ export default memo(function FinancialsTab(props: FinancialsTabProps) {
   }, [part2VerifiedSystems]);
 
   // -------------------------------------------------------------------------
-  // Debug panel: walks the ABP → CSG mapping → scan → ICC join chain,
-  // counts attrition at each step, and surfaces sample IDs for eyeballing.
+  // Debug panel: composes the server-derived static debug shape (from
+  // `getDashboardFinancials.debug`) with the current local React-Query
+  // state (status / isFetching / error). Phase 5e step 4 PR-B.
   // -------------------------------------------------------------------------
   const financialProfitDebug = useMemo(() => {
-    const mappingRows = abpCsgSystemMapping?.rows ?? [];
-    const iccRows = abpIccReport3Rows?.rows ?? [];
-    const scanResults = contractScanResults;
-
-    // Step 1: parse the mapping into both directions
-    const csgIdByAppId = new Map<string, string>();
-    const appIdByCsgId = new Map<string, string>();
-    for (const row of mappingRows) {
-      const csgId = (row.csgId || row["CSG ID"] || "").trim();
-      const systemId = (row.systemId || row["System ID"] || "").trim();
-      if (csgId && systemId) {
-        csgIdByAppId.set(systemId, csgId);
-        appIdByCsgId.set(csgId, systemId);
-      }
-    }
-
-    // Step 2: scan-by-csgId
-    const scanByCsgId = new Map<string, ContractScanResultRow>();
-    for (const r of scanResults) {
-      scanByCsgId.set(r.csgId, r);
-    }
-
-    // Step 3: ICC by appId — same field-name fallbacks as financialProfitData
-    // and parseNumber (not parseFloat) to handle "$1,234.56" currency strings.
-    const iccAppIds = new Set<string>();
-    for (const row of iccRows) {
-      const appId = (
-        row["Application ID"] ||
-        row.Application_ID ||
-        row.application_id ||
-        ""
-      ).trim();
-      if (!appId) continue;
-      const gcv =
-        parseNumber(
-          row["Total REC Delivery Contract Value"] ||
-            row["REC Delivery Contract Value"] ||
-            row["Total Contract Value"],
-        ) ?? 0;
-      const rq =
-        parseNumber(
-          row["Total Quantity of RECs Contracted"] ||
-            row["Contracted SRECs"] ||
-            row.SRECs,
-        ) ?? 0;
-      const rp = parseNumber(row["REC Price"]) ?? 0;
-      const gross = gcv > 0 ? gcv : rq * rp;
-      if (gross > 0) iccAppIds.add(appId);
-    }
-
-    // Step 4: walk the join chain and count attrition
-    let withAppId = 0;
-    let withCsgId = 0;
-    let withScan = 0;
-    let withIcc = 0;
-    let final = 0;
-    for (const abpRow of part2VerifiedAbpRows) {
-      const appId = (abpRow.Application_ID || abpRow.application_id || "").trim();
-      if (!appId) continue;
-      withAppId += 1;
-
-      const csgId = csgIdByAppId.get(appId);
-      if (!csgId) continue;
-      withCsgId += 1;
-
-      if (scanByCsgId.has(csgId)) {
-        withScan += 1;
-      }
-      if (iccAppIds.has(appId)) {
-        withIcc += 1;
-      }
-
-      if (scanByCsgId.has(csgId) && iccAppIds.has(appId)) {
-        final += 1;
-      }
-    }
-
-    // Sample IDs from each side for the user to eyeball mismatches
-    const sample = <T,>(arr: T[], n: number) => arr.slice(0, n);
-    const mappingCsgIdSamples = sample(Array.from(appIdByCsgId.keys()), 5);
-    const scanCsgIdSamples = sample(scanResults.map((r) => r.csgId), 5);
-    const mappingAppIdSamples = sample(Array.from(csgIdByAppId.keys()), 5);
-    const iccAppIdSamples = sample(Array.from(iccAppIds), 5);
-    const part2AppIdSamples = sample(
-      part2VerifiedAbpRows
-        .map((r) => (r.Application_ID || r.application_id || "").trim())
-        .filter((id) => id.length > 0),
-      5,
-    );
-
-    // ICC Report headers: surface the actual column names from the CSV
-    // so the user can see if the expected field names match.
-    const iccHeaders = abpIccReport3Rows?.headers ?? [];
-    const iccFirstRow = iccRows.length > 0 ? iccRows[0] : null;
-    const iccAppIdFieldFound = iccFirstRow
-      ? ["Application ID", "Application_ID", "application_id"].filter(
-          (key) => key in iccFirstRow && (iccFirstRow[key] ?? "").trim().length > 0,
-        )
-      : [];
-    const iccContractValueFieldFound = iccFirstRow
-      ? [
-          "Total REC Delivery Contract Value",
-          "REC Delivery Contract Value",
-          "Total Contract Value",
-        ].filter(
-          (key) => key in iccFirstRow && (iccFirstRow[key] ?? "").trim().length > 0,
-        )
-      : [];
     const queryErrorMessage =
       contractScanError instanceof Error
         ? contractScanError.message
         : contractScanError
           ? String(contractScanError)
           : null;
-
+    const staticDebug = financialsDebug ?? FINANCIALS_DEBUG_EMPTY;
     return {
       queryStatus: contractScanStatus,
       queryFetching: contractScanIsFetching,
       queryEnabled: financialCsgIds.length > 0,
       queryErrorMessage,
-      counts: {
-        part2VerifiedAbpRows: part2VerifiedAbpRows.length,
-        mappingRows: mappingRows.length,
-        iccReport3Rows: iccRows.length,
-        financialCsgIdsCount: financialCsgIds.length,
-        scanResultsReturned: scanResults.length,
-      },
-      chain: {
-        iterated: part2VerifiedAbpRows.length,
-        withAppId,
-        withCsgId,
-        withScan,
-        withIcc,
-        final,
-      },
-      samples: {
-        mappingCsgIds: mappingCsgIdSamples,
-        scanCsgIds: scanCsgIdSamples,
-        mappingAppIds: mappingAppIdSamples,
-        iccAppIds: iccAppIdSamples,
-        part2AppIds: part2AppIdSamples,
-      },
-      icc: {
-        headers: iccHeaders.slice(0, 20),
-        appIdFieldFound: iccAppIdFieldFound,
-        contractValueFieldFound: iccContractValueFieldFound,
-      },
+      counts: staticDebug.counts,
+      chain: staticDebug.chain,
+      samples: staticDebug.samples,
+      icc: staticDebug.icc,
     };
   }, [
-    abpCsgSystemMapping,
-    abpIccReport3Rows,
+    financialsDebug,
     contractScanError,
     contractScanIsFetching,
-    contractScanResults,
     contractScanStatus,
-    financialCsgIds,
-    part2VerifiedAbpRows,
+    financialCsgIds.length,
   ]);
 
   // -------------------------------------------------------------------------

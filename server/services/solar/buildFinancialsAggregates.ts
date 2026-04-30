@@ -61,6 +61,45 @@ export type FinancialsAggregates = {
   systemsWithData: number;
 };
 
+/**
+ * Debug shape consumed by FinancialsTab's diagnostic panel. Mirrors
+ * the prior client-side `financialProfitDebug` useMemo (which read
+ * `datasets.abpCsgSystemMapping.rows` + `datasets.abpIccReport3Rows
+ * .rows` + `part2VerifiedAbpRows`). The dynamic React Query state
+ * fields (`queryStatus`, `queryFetching`, `queryEnabled`,
+ * `queryErrorMessage`) stay client-side; the static data here joins
+ * with them at render time.
+ */
+export type FinancialsDebugAggregate = {
+  counts: {
+    part2VerifiedAbpRows: number;
+    mappingRows: number;
+    iccReport3Rows: number;
+    financialCsgIdsCount: number;
+    scanResultsReturned: number;
+  };
+  chain: {
+    iterated: number;
+    withAppId: number;
+    withCsgId: number;
+    withScan: number;
+    withIcc: number;
+    final: number;
+  };
+  samples: {
+    mappingCsgIds: string[];
+    scanCsgIds: string[];
+    mappingAppIds: string[];
+    iccAppIds: string[];
+    part2AppIds: string[];
+  };
+  icc: {
+    headers: string[];
+    appIdFieldFound: string[];
+    contractValueFieldFound: string[];
+  };
+};
+
 type FinancialsContractScanRow = {
   id?: string | null;
   csgId: string;
@@ -92,6 +131,190 @@ const EMPTY_FINANCIALS: FinancialsAggregates = {
   totalCcAuth: 0,
   systemsWithData: 0,
 };
+
+export const EMPTY_FINANCIALS_DEBUG: FinancialsDebugAggregate = {
+  counts: {
+    part2VerifiedAbpRows: 0,
+    mappingRows: 0,
+    iccReport3Rows: 0,
+    financialCsgIdsCount: 0,
+    scanResultsReturned: 0,
+  },
+  chain: {
+    iterated: 0,
+    withAppId: 0,
+    withCsgId: 0,
+    withScan: 0,
+    withIcc: 0,
+    final: 0,
+  },
+  samples: {
+    mappingCsgIds: [],
+    scanCsgIds: [],
+    mappingAppIds: [],
+    iccAppIds: [],
+    part2AppIds: [],
+  },
+  icc: {
+    headers: [],
+    appIdFieldFound: [],
+    contractValueFieldFound: [],
+  },
+};
+
+/**
+ * Pure builder for the FinancialsTab debug panel's static fields.
+ * Matches the per-step join logic the client memo previously ran
+ * over hydrated `datasets[k].rows` arrays. The 4 dynamic
+ * React-Query fields (`queryStatus`, `queryFetching`,
+ * `queryEnabled`, `queryErrorMessage`) are not represented here —
+ * the client composes them on top of this static shape.
+ */
+export function buildFinancialsDebug(input: {
+  mappingRows: CsvRow[];
+  iccRows: CsvRow[];
+  abpRows: CsvRow[];
+  scanResults: FinancialsContractScanRow[];
+  financialCsgIds: string[];
+}): FinancialsDebugAggregate {
+  const { mappingRows, iccRows, abpRows, scanResults, financialCsgIds } = input;
+
+  // Step 1: parse the mapping into both directions
+  const csgIdByAppId = new Map<string, string>();
+  const appIdByCsgId = new Map<string, string>();
+  for (const row of mappingRows) {
+    const csgId = clean(row.csgId || row["CSG ID"]);
+    const systemId = clean(row.systemId || row["System ID"]);
+    if (csgId && systemId) {
+      csgIdByAppId.set(systemId, csgId);
+      appIdByCsgId.set(csgId, systemId);
+    }
+  }
+
+  // Step 2: scan-by-csgId
+  const scanByCsgId = new Map<string, FinancialsContractScanRow>();
+  for (const r of scanResults) {
+    scanByCsgId.set(r.csgId, r);
+  }
+
+  // Step 3: ICC by appId — same field-name fallbacks + parseNumber
+  // (not parseFloat, which chokes on "$1,234.56").
+  const iccAppIds = new Set<string>();
+  for (const row of iccRows) {
+    const appId = clean(
+      row["Application ID"] || row.Application_ID || row.application_id
+    );
+    if (!appId) continue;
+    const gcv =
+      parseNumber(
+        row["Total REC Delivery Contract Value"] ||
+          row["REC Delivery Contract Value"] ||
+          row["Total Contract Value"]
+      ) ?? 0;
+    const rq =
+      parseNumber(
+        row["Total Quantity of RECs Contracted"] ||
+          row["Contracted SRECs"] ||
+          row.SRECs
+      ) ?? 0;
+    const rp = parseNumber(row["REC Price"]) ?? 0;
+    const gross = gcv > 0 ? gcv : rq * rp;
+    if (gross > 0) iccAppIds.add(appId);
+  }
+
+  // Step 4: walk the join chain on part2VerifiedAbpRows and count
+  // attrition at every step.
+  const part2VerifiedAbpRows = abpRows.filter((row) =>
+    isPart2VerifiedAbpRow(row)
+  );
+  let withAppId = 0;
+  let withCsgId = 0;
+  let withScan = 0;
+  let withIcc = 0;
+  let final = 0;
+  for (const abpRow of part2VerifiedAbpRows) {
+    const appId = clean(abpRow.Application_ID || abpRow.application_id);
+    if (!appId) continue;
+    withAppId += 1;
+
+    const csgId = csgIdByAppId.get(appId);
+    if (!csgId) continue;
+    withCsgId += 1;
+
+    if (scanByCsgId.has(csgId)) {
+      withScan += 1;
+    }
+    if (iccAppIds.has(appId)) {
+      withIcc += 1;
+    }
+    if (scanByCsgId.has(csgId) && iccAppIds.has(appId)) {
+      final += 1;
+    }
+  }
+
+  // Sample IDs from each side for the user to eyeball mismatches.
+  const sampleArr = <T>(arr: T[], n: number): T[] => arr.slice(0, n);
+  const mappingCsgIdSamples = sampleArr(Array.from(appIdByCsgId.keys()), 5);
+  const scanCsgIdSamples = sampleArr(scanResults.map((r) => r.csgId), 5);
+  const mappingAppIdSamples = sampleArr(Array.from(csgIdByAppId.keys()), 5);
+  const iccAppIdSamples = sampleArr(Array.from(iccAppIds), 5);
+  const part2AppIdSamples = sampleArr(
+    part2VerifiedAbpRows
+      .map((r) => clean(r.Application_ID || r.application_id))
+      .filter((id) => id.length > 0),
+    5
+  );
+
+  // ICC headers: derive from the first row's keys (the typed
+  // schema doesn't preserve original CSV headers, but the
+  // reconstructed CsvRow keys are equivalent for diagnostics).
+  const iccFirstRow = iccRows.length > 0 ? iccRows[0] : null;
+  const iccHeaders = iccFirstRow ? Object.keys(iccFirstRow) : [];
+  const iccAppIdFieldFound = iccFirstRow
+    ? ["Application ID", "Application_ID", "application_id"].filter(
+        (key) => key in iccFirstRow && clean(iccFirstRow[key]).length > 0
+      )
+    : [];
+  const iccContractValueFieldFound = iccFirstRow
+    ? [
+        "Total REC Delivery Contract Value",
+        "REC Delivery Contract Value",
+        "Total Contract Value",
+      ].filter(
+        (key) => key in iccFirstRow && clean(iccFirstRow[key]).length > 0
+      )
+    : [];
+
+  return {
+    counts: {
+      part2VerifiedAbpRows: part2VerifiedAbpRows.length,
+      mappingRows: mappingRows.length,
+      iccReport3Rows: iccRows.length,
+      financialCsgIdsCount: financialCsgIds.length,
+      scanResultsReturned: scanResults.length,
+    },
+    chain: {
+      iterated: part2VerifiedAbpRows.length,
+      withAppId,
+      withCsgId,
+      withScan,
+      withIcc,
+      final,
+    },
+    samples: {
+      mappingCsgIds: mappingCsgIdSamples,
+      scanCsgIds: scanCsgIdSamples,
+      mappingAppIds: mappingAppIdSamples,
+      iccAppIds: iccAppIdSamples,
+      part2AppIds: part2AppIdSamples,
+    },
+    icc: {
+      headers: iccHeaders.slice(0, 20),
+      appIdFieldFound: iccAppIdFieldFound,
+      contractValueFieldFound: iccContractValueFieldFound,
+    },
+  };
+}
 
 export function buildFinancialsAggregates(
   input: FinancialsAggregatorInput
@@ -305,7 +528,11 @@ const FINANCIALS_DEPS = [
 
 const FINANCIALS_ARTIFACT_TYPE = "financials";
 
-export const FINANCIALS_RUNNER_VERSION = "phase-5d-pr3-financials@1";
+export const FINANCIALS_RUNNER_VERSION =
+  // 2026-04-30 (@2): added `csgIds` + `debug` to the response shape
+  // for Phase 5e Followup #4 step 4 PR-B. Cache invalidation forces
+  // a recompute against the new return type.
+  "phase-5e-step4b-financials@2";
 
 type FinancialsBatchIds = {
   abpCsgSystemMappingBatchId: string | null;
@@ -390,11 +617,16 @@ function computeFinancialsInputHash(
     .slice(0, 16);
 }
 
-export async function getOrBuildFinancialsAggregates(
-  scopeId: string
-): Promise<FinancialsAggregates & { fromCache: boolean }> {
+export async function getOrBuildFinancialsAggregates(scopeId: string): Promise<
+  FinancialsAggregates & {
+    csgIds: string[];
+    debug: FinancialsDebugAggregate;
+    fromCache: boolean;
+  }
+> {
   const batchIds = await resolveFinancialsBatchIds(scopeId);
 
+  // No datasets uploaded at all → nothing to compute on any axis.
   if (
     !batchIds.abpCsgSystemMappingBatchId ||
     !batchIds.abpIccReport3RowsBatchId ||
@@ -402,20 +634,57 @@ export async function getOrBuildFinancialsAggregates(
   ) {
     return {
       ...EMPTY_FINANCIALS,
+      csgIds: [],
+      debug: EMPTY_FINANCIALS_DEBUG,
       fromCache: false,
     };
   }
 
+  // Phase 5e step 4 PR-B (2026-04-30) — load mapping + icc + abp
+  // up-front so debug counts reflect the user's actual input even
+  // when the rows aggregator early-bails on missing csgIds or scan
+  // results. Sequential to keep the OOM-safe pattern from #269.
+  process.stdout.write(
+    `[financialsAggregates] loading mapping/icc/abp for scope=${scopeId}. ` +
+      `heapUsed=${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB\n`
+  );
   const mappingRows = await loadDatasetRows(
     scopeId,
     batchIds.abpCsgSystemMappingBatchId,
     srDsAbpCsgSystemMapping
   );
+  const iccRows = await loadDatasetRows(
+    scopeId,
+    batchIds.abpIccReport3RowsBatchId,
+    srDsAbpIccReport3Rows
+  );
+  const abpRows = await loadDatasetRows(
+    scopeId,
+    batchIds.abpReportBatchId,
+    srDsAbpReport
+  );
+  process.stdout.write(
+    `[financialsAggregates] datasets loaded; ` +
+      `mappingRows=${mappingRows.length} iccRows=${iccRows.length} abpRows=${abpRows.length} ` +
+      `heapUsed=${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB.\n`
+  );
+
   const financialCsgIds = buildFinancialCsgIds(mappingRows);
 
+  // Mapping has no usable CSG IDs — debug is still populated with
+  // counts/samples so the user can see WHY the join chain is empty.
   if (financialCsgIds.length === 0) {
+    const debug = buildFinancialsDebug({
+      mappingRows,
+      iccRows,
+      abpRows,
+      scanResults: [],
+      financialCsgIds,
+    });
     return {
       ...EMPTY_FINANCIALS,
+      csgIds: financialCsgIds,
+      debug,
       fromCache: false,
     };
   }
@@ -425,9 +694,20 @@ export async function getOrBuildFinancialsAggregates(
     financialCsgIds
   );
 
+  // Always-computed debug now that we know about scan results.
+  const debug = buildFinancialsDebug({
+    mappingRows,
+    iccRows,
+    abpRows,
+    scanResults,
+    financialCsgIds,
+  });
+
   if (scanResults.length === 0) {
     return {
       ...EMPTY_FINANCIALS,
+      csgIds: financialCsgIds,
+      debug,
       fromCache: false,
     };
   }
@@ -438,43 +718,20 @@ export async function getOrBuildFinancialsAggregates(
     scanResultsHash
   );
 
+  // Cache wraps ONLY the heavy rows aggregator. csgIds + debug are
+  // cheap to recompute and don't fit the cache key (debug captures
+  // a snapshot of the join chain that's deterministic from the
+  // already-loaded inputs).
   const { result, fromCache } = await withArtifactCache<FinancialsAggregates>({
     scopeId,
     artifactType: FINANCIALS_ARTIFACT_TYPE,
     inputVersionHash,
     serde: jsonSerde<FinancialsAggregates>(),
-    rowCount: data => data.rows.length,
+    rowCount: (data) => data.rows.length,
     recompute: async () => {
-      // 2026-04-29 — sequential loads to match the OOM-safe pattern
-      // established in PR 2.5 (#269). The Financials inputs are
-      // smaller than PR 1's convertedReads (no single behemoth) so
-      // the OOM risk was always low here, but uniformity wins:
-      // every aggregator now loads datasets one at a time. The
-      // breadcrumbs below show heap pressure on cold compute so a
-      // future drift is visible in logs.
       process.stdout.write(
-        `[financialsAggregates] cache miss for scope=${scopeId} — sequential dataset loads beginning. ` +
-          `heapUsed=${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB\n`
+        `[financialsAggregates] cache miss for scope=${scopeId} — running rows aggregator.\n`
       );
-
-      const iccRows = await loadDatasetRows(
-        scopeId,
-        batchIds.abpIccReport3RowsBatchId,
-        srDsAbpIccReport3Rows
-      );
-      const abpRows = await loadDatasetRows(
-        scopeId,
-        batchIds.abpReportBatchId,
-        srDsAbpReport
-      );
-
-      process.stdout.write(
-        `[financialsAggregates] datasets loaded; ` +
-          `iccRows=${iccRows.length} abpRows=${abpRows.length} ` +
-          `heapUsed=${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB. ` +
-          `Aggregator running next.\n`
-      );
-
       return buildFinancialsAggregates({
         mappingRows,
         iccRows,
@@ -484,5 +741,10 @@ export async function getOrBuildFinancialsAggregates(
     },
   });
 
-  return { ...result, fromCache };
+  return {
+    ...result,
+    csgIds: financialCsgIds,
+    debug,
+    fromCache,
+  };
 }
