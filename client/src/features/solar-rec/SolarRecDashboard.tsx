@@ -6495,10 +6495,9 @@ const aiDataContext = useMemo(() => {
                       // apply-track-v1 + contract-id-mapping-v1: after a
                       // server-side apply or mapping mutation lands, reload
                       // deliveryScheduleBase from the cloud so local state
-                      // mirrors the server's post-apply truth. This eliminates
-                      // the "Dataset has: N stays flat" bug caused by the
-                      // client doing an independent parallel merge (see the
-                      // deprecated onApply handler below).
+                      // mirrors the server's post-apply truth. This is now the
+                      // sole apply path; the parallel client-side merge it
+                      // replaced was deleted in Phase 5e Followup #1 step 2.
                       //
                       // Hardening pass 2026-04-11: previously this had silent
                       // console.warn bail-outs on "no payload" and "null
@@ -6622,102 +6621,6 @@ const aiDataContext = useMemo(() => {
                               : "Cloud reload failed"
                           );
                         }
-                      }}
-                      // @deprecated apply-track-v1: the parallel client-side
-                      // merge below is superseded by onApplyComplete's cloud
-                      // reload. Kept for backward compatibility during rollout;
-                      // delete in a follow-up after verifying prod behavior.
-                      onApply={(rows) => {
-                        const makeDeliveryRowKey = (row: CsvRow, fallbackPrefix: string, index: number) => {
-                          const trackingId = clean(row.tracking_system_ref_id).toUpperCase();
-                          if (trackingId) return `tracking:${trackingId}`;
-                          const designatedSystemId = clean(row.designated_system_id);
-                          if (designatedSystemId) return `designated:${designatedSystemId}`;
-                          const systemName = clean(row.system_name).toLowerCase();
-                          if (systemName) return `name:${systemName}`;
-                          return `${fallbackPrefix}:${index}`;
-                        };
-
-                        // Persistence fix (Phase 0, Bug 4): clear any stale sync
-                        // signature so the cloud-sync effect at ~line 8438 treats the
-                        // new dataset as a genuine change regardless of whether the
-                        // previous signature was raw:... (manifest era) or
-                        // local-only:... (silent-drop branch).
-                        delete remoteDatasetSignatureRef.current.deliveryScheduleBase;
-
-                        const beforeRowCount = datasets.deliveryScheduleBase?.rows.length ?? 0;
-
-                        setDatasets((prev) => {
-                          const existingRows = prev.deliveryScheduleBase?.rows ?? [];
-                          const mergedByKey = new Map<string, CsvRow>();
-                          const orderedKeys: string[] = [];
-
-                          existingRows.forEach((row, index) => {
-                            const key = makeDeliveryRowKey(row, "existing", index);
-                            if (mergedByKey.has(key)) return;
-                            mergedByKey.set(key, row);
-                            orderedKeys.push(key);
-                          });
-
-                          let incomingNewCount = 0;
-                          let incomingMergedCount = 0;
-                          rows.forEach((row, index) => {
-                            const key = makeDeliveryRowKey(row, "scheduleb", index);
-                            const existing = mergedByKey.get(key);
-                            if (existing) {
-                              mergedByKey.set(key, { ...existing, ...row });
-                              incomingMergedCount += 1;
-                              return;
-                            }
-                            mergedByKey.set(key, row);
-                            orderedKeys.push(key);
-                            incomingNewCount += 1;
-                          });
-
-                          const mergedRows = orderedKeys
-                            .map((key) => mergedByKey.get(key))
-                            .filter((row): row is CsvRow => Boolean(row));
-
-                          const mergedHeaders: string[] = [];
-                          const pushHeader = (header: string) => {
-                            if (!header || mergedHeaders.includes(header)) return;
-                            mergedHeaders.push(header);
-                          };
-                          (prev.deliveryScheduleBase?.headers ?? []).forEach(pushHeader);
-                          rows.flatMap((row) => Object.keys(row)).forEach(pushHeader);
-                          mergedRows.flatMap((row) => Object.keys(row)).forEach(pushHeader);
-
-                          // Diagnostic toast so the user can see exactly what
-                          // happened: rows received, new vs. merged-into-existing,
-                          // dataset size before/after. Without this the UX is
-                          // opaque when "Apply says success but tracker count
-                          // doesn't change" (usually because the new rows all
-                          // collided with existing tracking IDs).
-                          toast.info(
-                            `Apply: ${rows.length} incoming (${incomingNewCount} new, ${incomingMergedCount} merged). Dataset ${beforeRowCount} → ${mergedRows.length} rows.`,
-                            { duration: 8000 }
-                          );
-
-                          return {
-                            ...prev,
-                            deliveryScheduleBase: {
-                              fileName: prev.deliveryScheduleBase?.fileName ?? "Schedule B Import",
-                              uploadedAt: new Date(),
-                              headers: mergedHeaders,
-                              rows: mergedRows,
-                              rowCount: mergedRows.length,
-                            },
-                          };
-                        });
-                        // Phase 0 persistence fix: do NOT wipe the source manifest.
-                        // A synthesized (merged) dataset was never backed by a
-                        // manifest, so setting it to undefined just poisons the
-                        // sync path — it forced the inline-serialize branch to
-                        // recompute from a stale signature. Leave it alone and let
-                        // the dataset sync effect take the normal synth path.
-                        setDatasetCloudSyncBadge("deliveryScheduleBase", "pending");
-                        setForceSyncingDatasets((prev) => ({ ...prev, deliveryScheduleBase: false }));
-                        forcedRemoteDatasetSyncKeysRef.current.delete("deliveryScheduleBase");
                       }}
                     />
                   </>
