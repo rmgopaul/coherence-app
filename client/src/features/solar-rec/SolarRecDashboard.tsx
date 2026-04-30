@@ -6333,8 +6333,12 @@ const aiDataContext = useMemo(() => {
                     existence empty-state check + the size-reporting
                     sub-memo. */}
                 <PerformanceRatioTabLazy
-                  convertedReads={datasets.convertedReads ?? null}
-                  annualProductionEstimates={datasets.annualProductionEstimates ?? null}
+                  hasConvertedReads={
+                    (datasetSummariesByKey.convertedReads?.rowCount ?? 0) > 0
+                  }
+                  hasAnnualProductionEstimates={
+                    (datasetSummariesByKey.annualProductionEstimates?.rowCount ?? 0) > 0
+                  }
                   convertedReadsLabel={DATASET_DEFINITIONS.convertedReads.label}
                   annualProductionEstimatesLabel={DATASET_DEFINITIONS.annualProductionEstimates.label}
                   part2EligibleSystemsForSizeReporting={part2EligibleSystemsForSizeReporting}
