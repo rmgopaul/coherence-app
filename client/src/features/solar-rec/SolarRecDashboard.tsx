@@ -1842,6 +1842,7 @@ export default function SolarRecDashboard() {
   const isPipelineTabActive = activeTab === "app-pipeline";
   const isFinancialsTabActive = activeTab === "financials";
   const isDeliveryTrackerTabActive = activeTab === "delivery-tracker";
+  const isOfflineMonitoringTabActive = activeTab === "offline-monitoring";
   // Removed dead flags whose consumer memos moved out of the parent:
   // isTrendsTabActive, isAlertsTabActive, isComparisonsTabActive,
   // isDataQualityTabActive, isOfflineTabActive,
@@ -2929,14 +2930,29 @@ export default function SolarRecDashboard() {
     return uniqueEligibleKeys.size;
   }, [part2VerifiedAbpRows]);
 
+  // Phase 5e Followup #4 step 4 PR-A (2026-04-30) — server-side
+  // aggregator that replaces 4 client useMemos that read
+  // `datasets.abpReport.rows` + `datasets.solarApplications.rows`
+  // (`abpEligibleTrackingIdsStrict`, `abpApplicationIdBySystemKey`,
+  // `monitoringDetailsBySystemKey`, plus the 3 ID Sets behind
+  // `part2EligibleSystemsForSizeReporting`). Not tab-gated — the
+  // outputs feed Overview, ApplicationPipeline, the contracts-
+  // computation umbrella, and OfflineMonitoring; the cached server
+  // path (`solarRecComputedArtifacts`) makes the cost negligible
+  // after the first hit.
+  const offlineMonitoringQuery =
+    solarRecTrpc.solarRecDashboard.getDashboardOfflineMonitoring.useQuery(
+      undefined,
+      {
+        staleTime: 60_000,
+      }
+    );
+
   const abpEligibleTrackingIdsStrict = useMemo(() => {
-    const ids = new Set<string>();
-    part2VerifiedAbpRows.forEach((row) => {
-      const trackingId = clean(row.PJM_GATS_or_MRETS_Unit_ID_Part_2) || clean(row.tracking_system_ref_id);
-      if (trackingId) ids.add(trackingId);
-    });
-    return ids;
-  }, [part2VerifiedAbpRows]);
+    return new Set<string>(
+      offlineMonitoringQuery.data?.eligiblePart2TrackingIds ?? []
+    );
+  }, [offlineMonitoringQuery.data]);
 
   // Phase 8.2 of the server-side architecture migration:
   //
@@ -3178,17 +3194,17 @@ export default function SolarRecDashboard() {
   }, [part2VerifiedAbpRows, systems]);
 
   const part2EligibleSystemsForSizeReporting = useMemo(() => {
-    const eligiblePart2ApplicationIds = new Set<string>();
-    const eligiblePart2PortalSystemIds = new Set<string>();
-    const eligiblePart2TrackingIds = new Set<string>();
-    part2VerifiedAbpRows.forEach((row) => {
-      const applicationId = clean(row.Application_ID);
-      const portalSystemId = clean(row.system_id);
-      const trackingId = clean(row.PJM_GATS_or_MRETS_Unit_ID_Part_2) || clean(row.tracking_system_ref_id);
-      if (applicationId) eligiblePart2ApplicationIds.add(applicationId);
-      if (portalSystemId) eligiblePart2PortalSystemIds.add(portalSystemId);
-      if (trackingId) eligiblePart2TrackingIds.add(trackingId);
-    });
+    const data = offlineMonitoringQuery.data;
+    if (!data) return [];
+    const eligiblePart2ApplicationIds = new Set<string>(
+      data.eligiblePart2ApplicationIds
+    );
+    const eligiblePart2PortalSystemIds = new Set<string>(
+      data.eligiblePart2PortalSystemIds
+    );
+    const eligiblePart2TrackingIds = new Set<string>(
+      data.eligiblePart2TrackingIds
+    );
 
     return systems
       .filter((system) => {
@@ -3201,7 +3217,7 @@ export default function SolarRecDashboard() {
           : false;
         return byPortalSystemId || byApplicationId || byTrackingId;
       });
-  }, [part2VerifiedAbpRows, systems]);
+  }, [offlineMonitoringQuery.data, systems]);
 
   // overviewPart2Totals — moved to OverviewTab (Phase 12)
 
@@ -3473,18 +3489,12 @@ export default function SolarRecDashboard() {
   // — moved to @/solar-rec-dashboard/components/OfflineMonitoringTab
 
   const abpApplicationIdBySystemKey = useMemo(() => {
-    const mapping = new Map<string, string>();
-    part2VerifiedAbpRows.forEach((row) => {
-      const abpApplicationId = clean(row.Application_ID) || clean(row.system_id);
-      const trackingId = clean(row.PJM_GATS_or_MRETS_Unit_ID_Part_2) || clean(row.tracking_system_ref_id);
-      const projectName = clean(row.Project_Name) || clean(row.system_name);
-
-      if (abpApplicationId) mapping.set(`id:${abpApplicationId}`, abpApplicationId);
-      if (trackingId && abpApplicationId) mapping.set(`tracking:${trackingId}`, abpApplicationId);
-      if (projectName && abpApplicationId) mapping.set(`name:${projectName.toLowerCase()}`, abpApplicationId);
-    });
-    return mapping;
-  }, [part2VerifiedAbpRows]);
+    return new Map<string, string>(
+      Object.entries(
+        offlineMonitoringQuery.data?.abpApplicationIdBySystemKey ?? {}
+      )
+    );
+  }, [offlineMonitoringQuery.data]);
 
   const abpAcSizeKwBySystemKey = useMemo(() => {
     const mapping = new Map<string, number>();
@@ -3547,58 +3557,12 @@ export default function SolarRecDashboard() {
   }, [part2VerifiedAbpRows]);
 
   const monitoringDetailsBySystemKey = useMemo(() => {
-    const mapping = new Map<string, MonitoringDetailsRecord>();
-
-    const mergeDetails = (
-      key: string,
-      detail: MonitoringDetailsRecord
-    ) => {
-      const current = mapping.get(key);
-      if (!current) {
-        mapping.set(key, detail);
-        return;
-      }
-      const merged = { ...current };
-      (Object.keys(detail) as Array<keyof typeof detail>).forEach((field) => {
-        if (!merged[field] && detail[field]) merged[field] = detail[field];
-      });
-      mapping.set(key, merged);
-    };
-
-    (datasets.solarApplications?.rows ?? []).forEach((row) => {
-      const systemId = clean(row.system_id) || clean(row.Application_ID);
-      const trackingId =
-        clean(row.tracking_system_ref_id) ||
-        clean(row.reporting_entity_ref_id) ||
-        clean(row.PJM_GATS_or_MRETS_Unit_ID_Part_2);
-      const systemName = clean(row.system_name) || clean(row.Project_Name);
-      if (!systemId && !trackingId && !systemName) return;
-
-      const detail = {
-        online_monitoring_access_type: clean(row.online_monitoring_access_type),
-        online_monitoring: clean(row.online_monitoring),
-        online_monitoring_granted_username: clean(row.online_monitoring_granted_username),
-        online_monitoring_username: clean(row.online_monitoring_username),
-        online_monitoring_system_name: clean(row.online_monitoring_system_name),
-        online_monitoring_system_id: clean(row.online_monitoring_system_id),
-        online_monitoring_password: clean(row.online_monitoring_password),
-        online_monitoring_website_api_link: clean(row.online_monitoring_website_api_link),
-        online_monitoring_entry_method: clean(row.online_monitoring_entry_method),
-        online_monitoring_notes: clean(row.online_monitoring_notes),
-        online_monitoring_self_report: clean(row.online_monitoring_self_report),
-        online_monitoring_rgm_info: clean(row.online_monitoring_rgm_info),
-        online_monitoring_no_submit_generation: clean(row.online_monitoring_no_submit_generation),
-        system_online: clean(row.system_online),
-        last_reported_online_date: clean(row.last_reported_online_date),
-      };
-
-      if (systemId) mergeDetails(`id:${systemId}`, detail);
-      if (trackingId) mergeDetails(`tracking:${trackingId}`, detail);
-      if (systemName) mergeDetails(`name:${systemName.toLowerCase()}`, detail);
-    });
-
-    return mapping;
-  }, [datasets.solarApplications]);
+    return new Map<string, MonitoringDetailsRecord>(
+      Object.entries(
+        offlineMonitoringQuery.data?.monitoringDetailsBySystemKey ?? {}
+      )
+    );
+  }, [offlineMonitoringQuery.data]);
 
   // Phase 5e (2026-04-29): the parent's two tracking-ID-keyed memos
   // — `annualProductionByTrackingId` and `generationBaselineByTrack
