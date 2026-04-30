@@ -150,11 +150,9 @@ import { base64ToBytes, bytesToBase64 } from "@/solar-rec-dashboard/lib/binaryEn
 // itself was already dead after Phases 5a–5c removed IDB.
 import { resolveHydrationKeys } from "@/solar-rec-dashboard/lib/hydrationKeys";
 import { isSolarRecDebugEnabled } from "@/solar-rec-dashboard/lib/debugFlag";
-import {
-  HYDRATE_LOG_PREFIX_CLOUD,
-  toUserFacingHydrationMessage,
-  type PerDatasetErrorMap,
-} from "@/solar-rec-dashboard/lib/hydrationErrors";
+// Phase 5e step 4 PR-D (2026-04-30): the hydrationErrors module is
+// no longer imported — its consumers (cloud-fallback hydration's
+// per-key error mapping) are gone.
 import { ScheduleBImport } from "@/solar-rec-dashboard/components/ScheduleBImport";
 // Phase 5a (2026-04-28): ParityReportPanel deleted — it was a
 // dev-only IDB-vs-server diff probe. With IDB no longer used at
@@ -465,45 +463,10 @@ const EMPTY_PERFORMANCE_SOURCE_ROWS: PerformanceSourceRow[] = [];
  * The dataset is 50–150 MB on populated scopes; hydrating it
  * per-tab was the root cause of the Performance Ratio hang.
  */
-const TAB_PRIORITY_DATASETS: Record<string, DatasetKey[]> = {
-  "performance-ratio": [
-    "solarApplications",
-    "annualProductionEstimates",
-    "generatorDetails",
-    "generationEntry",
-  ],
-  "offline-monitoring": ["solarApplications"],
-  "delivery-tracker": ["deliveryScheduleBase"],
-  "contracts": ["deliveryScheduleBase"],
-  "annual-review": ["deliveryScheduleBase"],
-  "performance-eval": ["deliveryScheduleBase"],
-  "snapshot-log": ["deliveryScheduleBase"],
-  "forecast": [
-    "deliveryScheduleBase",
-    "annualProductionEstimates",
-    "generationEntry",
-  ],
-  "financials": [
-    "abpProjectApplicationRows",
-    "abpUtilityInvoiceRows",
-    "abpQuickBooksRows",
-    "abpPortalInvoiceMapRows",
-    "abpCsgPortalDatabaseRows",
-    "abpIccReport2Rows",
-    "abpIccReport3Rows",
-  ],
-  "app-pipeline": ["generatorDetails", "abpCsgSystemMapping", "abpIccReport3Rows"],
-  "trends": ["deliveryScheduleBase"],
-};
-
-function buildHydrationPriorityKeys(activeTab: string): Set<DatasetKey> {
-  const keys = new Set<DatasetKey>(CORE_REQUIRED_DATASET_KEYS);
-  const tabExtras = TAB_PRIORITY_DATASETS[activeTab];
-  if (tabExtras) {
-    for (const key of tabExtras) keys.add(key);
-  }
-  return keys;
-}
+// TAB_PRIORITY_DATASETS + buildHydrationPriorityKeys deleted in
+// Phase 5e step 4 PR-D (2026-04-30). They drove the cloud-fallback
+// useEffect's per-tab activation hydration; with that effect gone,
+// they have no consumers.
 
 type DashboardTabId = (typeof DASHBOARD_TAB_VALUES)[number];
 
@@ -1256,26 +1219,11 @@ export default function SolarRecDashboard() {
   const [datasetsHydrated, setDatasetsHydrated] = useState(true);
   const [logEntries, setLogEntries] = useState<DashboardLogEntry[]>(() => loadPersistedLogs());
   const [uploadErrors, setUploadErrors] = useState<Partial<Record<DatasetKey, string>>>({});
-  // Per-dataset hydration failures. Value is a user-facing message
-  // surfaced on the card so the user can tell "hydration failed"
-  // apart from "never uploaded." Cleared when a key next hydrates
-  // successfully, or when the dataset is explicitly removed.
-  const [hydrationErrors, setHydrationErrors] = useState<PerDatasetErrorMap>({});
-  const recordHydrationError = useCallback((key: DatasetKey, error: unknown) => {
-    setHydrationErrors((current) => ({
-      ...current,
-      [key]: toUserFacingHydrationMessage(error),
-    }));
-  }, []);
-  const clearHydrationErrorsForKeys = useCallback((keys: readonly DatasetKey[]) => {
-    if (keys.length === 0) return;
-    setHydrationErrors((current) => {
-      if (keys.every((key) => !current[key])) return current;
-      const next = { ...current };
-      for (const key of keys) delete next[key];
-      return next;
-    });
-  }, []);
+  // Phase 5e step 4 PR-D (2026-04-30) — `hydrationErrors`,
+  // `recordHydrationError`, `clearHydrationErrorsForKeys` deleted.
+  // The only writer was the cloud-fallback hydration useEffect
+  // which is gone; upload failures surface via `uploadErrors` and
+  // `lastDbErrors` instead.
   const [storageNotice, setStorageNotice] = useState<string | null>(null);
   // Phase 6 PR-C (2026-04-29) — `uploadQueueTailRef`,
   // `activeUploadTaskRef`, `queuedUploadTaskCountRef`,
@@ -1314,29 +1262,20 @@ export default function SolarRecDashboard() {
   const [remoteSourceManifests, setRemoteSourceManifests] = useState<
     Partial<Record<DatasetKey, RemoteDatasetSourceManifestPayload>>
   >({});
-  const [serverCloudDatasetManifest, setServerCloudDatasetManifest] = useState<
-    Partial<Record<DatasetKey, RemoteDatasetManifestEntry>>
-  >({});
+  // Phase 5e step 4 PR-D (2026-04-30) — `serverCloudDatasetManifest`
+  // dropped. Its only setter was inside the deleted cloud-fallback
+  // useEffect; `mergedRemoteDatasetManifest` now flows from
+  // `localDatasetManifest` only (live uploads in this session).
+  // Legacy "in-cloud / tap tab to load" card-render branch is gone.
   const [localDatasetPayloadHashes, setLocalDatasetPayloadHashes] = useState<
     Partial<Record<DatasetKey, string>>
   >({});
   const [forceDatasetSyncTick, setForceDatasetSyncTick] = useState(0);
-  // 2026-04-29 — Force-load-all entry point. Bumping the tick re-
-  // runs the cloud-hydration effect with `keysToLoad = ALL manifest
-  // keys` instead of the active tab's priority subset; the
-  // hydration loop's per-key onKeyComplete callback drives the
-  // progress bar below the "Datasets Loaded" stat.
-  const [forceLoadAllTick, setForceLoadAllTick] = useState(0);
-  const [forceLoadProgress, setForceLoadProgress] = useState<{
-    loaded: number;
-    total: number;
-  } | null>(null);
-  const requestForceLoadAll = useCallback(() => {
-    // Reset progress to zero immediately so the UI flips to
-    // "loading" without waiting for the effect to seed the count.
-    setForceLoadProgress({ loaded: 0, total: 0 });
-    setForceLoadAllTick((t) => t + 1);
-  }, []);
+  // Phase 5e step 4 PR-D (2026-04-30) — `forceLoadAllTick`,
+  // `forceLoadProgress`, and `requestForceLoadAll` deleted along
+  // with the cloud-fallback hydration useEffect they drove. Tabs
+  // fetch their data from server queries on demand now, so there's
+  // nothing to "force-load" client-side.
   const [remoteStateHydrated, setRemoteStateHydrated] = useState(false);
   const allDatasetKeys = useMemo(
     () => Object.keys(DATASET_DEFINITIONS) as DatasetKey[],
@@ -3574,32 +3513,22 @@ export default function SolarRecDashboard() {
     ]
   );
 
+  // Phase 5e step 4 PR-D (2026-04-30): `mergedRemoteDatasetManifest`
+  // simplified — the cloud-side manifest seed
+  // (`serverCloudDatasetManifest`) is gone. This now just exposes
+  // the in-session `localDatasetManifest` (built from live
+  // uploads). The cloud-recoverability story is told via
+  // `serverDatasetCloudStatusByKey` below.
   const mergedRemoteDatasetManifest = useMemo<
     Partial<Record<DatasetKey, RemoteDatasetManifestEntry>>
   >(() => {
-    const merged: Partial<Record<DatasetKey, RemoteDatasetManifestEntry>> = {
-      ...serverCloudDatasetManifest,
-    };
+    const merged: Partial<Record<DatasetKey, RemoteDatasetManifestEntry>> = {};
     allDatasetKeys.forEach((key) => {
       const localEntry = localDatasetManifest[key];
-      if (localEntry) {
-        merged[key] = localEntry;
-        return;
-      }
-      const status = datasetCloudStatusesQuery.data?.statuses.find(
-        (entry) => entry.datasetKey === key
-      );
-      if (status?.recoverable === false) {
-        delete merged[key];
-      }
+      if (localEntry) merged[key] = localEntry;
     });
     return merged;
-  }, [
-    allDatasetKeys,
-    datasetCloudStatusesQuery.data?.statuses,
-    localDatasetManifest,
-    serverCloudDatasetManifest,
-  ]);
+  }, [allDatasetKeys, localDatasetManifest]);
 
   const serverDatasetCloudStatusByKey = useMemo(() => {
     const entries = datasetCloudStatusesQuery.data?.statuses ?? [];
@@ -3671,17 +3600,6 @@ export default function SolarRecDashboard() {
     remoteStateHydratedRef.current = remoteStateHydrated;
   }, [remoteStateHydrated]);
 
-  // Prune hydration errors on set → unset transitions — i.e., the
-  // user explicitly cleared a dataset (Remove button / clearDataset)
-  // that was previously loaded. Stale "Hydration failed" text would
-  // otherwise sit on an empty slot after the manual remove.
-  //
-  // Crucially we do NOT prune on "still empty" keys, because a key
-  // can legitimately have `hydrationErrors[key]` set while
-  // `datasets[key]` is undefined — that's the state immediately
-  // after onError fires for a dataset that never managed to hydrate.
-  // Only the transition matters.
-  const previousDatasetPresenceRef = useRef<Partial<Record<DatasetKey, boolean>>>({});
   // Sticky-true ref: once a dataset has been hydrated locally in this
   // browser session, this stays true for the rest of the session. The
   // auto-persist effect uses it to gate the destructive `!dataset`
@@ -3690,24 +3608,18 @@ export default function SolarRecDashboard() {
   // mounts the dashboard, but never tap-to-loads convertedReads, would
   // fall through to the convertedReads CLEAR path on the first effect
   // tick and wipe every user CSV source from the cloud manifest.
+  //
+  // Phase 5e step 4 PR-D (2026-04-30): the companion
+  // `previousDatasetPresenceRef` + hydrationErrors-prune block was
+  // dropped along with the cloud-fallback hydration pipeline.
   const everLoadedDatasetsRef = useRef<Partial<Record<DatasetKey, boolean>>>({});
   useEffect(() => {
-    const previous = previousDatasetPresenceRef.current;
-    const removed: DatasetKey[] = [];
-    const nextPresence: Partial<Record<DatasetKey, boolean>> = {};
     (Object.keys(DATASET_DEFINITIONS) as DatasetKey[]).forEach((key) => {
-      const isPresent = Boolean(datasets[key]);
-      nextPresence[key] = isPresent;
-      if (isPresent) {
+      if (datasets[key]) {
         everLoadedDatasetsRef.current[key] = true;
       }
-      if (previous[key] && !isPresent) removed.push(key);
     });
-    previousDatasetPresenceRef.current = nextPresence;
-    if (removed.length > 0) {
-      clearHydrationErrorsForKeys(removed);
-    }
-  }, [datasets, clearHydrationErrorsForKeys]);
+  }, [datasets]);
 
   // Phase 5c (2026-04-28): the mount-time IDB hydration effect is
   // gone. Phase 5a no-op'd `loadDatasetsFromStorage`, so this effect
@@ -3728,557 +3640,18 @@ export default function SolarRecDashboard() {
   // the legacy `datasets` state map" no longer corresponds to any
   // user-visible benefit.
 
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      if (remoteDashboardStateQuery.status === "pending") return;
-      const stateRequestErrored = remoteDashboardStateQuery.status === "error";
-      if (stateRequestErrored && !cancelled) {
-        setStorageNotice("Could not load dashboard state metadata from cloud. Trying dataset fallback sync.");
-      }
-
-      const loadRemoteDatasets = async (
-        keys: DatasetKey[],
-        options: { onKeyComplete?: (key: DatasetKey) => void } = {}
-      ) => {
-        const loadedDatasets: Partial<Record<DatasetKey, CsvDataset>> = {};
-        const loadedSignatures: Partial<Record<DatasetKey, string>> = {};
-        const loadedChunkKeys: Partial<Record<DatasetKey, string[]>> = {};
-        const loadedSourceManifests: Partial<Record<DatasetKey, RemoteDatasetSourceManifestPayload>> = {};
-        // Phase 13b: fetch all chunks in parallel and join them in
-        // chunk-key order. Previously this was a serial for-await
-        // loop that paid the full RTT per chunk — a 6-chunk dataset
-        // on a 200ms link was 1.2s of pure latency.
-        const loadChunkedPayload = async (chunkKeys: string[]): Promise<string | null> => {
-          if (cancelled || chunkKeys.length === 0) return null;
-          const responses = await mapWithBoundedConcurrency(
-            chunkKeys,
-            REMOTE_READ_CONCURRENCY,
-            (chunkKey) =>
-              withRetry(
-                () => getRemoteDatasetRef.current.mutateAsync({ key: chunkKey }),
-                3,
-                250
-              ).catch(() => null)
-          );
-          if (cancelled) return null;
-          let combined = "";
-          for (const chunkResponse of responses) {
-            if (!chunkResponse?.payload) return null;
-            combined += chunkResponse.payload;
-          }
-          return combined;
-        };
-        const loadPayloadByKey = async (
-          key: string
-        ): Promise<{
-          payload: string;
-          chunkKeys: string[];
-        } | null> => {
-          const response = await withRetry(
-            () => getRemoteDatasetRef.current.mutateAsync({ key }),
-            3,
-            250
-          ).catch(() => null);
-          if (!response?.payload) return null;
-          const chunkKeys = parseChunkPointerPayload(response.payload);
-          if (chunkKeys && chunkKeys.length > 0) {
-            const chunkedPayload = await loadChunkedPayload(chunkKeys);
-            if (!chunkedPayload) return null;
-            return {
-              payload: chunkedPayload,
-              chunkKeys,
-            };
-          }
-          return {
-            payload: response.payload,
-            chunkKeys: [],
-          };
-        };
-        const parseSourcePayloadForDataset = async (
-          key: DatasetKey,
-          source: RemoteDatasetSourceRef,
-          payload: string
-        ): Promise<{ headers: string[]; rows: CsvRow[] } | null> => {
-          try {
-            const csvLike = isCsvLikeFile(source.fileName, source.contentType);
-            if (source.encoding === "utf8") {
-              const file = new File([payload], source.fileName, { type: source.contentType });
-              if (csvLike || !TABULAR_DATASET_KEYS.has(key)) {
-                return await parseCsvFileAsync(file);
-              }
-              return await parseTabularFile(file);
-            }
-
-            const bytes = base64ToBytes(payload);
-            const arrayBuffer = bytes.buffer.slice(
-              bytes.byteOffset,
-              bytes.byteOffset + bytes.byteLength
-            ) as ArrayBuffer;
-            const file = new File([arrayBuffer], source.fileName, { type: source.contentType });
-            if (TABULAR_DATASET_KEYS.has(key) && !csvLike) {
-              return await parseTabularFile(file);
-            }
-            const text = await file.text();
-            return await parseCsvTextAsync(text);
-          } catch {
-            return null;
-          }
-        };
-
-        // Phase 13b: load all datasets in parallel. Each iteration
-        // writes a different key in the result maps (loadedDatasets,
-        // loadedSignatures, etc.), so there's no contention under
-        // Promise.all. Source-manifest datasets also fan out their
-        // per-source fetches inside loadSingleDataset — three levels
-        // of concurrency (dataset × sources × chunks) for cold-hydrate.
-        // Previously this was a 15-dataset × 3-chunk serial walk ≈
-        // 9s of pure RTT.
-        const loadSingleDataset = async (rawKey: DatasetKey) => {
-          if (cancelled) return;
-          const debug = isSolarRecDebugEnabled();
-          const t0 = debug ? performance.now() : 0;
-          try {
-            // Task 5.14 PR-5 (2026-04-27): the previous "next-best
-            // path" — the single-roundtrip batch endpoint
-            // `getDatasetAssembled` — is gone. It used to fetch a
-            // dataset's manifest + every source's payload in one
-            // tRPC call, but the assembled response could grow to
-            // 50–150 MB on populated scopes (the convertedReads
-            // multi-source manifest, transferHistory's accumulated
-            // GATS history) which blew up Chrome tabs on JSON.parse.
-            // Cold hydration now always takes the per-key route
-            // below: load the top-level manifest, then fetch each
-            // source's chunk-sized payload with bounded
-            // concurrency. The wire payload per round-trip is
-            // capped by `REMOTE_DATASET_CHUNK_CHAR_LIMIT` (250 KB)
-            // so memory stays bounded and the JSON.parse path
-            // never has more than a chunk in flight at a time.
-            //
-            // Server-side procedure removal + the dead chunked-CSV
-            // reassembly helper land in PR-6 once we're sure no
-            // other client surface calls into it.
-            let datasetPayload: string | null = null;
-            let topChunkKeys: string[] = [];
-
-            {
-              const loadedPayload = await loadPayloadByKey(rawKey);
-              if (!loadedPayload?.payload) {
-                if (debug) {
-                  const ms = Math.round(performance.now() - t0);
-                  // eslint-disable-next-line no-console
-                  console.log(`${HYDRATE_LOG_PREFIX_CLOUD} ${rawKey} ${ms}ms (no payload)`);
-                }
-                return;
-              }
-              datasetPayload = loadedPayload.payload;
-              topChunkKeys = loadedPayload.chunkKeys;
-            }
-            loadedChunkKeys[rawKey] = topChunkKeys;
-
-            const sourceManifest = parseRemoteSourceManifestPayload(datasetPayload);
-            if (sourceManifest) {
-              // Per-source: prefer the batch-assembled payload (cheap
-              // map lookup); fall back to per-key fetch for every
-              // source. Parsing still runs in parallel so we don't
-              // block on the slowest CSV.
-              const sourcePayloads = await mapWithBoundedConcurrency(
-                sourceManifest.sources,
-                REMOTE_READ_CONCURRENCY,
-                async (source) => {
-                  if (cancelled) return null;
-                  let sourcePayloadText: string | null = null;
-                  let sourceChunkKeys: string[] = [];
-                  const sourcePayload = await loadPayloadByKey(source.storageKey);
-                  if (!sourcePayload?.payload) return null;
-                  sourcePayloadText = sourcePayload.payload;
-                  sourceChunkKeys = sourcePayload.chunkKeys;
-                  if (!sourcePayloadText) return null;
-                  const parsed = await parseSourcePayloadForDataset(rawKey, source, sourcePayloadText);
-                  if (!parsed) return null;
-                  return {
-                    source: {
-                      ...source,
-                      chunkKeys:
-                        source.chunkKeys && source.chunkKeys.length > 0
-                          ? source.chunkKeys
-                          : sourceChunkKeys,
-                    },
-                    parsed,
-                  };
-                }
-              );
-              const parsedSourceData = sourcePayloads.filter(
-                (entry): entry is NonNullable<typeof entry> => entry !== null,
-              );
-
-              if (parsedSourceData.length > 0) {
-                const normalizedSources = parsedSourceData.map(({ source, parsed }) => ({
-                  ...source,
-                  rowCount: source.rowCount > 0 ? source.rowCount : parsed.rows.length,
-                }));
-                const sourceRows = normalizedSources.map((source) => ({
-                  fileName: source.fileName,
-                  uploadedAt: new Date(source.uploadedAt),
-                  rowCount: source.rowCount,
-                }));
-
-                if (MULTI_APPEND_DATASET_KEYS.has(rawKey)) {
-                  const headers: string[] = [];
-                  const rows: CsvRow[] = [];
-                  const dedupeKeys = new Set<string>();
-                  parsedSourceData.forEach(({ parsed }) => {
-                    parsed.headers.forEach((header) => {
-                      if (!headers.includes(header)) headers.push(header);
-                    });
-                    parsed.rows.forEach((row) => {
-                      const dedupeKey = datasetAppendRowKey(rawKey, row);
-                      if (dedupeKey && dedupeKeys.has(dedupeKey)) return;
-                      if (dedupeKey) dedupeKeys.add(dedupeKey);
-                      rows.push(row);
-                    });
-                  });
-
-                  const uploadedAt =
-                    sourceRows[sourceRows.length - 1]?.uploadedAt ??
-                    new Date();
-                  loadedDatasets[rawKey] = {
-                    fileName:
-                      sourceRows.length > 1
-                        ? `${sourceRows.length} files loaded`
-                        : sourceRows[0]?.fileName ?? `${DATASET_DEFINITIONS[rawKey].label} upload`,
-                    uploadedAt,
-                    headers,
-                    rows,
-                    rowCount: rows.length,
-                    sources: sourceRows,
-                  };
-                  const newest = normalizedSources[normalizedSources.length - 1];
-                  loadedSignatures[rawKey] =
-                    `raw:${normalizedSources.length}|${newest?.id ?? ""}|${newest?.uploadedAt ?? ""}|${rows.length}`;
-                } else {
-                  const latest = parsedSourceData[parsedSourceData.length - 1];
-                  const latestSource =
-                    normalizedSources[normalizedSources.length - 1];
-                  const latestRows = latest?.parsed.rows ?? [];
-                  loadedDatasets[rawKey] = {
-                    fileName: latestSource?.fileName ?? `${DATASET_DEFINITIONS[rawKey].label} upload`,
-                    uploadedAt: latestSource?.uploadedAt ? new Date(latestSource.uploadedAt) : new Date(),
-                    headers: latest?.parsed.headers ?? [],
-                    rows: latestRows,
-                    rowCount: latestRows.length,
-                    sources: sourceRows,
-                  };
-                  loadedSignatures[rawKey] =
-                    `raw:${normalizedSources.length}|${latestSource?.id ?? ""}|${latestSource?.uploadedAt ?? ""}|${latestRows.length}`;
-                }
-
-                loadedSourceManifests[rawKey] = {
-                  _rawSourcesV1: true,
-                  version: 1,
-                  sources: normalizedSources,
-                };
-                return;
-              }
-            }
-
-            const deserializedDataset = deserializeRemoteDatasetPayload(datasetPayload);
-            if (!deserializedDataset) return;
-            loadedDatasets[rawKey] = deserializedDataset;
-            loadedSignatures[rawKey] = `${deserializedDataset.fileName}|${deserializedDataset.uploadedAt.toISOString()}|${deserializedDataset.rows.length}|${deserializedDataset.sources?.length ?? 0}`;
-            if (debug) {
-              const ms = Math.round(performance.now() - t0);
-              // eslint-disable-next-line no-console
-              console.log(
-                `${HYDRATE_LOG_PREFIX_CLOUD} ${rawKey} ${ms}ms (${deserializedDataset.rows.length} rows)`,
-              );
-            }
-          } catch (error) {
-            // Keep going; partial data is better than none. Record the
-            // error so the per-card UI can distinguish "failed to
-            // hydrate" from "never uploaded."
-            if (debug) {
-              const ms = Math.round(performance.now() - t0);
-              // eslint-disable-next-line no-console
-              console.error(`${HYDRATE_LOG_PREFIX_CLOUD} ${rawKey} FAILED after ${ms}ms`, error);
-            }
-            if (!cancelled) {
-              recordHydrationError(rawKey, error);
-            }
-          } finally {
-            // Force-load-all progress bar reads its loaded-count
-            // increments from here. Fires once per key regardless of
-            // success / error so the bar always advances; the per-
-            // card hydration error UI surfaces the failure
-            // separately.
-            if (!cancelled) {
-              options.onKeyComplete?.(rawKey);
-            }
-          }
-        };
-
-        await mapWithBoundedConcurrency(keys, REMOTE_READ_CONCURRENCY, (rawKey) => loadSingleDataset(rawKey));
-
-        return { loadedDatasets, loadedSignatures, loadedChunkKeys, loadedSourceManifests };
-      };
-
-      try {
-        const payload = remoteDashboardStateQuery.data?.payload;
-        let manifest: Record<string, RemoteDatasetManifestEntry> = {};
-        let stateLogs: DashboardLogEntry[] = [];
-
-        if (payload) {
-          const parsed = JSON.parse(payload) as {
-            datasetManifest?: Record<string, RemoteDatasetManifestEntry>;
-            logs?: unknown;
-          };
-
-          if (Array.isArray(parsed.logs)) {
-            stateLogs = deserializeDashboardLogs(JSON.stringify(parsed.logs));
-          }
-
-          manifest = parsed.datasetManifest ?? {};
-        }
-
-        if (!cancelled && Object.keys(manifest).length > 0) {
-          setServerCloudDatasetManifest((current) => ({
-            ...current,
-            ...manifest,
-          }));
-        }
-
-        // Cloud fallback is network-bound and can include very large
-        // source CSVs, so automatic hydration only fetches the active
-        // tab's priority keys. When the user clicks "Force load all
-        // datasets", the same effect re-runs but `keysToLoad`
-        // expands to every manifest entry — at the cost of more
-        // bytes over the wire and more main-thread parsing.
-        const isForceLoadAll = forceLoadAllTick > 0;
-        const priorityKeys = buildHydrationPriorityKeys(
-          getTabFromSearch(search) ?? DEFAULT_DASHBOARD_TAB
-        );
-        const keysToLoad = isForceLoadAll
-          ? new Set<DatasetKey>(
-              (Object.keys(manifest) as string[]).filter(isDatasetKey)
-            )
-          : resolveHydrationKeys({
-              manifestKeys: Object.keys(manifest),
-              priorityKeys,
-              isDatasetKey,
-              includeManifestEntries: false,
-            });
-
-        if (keysToLoad.size === 0) {
-          try {
-            const manifestResponse = await withRetry(
-              () => getRemoteDatasetRef.current.mutateAsync({ key: REMOTE_DATASET_KEY_MANIFEST }),
-              3,
-              250
-            );
-            if (manifestResponse?.payload) {
-              parseDatasetKeyManifestPayload(manifestResponse.payload).forEach((key) => keysToLoad.add(key));
-            }
-          } catch {
-            // Optional fallback key; ignore errors.
-          }
-        }
-
-        // 2026-04-29 Force-load hotfix — skip the 3 multi-append
-        // datasets (`accountSolarGeneration`, `convertedReads`,
-        // `transferHistory`) when force-loading. Browser-side proof
-        // (Chrome MCP, 2026-04-29): a populated scope's force-load
-        // succeeds at the network layer (1000+ chunked GETs all
-        // 200 OK) but freezes the renderer's main thread under the
-        // CSV parse load — `convertedReads` alone can be 50–150 MB
-        // assembled. Skipping these 3 keeps force-load useful for
-        // the small / medium datasets (the long tail of admin /
-        // mapping / report tables) without locking the tab.
-        //
-        // Phase 5e Followup #3 (2026-04-29) — `accountSolarGeneration`
-        // + `transferHistory` removed from per-tab priority lists.
-        //
-        // Phase 5e Followup #4 step 3 (2026-04-29) — `convertedReads`
-        // also removed from per-tab priority lists (PerformanceRatioTab
-        // is sentinel-only post-#285; SystemDetailSheet uses a server
-        // query post-#286; TrendsTab never read it). All 3 multi-
-        // append datasets now ONLY appear in `keysToLoad` under the
-        // force-load expansion (which pulls from the full manifest).
-        // This filter is the only path that excludes them — and it
-        // still does, because forcing them through the cloud-fallback
-        // pipeline still risks the same main-thread freeze on
-        // populated scopes that the original 2026-04-29 hotfix saw.
-        if (isForceLoadAll) {
-          MULTI_APPEND_DATASET_KEYS.forEach((heavyKey) => {
-            keysToLoad.delete(heavyKey);
-          });
-        }
-
-        // Seed the force-load progress bar AFTER we know the final
-        // key count (manifest fallback above can grow `keysToLoad`,
-        // and the multi-append filter above can shrink it).
-        if (isForceLoadAll && !cancelled) {
-          setForceLoadProgress({ loaded: 0, total: keysToLoad.size });
-        }
-
-        const { loadedDatasets, loadedSignatures, loadedChunkKeys, loadedSourceManifests } =
-          await loadRemoteDatasets(Array.from(keysToLoad), {
-            onKeyComplete: isForceLoadAll
-              ? () => {
-                  // Increment loaded-count on every key completion,
-                  // success or failure. The per-card hydrationErrors
-                  // map separately surfaces failures. Ref-based
-                  // updater handles concurrent fires (concurrency
-                  // limit is REMOTE_READ_CONCURRENCY=8, so up to 8
-                  // simultaneous increments).
-                  setForceLoadProgress((prev) =>
-                    prev ? { ...prev, loaded: prev.loaded + 1 } : prev
-                  );
-                }
-              : undefined,
-          });
-
-        let loadedCloudLogs: DashboardLogEntry[] = [];
-        try {
-          const logsResponse = await withRetry(
-            () => getRemoteDatasetRef.current.mutateAsync({ key: REMOTE_SNAPSHOT_LOGS_KEY }),
-            3,
-            250
-          );
-          if (logsResponse?.payload) {
-            let logsPayload = logsResponse.payload;
-            const chunkKeys = parseChunkPointerPayload(logsResponse.payload);
-            if (chunkKeys) {
-              remoteLogsChunkKeysRef.current = chunkKeys;
-              // Phase 13b: fetch log chunks in parallel and stitch
-              // them together in chunk-key order. Aborts the batch
-              // if any chunk comes back empty (partial log history
-              // is worse than no log history here).
-              if (!cancelled && chunkKeys.length > 0) {
-                const chunkResponses = await mapWithBoundedConcurrency(
-                  chunkKeys,
-                  REMOTE_READ_CONCURRENCY,
-                  (chunkKey) =>
-                    withRetry(
-                      () => getRemoteDatasetRef.current.mutateAsync({ key: chunkKey }),
-                      3,
-                      250
-                    ).catch(() => null)
-                );
-                if (!cancelled) {
-                  let combinedLogsPayload = "";
-                  let allLogsChunksLoaded = true;
-                  for (const chunkResponse of chunkResponses) {
-                    if (!chunkResponse?.payload) {
-                      allLogsChunksLoaded = false;
-                      break;
-                    }
-                    combinedLogsPayload += chunkResponse.payload;
-                  }
-                  if (allLogsChunksLoaded && combinedLogsPayload) {
-                    logsPayload = combinedLogsPayload;
-                  }
-                }
-              }
-            } else {
-              remoteLogsChunkKeysRef.current = [];
-            }
-            loadedCloudLogs = deserializeDashboardLogs(logsPayload);
-            remoteLogsSignatureRef.current = buildLogSyncSignature(loadedCloudLogs);
-          } else {
-            remoteLogsChunkKeysRef.current = [];
-            remoteLogsSignatureRef.current = "0";
-          }
-        } catch {
-          // Keep existing logs if remote log fetch fails.
-        }
-
-        if (!cancelled) {
-          if (Object.keys(loadedDatasets).length > 0) {
-            setDatasets((current) => {
-              if (Object.keys(current).length === 0) return loadedDatasets;
-              const merged = { ...current };
-              for (const [key, value] of Object.entries(loadedDatasets)) {
-                if (!value) continue;
-                const existing = merged[key as DatasetKey];
-                if (!existing) {
-                  merged[key as DatasetKey] = value;
-                  continue;
-                }
-                // If the remote version has a newer uploadedAt, replace local.
-                // This lets externally-mutated datasets (meter reads pages, the
-                // monitoring batch converted-reads bridge, etc.) overwrite a
-                // stale IndexedDB copy instead of being silently ignored.
-                // Local-only edits are preserved because their uploadedAt is
-                // always >= the last remote version.
-                if (value.uploadedAt.getTime() > existing.uploadedAt.getTime()) {
-                  merged[key as DatasetKey] = value;
-                }
-              }
-              return merged;
-            });
-            setDatasetCloudSyncStatus((current) => {
-              const next = { ...current };
-              (Object.keys(loadedDatasets) as DatasetKey[]).forEach((key) => {
-                if (loadedDatasets[key]) {
-                  delete next[key];
-                }
-              });
-              return next;
-            });
-            // Parallels the IDB path's clear-on-success: a dataset
-            // that just successfully hydrated from cloud should lose
-            // any prior "Hydration failed" badge.
-            clearHydrationErrorsForKeys(
-              (Object.keys(loadedDatasets) as DatasetKey[]).filter(
-                (key) => loadedDatasets[key] !== undefined,
-              ),
-            );
-          }
-          remoteDatasetSignatureRef.current = loadedSignatures;
-          remoteDatasetChunkKeysRef.current = loadedChunkKeys;
-          if (Object.keys(loadedSourceManifests).length > 0) {
-            setRemoteSourceManifests((current) => ({
-              ...current,
-              ...loadedSourceManifests,
-            }));
-          }
-          if (loadedCloudLogs.length > 0) {
-            setLogEntries((current) => (loadedCloudLogs.length >= current.length ? loadedCloudLogs : current));
-          } else if (stateLogs.length > 0) {
-            setLogEntries((current) => (current.length >= stateLogs.length ? current : stateLogs));
-          }
-          if (Object.keys(loadedDatasets).length > 0 || loadedCloudLogs.length > 0 || stateLogs.length > 0) {
-            setStorageNotice(null);
-          } else if (stateRequestErrored) {
-            setStorageNotice("Cloud state sync failed on this device. Retrying in the background.");
-          } else {
-            setStorageNotice(null);
-          }
-        }
-      } catch {
-        if (!cancelled) setStorageNotice("Could not parse synced dashboard data.");
-      } finally {
-        if (!cancelled) {
-          setRemoteStateHydrated(true);
-          setDatasetsHydrated(true);
-          // Clear force-load progress regardless of success / error
-          // so the button re-appears once the run finishes.
-          setForceLoadProgress(null);
-        }
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    activeTab,
-    parseCsvFileAsync,
-    parseCsvTextAsync,
-    remoteDashboardStateQuery.data,
-    remoteDashboardStateQuery.status,
-    forceLoadAllTick,
-  ]);
+  // Phase 5e Followup #4 step 4 PR-D (2026-04-30) — the ~550-LOC
+  // cloud-fallback hydration useEffect was deleted here. It used
+  // to read the chunked-CSV blob storage and populate datasets[k]
+  // for each tab activation + force-load-all. After PR-A through
+  // PR-C3 migrated every datasets[k].rows consumer to a server
+  // aggregator, the read path had no consumers — every tab fetches
+  // its own server query on activation. The companion utilities
+  // (loadRemoteDatasets, deserializeRemoteDatasetPayload, the
+  // chunk-pointer reassembly logic, hydrationErrors error-mapping,
+  // serverCloudDatasetManifest state, Force Load All button,
+  // TAB_PRIORITY_DATASETS, MULTI_APPEND_DATASET_KEYS skip set) all
+  // come out together below.
 
   useEffect(() => {
     if (remoteDashboardStateQuery.status !== "error") return;
@@ -5344,79 +4717,11 @@ const aiDataContext = useMemo(() => {
                 <p className="text-lg font-semibold text-slate-900">
                   {formatNumber(dataHealthSummary.loadedDatasetCount)} / {formatNumber(dataHealthSummary.totalDatasetCount)}
                 </p>
-                {/* 2026-04-29 — Force-load-all hydration.
-                    Re-triggers the cloud-fallback hydration with
-                    every manifest key (instead of the active tab's
-                    priority subset). The 3 multi-append datasets
-                    (`accountSolarGeneration`, `convertedReads`,
-                    `transferHistory`) are deliberately skipped —
-                    parsing their assembled chunked-CSV blobs locks
-                    the renderer's main thread on populated scopes.
-                    The deferred Phase-5d tabs that need them
-                    hydrate via their tab-priority path. The
-                    button label below subtracts the 3 skipped keys
-                    from the "remaining" count so the number is
-                    honest about what force-load will actually
-                    fetch. */}
-                {forceLoadProgress !== null ? (
-                  <div className="mt-2 space-y-1">
-                    <Progress
-                      value={
-                        forceLoadProgress.total > 0
-                          ? Math.min(
-                              100,
-                              (forceLoadProgress.loaded /
-                                forceLoadProgress.total) *
-                                100
-                            )
-                          : 0
-                      }
-                      className="h-2"
-                    />
-                    <p className="text-[11px] text-sky-700">
-                      Loading {formatNumber(forceLoadProgress.loaded)} /{" "}
-                      {formatNumber(forceLoadProgress.total)} datasets
-                      {forceLoadProgress.total > 0
-                        ? ` (${Math.round(
-                            (forceLoadProgress.loaded /
-                              forceLoadProgress.total) *
-                              100
-                          )}%)`
-                        : ""}
-                    </p>
-                  </div>
-                ) : (() => {
-                    // Subtract the 3 force-load-skipped multi-append
-                    // keys from the remaining count IF any of them
-                    // are unloaded. They won't be picked up by
-                    // force-load, so showing them as "remaining"
-                    // would mislead the user into thinking the
-                    // button will fetch them.
-                    const totalRemaining =
-                      dataHealthSummary.totalDatasetCount -
-                      dataHealthSummary.loadedDatasetCount;
-                    const skippedHeavyUnloaded = Array.from(
-                      MULTI_APPEND_DATASET_KEYS
-                    ).filter((key) => !datasets[key]).length;
-                    const forceLoadable =
-                      totalRemaining - skippedHeavyUnloaded;
-                    if (forceLoadable <= 0) return null;
-                    return (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={requestForceLoadAll}
-                        className="mt-2 h-7 w-full px-2 text-[11px]"
-                        title={
-                          skippedHeavyUnloaded > 0
-                            ? `Skips ${skippedHeavyUnloaded} large dataset${skippedHeavyUnloaded === 1 ? "" : "s"} (convertedReads / accountSolarGeneration / transferHistory) — load those by visiting the relevant tab`
-                            : undefined
-                        }
-                      >
-                        Force load all ({formatNumber(forceLoadable)} remaining)
-                      </Button>
-                    );
-                  })()}
+                {/* Phase 5e step 4 PR-D (2026-04-30): Force Load All
+                    button + progress bar deleted along with the
+                    cloud-fallback hydration pipeline. Tabs now fetch
+                    their data from server queries on demand; there's
+                    nothing to "force-load" client-side anymore. */}
               </div>
               <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
                 <p className="text-xs uppercase tracking-wide text-slate-500">Rows Loaded</p>
@@ -6143,7 +5448,6 @@ const aiDataContext = useMemo(() => {
                 const dataset = datasets[key];
                 const manifestEntry = mergedRemoteDatasetManifest[key];
                 const error = uploadErrors[key];
-                const hydrationError = hydrationErrors[key];
                 const isMultiAppend = MULTI_APPEND_DATASET_KEYS.has(key);
                 const isScannerManaged = SCANNER_MANAGED_DATASET_KEYS.has(key);
                 const serverCloudStatus = serverDatasetCloudStatusByKey[key];
@@ -6246,52 +5550,16 @@ const aiDataContext = useMemo(() => {
                           </div>
                         ) : null}
                       </div>
-                    ) : manifestEntry ? (
-                      <div className="space-y-2">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <Badge className="border-slate-200 bg-slate-100 text-slate-700">
-                            {manifestEntry.rowCount} rows saved
-                          </Badge>
-                          {cloudStatusForDataset === "pending" ? (
-                            <Badge className="border-blue-200 bg-blue-100 text-blue-900">
-                              Cloud sync pending
-                            </Badge>
-                          ) : null}
-                          {cloudStatusForDataset === "synced" ? (
-                            <Badge className="border-amber-200 bg-amber-100 text-amber-900">
-                              In cloud · tap tab to load
-                            </Badge>
-                          ) : null}
-                          {cloudStatusForDataset === "failed" ? (
-                            <Badge className="border-rose-200 bg-rose-100 text-rose-800">
-                              Cloud sync failed
-                            </Badge>
-                          ) : null}
-                          {cloudStatusForDataset === "not-synced" ? (
-                            <Badge className="border-amber-200 bg-amber-100 text-amber-900">
-                              Not synced to cloud
-                            </Badge>
-                          ) : null}
-                        </div>
-                        <p className="truncate text-xs text-slate-600">
-                          {manifestEntry.fileName}
-                        </p>
-                        <p className="text-xs text-slate-500">
-                          Last updated {new Date(manifestEntry.uploadedAt).toLocaleString()}
-                        </p>
-                        <p className="text-xs text-slate-500">
-                          Full rows reload when this dataset's tab is opened.
-                        </p>
-                      </div>
                     ) : serverCloudStatus?.recoverable ? (
                       <div className="space-y-2">
                         <div className="flex flex-wrap items-center gap-2">
-                          <Badge className="border-amber-200 bg-amber-100 text-amber-900">
-                            In cloud · tap tab to load
+                          <Badge className="border-emerald-200 bg-emerald-100 text-emerald-800">
+                            Saved in cloud
                           </Badge>
                         </div>
                         <p className="text-xs text-slate-500">
-                          Saved in cloud. Full rows reload when this dataset's tab is opened.
+                          Tabs read this dataset directly from the
+                          server. Re-upload to refresh.
                         </p>
                       </div>
                     ) : (
@@ -6316,11 +5584,6 @@ const aiDataContext = useMemo(() => {
                     ) : null}
 
                     {error ? <p className="text-xs text-rose-700">{error}</p> : null}
-                    {hydrationError ? (
-                      <p className="text-xs text-rose-700">
-                        Hydration failed: {hydrationError}
-                      </p>
-                    ) : null}
 
                     {isScannerManaged ? (
                       <div className="space-y-2">
