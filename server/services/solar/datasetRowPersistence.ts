@@ -1116,6 +1116,16 @@ export async function deleteDatasetBatchRows(
  * same key construction as both the upload-side in-memory dedup and
  * the single-row SQL check fallback.
  */
+/**
+ * Public alias of `rowKey` for the streaming upload runner —
+ * needed for per-row dedup during streaming append (the batch
+ * helper `partitionAppendRowsByKeySet` requires the full row
+ * array up-front, which defeats streaming).
+ */
+export function buildAppendRowKey(datasetKey: string, row: CsvRow): string {
+  return rowKey(datasetKey, row);
+}
+
 function rowKey(datasetKey: string, row: CsvRow): string {
   if (datasetKey === "accountSolarGeneration") {
     return [
