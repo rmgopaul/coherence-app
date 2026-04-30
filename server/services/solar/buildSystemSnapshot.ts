@@ -81,7 +81,7 @@ export async function computeSystemSnapshotHash(
  *       columns are the only source of truth
  *   (b) large tables where we deliberately skip rawRow to keep
  *       server memory under Render's ~1GB heap ceiling
- *       (accountSolarGeneration, transferHistory)
+ *       (convertedReads, transferHistory)
  * For remaining tables the rawRow JSON provides all original CSV
  * keys and this mapping is a no-op.
  */
@@ -105,6 +105,13 @@ const TYPED_COLUMN_TO_CSV_KEY: Record<string, Record<string, string>> = {
     quantity: "Quantity",
     transactionId: "Transaction ID",
   },
+  srDsConvertedReads: {
+    monitoring: "monitoring",
+    monitoringSystemId: "monitoring_system_id",
+    monitoringSystemName: "monitoring_system_name",
+    lifetimeMeterReadWh: "lifetime_meter_read_wh",
+    readDate: "read_date",
+  },
 };
 
 /**
@@ -112,7 +119,8 @@ const TYPED_COLUMN_TO_CSV_KEY: Record<string, Record<string, string>> = {
  * buildSystems reads from these rows is already covered by a
  * typed column (see TYPED_COLUMN_TO_CSV_KEY). Skipping rawRow
  * drops roughly 500MB of wire transfer + JSON parse work on a
- * million-row dataset.
+ * million-row dataset. convertedReads is also rawRow-skipped
+ * because the server aggregators only need its typed columns.
  *
  * NOTE: accountSolarGeneration was also here originally, but
  * buildSystems uses `resolveLastMeterReadRawValue` which does a
@@ -125,6 +133,7 @@ const TYPED_COLUMN_TO_CSV_KEY: Record<string, Record<string, string>> = {
  * transfer — still fits comfortably under the 2GB Node heap.
  */
 const SKIP_RAW_ROW_TABLES = new Set<string>([
+  "srDsConvertedReads",
   "srDsTransferHistory",
 ]);
 

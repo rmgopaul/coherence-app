@@ -20,6 +20,7 @@ import {
   parseDate,
   parseEnergyToWh,
   type PerformanceRatioAggregates,
+  type PerformanceRatioConvertedReadRow,
   type PerformanceRatioInput,
   type PerformanceRatioInputSystem,
   type PerformanceRatioMatchType,
@@ -100,8 +101,28 @@ function buildMatchIndexes(
 export function buildPerformanceRatioAggregates(
   input: PerformanceRatioInput
 ): PerformanceRatioAggregates {
+  const accumulator = createPerformanceRatioAccumulator(input);
+  accumulator.processRows(input.convertedReadsRows, 0);
+  return accumulator.toAggregates();
+}
+
+type PerformanceRatioStaticInput = Omit<
+  PerformanceRatioInput,
+  "convertedReadsRows"
+>;
+
+type PerformanceRatioAccumulator = {
+  processRows: (
+    convertedReadsRows: readonly PerformanceRatioConvertedReadRow[],
+    startIndex: number
+  ) => void;
+  toAggregates: () => PerformanceRatioAggregates;
+};
+
+export function createPerformanceRatioAccumulator(
+  input: PerformanceRatioStaticInput
+): PerformanceRatioAccumulator {
   const {
-    convertedReadsRows,
     systems,
     abpAcSizeKwByApplicationId,
     abpPart2VerificationDateByApplicationId,
@@ -110,181 +131,185 @@ export function buildPerformanceRatioAggregates(
     generatorDateOnlineByTrackingId,
   } = input;
 
-  if (convertedReadsRows.length === 0 || systems.length === 0) {
-    return {
-      rows: [],
-      convertedReadCount: convertedReadsRows.length,
-      matchedConvertedReads: 0,
-      unmatchedConvertedReads: 0,
-      invalidConvertedReads: 0,
-    };
-  }
-
   const indexes = buildMatchIndexes(systems);
 
   const rows: PerformanceRatioRow[] = [];
+  let convertedReadCount = 0;
   let matchedConvertedReads = 0;
   let unmatchedConvertedReads = 0;
   let invalidConvertedReads = 0;
 
-  for (let index = 0; index < convertedReadsRows.length; index += 1) {
-    const row = convertedReadsRows[index]!;
-    const monitoring = clean(row.monitoring);
-    const monitoringNormalized = normalizeMonitoringMatch(monitoring);
-    const lifetimeReadWh = parseEnergyToWh(
-      row.lifetime_meter_read_wh,
-      "lifetime_meter_read_wh",
-      "wh"
-    );
-    const monitoringSystemId = clean(row.monitoring_system_id);
-    const monitoringSystemIdNormalized =
-      normalizeSystemIdMatch(monitoringSystemId);
-    const monitoringSystemName = clean(row.monitoring_system_name);
-    const monitoringSystemNameNormalized =
-      normalizeSystemNameMatch(monitoringSystemName);
-
-    if (
-      !monitoringNormalized ||
-      lifetimeReadWh === null ||
-      (!monitoringSystemIdNormalized && !monitoringSystemNameNormalized)
-    ) {
-      invalidConvertedReads += 1;
-      continue;
-    }
-
-    const readDateRaw = clean(row.read_date);
-    const readDate = parseDate(readDateRaw);
-    const readKey = `converted-${index}`;
-
-    const bothMatches =
-      monitoringSystemIdNormalized && monitoringSystemNameNormalized
-        ? indexes.byMonitoringAndIdAndName.get(
-            `${monitoringNormalized}__${monitoringSystemIdNormalized}__${monitoringSystemNameNormalized}`
-          ) ?? null
-        : null;
-    const idMatches = monitoringSystemIdNormalized
-      ? indexes.byMonitoringAndId.get(
-          `${monitoringNormalized}__${monitoringSystemIdNormalized}`
-        ) ?? null
-      : null;
-    const nameMatches = monitoringSystemNameNormalized
-      ? indexes.byMonitoringAndName.get(
-          `${monitoringNormalized}__${monitoringSystemNameNormalized}`
-        ) ?? null
-      : null;
-
-    const matchedCandidateKeys = new Set<string>();
-    bothMatches?.forEach((k) => matchedCandidateKeys.add(k));
-    idMatches?.forEach((k) => matchedCandidateKeys.add(k));
-    nameMatches?.forEach((k) => matchedCandidateKeys.add(k));
-
-    if (matchedCandidateKeys.size === 0) {
-      unmatchedConvertedReads += 1;
-      continue;
-    }
-    matchedConvertedReads += 1;
-
-    matchedCandidateKeys.forEach((candidateKey) => {
-      const candidate = indexes.candidateByKey.get(candidateKey);
-      if (!candidate || !candidate.trackingSystemRefId) return;
-
-      const baseline = generationBaselineByTrackingId.get(
-        candidate.trackingSystemRefId
-      );
-      const generatorDateOnline =
-        generatorDateOnlineByTrackingId.get(candidate.trackingSystemRefId) ??
-        null;
-      const baselineValueWh =
-        baseline?.valueWh ?? (generatorDateOnline ? 0 : null);
-      const baselineDate = baseline?.date ?? generatorDateOnline;
-      const baselineSource =
-        baseline?.source ??
-        (generatorDateOnline
-          ? "Generator Details (Date Online @ day 15, baseline 0)"
-          : null);
-      const annualProfile = annualProductionByTrackingId.get(
-        candidate.trackingSystemRefId
-      );
-      const productionDeltaWh =
-        baselineValueWh !== null ? lifetimeReadWh - baselineValueWh : null;
-      const expectedProductionWh =
-        baselineDate && readDate && annualProfile
-          ? calculateExpectedWhForRange(
-              annualProfile.monthlyKwh,
-              baselineDate,
-              readDate
-            )
-          : null;
-      const performanceRatioPercent =
-        productionDeltaWh !== null &&
-        expectedProductionWh !== null &&
-        expectedProductionWh > 0
-          ? (productionDeltaWh / expectedProductionWh) * 100
-          : null;
-
-      const matchType: PerformanceRatioMatchType =
-        bothMatches && bothMatches.has(candidateKey)
-          ? "Monitoring + System ID + System Name"
-          : idMatches && idMatches.has(candidateKey)
-            ? "Monitoring + System ID"
-            : "Monitoring + System Name";
-
-      rows.push({
-        key: `${readKey}-${candidateKey}`,
-        convertedReadKey: readKey,
-        matchType,
-        monitoring,
-        monitoringSystemId,
-        monitoringSystemName,
-        readDate,
-        readDateRaw,
-        lifetimeReadWh,
-        trackingSystemRefId: candidate.trackingSystemRefId,
-        systemId: candidate.systemId,
-        stateApplicationRefId: candidate.stateApplicationRefId,
-        systemName: candidate.systemName,
-        installerName: candidate.installerName,
-        monitoringPlatform: candidate.monitoringPlatform,
-        portalAcSizeKw: candidate.installedKwAc,
-        abpAcSizeKw: candidate.stateApplicationRefId
-          ? abpAcSizeKwByApplicationId.get(candidate.stateApplicationRefId) ??
-            null
-          : null,
-        part2VerificationDate: candidate.stateApplicationRefId
-          ? abpPart2VerificationDateByApplicationId.get(
-              candidate.stateApplicationRefId
-            ) ?? null
-          : null,
-        baselineReadWh: baselineValueWh,
-        baselineDate,
-        baselineSource,
-        productionDeltaWh,
-        expectedProductionWh,
-        performanceRatioPercent,
-        contractValue: candidate.contractValue,
-      });
-    });
-  }
-
-  rows.sort((a, b) => {
-    const aTime = a.readDate?.getTime() ?? Number.NEGATIVE_INFINITY;
-    const bTime = b.readDate?.getTime() ?? Number.NEGATIVE_INFINITY;
-    if (aTime !== bTime) return bTime - aTime;
-    const aRatio = a.performanceRatioPercent ?? Number.NEGATIVE_INFINITY;
-    const bRatio = b.performanceRatioPercent ?? Number.NEGATIVE_INFINITY;
-    if (aRatio !== bRatio) return bRatio - aRatio;
-    return a.systemName.localeCompare(b.systemName, undefined, {
-      sensitivity: "base",
-      numeric: true,
-    });
-  });
-
   return {
-    rows,
-    convertedReadCount: convertedReadsRows.length,
-    matchedConvertedReads,
-    unmatchedConvertedReads,
-    invalidConvertedReads,
+    processRows: (convertedReadsRows, startIndex) => {
+      convertedReadCount += convertedReadsRows.length;
+
+      if (convertedReadsRows.length === 0 || systems.length === 0) {
+        return;
+      }
+
+      for (let index = 0; index < convertedReadsRows.length; index += 1) {
+        const row = convertedReadsRows[index]!;
+        const globalIndex = startIndex + index;
+        const monitoring = clean(row.monitoring);
+        const monitoringNormalized = normalizeMonitoringMatch(monitoring);
+        const lifetimeReadWh = parseEnergyToWh(
+          row.lifetime_meter_read_wh,
+          "lifetime_meter_read_wh",
+          "wh"
+        );
+        const monitoringSystemId = clean(row.monitoring_system_id);
+        const monitoringSystemIdNormalized =
+          normalizeSystemIdMatch(monitoringSystemId);
+        const monitoringSystemName = clean(row.monitoring_system_name);
+        const monitoringSystemNameNormalized =
+          normalizeSystemNameMatch(monitoringSystemName);
+
+        if (
+          !monitoringNormalized ||
+          lifetimeReadWh === null ||
+          (!monitoringSystemIdNormalized && !monitoringSystemNameNormalized)
+        ) {
+          invalidConvertedReads += 1;
+          continue;
+        }
+
+        const readDateRaw = clean(row.read_date);
+        const readDate = parseDate(readDateRaw);
+        const readKey = `converted-${globalIndex}`;
+
+        const bothMatches =
+          monitoringSystemIdNormalized && monitoringSystemNameNormalized
+            ? indexes.byMonitoringAndIdAndName.get(
+                `${monitoringNormalized}__${monitoringSystemIdNormalized}__${monitoringSystemNameNormalized}`
+              ) ?? null
+            : null;
+        const idMatches = monitoringSystemIdNormalized
+          ? indexes.byMonitoringAndId.get(
+              `${monitoringNormalized}__${monitoringSystemIdNormalized}`
+            ) ?? null
+          : null;
+        const nameMatches = monitoringSystemNameNormalized
+          ? indexes.byMonitoringAndName.get(
+              `${monitoringNormalized}__${monitoringSystemNameNormalized}`
+            ) ?? null
+          : null;
+
+        const matchedCandidateKeys = new Set<string>();
+        bothMatches?.forEach((k) => matchedCandidateKeys.add(k));
+        idMatches?.forEach((k) => matchedCandidateKeys.add(k));
+        nameMatches?.forEach((k) => matchedCandidateKeys.add(k));
+
+        if (matchedCandidateKeys.size === 0) {
+          unmatchedConvertedReads += 1;
+          continue;
+        }
+        matchedConvertedReads += 1;
+
+        matchedCandidateKeys.forEach((candidateKey) => {
+          const candidate = indexes.candidateByKey.get(candidateKey);
+          if (!candidate || !candidate.trackingSystemRefId) return;
+
+          const baseline = generationBaselineByTrackingId.get(
+            candidate.trackingSystemRefId
+          );
+          const generatorDateOnline =
+            generatorDateOnlineByTrackingId.get(candidate.trackingSystemRefId) ??
+            null;
+          const baselineValueWh =
+            baseline?.valueWh ?? (generatorDateOnline ? 0 : null);
+          const baselineDate = baseline?.date ?? generatorDateOnline;
+          const baselineSource =
+            baseline?.source ??
+            (generatorDateOnline
+              ? "Generator Details (Date Online @ day 15, baseline 0)"
+              : null);
+          const annualProfile = annualProductionByTrackingId.get(
+            candidate.trackingSystemRefId
+          );
+          const productionDeltaWh =
+            baselineValueWh !== null ? lifetimeReadWh - baselineValueWh : null;
+          const expectedProductionWh =
+            baselineDate && readDate && annualProfile
+              ? calculateExpectedWhForRange(
+                  annualProfile.monthlyKwh,
+                  baselineDate,
+                  readDate
+                )
+              : null;
+          const performanceRatioPercent =
+            productionDeltaWh !== null &&
+            expectedProductionWh !== null &&
+            expectedProductionWh > 0
+              ? (productionDeltaWh / expectedProductionWh) * 100
+              : null;
+
+          const matchType: PerformanceRatioMatchType =
+            bothMatches && bothMatches.has(candidateKey)
+              ? "Monitoring + System ID + System Name"
+              : idMatches && idMatches.has(candidateKey)
+                ? "Monitoring + System ID"
+                : "Monitoring + System Name";
+
+          rows.push({
+            key: `${readKey}-${candidateKey}`,
+            convertedReadKey: readKey,
+            matchType,
+            monitoring,
+            monitoringSystemId,
+            monitoringSystemName,
+            readDate,
+            readDateRaw,
+            lifetimeReadWh,
+            trackingSystemRefId: candidate.trackingSystemRefId,
+            systemId: candidate.systemId,
+            stateApplicationRefId: candidate.stateApplicationRefId,
+            systemName: candidate.systemName,
+            installerName: candidate.installerName,
+            monitoringPlatform: candidate.monitoringPlatform,
+            portalAcSizeKw: candidate.installedKwAc,
+            abpAcSizeKw: candidate.stateApplicationRefId
+              ? abpAcSizeKwByApplicationId.get(
+                  candidate.stateApplicationRefId
+                ) ?? null
+              : null,
+            part2VerificationDate: candidate.stateApplicationRefId
+              ? abpPart2VerificationDateByApplicationId.get(
+                  candidate.stateApplicationRefId
+                ) ?? null
+              : null,
+            baselineReadWh: baselineValueWh,
+            baselineDate,
+            baselineSource,
+            productionDeltaWh,
+            expectedProductionWh,
+            performanceRatioPercent,
+            contractValue: candidate.contractValue,
+          });
+        });
+      }
+    },
+    toAggregates: () => {
+      rows.sort((a, b) => {
+        const aTime = a.readDate?.getTime() ?? Number.NEGATIVE_INFINITY;
+        const bTime = b.readDate?.getTime() ?? Number.NEGATIVE_INFINITY;
+        if (aTime !== bTime) return bTime - aTime;
+        const aRatio = a.performanceRatioPercent ?? Number.NEGATIVE_INFINITY;
+        const bRatio = b.performanceRatioPercent ?? Number.NEGATIVE_INFINITY;
+        if (aRatio !== bRatio) return bRatio - aRatio;
+        return a.systemName.localeCompare(b.systemName, undefined, {
+          sensitivity: "base",
+          numeric: true,
+        });
+      });
+
+      return {
+        rows,
+        convertedReadCount,
+        matchedConvertedReads,
+        unmatchedConvertedReads,
+        invalidConvertedReads,
+      };
+    },
   };
 }
 
@@ -300,7 +325,8 @@ export function buildPerformanceRatioAggregates(
 
 import { createHash } from "node:crypto";
 import {
-  loadPerformanceRatioInput,
+  forEachPerformanceRatioConvertedReadPage,
+  loadPerformanceRatioStaticInput,
   resolvePerformanceRatioBatchIds,
   type PerformanceRatioInputBatchIds,
 } from "./loadPerformanceRatioInput";
@@ -371,8 +397,16 @@ export async function getOrBuildPerformanceRatio(
     serde: superjsonSerde<PerformanceRatioAggregates>(),
     rowCount: (data) => data.rows.length,
     recompute: async () => {
-      const input = await loadPerformanceRatioInput(scopeId, batchIds);
-      return buildPerformanceRatioAggregates(input);
+      const input = await loadPerformanceRatioStaticInput(scopeId, batchIds);
+      const accumulator = createPerformanceRatioAccumulator(input);
+      await forEachPerformanceRatioConvertedReadPage(
+        scopeId,
+        batchIds.convertedReadsBatchId,
+        (rows, startIndex) => {
+          accumulator.processRows(rows, startIndex);
+        }
+      );
+      return accumulator.toAggregates();
     },
   });
 

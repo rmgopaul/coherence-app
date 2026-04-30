@@ -39,6 +39,7 @@ import {
 } from "./aggregatorHelpers";
 import {
   loadDatasetRows,
+  loadDatasetRowsPage,
   getOrBuildSystemSnapshot,
 } from "./buildSystemSnapshot";
 import {
@@ -51,6 +52,7 @@ import {
   normalizeSystemNameMatch,
   type AnnualProductionProfile,
   type GenerationBaseline,
+  type PerformanceRatioConvertedReadRow,
   type PerformanceRatioInput,
   type PerformanceRatioInputSystem,
   type SolarRecCsvRow,
@@ -400,24 +402,31 @@ export async function resolvePerformanceRatioBatchIds(
   };
 }
 
-export async function loadPerformanceRatioInput(
+export type PerformanceRatioStaticInput = Omit<
+  PerformanceRatioInput,
+  "convertedReadsRows"
+>;
+
+export const PERFORMANCE_RATIO_CONVERTED_READS_PAGE_SIZE = 5_000;
+
+export function projectPerformanceRatioConvertedRead(
+  row: CsvRow
+): PerformanceRatioConvertedReadRow {
+  return {
+    monitoring: clean(row.monitoring),
+    monitoring_system_id: clean(row.monitoring_system_id),
+    monitoring_system_name: clean(row.monitoring_system_name),
+    lifetime_meter_read_wh: clean(row.lifetime_meter_read_wh),
+    read_date: clean(row.read_date),
+  };
+}
+
+export async function loadPerformanceRatioStaticInput(
   scopeId: string,
   batchIds: PerformanceRatioInputBatchIds
-): Promise<PerformanceRatioInput> {
-  // 2026-04-29 OOM hotfix (PR 2.5) — load datasets sequentially
-  // with explicit array-drop between phases. The previous
-  // `Promise.all` approach kept up to 8 datasets in memory
-  // simultaneously, peaking at ~300-500 MB on populated scopes
-  // (`srDsConvertedReads` alone is hundreds of MB) and crashing
-  // Render's 3 GB heap soft-limit on the first cold compute.
-  //
-  // Strategy: build each small lookup map first, drop the source
-  // array. Load the BIG dataset (`convertedReads`) LAST, so peak
-  // memory is roughly "convertedReads + final maps" rather than
-  // "all 8 datasets at once".
-
+): Promise<PerformanceRatioStaticInput> {
   process.stdout.write(
-    `[loadPerformanceRatioInput] cache miss for scope=${scopeId} — sequential dataset loads beginning. ` +
+    `[loadPerformanceRatioInput] cache miss for scope=${scopeId} — static dataset loads beginning. ` +
       `heapUsed=${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB\n`
   );
 
@@ -514,41 +523,10 @@ export async function loadPerformanceRatioInput(
     );
 
   process.stdout.write(
-    `[loadPerformanceRatioInput] small datasets loaded; ` +
+    `[loadPerformanceRatioInput] static datasets loaded; ` +
       `systems=${systems.length} ` +
       `heapUsed=${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB. ` +
-      `Loading convertedReads now (the big one)...\n`
-  );
-
-  // Phase 3: the BIG dataset, last. Memory peak is roughly
-  // "convertedReads rows + final maps" rather than "all 8 datasets".
-  const convertedReadsRows = batchIds.convertedReadsBatchId
-    ? await loadDatasetRows(
-        scopeId,
-        batchIds.convertedReadsBatchId,
-        srDsConvertedReads
-      )
-    : ([] as CsvRow[]);
-
-  // Reshape convertedReads rows into the aggregator's expected
-  // shape. `loadDatasetRows` returns CsvRow with both typed-column
-  // names AND CSV-header keys (via the rawRow merge); we pick the
-  // canonical lower_snake_case names the aggregator iterates.
-  // Map-and-replace via reassign so the original reshape source can
-  // be GC'd as soon as the projected array is built.
-  const convertedReadsForAggregator = convertedReadsRows.map((row) => ({
-    monitoring: clean(row.monitoring),
-    monitoring_system_id: clean(row.monitoring_system_id),
-    monitoring_system_name: clean(row.monitoring_system_name),
-    lifetime_meter_read_wh: clean(row.lifetime_meter_read_wh),
-    read_date: clean(row.read_date),
-  }));
-
-  process.stdout.write(
-    `[loadPerformanceRatioInput] convertedReads loaded; ` +
-      `rows=${convertedReadsForAggregator.length} ` +
-      `heapUsed=${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB. ` +
-      `Aggregator running next.\n`
+      `convertedReads will stream in pages next.\n`
   );
 
   // Note on the cast: the shared `PerformanceRatioGenerationBaseline`
@@ -560,7 +538,6 @@ export async function loadPerformanceRatioInput(
   // rather than fighting the structural-type widening — same pattern
   // used by `extractSnapshotSystems` in `aggregatorHelpers.ts`.
   return {
-    convertedReadsRows: convertedReadsForAggregator,
     systems,
     abpAcSizeKwByApplicationId,
     abpPart2VerificationDateByApplicationId,
@@ -568,5 +545,72 @@ export async function loadPerformanceRatioInput(
     generationBaselineByTrackingId:
       generationBaselineByTrackingId as unknown as PerformanceRatioInput["generationBaselineByTrackingId"],
     generatorDateOnlineByTrackingId,
+  };
+}
+
+export async function forEachPerformanceRatioConvertedReadPage(
+  scopeId: string,
+  batchId: string | null,
+  onPage: (
+    rows: PerformanceRatioConvertedReadRow[],
+    startIndex: number
+  ) => void | Promise<void>,
+  options: { pageSize?: number } = {}
+): Promise<number> {
+  if (!batchId) return 0;
+
+  const pageSize =
+    options.pageSize ?? PERFORMANCE_RATIO_CONVERTED_READS_PAGE_SIZE;
+  let cursor: string | null = null;
+  let totalRows = 0;
+  let pageCount = 0;
+
+  for (;;) {
+    const page = await loadDatasetRowsPage(
+      scopeId,
+      batchId,
+      srDsConvertedReads,
+      { cursor, limit: pageSize }
+    );
+    const projectedRows = page.rows.map(projectPerformanceRatioConvertedRead);
+    if (projectedRows.length > 0) {
+      await onPage(projectedRows, totalRows);
+    }
+
+    totalRows += projectedRows.length;
+    pageCount += 1;
+
+    if (pageCount === 1 || pageCount % 10 === 0 || !page.nextCursor) {
+      process.stdout.write(
+        `[loadPerformanceRatioInput] streamed convertedReads page=${pageCount} ` +
+          `totalRows=${totalRows} ` +
+          `heapUsed=${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB\n`
+      );
+    }
+
+    if (!page.nextCursor) break;
+    cursor = page.nextCursor;
+  }
+
+  return totalRows;
+}
+
+export async function loadPerformanceRatioInput(
+  scopeId: string,
+  batchIds: PerformanceRatioInputBatchIds
+): Promise<PerformanceRatioInput> {
+  const staticInput = await loadPerformanceRatioStaticInput(scopeId, batchIds);
+  const convertedReadsRows: PerformanceRatioConvertedReadRow[] = [];
+  await forEachPerformanceRatioConvertedReadPage(
+    scopeId,
+    batchIds.convertedReadsBatchId,
+    (rows) => {
+      convertedReadsRows.push(...rows);
+    }
+  );
+
+  return {
+    ...staticInput,
+    convertedReadsRows,
   };
 }

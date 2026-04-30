@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildPerformanceRatioAggregates,
+  createPerformanceRatioAccumulator,
   type PerformanceRatioConvertedReadRow,
   type PerformanceRatioInputSystem,
 } from "./buildPerformanceRatioAggregates";
@@ -384,5 +385,47 @@ describe("buildPerformanceRatioAggregates", () => {
     expect(new Set(keys).size).toBe(keys.length);
     expect(keys).toContain("converted-0-k-A");
     expect(keys).toContain("converted-0-k-B");
+  });
+
+  it("paged accumulator matches the full-array aggregate output", () => {
+    const input = {
+      convertedReadsRows: [
+        buildRead({ read_date: "2026-04-01" }),
+        buildRead({
+          monitoring_system_id: "SYS-2",
+          monitoring_system_name: "Acme Solar 2",
+          read_date: "2026-04-15",
+        }),
+      ],
+      systems: [
+        buildBaseSystem(),
+        buildBaseSystem({
+          key: "system-B",
+          trackingSystemRefId: "TRK-B",
+          systemId: "SYS-2",
+          stateApplicationRefId: "APP-B",
+          systemName: "Acme Solar 2",
+          idTokens: [normalizeSystemIdMatch("SYS-2")],
+          nameTokens: [normalizeSystemNameMatch("Acme Solar 2")],
+        }),
+      ],
+      ...EMPTY_LOOKUPS,
+    };
+
+    const full = buildPerformanceRatioAggregates(input);
+    const staticInput = {
+      systems: input.systems,
+      abpAcSizeKwByApplicationId: input.abpAcSizeKwByApplicationId,
+      abpPart2VerificationDateByApplicationId:
+        input.abpPart2VerificationDateByApplicationId,
+      annualProductionByTrackingId: input.annualProductionByTrackingId,
+      generationBaselineByTrackingId: input.generationBaselineByTrackingId,
+      generatorDateOnlineByTrackingId: input.generatorDateOnlineByTrackingId,
+    };
+    const accumulator = createPerformanceRatioAccumulator(staticInput);
+    accumulator.processRows(input.convertedReadsRows.slice(0, 1), 0);
+    accumulator.processRows(input.convertedReadsRows.slice(1), 1);
+
+    expect(accumulator.toAggregates()).toEqual(full);
   });
 });
