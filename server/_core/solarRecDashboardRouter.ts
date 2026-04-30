@@ -2898,6 +2898,41 @@ export const solarRecDashboardRouter = t.router({
   }),
 
   /**
+   * Phase 5e Followup #4 step 4 PR-C3 (2026-04-30) — server-side
+   * aggregator for the Change of Ownership tab + Overview tab's
+   * stacked-chart row. Replaces 3 client memos that walked
+   * `part2VerifiedAbpRows × systems`:
+   * `changeOwnershipRows` (~140 LOC), `changeOwnershipSummary`,
+   * `cooNotTransferredNotReportingCurrentCount`, plus
+   * `ownershipStackedChartRows` over in OverviewTab.
+   *
+   * Cache key bundles `abpReport` batch + system snapshot hash.
+   * superjson serde because `rows[i].{contractedDate,
+   * zillowSoldDate, latestReportingDate}` are `Date | null`.
+   */
+  getDashboardChangeOwnership: requirePermission(
+    "solar-rec-dashboard",
+    "read"
+  ).query(async ({ ctx }) => {
+    const {
+      getOrBuildChangeOwnership,
+      CHANGE_OWNERSHIP_RUNNER_VERSION,
+    } = await import(
+      "../services/solar/buildChangeOwnershipAggregates"
+    );
+
+    const { result, fromCache } = await getOrBuildChangeOwnership(
+      ctx.scopeId
+    );
+
+    return {
+      ...result,
+      fromCache,
+      _runnerVersion: CHANGE_OWNERSHIP_RUNNER_VERSION,
+    };
+  }),
+
+  /**
    * Phase 5e Followup #4 step 4 PR-C2 (2026-04-30) — server-side
    * aggregator for the Overview tab `summary` shape. Replaces the
    * 208-line `summary` useMemo in `SolarRecDashboard.tsx` that

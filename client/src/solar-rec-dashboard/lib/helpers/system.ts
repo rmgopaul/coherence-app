@@ -30,7 +30,9 @@ import {
 } from "@shared/solarRecPerformanceRatio";
 import { firstNonNull } from "./misc";
 
-export function resolveContractValueAmount(system: SystemRecord): number {
+export function resolveContractValueAmount(
+  system: Pick<SystemRecord, "totalContractAmount" | "contractedValue">,
+): number {
   return firstNonNull(system.totalContractAmount, system.contractedValue) ?? 0;
 }
 

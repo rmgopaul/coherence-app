@@ -33,18 +33,16 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { clean, formatCurrency, formatPercent } from "@/lib/helpers";
+import { formatCurrency, formatPercent } from "@/lib/helpers";
 import { AskAiPanel } from "@/components/AskAiPanel";
 import {
   formatCapacityKw,
   formatNumber,
   resolveContractValueAmount,
-  resolvePart2ProjectIdentity,
 } from "@/solar-rec-dashboard/lib/helpers";
 import type {
   ChangeOwnershipStatus,
   ChangeOwnershipSummary,
-  CsvRow,
   FinancialProfitData,
   SizeBucket,
   SystemRecord,
@@ -80,14 +78,26 @@ export type OverviewSizeBreakdownRow = {
   notReporting: number;
 };
 
+/**
+ * Stacked-chart row shape for the "Ownership Mix by Reporting State"
+ * chart. Two rows (Reporting / Not Reporting) × 3 buckets each.
+ * Phase 5e step 4 PR-C3 (2026-04-30) — moved server-side; this type
+ * mirrors the server's `OwnershipStackedChartRow`.
+ */
+export type OverviewOwnershipStackedChartRow = {
+  label: "Reporting" | "Not Reporting";
+  notTransferred: number;
+  transferred: number;
+  changeOwnership: number;
+};
+
 export interface OverviewTabProps {
   summary: OverviewSummary;
   financialProfitData: FinancialProfitData;
   changeOwnershipSummary: ChangeOwnershipSummary;
   /**
    * Foundation memo from the parent — the Part II verified,
-   * scoped systems slice. Used for the Part II KPI totals and
-   * the stacked ownership chart.
+   * scoped systems slice. Used for the Part II KPI totals.
    */
   part2EligibleSystemsForSizeReporting: SystemRecord[];
   /**
@@ -95,8 +105,12 @@ export interface OverviewTabProps {
    * Overview maps it into the compact reporting chart shape.
    */
   sizeBreakdownRows: OverviewSizeBreakdownRow[];
-  /** Foundation memo — shared by many tabs. */
-  part2VerifiedAbpRows: CsvRow[];
+  /**
+   * Phase 5e step 4 PR-C3 (2026-04-30) — server-derived stacked
+   * chart rows from `getDashboardChangeOwnership`. Replaces the
+   * prior client useMemo over `part2VerifiedAbpRows × systems`.
+   */
+  ownershipStackedChartRows: readonly OverviewOwnershipStackedChartRow[];
   /** Foundation memo — the 440-line parent `systems` list. */
   systems: SystemRecord[];
   onDownloadOwnershipTile: (tile: "reporting" | "notReporting" | "terminated") => void;
@@ -115,7 +129,7 @@ export default memo(function OverviewTab(props: OverviewTabProps) {
     changeOwnershipSummary,
     part2EligibleSystemsForSizeReporting,
     sizeBreakdownRows,
-    part2VerifiedAbpRows,
+    ownershipStackedChartRows,
     systems,
     onDownloadOwnershipTile,
     onDownloadChangeOwnershipTile,
@@ -153,124 +167,9 @@ export default memo(function OverviewTab(props: OverviewTabProps) {
     [sizeBreakdownRows],
   );
 
-  // Stacked "Ownership Mix by Reporting State" chart — walks the
-  // Part II verified AbpReport rows, matches them to the parent's
-  // systems list via four indexed maps, and buckets each matched
-  // system into NotTransferred / Transferred / ChangeOwnership
-  // under Reporting vs Not Reporting.
-  const ownershipStackedChartRows = useMemo(() => {
-    const eligiblePart2ApplicationIds = new Set<string>();
-    const eligiblePart2PortalSystemIds = new Set<string>();
-    const eligiblePart2TrackingIds = new Set<string>();
-    part2VerifiedAbpRows.forEach((row) => {
-      const applicationId = clean(row.Application_ID);
-      const portalSystemId = clean(row.system_id);
-      const trackingId =
-        clean(row.PJM_GATS_or_MRETS_Unit_ID_Part_2) ||
-        clean(row.tracking_system_ref_id);
-      if (applicationId) eligiblePart2ApplicationIds.add(applicationId);
-      if (portalSystemId) eligiblePart2PortalSystemIds.add(portalSystemId);
-      if (trackingId) eligiblePart2TrackingIds.add(trackingId);
-    });
-
-    const scopedPart2Systems = systems.filter((system) => {
-      const byPortalSystemId = system.systemId
-        ? eligiblePart2PortalSystemIds.has(system.systemId)
-        : false;
-      const byApplicationId = system.stateApplicationRefId
-        ? eligiblePart2ApplicationIds.has(system.stateApplicationRefId)
-        : false;
-      const byTrackingId = system.trackingSystemRefId
-        ? eligiblePart2TrackingIds.has(system.trackingSystemRefId)
-        : false;
-      return byPortalSystemId || byApplicationId || byTrackingId;
-    });
-
-    const systemsById = new Map<string, SystemRecord[]>();
-    const systemsByApplicationId = new Map<string, SystemRecord[]>();
-    const systemsByTrackingId = new Map<string, SystemRecord[]>();
-    const systemsByName = new Map<string, SystemRecord[]>();
-
-    const addIndexedSystem = (
-      map: Map<string, SystemRecord[]>,
-      key: string | null | undefined,
-      system: SystemRecord,
-    ) => {
-      const normalized = clean(key);
-      if (!normalized) return;
-      const existing = map.get(normalized) ?? [];
-      existing.push(system);
-      map.set(normalized, existing);
-    };
-
-    scopedPart2Systems.forEach((system) => {
-      addIndexedSystem(systemsById, system.systemId, system);
-      addIndexedSystem(systemsByApplicationId, system.stateApplicationRefId, system);
-      addIndexedSystem(systemsByTrackingId, system.trackingSystemRefId, system);
-      addIndexedSystem(systemsByName, system.systemName.toLowerCase(), system);
-    });
-
-    const rows = [
-      { label: "Reporting", notTransferred: 0, transferred: 0, changeOwnership: 0 },
-      { label: "Not Reporting", notTransferred: 0, transferred: 0, changeOwnership: 0 },
-    ];
-
-    const uniquePart2Projects = new Set<string>();
-
-    part2VerifiedAbpRows.forEach((row, index) => {
-      const { applicationId, portalSystemId, trackingId, projectNameKey, dedupeKey } =
-        resolvePart2ProjectIdentity(row, index);
-      if (uniquePart2Projects.has(dedupeKey)) return;
-      uniquePart2Projects.add(dedupeKey);
-
-      const matchedSystems = new Map<string, SystemRecord>();
-      (systemsById.get(portalSystemId) ?? []).forEach((system) =>
-        matchedSystems.set(system.key, system),
-      );
-      (systemsByApplicationId.get(applicationId) ?? []).forEach((system) =>
-        matchedSystems.set(system.key, system),
-      );
-      (systemsByTrackingId.get(trackingId) ?? []).forEach((system) =>
-        matchedSystems.set(system.key, system),
-      );
-      (systemsByName.get(projectNameKey) ?? []).forEach((system) =>
-        matchedSystems.set(system.key, system),
-      );
-
-      if (matchedSystems.size === 0) {
-        rows[1]!.notTransferred += 1;
-        return;
-      }
-
-      let isReporting = false;
-      let isTransferred = false;
-      let isTerminated = false;
-      let isChangeOwnershipNotTransferred = false;
-
-      matchedSystems.forEach((system) => {
-        if (system.isReporting) isReporting = true;
-        if (system.isTransferred) isTransferred = true;
-        if (system.isTerminated) isTerminated = true;
-        const normalizedChangeOwnershipStatus = clean(system.changeOwnershipStatus ?? "");
-        if (normalizedChangeOwnershipStatus.startsWith("Change of Ownership - Not Transferred")) {
-          isChangeOwnershipNotTransferred = true;
-        }
-      });
-
-      if (isTerminated) return;
-
-      const target = isReporting ? rows[0]! : rows[1]!;
-      if (isChangeOwnershipNotTransferred) {
-        target.changeOwnership += 1;
-      } else if (isTransferred) {
-        target.transferred += 1;
-      } else {
-        target.notTransferred += 1;
-      }
-    });
-
-    return rows;
-  }, [part2VerifiedAbpRows, systems]);
+  // ownershipStackedChartRows — moved to server in Phase 5e step 4
+  // PR-C3 (2026-04-30). Now consumed via props from
+  // `getDashboardChangeOwnership.ownershipStackedChartRows`.
 
   const findCount = (status: ChangeOwnershipStatus) =>
     changeOwnershipSummary.counts.find((item) => item.status === status)?.count ?? 0;
@@ -420,7 +319,7 @@ export default memo(function OverviewTab(props: OverviewTabProps) {
             <div className="h-72 rounded-md border border-slate-200 bg-white p-2">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart
-                  data={ownershipStackedChartRows}
+                  data={ownershipStackedChartRows as OverviewOwnershipStackedChartRow[]}
                   margin={{ top: 8, right: 12, left: 4, bottom: 8 }}
                 >
                   <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
