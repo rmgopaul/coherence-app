@@ -4,6 +4,7 @@
 
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { getBandwidthLogThresholdBytes } from "./_core/bandwidthDiagnostics";
 import { ENV } from "./_core/env";
 
 type StorageConfig = { baseUrl: string; apiKey: string };
@@ -126,18 +127,41 @@ function buildAuthHeaders(apiKey: string): HeadersInit {
   return { Authorization: `Bearer ${apiKey}` };
 }
 
+function dataByteLength(data: Buffer | Uint8Array | string): number {
+  if (typeof data === "string") return Buffer.byteLength(data);
+  return data.byteLength;
+}
+
+function logLargeStorageTransfer(
+  event: "storage-put" | "storage-read",
+  payload: Record<string, unknown> & { bytes: number }
+): void {
+  if (process.env.BANDWIDTH_DIAGNOSTICS_DISABLED === "1") return;
+  if (payload.bytes < getBandwidthLogThresholdBytes()) return;
+  console.warn(`[bandwidth:${event}] ${JSON.stringify(payload)}`);
+}
+
 export async function storagePut(
   relKey: string,
   data: Buffer | Uint8Array | string,
   contentType = "application/octet-stream"
 ): Promise<{ key: string; url: string }> {
   const key = normalizeKey(relKey);
+  const bytes = dataByteLength(data);
+  const startedAt = Date.now();
 
   if (!isStorageProxyConfigured()) {
     const root = getLocalStorageRoot();
     const absolutePath = path.join(root, key);
     await mkdir(path.dirname(absolutePath), { recursive: true });
     await writeFile(absolutePath, data);
+    logLargeStorageTransfer("storage-put", {
+      key,
+      bytes,
+      contentType,
+      mode: "local",
+      durationMs: Date.now() - startedAt,
+    });
     return { key, url: keyToLocalUrl(key) };
   }
 
@@ -157,6 +181,13 @@ export async function storagePut(
     );
   }
   const url = (await response.json()).url;
+  logLargeStorageTransfer("storage-put", {
+    key,
+    bytes,
+    contentType,
+    mode: "proxy",
+    durationMs: Date.now() - startedAt,
+  });
   return { key, url };
 }
 
@@ -212,11 +243,19 @@ export async function storageExists(relKey: string): Promise<boolean> {
 
 export async function storageReadBytes(relKey: string): Promise<Uint8Array> {
   const key = normalizeKey(relKey);
+  const startedAt = Date.now();
 
   if (!isStorageProxyConfigured()) {
     const absolutePath = resolveLocalStorageAbsolutePath(key);
     const bytes = await readFile(absolutePath);
-    return new Uint8Array(bytes);
+    const out = new Uint8Array(bytes);
+    logLargeStorageTransfer("storage-read", {
+      key,
+      bytes: out.byteLength,
+      mode: "local",
+      durationMs: Date.now() - startedAt,
+    });
+    return out;
   }
 
   const { url } = await storageGet(key);
@@ -224,5 +263,12 @@ export async function storageReadBytes(relKey: string): Promise<Uint8Array> {
   if (!response.ok) {
     throw new Error(`Storage read failed (${response.status} ${response.statusText}).`);
   }
-  return new Uint8Array(await response.arrayBuffer());
+  const out = new Uint8Array(await response.arrayBuffer());
+  logLargeStorageTransfer("storage-read", {
+    key,
+    bytes: out.byteLength,
+    mode: "proxy",
+    durationMs: Date.now() - startedAt,
+  });
+  return out;
 }

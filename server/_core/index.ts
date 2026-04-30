@@ -14,6 +14,10 @@ import { startMonitoringScheduler } from "../solar/monitoringScheduler";
 import { registerPinGate } from "./pinGate";
 import { registerSecurityMiddleware } from "./security";
 import {
+  installFetchBandwidthDiagnostics,
+  largeResponseLogger,
+} from "./bandwidthDiagnostics";
+import {
   registerSolarRecAuth,
   authenticateSolarRecRequest,
   resolveSolarRecOwnerUserId,
@@ -147,6 +151,7 @@ async function createSolarRecMainContext(
 
 async function startServer() {
   assertServerRuntimeSafety();
+  installFetchBandwidthDiagnostics();
   startNightlySnapshotScheduler();
   startMonitoringScheduler();
 
@@ -221,6 +226,7 @@ async function startServer() {
 
   // Security middleware (helmet, CORS, rate limiting) — must come first
   registerSecurityMiddleware(app);
+  app.use(largeResponseLogger());
 
   // Allow larger dashboard dataset payloads (large CSV-derived uploads) while still bounded.
   app.use(express.json({ limit: "50mb" }));
