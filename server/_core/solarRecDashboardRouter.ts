@@ -2898,6 +2898,44 @@ export const solarRecDashboardRouter = t.router({
   }),
 
   /**
+   * Phase 5e Followup #4 step 4 PR-A (2026-04-30) — server-side
+   * aggregator for the Offline Monitoring tab. Replaces four client
+   * useMemos in `SolarRecDashboard.tsx` that derived from
+   * `datasets.abpReport.rows` + `datasets.solarApplications.rows`:
+   * `abpEligibleTrackingIdsStrict`, `abpApplicationIdBySystemKey`,
+   * `monitoringDetailsBySystemKey`, and the 3 ID Sets that drive
+   * `part2EligibleSystemsForSizeReporting`.
+   *
+   * `abpEligibleTrackingIdsStrict` and the inner
+   * `eligiblePart2TrackingIds` set were byte-identical at the
+   * source — this aggregator computes them once.
+   *
+   * Cache key bundles 2 dataset batch IDs (abpReport,
+   * solarApplications). Plain JSON serde — output is all strings
+   * and string-keyed records.
+   */
+  getDashboardOfflineMonitoring: requirePermission(
+    "solar-rec-dashboard",
+    "read"
+  ).query(async ({ ctx }) => {
+    const {
+      getOrBuildOfflineMonitoringAggregates,
+      OFFLINE_MONITORING_RUNNER_VERSION,
+    } = await import(
+      "../services/solar/buildOfflineMonitoringAggregates"
+    );
+
+    const { result, fromCache } =
+      await getOrBuildOfflineMonitoringAggregates(ctx.scopeId);
+
+    return {
+      ...result,
+      fromCache,
+      _runnerVersion: OFFLINE_MONITORING_RUNNER_VERSION,
+    };
+  }),
+
+  /**
    * Phase 5e PR (2026-04-29) — server-side aggregator for the
    * `performanceSourceRows` shape consumed by RecPerformanceEvaluation
    * Tab + Snapshot Log + the parent's `recPerformanceSnapshotContracts
