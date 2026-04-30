@@ -1,4 +1,4 @@
-import express, { type Express } from "express";
+import express, { type Express, type Response } from "express";
 import fs from "fs";
 import { type Server } from "http";
 import { nanoid } from "nanoid";
@@ -50,6 +50,31 @@ export async function setupVite(app: Express, server: Server) {
   });
 }
 
+function setStaticCacheHeaders(res: Response, filePath: string): void {
+  const fileName = path.basename(filePath);
+
+  if (filePath.includes(`${path.sep}assets${path.sep}`)) {
+    res.setHeader(
+      "Cache-Control",
+      "public, max-age=31536000, immutable"
+    );
+    return;
+  }
+
+  if (
+    fileName.endsWith(".html") ||
+    fileName === "service-worker.js" ||
+    fileName === "manifest.webmanifest"
+  ) {
+    res.setHeader("Cache-Control", "no-cache");
+    return;
+  }
+
+  if (/\.(?:png|svg|ico|webp|jpg|jpeg)$/i.test(fileName)) {
+    res.setHeader("Cache-Control", "public, max-age=86400");
+  }
+}
+
 export function serveStatic(app: Express) {
   const distPath =
     process.env.NODE_ENV === "development"
@@ -61,11 +86,24 @@ export function serveStatic(app: Express) {
     );
   }
 
-  app.use(express.static(distPath));
+  app.use(
+    "/assets",
+    express.static(path.resolve(distPath, "assets"), {
+      immutable: true,
+      maxAge: "1y",
+      setHeaders: setStaticCacheHeaders,
+    })
+  );
+  app.use(
+    express.static(distPath, {
+      setHeaders: setStaticCacheHeaders,
+    })
+  );
 
   // Solar REC standalone route — serve solar-rec.html
   app.use("/solar-rec/*", (_req, res) => {
     const solarRecHtml = path.resolve(distPath, "solar-rec.html");
+    res.setHeader("Cache-Control", "no-cache");
     if (fs.existsSync(solarRecHtml)) {
       res.sendFile(solarRecHtml);
     } else {
@@ -75,6 +113,7 @@ export function serveStatic(app: Express) {
 
   // fall through to index.html if the file doesn't exist
   app.use("*", (_req, res) => {
+    res.setHeader("Cache-Control", "no-cache");
     res.sendFile(path.resolve(distPath, "index.html"));
   });
 }
