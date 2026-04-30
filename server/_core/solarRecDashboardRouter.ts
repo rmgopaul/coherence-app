@@ -2971,6 +2971,46 @@ export const solarRecDashboardRouter = t.router({
   }),
 
   /**
+   * Phase 5e Followup #4 step 2 (2026-04-29) — server-side
+   * implementation of the SystemDetailSheet's "Recent Meter Reads"
+   * table. Replaces the client-side filter that walked
+   * `datasets.convertedReads.rows` (50–150 MB on populated scopes)
+   * just to render up to 20 rows for one selected system.
+   *
+   * Input shape mirrors the prior client filter (systemId OR
+   * systemName match). Caller passes both fields off the
+   * SystemRecord; either may be empty.
+   *
+   * Result is small (~20 rows × 3 fields ≈ 1 KB) so no artifact
+   * cache — the underlying SELECT hits the
+   * `(scopeId, monitoringSystemId, readDate)` index and returns
+   * sub-millisecond on prod scale. `_runnerVersion` is bumped on
+   * matcher-shape or sort-order changes.
+   */
+  getSystemRecentMeterReads: requirePermission("solar-rec-dashboard", "read")
+    .input(
+      z.object({
+        systemId: z.string().nullable(),
+        systemName: z.string(),
+        limit: z.number().int().min(1).max(200).optional(),
+      })
+    )
+    .query(async ({ ctx, input }) => {
+      const { getSystemRecentMeterReads } = await import(
+        "../db/systemMeterReads"
+      );
+      const result = await getSystemRecentMeterReads(
+        ctx.scopeId,
+        { systemId: input.systemId, systemName: input.systemName },
+        { limit: input.limit }
+      );
+      return {
+        ...result,
+        _runnerVersion: "phase-5e-followup-4-systemrecentmeterreads@1",
+      };
+    }),
+
+  /**
    * Task 5.13 PR-5 (2026-04-27) — server-side Application Pipeline
    * monthly aggregate. Replaces the parent's `pipelineMonthlyRows`
    * useMemo over `abpReport.rows` + `generatorDetails.rows` (with

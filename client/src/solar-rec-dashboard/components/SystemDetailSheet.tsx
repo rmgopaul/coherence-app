@@ -2,18 +2,29 @@
  * System Detail Sheet.
  *
  * Extracted from `SolarRecDashboard.tsx` in Phase 11. Pure reader
- * component: receives the selected key plus the two parent arrays
- * it needs (systems + converted-read rows) and renders a
- * right-side sheet with identifiers, REC contract, status, system
- * details, and the last 20 converted meter reads for the system.
+ * component: receives the selected key + the parent's systems
+ * array and renders a right-side sheet with identifiers, REC
+ * contract, status, system details, and a server-driven "Recent
+ * Meter Reads" table at the bottom.
  *
  * The `selectedSystemKey` state stays in the parent because
  * ANY tab can open the sheet — the parent still owns
  * `setSelectedSystemKey` and passes it down as `onSelectSystem`.
- * This component is purely for the SHEET itself; it doesn't own
- * any state beyond what flows in via props.
+ *
+ * Phase 5e Followup #4 step 2 (2026-04-29) — the prior
+ * `convertedReads: CsvDataset | null` prop is gone. The Sheet
+ * now fetches the per-system meter-reads slice via
+ * `getSystemRecentMeterReads(systemId, systemName)`, which hits
+ * the `(scopeId, monitoringSystemId, readDate)` index on
+ * `srDsConvertedReads` and returns ≤20 rows (~1 KB) instead of
+ * forcing the parent to hydrate the full 50–150 MB convertedReads
+ * blob into memory. Removes the last in-component reader of
+ * `datasets.convertedReads.rows` in the dashboard tree (the
+ * remaining tab-priority hydration of `convertedReads` will be
+ * dropped in a follow-up PR once this lands).
  */
 
+import { useMemo } from "react";
 import { Badge } from "@/components/ui/badge";
 import {
   Sheet,
@@ -34,10 +45,8 @@ import {
   formatCapacityKw,
   formatNumber,
 } from "@/solar-rec-dashboard/lib/helpers";
-import type {
-  CsvDataset,
-  SystemRecord,
-} from "@/solar-rec-dashboard/state/types";
+import { solarRecTrpc } from "@/solar-rec/solarRecTrpc";
+import type { SystemRecord } from "@/solar-rec-dashboard/state/types";
 
 export interface SystemDetailSheetProps {
   /**
@@ -53,17 +62,37 @@ export interface SystemDetailSheetProps {
   onClose: () => void;
   /** All parent-known systems. Sheet looks up the selected one by key. */
   systems: SystemRecord[];
-  /**
-   * The parent's `convertedReads` dataset (or null if none
-   * uploaded). Used to render the "Recent Meter Reads" table at
-   * the bottom of the sheet — we filter the rows to just the ones
-   * that belong to the selected system and show the most recent 20.
-   */
-  convertedReads: CsvDataset | null;
 }
 
 export default function SystemDetailSheet(props: SystemDetailSheetProps) {
-  const { selectedSystemKey, onClose, systems, convertedReads } = props;
+  const { selectedSystemKey, onClose, systems } = props;
+
+  const sys = useMemo(
+    () =>
+      selectedSystemKey === null
+        ? null
+        : systems.find((s) => s.key === selectedSystemKey) ?? null,
+    [selectedSystemKey, systems]
+  );
+
+  const recentReadsQuery =
+    solarRecTrpc.solarRecDashboard.getSystemRecentMeterReads.useQuery(
+      {
+        systemId: sys?.systemId ?? null,
+        systemName: sys?.systemName ?? "",
+        limit: 20,
+      },
+      {
+        enabled: sys !== null,
+        // Most recent reads can shift by the day on populated scopes;
+        // 5-min stale window keeps re-opens snappy without hiding new
+        // data. The underlying SELECT is sub-ms via the
+        // (scopeId, monitoringSystemId, readDate) index.
+        staleTime: 5 * 60_000,
+        refetchOnWindowFocus: false,
+      }
+    );
+  const sysReads = recentReadsQuery.data?.reads ?? [];
 
   return (
     <Sheet
@@ -78,22 +107,10 @@ export default function SystemDetailSheet(props: SystemDetailSheetProps) {
           <SheetDescription>Full details for the selected system.</SheetDescription>
         </SheetHeader>
         {(() => {
-          const sys = systems.find((s) => s.key === selectedSystemKey);
           if (!sys)
             return (
               <p className="text-sm text-slate-500 mt-4">System not found.</p>
             );
-
-          // Find converted reads for this system
-          const sysReads = (convertedReads?.rows ?? [])
-            .filter((r) => {
-              const rId = (r.monitoring_system_id || "").toLowerCase();
-              const rName = (r.monitoring_system_name || "").toLowerCase();
-              const sysId = (sys.systemId || "").toLowerCase();
-              const sysName = sys.systemName.toLowerCase();
-              return (sysId && rId === sysId) || (sysName && rName === sysName);
-            })
-            .slice(0, 20);
 
           return (
             <div className="space-y-4 mt-4">
@@ -244,10 +261,12 @@ export default function SystemDetailSheet(props: SystemDetailSheetProps) {
                     <TableBody>
                       {sysReads.map((r, i) => (
                         <TableRow key={i}>
-                          <TableCell className="text-xs">{r.read_date}</TableCell>
-                          <TableCell className="text-xs">{r.monitoring}</TableCell>
+                          <TableCell className="text-xs">{r.readDate}</TableCell>
+                          <TableCell className="text-xs">
+                            {r.monitoring ?? ""}
+                          </TableCell>
                           <TableCell className="text-xs text-right">
-                            {formatNumber(parseFloat(r.lifetime_meter_read_wh || "0"))}
+                            {formatNumber(r.lifetimeMeterReadWh ?? 0)}
                           </TableCell>
                         </TableRow>
                       ))}

@@ -7088,7 +7088,6 @@ const aiDataContext = useMemo(() => {
             selectedSystemKey={selectedSystemKey}
             onClose={() => setSelectedSystemKey(null)}
             systems={systems}
-            convertedReads={datasets.convertedReads ?? null}
           />
         </Suspense>
       </div>

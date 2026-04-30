@@ -43,6 +43,116 @@ export interface SystemMeterRead {
   lifetimeMeterReadWh: number | null;
 }
 
+/**
+ * Phase 5e Followup #4 step 2 (2026-04-29) — sister helper to
+ * `getLatestMeterReadsForCsgId` for the SystemDetailSheet flow,
+ * which has a `SystemRecord` (systemId + systemName) but no
+ * `csgId`. The Sheet renders a 3-column "Recent Meter Reads"
+ * table at the bottom of the panel; this helper supplies that
+ * query without needing the client to hydrate the full
+ * `srDsConvertedReads` table (50–150 MB on a populated scope).
+ *
+ * Differs from `getLatestMeterReadsForCsgId`:
+ *   - Caller passes systemId/systemName directly (no csgId →
+ *     registry → generationEntry → vendor lookup chain).
+ *   - Returns the `monitoring` (vendor) field per row so the Sheet
+ *     can display "Platform" without a separate lookup. The
+ *     existing helper attaches a single resolved vendor at the
+ *     result level (via generationEntry); this one reads it
+ *     directly off each convertedReads row, since systems with
+ *     mixed-vendor history are rare but possible.
+ *
+ * Same OR-match shape as the SystemDetailSheet's prior client-side
+ * filter:
+ *
+ *   monitoringSystemId === input.systemId
+ *     OR monitoringSystemName === input.systemName
+ *
+ * Sort order: `readDate DESC, lifetimeMeterReadWh DESC NULLS LAST`.
+ * The Sheet's column header reads "Recent Meter Reads" — the prior
+ * client-side filter just took the first 20 rows in dataset order
+ * (a latent bug if the upload wasn't pre-sorted). This helper
+ * fixes that.
+ */
+export interface SystemRecentMeterReadsRow {
+  readDate: string;
+  monitoring: string | null;
+  lifetimeMeterReadWh: number | null;
+}
+
+export interface SystemRecentMeterReadsResult {
+  reads: SystemRecentMeterReadsRow[];
+}
+
+const EMPTY_RECENT_RESULT: SystemRecentMeterReadsResult = { reads: [] };
+
+export async function getSystemRecentMeterReads(
+  scopeId: string,
+  input: { systemId: string | null; systemName: string },
+  opts: { limit?: number } = {}
+): Promise<SystemRecentMeterReadsResult> {
+  const systemId = (input.systemId ?? "").trim();
+  const systemName = (input.systemName ?? "").trim();
+  if (!systemId && !systemName) return EMPTY_RECENT_RESULT;
+
+  const limit = Math.min(Math.max(opts.limit ?? 20, 1), 200);
+
+  const db = await getDb();
+  if (!db) return EMPTY_RECENT_RESULT;
+
+  const batches = await resolveMeterReadsBatchIds(scopeId);
+  const convertedReadsBatchId = batches.convertedReads;
+  if (!convertedReadsBatchId) return EMPTY_RECENT_RESULT;
+
+  const matchers: ReturnType<typeof eq>[] = [];
+  if (systemId) {
+    matchers.push(eq(srDsConvertedReads.monitoringSystemId, systemId));
+  }
+  if (systemName) {
+    matchers.push(eq(srDsConvertedReads.monitoringSystemName, systemName));
+  }
+  if (matchers.length === 0) return EMPTY_RECENT_RESULT;
+
+  const readRows = await withDbRetry(
+    "system recent meter reads — converted reads lookup",
+    () =>
+      db
+        .select({
+          readDate: srDsConvertedReads.readDate,
+          monitoring: srDsConvertedReads.monitoring,
+          lifetimeMeterReadWh: srDsConvertedReads.lifetimeMeterReadWh,
+        })
+        .from(srDsConvertedReads)
+        .where(
+          and(
+            eq(srDsConvertedReads.scopeId, scopeId),
+            eq(srDsConvertedReads.batchId, convertedReadsBatchId),
+            or(...matchers)
+          )
+        )
+        .orderBy(desc(srDsConvertedReads.readDate))
+        .limit(limit)
+  );
+
+  const reads: SystemRecentMeterReadsRow[] = readRows
+    .filter(
+      (
+        r
+      ): r is {
+        readDate: string;
+        monitoring: string | null;
+        lifetimeMeterReadWh: number | null;
+      } => typeof r.readDate === "string" && r.readDate.length > 0
+    )
+    .map((r) => ({
+      readDate: r.readDate,
+      monitoring: r.monitoring,
+      lifetimeMeterReadWh: r.lifetimeMeterReadWh,
+    }));
+
+  return { reads };
+}
+
 export interface SystemMeterReadsResult {
   /** "Solis" / "SolarEdge" / etc. — null when no generation-entry
    *  row resolved the vendor for this system. */
