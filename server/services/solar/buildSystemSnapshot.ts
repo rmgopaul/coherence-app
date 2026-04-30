@@ -119,22 +119,33 @@ const TYPED_COLUMN_TO_CSV_KEY: Record<string, Record<string, string>> = {
  * buildSystems reads from these rows is already covered by a
  * typed column (see TYPED_COLUMN_TO_CSV_KEY). Skipping rawRow
  * drops roughly 500MB of wire transfer + JSON parse work on a
- * million-row dataset. convertedReads is also rawRow-skipped
- * because the server aggregators only need its typed columns.
+ * million-row dataset.
  *
- * NOTE: accountSolarGeneration was also here originally, but
- * buildSystems uses `resolveLastMeterReadRawValue` which does a
- * case-insensitive substring search across all row keys for
- * "last meter read". The actual CSV uses column header
- * "Last Meter Read (kWh/Btu)" (not "Last Meter Read (kWh)" as
- * the typed column mapping assumed), so without rawRow the
- * fallback search has nothing to scan. We now preserve rawRow
- * for accountSolarGeneration at the cost of ~170MB more wire
- * transfer — still fits comfortably under the 2GB Node heap.
+ * 2026-04-30 — added `srDsAccountSolarGeneration` after a
+ * production OOM. The historical comment claimed rawRow was
+ * required because the actual CSV header `"Last Meter Read
+ * (kWh/Btu)"` didn't match `"Last Meter Read (kWh)"` in the
+ * typed-column remap, forcing a fallback substring scan that
+ * needs rawRow. The real fix was to extend the upload parser's
+ * `pickField` alias list to recognise the parenthesised forms
+ * (see `datasetUploadParsers.ts :: ACCOUNT_SOLAR_GENERATION_PARSER`).
+ * After that change, every newly uploaded row has the value in
+ * the typed `lastMeterReadKwh` column and reconstructs to
+ * `"Last Meter Read (kWh)"` via `TYPED_COLUMN_TO_CSV_KEY` — so
+ * `resolveLastMeterReadRawValue`'s direct lookup at the head of
+ * the function finds it without needing the fallback scan.
+ *
+ * Caveat for existing batches uploaded before this fix: the
+ * typed column may be null for those rows, and without rawRow
+ * the snapshot loses their meter-read values. Re-uploading
+ * accountSolarGeneration through the v2 button repopulates the
+ * typed column with the new alias list. Acceptable hotfix
+ * tradeoff to keep the server alive.
  */
 const SKIP_RAW_ROW_TABLES = new Set<string>([
   "srDsConvertedReads",
   "srDsTransferHistory",
+  "srDsAccountSolarGeneration",
 ]);
 
 /**
