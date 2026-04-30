@@ -474,18 +474,23 @@ const EMPTY_PERFORMANCE_SOURCE_ROWS: PerformanceSourceRow[] = [];
  * Phase 5e Followup #3 (2026-04-29) — `accountSolarGeneration` and
  * `transferHistory` removed from every tab's priority list. Both
  * had ZERO live client-side row consumers after the Phase 5d/5e
- * server-aggregator migrations (delivery tracker, trend delivery
- * pace, contract vintage, forecast, performance ratio, performance
- * source rows, financials all read straight from `srDs*` tables
- * server-side). Hydrating them here was wasted bandwidth + main-
- * thread parse cost. `convertedReads` stays — it's still consumed
- * by `SystemDetailSheet`'s "Recent Meter Reads" table until that
- * migrates to a server query.
+ * server-aggregator migrations.
+ *
+ * Phase 5e Followup #4 step 3 (2026-04-29) — `convertedReads`
+ * removed from `performance-ratio` and `trends`. Server-side:
+ * `getDashboardPerformanceRatio` reads `srDsConvertedReads`
+ * directly via `loadPerformanceRatioInput`, and the trends-
+ * production aggregator does the same on its own. Client-side:
+ * `PerformanceRatioTab` (sentinel-only consumer, PR #285),
+ * `TrendsTab` (zero consumers — historical comment only), and
+ * `SystemDetailSheet` (now via `getSystemRecentMeterReads`,
+ * PR #286) all stopped reading `datasets.convertedReads.rows`.
+ * The dataset is 50–150 MB on populated scopes; hydrating it
+ * per-tab was the root cause of the Performance Ratio hang.
  */
 const TAB_PRIORITY_DATASETS: Record<string, DatasetKey[]> = {
   "performance-ratio": [
     "solarApplications",
-    "convertedReads",
     "annualProductionEstimates",
     "generatorDetails",
     "generationEntry",
@@ -511,7 +516,7 @@ const TAB_PRIORITY_DATASETS: Record<string, DatasetKey[]> = {
     "abpIccReport3Rows",
   ],
   "app-pipeline": ["generatorDetails", "abpCsgSystemMapping", "abpIccReport3Rows"],
-  "trends": ["convertedReads", "deliveryScheduleBase"],
+  "trends": ["deliveryScheduleBase"],
 };
 
 function buildHydrationPriorityKeys(activeTab: string): Set<DatasetKey> {
@@ -4442,13 +4447,18 @@ export default function SolarRecDashboard() {
         // mapping / report tables) without locking the tab.
         //
         // Phase 5e Followup #3 (2026-04-29) — `accountSolarGeneration`
-        // + `transferHistory` are now also gone from per-tab
-        // priority lists, so they only ever appear in `keysToLoad`
-        // here under the force-load expansion (which pulls from the
-        // full manifest). This filter is the only path that excludes
-        // them in that case. `convertedReads` still reaches per-tab
-        // hydration (SystemDetailSheet's "Recent Meter Reads" table)
-        // until that migrates to a server query — Followup #4.
+        // + `transferHistory` removed from per-tab priority lists.
+        //
+        // Phase 5e Followup #4 step 3 (2026-04-29) — `convertedReads`
+        // also removed from per-tab priority lists (PerformanceRatioTab
+        // is sentinel-only post-#285; SystemDetailSheet uses a server
+        // query post-#286; TrendsTab never read it). All 3 multi-
+        // append datasets now ONLY appear in `keysToLoad` under the
+        // force-load expansion (which pulls from the full manifest).
+        // This filter is the only path that excludes them — and it
+        // still does, because forcing them through the cloud-fallback
+        // pipeline still risks the same main-thread freeze on
+        // populated scopes that the original 2026-04-29 hotfix saw.
         if (isForceLoadAll) {
           MULTI_APPEND_DATASET_KEYS.forEach((heavyKey) => {
             keysToLoad.delete(heavyKey);
