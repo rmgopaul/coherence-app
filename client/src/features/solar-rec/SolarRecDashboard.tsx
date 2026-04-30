@@ -2950,11 +2950,15 @@ export default function SolarRecDashboard() {
   // are fine — the rest of the dashboard already handles dataset
   // hydration loading states the same way.
   //
-  // Phase 8.3 (future) removes the IDB-based dataset loading once
-  // non-core datasets (Financials, Invoice Match, etc.) have
-  // server-backed equivalents. For now the datasets state map
-  // stays populated to support those tabs that still read raw
-  // CSV rows (e.g. AlertsTab reading deliveryScheduleBase rows).
+  // The datasets state map still gets populated by cloud-fallback
+  // hydration for keys in `TAB_PRIORITY_DATASETS` because some tabs
+  // still iterate raw CSV rows (FinancialsTab reads
+  // `abpCsgSystemMapping.rows` + `abpIccReport3Rows.rows`;
+  // ScheduleBImport's CSV merge upload handler reads
+  // `deliveryScheduleBase.rows` to dedup against existing rows).
+  // The cloud-fallback pipeline + datasets state map can be deleted
+  // entirely once those last consumers migrate to server queries
+  // (Followup #1 step 2 + #4 in `phase-5e-handoff.md`).
   const serverSnapshot = useSystemSnapshot();
 
   const systems = useMemo<SystemRecord[]>(
@@ -3745,15 +3749,13 @@ export default function SolarRecDashboard() {
 
   // ── Transfer-Based Delivery Lookup (shared by Perf Eval + Forecast + Delivery Tracker) ──
   //
-  // Phase 8.4 of the server-side architecture migration:
-  // The server now computes this lookup from the active
-  // transferHistory batch and returns it via tRPC. We prefer the
-  // server result when available, falling back to a client-side
-  // build only while the server fetch is in flight. This is the
-  // same stale-while-revalidate pattern as useSystemSnapshot.
-  //
-  // Once we retire IDB dataset loading (Phase 8.6+), the client
-  // fallback can be dropped entirely.
+  // Server-computed from the active transferHistory batch in
+  // `srDsTransferHistory` and returned via tRPC. The Phase 5b
+  // (2026-04-28) IndexedDB-removal refactor dropped the client-side
+  // fallback that walked `datasets.transferHistory.rows` — see the
+  // comment immediately below for the rationale. Empty Map while
+  // the server query is in flight; matches pre-Phase-5a behavior
+  // for "transferHistory not uploaded."
   const serverTransferDeliveryLookup = useTransferDeliveryLookup();
 
   // Phase 5b (2026-04-28) of the IndexedDB-removal refactor: the
