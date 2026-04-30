@@ -136,6 +136,7 @@ import type {
   SizeBucket,
   SystemRecord,
 } from "@/solar-rec-dashboard/state/types";
+import { isTerminalUploadStatus } from "@shared/datasetUpload.helpers";
 import {
   buildCsv,
   parseCsv,
@@ -1338,6 +1339,29 @@ export default function SolarRecDashboard() {
     }
     return map;
   }, [datasetSummariesQuery.data]);
+  // Phase 5e step 4 PR-D follow-up (2026-04-30) — dashboard-level
+  // cloud-sync indicator. Polls v2 upload jobs every 2s when any
+  // are in flight, every 30s otherwise. Combined with the v1
+  // `datasetSyncProgress` map, this drives the aggregate progress
+  // bar in the CLOUD SYNC tile so the user sees activity dashboard-
+  // wide instead of having to inspect individual cards.
+  const datasetUploadJobsQuery =
+    solarRecTrpc.solarRecDashboard.listDatasetUploadJobs.useQuery(
+      { limit: 50 },
+      {
+        staleTime: 1500,
+        refetchInterval: (query) => {
+          const data = query.state.data;
+          if (!data) return 5_000;
+          const inFlight = data.jobs.some(
+            (j) => !isTerminalUploadStatus(j.status)
+          );
+          return inFlight ? 2_000 : 30_000;
+        },
+        refetchOnWindowFocus: true,
+      }
+    );
+
   const saveRemoteDashboardState = solarRecTrpc.solarRecDashboard.saveState.useMutation();
   const getRemoteDataset = solarRecTrpc.solarRecDashboard.getDataset.useMutation();
   // Task 5.14 PR-5 (2026-04-27): the previous batched cold-cache
@@ -4287,6 +4311,78 @@ export default function SolarRecDashboard() {
     );
   }, [datasetSummariesByKey, datasetSummariesQuery.status]);
 
+  // Phase 5e step 4 PR-D follow-up (2026-04-30) — dashboard-level
+  // cloud-sync aggregate. Combines:
+  //   - v1 `datasetSyncProgress` (per-dataset chunked-CSV uploads
+  //     and the post-write database-sync stage)
+  //   - v2 in-flight upload jobs (queued / uploading / parsing /
+  //     writing) from `listDatasetUploadJobs`
+  // into a single shape that drives the CLOUD SYNC tile's progress
+  // bar. When `null`, the tile shows the static "Cloud sync
+  // healthy" state. When non-null, the tile shows a percent + dataset
+  // names + a progress bar.
+  type CloudSyncIndicator = {
+    inFlightCount: number;
+    aggregatePercent: number;
+    activeLabels: string[];
+  };
+  const cloudSyncIndicator = useMemo<CloudSyncIndicator | null>(() => {
+    const v1Active = Object.entries(datasetSyncProgress) as Array<
+      [DatasetKey, DatasetSyncProgressState]
+    >;
+    const v2Jobs = datasetUploadJobsQuery.data?.jobs ?? [];
+    const v2Active = v2Jobs.filter((j) => !isTerminalUploadStatus(j.status));
+    const totalActive = v1Active.length + v2Active.length;
+    if (totalActive === 0) return null;
+
+    // v1 percent comes straight from the sync state.
+    const v1Sum = v1Active.reduce((sum, [, p]) => sum + clampSyncPercent(p.percent), 0);
+
+    // v2 percent — map the discrete status to a stage % (job runner
+    // doesn't emit fractional progress for queued/uploading/parsing;
+    // the writing phase has rowsWritten / totalRows).
+    const v2Sum = v2Active.reduce((sum, j) => {
+      switch (j.status) {
+        case "queued":
+          return sum + 5;
+        case "uploading":
+          return sum + 25;
+        case "parsing":
+          return sum + 55;
+        case "writing": {
+          if (typeof j.totalRows === "number" && j.totalRows > 0) {
+            const rowsWritten = j.rowsWritten ?? 0;
+            const writingPct = Math.min(100, (rowsWritten / j.totalRows) * 100);
+            // Writing phase covers 75 → 100% of overall.
+            return sum + 75 + writingPct * 0.25;
+          }
+          return sum + 80;
+        }
+        default:
+          return sum;
+      }
+    }, 0);
+
+    const aggregatePercent =
+      totalActive > 0 ? (v1Sum + v2Sum) / totalActive : 0;
+
+    const labels = [
+      ...v1Active.map(
+        ([key]) => DATASET_DEFINITIONS[key].label
+      ),
+      ...v2Active.map((j) => {
+        const def = DATASET_DEFINITIONS[j.datasetKey as DatasetKey];
+        return def?.label ?? j.datasetKey;
+      }),
+    ];
+
+    return {
+      inFlightCount: totalActive,
+      aggregatePercent: clampSyncPercent(aggregatePercent),
+      activeLabels: labels,
+    };
+  }, [datasetSyncProgress, datasetUploadJobsQuery.data]);
+
   const activeDatasetSyncProgress = useMemo(() => {
     const entries = Object.entries(datasetSyncProgress) as Array<
       [DatasetKey, DatasetSyncProgressState]
@@ -4789,27 +4885,38 @@ const aiDataContext = useMemo(() => {
               <div className={`rounded-md border px-3 py-2 xl:col-span-2 ${
                 Object.values(syncJobIssues).some(issue => issue.kind === "timeout" || issue.kind === "failed")
                   ? "border-rose-300 bg-rose-50"
-                  : "border-slate-200 bg-slate-50"
+                  : cloudSyncIndicator
+                    ? "border-sky-300 bg-sky-50"
+                    : "border-slate-200 bg-slate-50"
               }`}>
                 <p className="text-xs uppercase tracking-wide text-slate-500">Cloud Sync</p>
-                
-                {Object.keys(datasetSyncProgress).length > 0 ? (
-                  <div className="mt-1">
-                    <p className="text-sm font-semibold text-slate-900">
-                      Syncing {Object.keys(datasetSyncProgress).length} dataset(s)...
-                    </p>
-                    <p className="mt-1 text-[11px] text-slate-600 truncate">
-                      {Object.keys(datasetSyncProgress).map(k => DATASET_DEFINITIONS[k as DatasetKey].label).join(", ")}
+
+                {cloudSyncIndicator ? (
+                  <div className="mt-1 space-y-1.5">
+                    <div className="flex items-baseline justify-between gap-3">
+                      <p className="text-sm font-semibold text-sky-900">
+                        Syncing {cloudSyncIndicator.inFlightCount} dataset
+                        {cloudSyncIndicator.inFlightCount === 1 ? "" : "s"}…
+                      </p>
+                      <p className="text-xs font-medium text-sky-800">
+                        {Math.round(cloudSyncIndicator.aggregatePercent)}%
+                      </p>
+                    </div>
+                    <Progress
+                      value={cloudSyncIndicator.aggregatePercent}
+                      className="h-2 bg-sky-100"
+                    />
+                    <p className="text-[11px] text-sky-900/80 truncate">
+                      {cloudSyncIndicator.activeLabels.join(", ")}
                     </p>
                     <button
-                      className="mt-1 text-xs font-medium text-sky-600 hover:text-sky-700 hover:underline"
+                      className="text-xs font-medium text-sky-700 hover:text-sky-900 hover:underline"
                       onClick={() => {
                         setUploadsExpanded(true);
-                        // The container for dataset cards has id="dataset-cards" in this codebase.
                         document.getElementById("dataset-cards")?.scrollIntoView({ behavior: "smooth" });
                       }}
                     >
-                      View progress &darr;
+                      View per-dataset progress &darr;
                     </button>
                   </div>
                 ) : Object.values(syncJobIssues).some(issue => issue.kind === "timeout" || issue.kind === "failed") ? (
@@ -4821,7 +4928,7 @@ const aiDataContext = useMemo(() => {
                   <p className="text-sm font-semibold text-slate-900">{dataHealthSummary.syncStatus}</p>
                 )}
 
-                {dataHealthSummary.staleDatasetLabels.length > 0 && Object.keys(datasetSyncProgress).length === 0 ? (
+                {dataHealthSummary.staleDatasetLabels.length > 0 && !cloudSyncIndicator ? (
                   <p className="mt-1 text-xs text-amber-800">
                     Stale: {dataHealthSummary.staleDatasetLabels.join(", ")}
                   </p>
