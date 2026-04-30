@@ -52,25 +52,54 @@ import { CHANGE_OWNERSHIP_ORDER } from "@/solar-rec-dashboard/lib/constants";
 import type {
   ChangeOwnershipStatus,
   ChangeOwnershipSummary,
-  SystemRecord,
+  OwnershipStatus,
 } from "@/solar-rec-dashboard/state/types";
 
 // ---------------------------------------------------------------------------
 // Props
 // ---------------------------------------------------------------------------
 
+/**
+ * Projected change-of-ownership row shape from
+ * `getDashboardChangeOwnership.rows` (Phase 5e step 4 PR-C3,
+ * 2026-04-30). Mirrors the server's `ChangeOwnershipExportRow`.
+ * Kept inline rather than cross-importing from
+ * `server/services/solar/buildChangeOwnershipAggregates.ts`.
+ */
+export type ChangeOwnershipExportRow = {
+  key: string;
+  systemName: string;
+  systemId: string | null;
+  trackingSystemRefId: string | null;
+  installedKwAc: number | null;
+  contractType: string | null;
+  contractStatusText: string;
+  contractedDate: Date | null;
+  zillowStatus: string | null;
+  zillowSoldDate: Date | null;
+  latestReportingDate: Date | null;
+  changeOwnershipStatus: ChangeOwnershipStatus;
+  ownershipStatus: OwnershipStatus;
+  isReporting: boolean;
+  isTerminated: boolean;
+  isTransferred: boolean;
+  hasChangedOwnership: boolean;
+  totalContractAmount: number | null;
+  contractedValue: number | null;
+};
+
 export interface ChangeOwnershipTabProps {
   /**
-   * Flagged change-of-ownership systems. Computed by the parent's
-   * `changeOwnershipRows` useMemo and also consumed by Overview +
-   * Snapshot Log, so it stays in the parent.
+   * Flagged change-of-ownership rows. Comes from the server
+   * aggregator `getDashboardChangeOwnership.rows`. Also consumed
+   * by the parent's createLogEntry flow.
    */
-  changeOwnershipRows: SystemRecord[];
+  changeOwnershipRows: readonly ChangeOwnershipExportRow[];
 
   /**
-   * Aggregated counts + contract values by status. Computed by the
-   * parent's `changeOwnershipSummary` useMemo. Also consumed by Overview
-   * tiles, so stays in the parent.
+   * Aggregated counts + contract values by status. Comes from
+   * `getDashboardChangeOwnership.summary`. Also consumed by Overview
+   * tiles, so the parent forwards it.
    */
   changeOwnershipSummary: ChangeOwnershipSummary;
 }

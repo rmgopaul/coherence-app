@@ -160,7 +160,6 @@ import { ScheduleBImport } from "@/solar-rec-dashboard/components/ScheduleBImpor
 // dev-only IDB-vs-server diff probe. With IDB no longer used at
 // runtime, the parity report has no two sources to compare.
 import {
-  COO_TARGET_STATUS,
   LOGS_STORAGE_KEY,
   OWNERSHIP_ORDER,
   CHANGE_OWNERSHIP_ORDER,
@@ -182,12 +181,10 @@ import {
   resolveLastMeterReadRawValue,
   parseNumber,
   parseDate,
-  isPart2VerifiedAbpRow,
   formatNumber,
   roundMoney,
   toPercentValue,
   isStaleUpload,
-  maxDate,
   resolveContractValueAmount,
   resolveValueGapAmount,
   getMonitoringDetailsForSystem,
@@ -543,7 +540,11 @@ function getTabFromSearch(search: string): DashboardTabId | null {
 // client callers should `import { buildScheduleYearEntries } from
 // "@shared/solarRecPerformanceRatio";`.
 
-function buildSystemSnapshotKey(system: SystemRecord): string {
+function buildSystemSnapshotKey(system: {
+  systemId: string | null;
+  trackingSystemRefId: string | null;
+  systemName: string;
+}): string {
   if (system.systemId) return `id:${system.systemId}`;
   if (system.trackingSystemRefId) return `tracking:${system.trackingSystemRefId}`;
   return `name:${system.systemName.toLowerCase()}`;
@@ -2895,9 +2896,14 @@ export default function SolarRecDashboard() {
   // handleMeterReadsUpload / downloadMeterReadsCsv — moved to
   // @/solar-rec-dashboard/components/MeterReadsTab
 
-  const part2VerifiedAbpRows = useMemo(() => {
-    return (datasets.abpReport?.rows ?? []).filter((row) => isPart2VerifiedAbpRow(row));
-  }, [datasets.abpReport]);
+  // Phase 5e Followup #4 step 4 PR-C3 (2026-04-30) — `part2VerifiedAbpRows`
+  // parent useMemo deleted. It was the LAST reader of
+  // `datasets.abpReport.rows`. All consumers now flow through
+  // server aggregators (`getDashboardOfflineMonitoring`,
+  // `getDashboardOverviewSummary`, `getDashboardChangeOwnership`,
+  // `getDashboardFinancials`). With this delete, no client memo
+  // reads `datasets[k].rows` for ANY of the 18 dataset keys —
+  // PR-D (delete cloud-fallback hydration) is unblocked.
 
   // Phase 5e Followup #4 step 4 PR-A (2026-04-30) — server-side
   // aggregator that replaces 4 client useMemos that read
@@ -3106,192 +3112,67 @@ export default function SolarRecDashboard() {
 
   // filteredOwnershipRows — moved to @/solar-rec-dashboard/components/OwnershipTab
 
-  const changeOwnershipRows = useMemo(() => {
-    const eligiblePart2ApplicationIds = new Set<string>();
-    const eligiblePart2PortalSystemIds = new Set<string>();
-    const eligiblePart2TrackingIds = new Set<string>();
-    part2VerifiedAbpRows.forEach((row) => {
-      const applicationId = clean(row.Application_ID);
-      const portalSystemId = clean(row.system_id);
-      const trackingId = clean(row.PJM_GATS_or_MRETS_Unit_ID_Part_2) || clean(row.tracking_system_ref_id);
-      if (applicationId) eligiblePart2ApplicationIds.add(applicationId);
-      if (portalSystemId) eligiblePart2PortalSystemIds.add(portalSystemId);
-      if (trackingId) eligiblePart2TrackingIds.add(trackingId);
-    });
-
-    const scopedPart2Systems = systems.filter((system) => {
-      const byPortalSystemId = system.systemId ? eligiblePart2PortalSystemIds.has(system.systemId) : false;
-      const byApplicationId = system.stateApplicationRefId
-        ? eligiblePart2ApplicationIds.has(system.stateApplicationRefId)
-        : false;
-      const byTrackingId = system.trackingSystemRefId ? eligiblePart2TrackingIds.has(system.trackingSystemRefId) : false;
-      return byPortalSystemId || byApplicationId || byTrackingId;
-    });
-
-    const systemsById = new Map<string, SystemRecord[]>();
-    const systemsByApplicationId = new Map<string, SystemRecord[]>();
-    const systemsByTrackingId = new Map<string, SystemRecord[]>();
-    const systemsByName = new Map<string, SystemRecord[]>();
-
-    const addIndexedSystem = (
-      map: Map<string, SystemRecord[]>,
-      key: string | null | undefined,
-      system: SystemRecord
-    ) => {
-      const normalized = clean(key);
-      if (!normalized) return;
-      const existing = map.get(normalized) ?? [];
-      existing.push(system);
-      map.set(normalized, existing);
-    };
-
-    scopedPart2Systems.forEach((system) => {
-      addIndexedSystem(systemsById, system.systemId, system);
-      addIndexedSystem(systemsByApplicationId, system.stateApplicationRefId, system);
-      addIndexedSystem(systemsByTrackingId, system.trackingSystemRefId, system);
-      addIndexedSystem(systemsByName, system.systemName.toLowerCase(), system);
-    });
-
-    const uniquePart2Projects = new Set<string>();
-    const rows: SystemRecord[] = [];
-
-    part2VerifiedAbpRows.forEach((row, index) => {
-      const { applicationId, portalSystemId, trackingId, projectNameKey, dedupeKey } =
-        resolvePart2ProjectIdentity(row, index);
-      if (uniquePart2Projects.has(dedupeKey)) return;
-      uniquePart2Projects.add(dedupeKey);
-
-      const matchedSystems = new Map<string, SystemRecord>();
-      (systemsById.get(portalSystemId) ?? []).forEach((system) => matchedSystems.set(system.key, system));
-      (systemsByApplicationId.get(applicationId) ?? []).forEach((system) => matchedSystems.set(system.key, system));
-      (systemsByTrackingId.get(trackingId) ?? []).forEach((system) => matchedSystems.set(system.key, system));
-      (systemsByName.get(projectNameKey) ?? []).forEach((system) => matchedSystems.set(system.key, system));
-
-      const allMatched = Array.from(matchedSystems.values());
-      const nonTerminatedSystems = allMatched.filter((system) => !system.isTerminated);
-      if (nonTerminatedSystems.length === 0) {
-        const hasChangedOwnership = allMatched.some((system) => system.hasChangedOwnership);
-        if (hasChangedOwnership) {
-          const representative = allMatched[0];
-          const isReporting = allMatched.some((system) => system.isReporting);
-          const latestReportingDate = allMatched.reduce<Date | null>(
-            (latest, system) => maxDate(latest, system.latestReportingDate),
-            null
-          );
-          rows.push({
-            ...representative,
-            key: `coo:${dedupeKey}`,
-            latestReportingDate,
-            isReporting,
-            isTerminated: true,
-            isTransferred: false,
-            hasChangedOwnership: true,
-            changeOwnershipStatus: "Terminated",
-            ownershipStatus: isReporting ? "Terminated and Reporting" : "Terminated and Not Reporting",
-          });
-        }
-        return;
+  // Phase 5e Followup #4 step 4 PR-C3 (2026-04-30) — `changeOwnershipRows`,
+  // `changeOwnershipSummary`, `cooNotTransferredNotReportingCurrentCount`,
+  // and the OverviewTab's `ownershipStackedChartRows` all moved to
+  // a single server aggregator (`getDashboardChangeOwnership`).
+  // The ~140-LOC walk over `part2VerifiedAbpRows × systems` runs
+  // server-side, cached by abpReport batch + system snapshot hash.
+  const changeOwnershipQuery =
+    solarRecTrpc.solarRecDashboard.getDashboardChangeOwnership.useQuery(
+      undefined,
+      {
+        staleTime: 60_000,
       }
-
-      const hasChangedOwnership = nonTerminatedSystems.some((system) => system.hasChangedOwnership);
-      if (!hasChangedOwnership) return;
-
-      const isReporting = nonTerminatedSystems.some((system) => system.isReporting);
-      const isTransferred = nonTerminatedSystems.some(
-        (system) =>
-          system.isTransferred || clean(system.changeOwnershipStatus ?? "").startsWith("Transferred")
-      );
-      const hasChangeOwnershipNotTransferred = nonTerminatedSystems.some((system) =>
-        clean(system.changeOwnershipStatus ?? "").startsWith("Change of Ownership - Not Transferred")
-      );
-
-      const changeOwnershipStatus: ChangeOwnershipStatus = hasChangeOwnershipNotTransferred
-        ? isReporting
-          ? "Change of Ownership - Not Transferred and Reporting"
-          : "Change of Ownership - Not Transferred and Not Reporting"
-        : isTransferred
-          ? isReporting
-            ? "Transferred and Reporting"
-            : "Transferred and Not Reporting"
-          : isReporting
-            ? "Change of Ownership - Not Transferred and Reporting"
-            : "Change of Ownership - Not Transferred and Not Reporting";
-
-      const representative =
-        nonTerminatedSystems.find((system) => system.changeOwnershipStatus === changeOwnershipStatus) ??
-        nonTerminatedSystems.find(
-          (system) => system.hasChangedOwnership && system.changeOwnershipStatus !== null
-        ) ??
-        nonTerminatedSystems[0];
-
-      const latestReportingDate = nonTerminatedSystems.reduce<Date | null>(
-        (latest, system) => maxDate(latest, system.latestReportingDate),
-        null
-      );
-
-      rows.push({
-        ...representative,
-        key: `coo:${dedupeKey}`,
-        latestReportingDate,
-        isReporting,
-        isTerminated: false,
-        isTransferred,
-        ownershipStatus: isTransferred
-          ? isReporting
-            ? "Transferred and Reporting"
-            : "Transferred and Not Reporting"
-          : isReporting
-            ? "Not Transferred and Reporting"
-            : "Not Transferred and Not Reporting",
-        hasChangedOwnership: true,
-        changeOwnershipStatus,
-      });
-    });
-
-    return rows.sort((a, b) =>
-      a.systemName.localeCompare(b.systemName, undefined, { sensitivity: "base", numeric: true })
     );
-  }, [part2VerifiedAbpRows, systems]);
-
-  const changeOwnershipSummary = useMemo<ChangeOwnershipSummary>(() => {
-    const total = changeOwnershipRows.length;
-    const reporting = changeOwnershipRows.filter((system) => system.isReporting).length;
-    const notReporting = total - reporting;
-    const reportingPercent = toPercentValue(reporting, total);
-    const contractedValueTotal = changeOwnershipRows.reduce(
-      (sum, system) => sum + resolveContractValueAmount(system),
-      0
-    );
-    const contractedValueReporting = changeOwnershipRows
-      .filter((system) => system.isReporting)
-      .reduce((sum, system) => sum + resolveContractValueAmount(system), 0);
-    const contractedValueNotReporting = contractedValueTotal - contractedValueReporting;
-    const counts = CHANGE_OWNERSHIP_ORDER.map((status) => {
-      const count =
-        status === "Terminated"
-          ? changeOwnershipRows.filter((s) => s.changeOwnershipStatus?.startsWith("Terminated")).length
-          : changeOwnershipRows.filter((s) => s.changeOwnershipStatus === status).length;
-      return { status, count, percent: toPercentValue(count, total) };
-    });
-    return {
-      total,
-      reporting,
-      notReporting,
-      reportingPercent,
-      contractedValueTotal,
-      contractedValueReporting,
-      contractedValueNotReporting,
-      counts,
-    };
-  }, [changeOwnershipRows]);
-
-  const cooNotTransferredNotReportingCurrentCount = useMemo(
-    () =>
-      changeOwnershipRows.filter(
-        (system) => system.changeOwnershipStatus === COO_TARGET_STATUS
-      ).length,
-    [changeOwnershipRows]
+  type ChangeOwnershipData = NonNullable<typeof changeOwnershipQuery.data>;
+  const EMPTY_CHANGE_OWNERSHIP = useMemo<ChangeOwnershipData>(
+    () => ({
+      rows: [],
+      summary: {
+        total: 0,
+        reporting: 0,
+        notReporting: 0,
+        reportingPercent: null,
+        contractedValueTotal: 0,
+        contractedValueReporting: 0,
+        contractedValueNotReporting: 0,
+        counts: CHANGE_OWNERSHIP_ORDER.map((status) => ({
+          status,
+          count: 0,
+          percent: null,
+        })),
+      },
+      cooNotTransferredNotReportingCurrentCount: 0,
+      ownershipStackedChartRows: [
+        {
+          label: "Reporting" as const,
+          notTransferred: 0,
+          transferred: 0,
+          changeOwnership: 0,
+        },
+        {
+          label: "Not Reporting" as const,
+          notTransferred: 0,
+          transferred: 0,
+          changeOwnership: 0,
+        },
+      ],
+      fromCache: false,
+      _runnerVersion: "client-empty",
+    }),
+    []
   );
+  const changeOwnershipData = useMemo(
+    () => changeOwnershipQuery.data ?? EMPTY_CHANGE_OWNERSHIP,
+    [changeOwnershipQuery.data, EMPTY_CHANGE_OWNERSHIP]
+  );
+  const changeOwnershipRows = changeOwnershipData.rows;
+  const changeOwnershipSummary = changeOwnershipData.summary;
+  const cooNotTransferredNotReportingCurrentCount =
+    changeOwnershipData.cooNotTransferredNotReportingCurrentCount;
+  const ownershipStackedChartRows =
+    changeOwnershipData.ownershipStackedChartRows;
 
   // filteredChangeOwnershipRows — moved to @/solar-rec-dashboard/components/ChangeOwnershipTab
 
@@ -5810,7 +5691,7 @@ const aiDataContext = useMemo(() => {
                   changeOwnershipSummary={changeOwnershipSummary}
                   part2EligibleSystemsForSizeReporting={part2EligibleSystemsForSizeReporting}
                   sizeBreakdownRows={sizeBreakdownRows}
-                  part2VerifiedAbpRows={part2VerifiedAbpRows}
+                  ownershipStackedChartRows={ownershipStackedChartRows}
                   systems={systems}
                   onDownloadOwnershipTile={downloadOwnershipCountTileCsv}
                   onDownloadChangeOwnershipTile={downloadChangeOwnershipCountTileCsv}
