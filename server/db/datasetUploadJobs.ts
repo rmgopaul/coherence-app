@@ -12,7 +12,7 @@
  * also sanity-check the scope on lookup before mutating.
  */
 import { and, desc, eq, getDb, withDbRetry } from "./_core";
-import { sql } from "drizzle-orm";
+import { inArray, lt, sql } from "drizzle-orm";
 import {
   datasetUploadJobs,
   datasetUploadJobErrors,
@@ -282,4 +282,58 @@ export async function deleteDatasetUploadJob(
     (result as unknown as { rowCount?: number }).rowCount ??
     0;
   return affected > 0;
+}
+
+/**
+ * Sweep stale upload jobs — auto-fail rows in non-terminal status
+ * (`queued`, `uploading`, `parsing`, `writing`) whose `createdAt`
+ * is older than `staleAfterMs`. Used to clean up jobs whose
+ * runner crashed mid-flight (e.g. the OOM that crashed the Render
+ * instance before PRs #302 + #303 landed). Without the sweep,
+ * those job rows live forever and the dashboard's cloud-sync
+ * indicator never clears.
+ *
+ * Returns the count of rows updated. Idempotent — already-failed
+ * or already-done rows are not touched. Scope-agnostic; intended
+ * for a process-level sweep timer (see
+ * `server/services/core/datasetUploadStaleJobSweeper.ts`).
+ */
+export async function sweepStaleDatasetUploadJobs(
+  staleAfterMs: number
+): Promise<number> {
+  const db = await getDb();
+  if (!db) return 0;
+
+  const cutoff = new Date(Date.now() - staleAfterMs);
+  const result = await withDbRetry(
+    "sweep stale dataset upload jobs",
+    async () =>
+      db
+        .update(datasetUploadJobs)
+        .set({
+          status: "failed",
+          errorMessage:
+            "Job timed out — runner did not complete within the stale-job " +
+            "threshold. The most likely cause is a server restart or OOM " +
+            "while the runner was processing this upload. Re-upload to retry.",
+          completedAt: new Date(),
+        })
+        .where(
+          and(
+            inArray(datasetUploadJobs.status, [
+              "queued",
+              "uploading",
+              "parsing",
+              "writing",
+            ]),
+            lt(datasetUploadJobs.createdAt, cutoff)
+          )
+        )
+  );
+  const affected =
+    (result as unknown as { affectedRows?: number; rowCount?: number })
+      .affectedRows ??
+    (result as unknown as { rowCount?: number }).rowCount ??
+    0;
+  return affected;
 }

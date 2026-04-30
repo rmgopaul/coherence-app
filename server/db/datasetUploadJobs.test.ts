@@ -31,6 +31,7 @@ import {
   listDatasetUploadJobErrors,
   listDatasetUploadJobs,
   recordDatasetUploadJobError,
+  sweepStaleDatasetUploadJobs,
   updateDatasetUploadJob,
 } from "./datasetUploadJobs";
 
@@ -436,5 +437,36 @@ describe("deleteDatasetUploadJob", () => {
     mocks.getDb.mockResolvedValue(stub);
     const ok = await deleteDatasetUploadJob("s", "missing");
     expect(ok).toBe(false);
+  });
+});
+
+describe("sweepStaleDatasetUploadJobs", () => {
+  it("issues a single UPDATE setting status='failed' with a cutoff WHERE", async () => {
+    const stub = makeDbStub({ updateAffected: 3 });
+    mocks.getDb.mockResolvedValue(stub);
+
+    const swept = await sweepStaleDatasetUploadJobs(10 * 60 * 1000);
+    expect(swept).toBe(3);
+
+    const updates = stub.calls.filter((c) => c.kind === "update");
+    expect(updates).toHaveLength(1);
+    const update = updates[0]!;
+    expect(update.setValue).toMatchObject({ status: "failed" });
+    expect(update.setValue?.completedAt).toBeInstanceOf(Date);
+    expect(update.setValue?.errorMessage).toMatch(/timed out/i);
+    expect(update.whereCalled).toBe(1);
+  });
+
+  it("returns 0 when no rows match", async () => {
+    const stub = makeDbStub({ updateAffected: 0 });
+    mocks.getDb.mockResolvedValue(stub);
+    const swept = await sweepStaleDatasetUploadJobs(60 * 60 * 1000);
+    expect(swept).toBe(0);
+  });
+
+  it("returns 0 when DB is not available", async () => {
+    mocks.getDb.mockResolvedValue(null);
+    const swept = await sweepStaleDatasetUploadJobs(60 * 1000);
+    expect(swept).toBe(0);
   });
 });
