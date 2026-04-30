@@ -5531,7 +5531,7 @@ const aiDataContext = useMemo(() => {
           </div>
         </Tabs>
 
-        <Card className="border-slate-200">
+        <Card id="dataset-cards" className="border-slate-200 scroll-mt-4">
           <CardHeader className="pb-3">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div>
