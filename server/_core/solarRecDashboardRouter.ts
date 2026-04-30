@@ -2898,6 +2898,39 @@ export const solarRecDashboardRouter = t.router({
   }),
 
   /**
+   * Phase 5e Followup #4 step 4 PR-C2 (2026-04-30) — server-side
+   * aggregator for the Overview tab `summary` shape. Replaces the
+   * 208-line `summary` useMemo in `SolarRecDashboard.tsx` that
+   * walked `part2VerifiedAbpRows × systems`. Returns the full
+   * shape including `ownershipRows` (used for CSV export).
+   *
+   * Cache key bundles `abpReport` batch + system snapshot hash.
+   * superjson serde because `ownershipRows[i].{latestReportingDate,
+   * contractedDate, zillowSoldDate}` are `Date | null`.
+   */
+  getDashboardOverviewSummary: requirePermission(
+    "solar-rec-dashboard",
+    "read"
+  ).query(async ({ ctx }) => {
+    const {
+      getOrBuildOverviewSummary,
+      OVERVIEW_SUMMARY_RUNNER_VERSION,
+    } = await import(
+      "../services/solar/buildOverviewSummaryAggregates"
+    );
+
+    const { result, fromCache } = await getOrBuildOverviewSummary(
+      ctx.scopeId
+    );
+
+    return {
+      ...result,
+      fromCache,
+      _runnerVersion: OVERVIEW_SUMMARY_RUNNER_VERSION,
+    };
+  }),
+
+  /**
    * Phase 5e Followup #4 step 4 PR-A (2026-04-30) — server-side
    * aggregator for the Offline Monitoring tab. Replaces four client
    * useMemos in `SolarRecDashboard.tsx` that derived from

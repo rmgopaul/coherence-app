@@ -258,28 +258,10 @@ type SystemBuilder = {
 
 // SystemRecord — moved to @/solar-rec-dashboard/state/types
 
-type OwnershipOverviewExportRow = {
-  key: string;
-  part2ProjectName: string;
-  part2ApplicationId: string | null;
-  part2SystemId: string | null;
-  part2TrackingId: string | null;
-  source: "Matched System" | "Part II Unmatched";
-  systemName: string;
-  systemId: string | null;
-  stateApplicationRefId: string | null;
-  trackingSystemRefId: string | null;
-  ownershipStatus: OwnershipStatus;
-  isReporting: boolean;
-  isTransferred: boolean;
-  isTerminated: boolean;
-  contractType: string | null;
-  contractStatusText: string;
-  latestReportingDate: Date | null;
-  contractedDate: Date | null;
-  zillowStatus: string | null;
-  zillowSoldDate: Date | null;
-};
+// OwnershipOverviewExportRow — moved server-side to
+// `server/services/solar/buildOverviewSummaryAggregates.ts`
+// (Phase 5e step 4 PR-C2). The shape lives there alongside the
+// pure builder; client consumes via the inferred query data shape.
 
 // MonitoringDetailsRecord — moved to @/solar-rec-dashboard/state/types
 
@@ -2984,215 +2966,61 @@ export default function SolarRecDashboard() {
   );
 
 
-  const summary = useMemo(() => {
-    const eligiblePart2ApplicationIds = new Set<string>();
-    const eligiblePart2PortalSystemIds = new Set<string>();
-    const eligiblePart2TrackingIds = new Set<string>();
-    part2VerifiedAbpRows.forEach((row) => {
-      const applicationId = clean(row.Application_ID);
-      const portalSystemId = clean(row.system_id);
-      const trackingId = clean(row.PJM_GATS_or_MRETS_Unit_ID_Part_2) || clean(row.tracking_system_ref_id);
-      if (applicationId) eligiblePart2ApplicationIds.add(applicationId);
-      if (portalSystemId) eligiblePart2PortalSystemIds.add(portalSystemId);
-      if (trackingId) eligiblePart2TrackingIds.add(trackingId);
-    });
-
-    const scopedPart2Systems = systems.filter((system) => {
-      const byPortalSystemId = system.systemId ? eligiblePart2PortalSystemIds.has(system.systemId) : false;
-      const byApplicationId = system.stateApplicationRefId
-        ? eligiblePart2ApplicationIds.has(system.stateApplicationRefId)
-        : false;
-      const byTrackingId = system.trackingSystemRefId ? eligiblePart2TrackingIds.has(system.trackingSystemRefId) : false;
-      return byPortalSystemId || byApplicationId || byTrackingId;
-    });
-
-    const systemsById = new Map<string, SystemRecord[]>();
-    const systemsByApplicationId = new Map<string, SystemRecord[]>();
-    const systemsByTrackingId = new Map<string, SystemRecord[]>();
-    const systemsByName = new Map<string, SystemRecord[]>();
-
-    const addIndexedSystem = (
-      map: Map<string, SystemRecord[]>,
-      key: string | null | undefined,
-      system: SystemRecord
-    ) => {
-      const normalized = clean(key);
-      if (!normalized) return;
-      const existing = map.get(normalized) ?? [];
-      existing.push(system);
-      map.set(normalized, existing);
-    };
-
-    scopedPart2Systems.forEach((system) => {
-      addIndexedSystem(systemsById, system.systemId, system);
-      addIndexedSystem(systemsByApplicationId, system.stateApplicationRefId, system);
-      addIndexedSystem(systemsByTrackingId, system.trackingSystemRefId, system);
-      addIndexedSystem(systemsByName, system.systemName.toLowerCase(), system);
-    });
-
-    let notTransferredReporting = 0;
-    let transferredReporting = 0;
-    let notTransferredNotReporting = 0;
-    let transferredNotReporting = 0;
-    let terminatedReporting = 0;
-    let terminatedNotReporting = 0;
-    const uniquePart2Projects = new Set<string>();
-    const ownershipRows: OwnershipOverviewExportRow[] = [];
-
-    part2VerifiedAbpRows.forEach((row, index) => {
-      const { applicationId, portalSystemId, trackingId, projectName, projectNameKey, dedupeKey } =
-        resolvePart2ProjectIdentity(row, index);
-      if (uniquePart2Projects.has(dedupeKey)) return;
-      uniquePart2Projects.add(dedupeKey);
-
-      const matchedSystems = new Map<string, SystemRecord>();
-      (systemsById.get(portalSystemId) ?? []).forEach((system) => matchedSystems.set(system.key, system));
-      (systemsByApplicationId.get(applicationId) ?? []).forEach((system) => matchedSystems.set(system.key, system));
-      (systemsByTrackingId.get(trackingId) ?? []).forEach((system) => matchedSystems.set(system.key, system));
-      (systemsByName.get(projectNameKey) ?? []).forEach((system) => matchedSystems.set(system.key, system));
-
-      if (matchedSystems.size === 0) {
-        notTransferredNotReporting += 1;
-        ownershipRows.push({
-          key: `part2:${dedupeKey}`,
-          part2ProjectName: projectName || "(Unmatched Part II Row)",
-          part2ApplicationId: applicationId || null,
-          part2SystemId: portalSystemId || null,
-          part2TrackingId: trackingId || null,
-          source: "Part II Unmatched",
-          systemName: projectName || "(Unmatched Part II Row)",
-          systemId: portalSystemId || null,
-          stateApplicationRefId: applicationId || null,
-          trackingSystemRefId: trackingId || null,
-          ownershipStatus: "Not Transferred and Not Reporting",
-          isReporting: false,
-          isTransferred: false,
-          isTerminated: false,
-          contractType: null,
-          contractStatusText: "N/A",
-          latestReportingDate: null,
-          contractedDate: null,
-          zillowStatus: null,
-          zillowSoldDate: null,
-        });
-        return;
+  // Phase 5e Followup #4 step 4 PR-C2 (2026-04-30) — `summary`
+  // moved to a server-side aggregator
+  // (`getDashboardOverviewSummary`). The 208-LOC walk over
+  // `part2VerifiedAbpRows × systems` runs on the server now,
+  // cached by abpReport batch + system snapshot hash. The wire
+  // payload includes the full `ownershipRows` array (used for
+  // CSV export) — superjson preserves the Date fields end-to-end.
+  const overviewSummaryQuery =
+    solarRecTrpc.solarRecDashboard.getDashboardOverviewSummary.useQuery(
+      undefined,
+      {
+        staleTime: 60_000,
       }
-
-      let isReporting = false;
-      let isTransferred = false;
-      let isTerminated = false;
-      matchedSystems.forEach((system) => {
-        if (system.isReporting) isReporting = true;
-        if (system.isTransferred) isTransferred = true;
-        if (system.isTerminated) isTerminated = true;
-      });
-
-      const ownershipStatus: OwnershipStatus = isTerminated
-        ? isReporting
-          ? "Terminated and Reporting"
-          : "Terminated and Not Reporting"
-        : isTransferred
-          ? isReporting
-            ? "Transferred and Reporting"
-            : "Transferred and Not Reporting"
-          : isReporting
-            ? "Not Transferred and Reporting"
-            : "Not Transferred and Not Reporting";
-
-      const matchedSystemList = Array.from(matchedSystems.values());
-      const representative =
-        matchedSystemList.find((system) => system.ownershipStatus === ownershipStatus) ??
-        matchedSystemList[0];
-
-      ownershipRows.push({
-        key: `part2:${dedupeKey}`,
-        part2ProjectName: projectName || representative.systemName,
-        part2ApplicationId: applicationId || null,
-        part2SystemId: portalSystemId || null,
-        part2TrackingId: trackingId || null,
-        source: "Matched System",
-        systemName: representative.systemName,
-        systemId: representative.systemId,
-        stateApplicationRefId: representative.stateApplicationRefId,
-        trackingSystemRefId: representative.trackingSystemRefId,
-        ownershipStatus,
-        isReporting,
-        isTransferred,
-        isTerminated,
-        contractType: representative.contractType,
-        contractStatusText: representative.contractStatusText,
-        latestReportingDate: representative.latestReportingDate,
-        contractedDate: representative.contractedDate,
-        zillowStatus: representative.zillowStatus,
-        zillowSoldDate: representative.zillowSoldDate,
-      });
-
-      if (isTerminated) {
-        if (isReporting) terminatedReporting += 1;
-        else terminatedNotReporting += 1;
-        return;
-      }
-      if (isTransferred) {
-        if (isReporting) transferredReporting += 1;
-        else transferredNotReporting += 1;
-        return;
-      }
-      if (isReporting) notTransferredReporting += 1;
-      else notTransferredNotReporting += 1;
-    });
-
-    const totalSystems = uniquePart2Projects.size;
-    const reportingSystems = notTransferredReporting + transferredReporting + terminatedReporting;
-    const reportingPercent = toPercentValue(reportingSystems, totalSystems);
-    const smallSystems = scopedPart2Systems.filter((system) => system.sizeBucket === "<=10 kW AC").length;
-    const largeSystems = scopedPart2Systems.filter((system) => system.sizeBucket === ">10 kW AC").length;
-    const unknownSizeSystems = scopedPart2Systems.filter((system) => system.sizeBucket === "Unknown").length;
-
-    const terminatedTotal = terminatedReporting + terminatedNotReporting;
-    const reportingOwnershipTotal = notTransferredReporting + transferredReporting;
-    const notReportingOwnershipTotal = notTransferredNotReporting + transferredNotReporting;
-
-    const withValueData = scopedPart2Systems.filter(
-      (system) => resolveContractValueAmount(system) > 0 || (system.deliveredValue ?? 0) > 0
     );
-    const totalContractedValue = withValueData.reduce((sum, system) => sum + resolveContractValueAmount(system), 0);
-    const totalDeliveredValue = withValueData.reduce((sum, system) => sum + (system.deliveredValue ?? 0), 0);
-    const contractedValueReporting = withValueData
-      .filter((system) => system.isReporting)
-      .reduce((sum, system) => sum + resolveContractValueAmount(system), 0);
-    const contractedValueNotReporting = totalContractedValue - contractedValueReporting;
-    const contractedValueReportingPercent = toPercentValue(contractedValueReporting, totalContractedValue);
-    const deliveredValuePercent = toPercentValue(totalDeliveredValue, totalContractedValue);
-
-    return {
-      totalSystems,
-      reportingSystems,
-      reportingPercent,
-      smallSystems,
-      largeSystems,
-      unknownSizeSystems,
+  // Empty-state sentinel matched to the shape the server returns
+  // when it has no abpReport data. Must include `_runnerVersion`
+  // and `fromCache` to satisfy the inferred query-data type.
+  type OverviewSummaryData = NonNullable<typeof overviewSummaryQuery.data>;
+  const EMPTY_OVERVIEW_SUMMARY = useMemo<OverviewSummaryData>(
+    () => ({
+      totalSystems: 0,
+      reportingSystems: 0,
+      reportingPercent: null,
+      smallSystems: 0,
+      largeSystems: 0,
+      unknownSizeSystems: 0,
       ownershipOverview: {
-        reportingOwnershipTotal,
-        notTransferredReporting,
-        transferredReporting,
-        notReportingOwnershipTotal,
-        notTransferredNotReporting,
-        transferredNotReporting,
-        terminatedReporting,
-        terminatedNotReporting,
-        terminatedTotal,
+        reportingOwnershipTotal: 0,
+        notTransferredReporting: 0,
+        transferredReporting: 0,
+        notReportingOwnershipTotal: 0,
+        notTransferredNotReporting: 0,
+        transferredNotReporting: 0,
+        terminatedReporting: 0,
+        terminatedNotReporting: 0,
+        terminatedTotal: 0,
       },
-      ownershipRows,
-      withValueDataCount: withValueData.length,
-      totalContractedValue,
-      totalDeliveredValue,
-      totalGap: totalContractedValue - totalDeliveredValue,
-      contractedValueReporting,
-      contractedValueNotReporting,
-      contractedValueReportingPercent,
-      deliveredValuePercent,
-    };
-  }, [part2VerifiedAbpRows, systems]);
+      ownershipRows: [],
+      withValueDataCount: 0,
+      totalContractedValue: 0,
+      totalDeliveredValue: 0,
+      totalGap: 0,
+      contractedValueReporting: 0,
+      contractedValueNotReporting: 0,
+      contractedValueReportingPercent: null,
+      deliveredValuePercent: null,
+      fromCache: false,
+      _runnerVersion: "client-empty",
+    }),
+    []
+  );
+  const summary = useMemo(
+    () => overviewSummaryQuery.data ?? EMPTY_OVERVIEW_SUMMARY,
+    [overviewSummaryQuery.data, EMPTY_OVERVIEW_SUMMARY]
+  );
 
   const part2EligibleSystemsForSizeReporting = useMemo(() => {
     const data = offlineMonitoringQuery.data;
