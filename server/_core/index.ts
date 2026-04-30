@@ -11,6 +11,7 @@ import { assertServerRuntimeSafety } from "./env";
 import { serveStatic, setupVite } from "./vite";
 import { startNightlySnapshotScheduler } from "./nightlySnapshotScheduler";
 import { startMonitoringScheduler } from "../solar/monitoringScheduler";
+import { startDatasetUploadStaleJobSweeper } from "../services/core/datasetUploadStaleJobSweeper";
 import { registerPinGate } from "./pinGate";
 import { registerSecurityMiddleware } from "./security";
 import {
@@ -154,6 +155,7 @@ async function startServer() {
   installFetchBandwidthDiagnostics();
   startNightlySnapshotScheduler();
   startMonitoringScheduler();
+  startDatasetUploadStaleJobSweeper();
 
   // Mark any MonitoringBatchRun rows left in "running" state by the prior
   // Node process (killed by deploy, crash, OOM) as "failed" so the client
