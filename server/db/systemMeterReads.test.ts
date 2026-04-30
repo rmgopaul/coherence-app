@@ -24,6 +24,7 @@ vi.mock("./_core", async () => {
 
 import {
   getLatestMeterReadsForCsgId,
+  getSystemRecentMeterReads,
   resolveMeterReadsBatchIds,
 } from "./systemMeterReads";
 
@@ -243,5 +244,118 @@ describe("getLatestMeterReadsForCsgId", () => {
     // to observe the LIMIT clause. The clamp is a defense-in-depth
     // measure documented in the helper; this test confirms calling
     // with a wild limit doesn't throw.
+  });
+});
+
+describe("getSystemRecentMeterReads", () => {
+  it("returns empty result when both systemId and systemName are blank", async () => {
+    const out = await getSystemRecentMeterReads("scope-1", {
+      systemId: null,
+      systemName: "",
+    });
+    expect(out.reads).toEqual([]);
+    expect(mocks.getDb).not.toHaveBeenCalled();
+  });
+
+  it("returns empty result when convertedReads dataset isn't active", async () => {
+    mocks.getDb.mockResolvedValue(
+      makeDbStub([
+        // resolveMeterReadsBatchIds — only generationEntry active
+        [{ datasetKey: "generationEntry", batchId: "ge-1" }],
+      ])
+    );
+    const out = await getSystemRecentMeterReads("scope-1", {
+      systemId: "SYS-9",
+      systemName: "Smith Site",
+    });
+    expect(out.reads).toEqual([]);
+  });
+
+  it("returns reads ordered by readDate desc when matched by systemId", async () => {
+    mocks.getDb.mockResolvedValue(
+      makeDbStub([
+        // 1. active batches
+        [{ datasetKey: "convertedReads", batchId: "cr-1" }],
+        // 2. converted reads — DB returns them already sorted by
+        //    readDate DESC because the helper's .orderBy() runs on
+        //    the server. We mirror that here.
+        [
+          {
+            readDate: "2026-04-27",
+            monitoring: "Solis",
+            lifetimeMeterReadWh: 5_000_000,
+          },
+          {
+            readDate: "2026-04-20",
+            monitoring: "Solis",
+            lifetimeMeterReadWh: 4_900_000,
+          },
+          {
+            readDate: "2026-04-13",
+            monitoring: "Solis",
+            lifetimeMeterReadWh: 4_800_000,
+          },
+        ],
+      ])
+    );
+    const out = await getSystemRecentMeterReads("scope-1", {
+      systemId: "SYS-9",
+      systemName: "Smith Site",
+    });
+    expect(out.reads).toHaveLength(3);
+    expect(out.reads[0]).toEqual({
+      readDate: "2026-04-27",
+      monitoring: "Solis",
+      lifetimeMeterReadWh: 5_000_000,
+    });
+    expect(out.reads[2]?.readDate).toBe("2026-04-13");
+  });
+
+  it("falls back to systemName-only match when systemId is null", async () => {
+    mocks.getDb.mockResolvedValue(
+      makeDbStub([
+        [{ datasetKey: "convertedReads", batchId: "cr-1" }],
+        [
+          {
+            readDate: "2026-04-15",
+            monitoring: null,
+            lifetimeMeterReadWh: 1_234_000,
+          },
+        ],
+      ])
+    );
+    const out = await getSystemRecentMeterReads("scope-1", {
+      systemId: null,
+      systemName: "Smith Site",
+    });
+    expect(out.reads).toHaveLength(1);
+    expect(out.reads[0]).toEqual({
+      readDate: "2026-04-15",
+      monitoring: null,
+      lifetimeMeterReadWh: 1_234_000,
+    });
+  });
+
+  it("filters out rows with missing readDate (defensive — db has nullable column)", async () => {
+    mocks.getDb.mockResolvedValue(
+      makeDbStub([
+        [{ datasetKey: "convertedReads", batchId: "cr-1" }],
+        [
+          {
+            readDate: "2026-04-15",
+            monitoring: "Enphase",
+            lifetimeMeterReadWh: 1000,
+          },
+          { readDate: null, monitoring: "Enphase", lifetimeMeterReadWh: 999 },
+          { readDate: "", monitoring: "Enphase", lifetimeMeterReadWh: 998 },
+        ],
+      ])
+    );
+    const out = await getSystemRecentMeterReads("scope-1", {
+      systemId: "SYS-1",
+      systemName: "",
+    });
+    expect(out.reads).toHaveLength(1);
+    expect(out.reads[0]?.readDate).toBe("2026-04-15");
   });
 });
