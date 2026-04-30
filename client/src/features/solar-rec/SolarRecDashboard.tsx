@@ -4272,9 +4272,20 @@ export default function SolarRecDashboard() {
   // snapshotContractPage clamp useEffect, snapshotMetricRows
   // — moved to @/solar-rec-dashboard/components/SnapshotLogTab
 
-  const missingCoreDatasets = datasetsHydrated
-    ? CORE_REQUIRED_DATASET_KEYS.filter((key) => !datasets[key])
-    : [];
+  // Phase 5e step 4 PR-D follow-up (2026-04-30) — read from
+  // server-derived `datasetSummariesByKey` instead of client
+  // `datasets[k]`. Post-PR-D the client `datasets[k]` map only
+  // populates after a fresh upload in the current session;
+  // datasets saved in prior sessions live on the server but the
+  // client map is empty for them. The "missing required" check
+  // should reflect "is this dataset on the server?" — which is
+  // what `datasetSummariesByKey[key]?.rowCount > 0` answers.
+  const missingCoreDatasets = useMemo(() => {
+    if (datasetSummariesQuery.status !== "success") return [];
+    return CORE_REQUIRED_DATASET_KEYS.filter(
+      (key) => (datasetSummariesByKey[key]?.rowCount ?? 0) === 0
+    );
+  }, [datasetSummariesByKey, datasetSummariesQuery.status]);
 
   const activeDatasetSyncProgress = useMemo(() => {
     const entries = Object.entries(datasetSyncProgress) as Array<
@@ -4287,7 +4298,16 @@ export default function SolarRecDashboard() {
   }, [datasetSyncProgress]);
 
   const dataHealthSummary = useMemo(() => {
-    const loadedDatasetKeys = (Object.keys(DATASET_DEFINITIONS) as DatasetKey[]).filter((key) => Boolean(datasets[key]));
+    // Phase 5e step 4 PR-D follow-up (2026-04-30) — `loadedDatasetKeys`
+    // counts datasets that have data on the SERVER (rowCount > 0
+    // from `getDatasetSummariesAll`), not just the client-hydrated
+    // `datasets[k]` slots. Post-PR-D the client map is empty until
+    // the user uploads in this session, but the server has the data
+    // from prior uploads — that's what the "Datasets Loaded" tile
+    // should reflect.
+    const loadedDatasetKeys = (Object.keys(DATASET_DEFINITIONS) as DatasetKey[]).filter(
+      (key) => (datasetSummariesByKey[key]?.rowCount ?? 0) > 0
+    );
     // Task 5.14 PR-2 (2026-04-27): Total-Rows-Loaded reads the
     // server-side `rowCount` from `getDatasetSummariesAll` for every
     // dataset. The previous in-memory `rows.length` fallback existed
@@ -4360,22 +4380,17 @@ export default function SolarRecDashboard() {
       syncStatus,
       cloudSyncIncompleteCount: incompleteCount,
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- individual slots
   }, [
-    datasets.solarApplications, datasets.abpReport, datasets.generationEntry,
-    datasets.accountSolarGeneration, datasets.contractedDate, datasets.convertedReads,
-    datasets.annualProductionEstimates, datasets.generatorDetails,
-    datasets.abpUtilityInvoiceRows, datasets.abpCsgSystemMapping,
-    datasets.abpQuickBooksRows, datasets.abpProjectApplicationRows,
-    datasets.abpPortalInvoiceMapRows, datasets.abpCsgPortalDatabaseRows,
-    datasets.abpIccReport2Rows, datasets.abpIccReport3Rows,
-    datasets.deliveryScheduleBase, datasets.transferHistory,
+    // Phase 5e step 4 PR-D follow-up (2026-04-30): the per-slot
+    // `datasets.*` deps were dropped — none of the values inside this
+    // memo read `datasets[k]` anymore. `datasetSummariesByKey` is the
+    // single source of truth for both row counts and the loaded-set
+    // membership.
     missingCoreDatasets.length,
     remoteDashboardStateQuery.status,
     saveRemoteDashboardState.isPending,
     saveRemoteDataset.isPending,
     serverDatasetCloudStatusByKey,
-    // PR-6 (data-flow): Total-Rows-Loaded prefers server-side counts.
     datasetSummariesByKey,
   ]);
 
