@@ -153,6 +153,107 @@ describe("buildOfflineMonitoringAggregates", () => {
     expect(out.monitoringDetailsBySystemKey).toEqual({});
   });
 
+  it("populates abpAcSizeKwBySystemKey under all 3 keys (first-non-null wins)", () => {
+    const out = buildOfflineMonitoringAggregates({
+      abpReportRows: [
+        abpRow({
+          Application_ID: "APP-1",
+          system_id: "SYS-1",
+          Inverter_Size_kW_AC_Part_2: "10.5",
+          Project_Name: "Acme",
+        }),
+        // Same identity, but different value — should be ignored
+        // (first-non-null per key wins).
+        abpRow({
+          Application_ID: "APP-1",
+          Inverter_Size_kW_AC_Part_2: "99.9",
+        }),
+      ],
+      solarApplicationsRows: [],
+    });
+    expect(out.abpAcSizeKwBySystemKey["id:APP-1"]).toBe(10.5);
+    expect(out.abpAcSizeKwBySystemKey["tracking:NON100"]).toBe(10.5);
+    expect(out.abpAcSizeKwBySystemKey["name:acme"]).toBe(10.5);
+  });
+
+  it("builds abpAcSizeKwByApplicationId from `Application_ID || application_id`", () => {
+    const out = buildOfflineMonitoringAggregates({
+      abpReportRows: [
+        // Upper-case Application_ID present
+        abpRow({ Application_ID: "APP-A", Inverter_Size_kW_AC_Part_2: "5" }),
+        // Only lower-case application_id set — should still feed
+        // the application-id Map.
+        abpRow({
+          Application_ID: "",
+          system_id: "",
+          PJM_GATS_or_MRETS_Unit_ID_Part_2: "TRACK-B",
+          application_id: "APP-B",
+          Inverter_Size_kW_AC_Part_2: "7.5",
+        }),
+      ],
+      solarApplicationsRows: [],
+    });
+    expect(out.abpAcSizeKwByApplicationId).toEqual({
+      "APP-A": 5,
+      "APP-B": 7.5,
+    });
+  });
+
+  it("keeps the EARLIEST part-2 verification date per application id", () => {
+    const out = buildOfflineMonitoringAggregates({
+      abpReportRows: [
+        abpRow({
+          Application_ID: "APP-1",
+          Part_2_App_Verification_Date: "2025-06-01",
+        }),
+        abpRow({
+          Application_ID: "APP-1",
+          Part_2_App_Verification_Date: "2025-03-15",
+        }),
+        abpRow({
+          Application_ID: "APP-1",
+          Part_2_App_Verification_Date: "2025-09-30",
+        }),
+      ],
+      solarApplicationsRows: [],
+    });
+    expect(out.abpPart2VerificationDateByApplicationId["APP-1"]).toBe(
+      "2025-03-15"
+    );
+  });
+
+  it("counts unique part-2 dedupe keys for abpEligibleTotalSystemsCount", () => {
+    const out = buildOfflineMonitoringAggregates({
+      abpReportRows: [
+        // Same portalSystemId as the next row — same dedupe key.
+        abpRow({ Application_ID: "APP-1", system_id: "SYS-1" }),
+        abpRow({ Application_ID: "APP-2", system_id: "SYS-1" }),
+        // New portalSystemId — distinct dedupe key.
+        abpRow({ Application_ID: "APP-3", system_id: "SYS-3" }),
+      ],
+      solarApplicationsRows: [],
+    });
+    expect(out.abpEligibleTotalSystemsCount).toBe(2);
+    expect(out.part2VerifiedAbpRowsCount).toBe(3);
+  });
+
+  it("collects part2VerifiedSystemIds from `Application_ID || system_id`", () => {
+    const out = buildOfflineMonitoringAggregates({
+      abpReportRows: [
+        abpRow({ Application_ID: "APP-A", system_id: "SYS-A" }),
+        abpRow({ Application_ID: "", system_id: "SYS-B" }),
+        // Unverified — excluded
+        abpRow({
+          Application_ID: "APP-C",
+          system_id: "SYS-C",
+          Part_2_App_Verification_Date: "",
+        }),
+      ],
+      solarApplicationsRows: [],
+    });
+    expect(out.part2VerifiedSystemIds).toEqual(["APP-A", "SYS-B"]);
+  });
+
   it("returns deterministically-sorted eligibility arrays", () => {
     const out = buildOfflineMonitoringAggregates({
       abpReportRows: [

@@ -182,9 +182,7 @@ import {
   resolveLastMeterReadRawValue,
   parseNumber,
   parseDate,
-  parsePart2VerificationDate,
   isPart2VerifiedAbpRow,
-  parseAbpAcSizeKw,
   formatNumber,
   roundMoney,
   toPercentValue,
@@ -2919,17 +2917,6 @@ export default function SolarRecDashboard() {
     return (datasets.abpReport?.rows ?? []).filter((row) => isPart2VerifiedAbpRow(row));
   }, [datasets.abpReport]);
 
-  const abpEligibleTotalSystems = useMemo(() => {
-    const uniqueEligibleKeys = new Set<string>();
-
-    part2VerifiedAbpRows.forEach((row, index) => {
-      const { dedupeKey } = resolvePart2ProjectIdentity(row, index);
-      uniqueEligibleKeys.add(dedupeKey);
-    });
-
-    return uniqueEligibleKeys.size;
-  }, [part2VerifiedAbpRows]);
-
   // Phase 5e Followup #4 step 4 PR-A (2026-04-30) — server-side
   // aggregator that replaces 4 client useMemos that read
   // `datasets.abpReport.rows` + `datasets.solarApplications.rows`
@@ -2940,6 +2927,14 @@ export default function SolarRecDashboard() {
   // computation umbrella, and OfflineMonitoring; the cached server
   // path (`solarRecComputedArtifacts`) makes the cost negligible
   // after the first hit.
+  //
+  // PR-C1 (2026-04-30) extended the same aggregator with 5 derived
+  // `abp*By*` Maps + 2 counts (abpAcSizeKwBySystemKey,
+  // abpAcSizeKwByApplicationId, abpPart2VerificationDateByApplicationId,
+  // part2VerifiedSystemIds, part2VerifiedAbpRowsCount,
+  // abpEligibleTotalSystemsCount). The aggregator name remains
+  // "OfflineMonitoring" for historical continuity but its scope is
+  // now broadly "any abp-derived state the dashboard consumes".
   const offlineMonitoringQuery =
     solarRecTrpc.solarRecDashboard.getDashboardOfflineMonitoring.useQuery(
       undefined,
@@ -2947,6 +2942,12 @@ export default function SolarRecDashboard() {
         staleTime: 60_000,
       }
     );
+
+  // Count comes from the aggregator's
+  // `abpEligibleTotalSystemsCount` field — server walks the same
+  // `resolvePart2ProjectIdentity` dedupeKey logic.
+  const abpEligibleTotalSystems =
+    offlineMonitoringQuery.data?.abpEligibleTotalSystemsCount ?? 0;
 
   const abpEligibleTrackingIdsStrict = useMemo(() => {
     return new Set<string>(
@@ -3496,65 +3497,37 @@ export default function SolarRecDashboard() {
     );
   }, [offlineMonitoringQuery.data]);
 
+  // Phase 5e step 4 PR-C1 (2026-04-30) — three abp-derived Maps now
+  // come from `getDashboardOfflineMonitoring`. Server runs the same
+  // first-non-null / earliest-date semantics; client wraps the
+  // serialized records in Maps once.
   const abpAcSizeKwBySystemKey = useMemo(() => {
-    const mapping = new Map<string, number>();
-
-    const setIfMissing = (key: string, value: number | null) => {
-      if (!key || value === null) return;
-      if (!mapping.has(key)) mapping.set(key, value);
-    };
-
-    part2VerifiedAbpRows.forEach((row) => {
-      const acSizeKw = parseAbpAcSizeKw(row);
-      const abpApplicationId = clean(row.Application_ID) || clean(row.system_id);
-      const trackingId = clean(row.PJM_GATS_or_MRETS_Unit_ID_Part_2) || clean(row.tracking_system_ref_id);
-      const projectName = clean(row.Project_Name) || clean(row.system_name);
-
-      setIfMissing(abpApplicationId ? `id:${abpApplicationId}` : "", acSizeKw);
-      setIfMissing(trackingId ? `tracking:${trackingId}` : "", acSizeKw);
-      setIfMissing(projectName ? `name:${projectName.toLowerCase()}` : "", acSizeKw);
-    });
-
-    return mapping;
-  }, [part2VerifiedAbpRows]);
+    return new Map<string, number>(
+      Object.entries(
+        offlineMonitoringQuery.data?.abpAcSizeKwBySystemKey ?? {}
+      )
+    );
+  }, [offlineMonitoringQuery.data]);
 
   const abpAcSizeKwByApplicationId = useMemo(() => {
-    const mapping = new Map<string, number>();
-
-    part2VerifiedAbpRows.forEach((row) => {
-      const applicationId = clean(row.Application_ID) || clean(row.application_id);
-      if (!applicationId) return;
-      if (mapping.has(applicationId)) return;
-
-      const acSizeKw = parseAbpAcSizeKw(row);
-      if (acSizeKw === null) return;
-
-      mapping.set(applicationId, acSizeKw);
-    });
-
-    return mapping;
-  }, [part2VerifiedAbpRows]);
+    return new Map<string, number>(
+      Object.entries(
+        offlineMonitoringQuery.data?.abpAcSizeKwByApplicationId ?? {}
+      )
+    );
+  }, [offlineMonitoringQuery.data]);
 
   const abpPart2VerificationDateByApplicationId = useMemo(() => {
-    const mapping = new Map<string, Date>();
-
-    part2VerifiedAbpRows.forEach((row) => {
-      const part2VerifiedDateRaw =
-        clean(row.Part_2_App_Verification_Date) || clean(row.part_2_app_verification_date);
-      const part2VerifiedDate = parsePart2VerificationDate(part2VerifiedDateRaw);
-      if (!part2VerifiedDate) return;
-
-      const applicationId = clean(row.Application_ID) || clean(row.system_id);
-      if (!applicationId) return;
-
-      const existing = mapping.get(applicationId);
-      if (!existing || part2VerifiedDate < existing) {
-        mapping.set(applicationId, part2VerifiedDate);
-      }
-    });
-
-    return mapping;
-  }, [part2VerifiedAbpRows]);
+    const isoByAppId =
+      offlineMonitoringQuery.data?.abpPart2VerificationDateByApplicationId ??
+      {};
+    const out = new Map<string, Date>();
+    for (const [appId, iso] of Object.entries(isoByAppId)) {
+      const date = new Date(iso);
+      if (!Number.isNaN(date.getTime())) out.set(appId, date);
+    }
+    return out;
+  }, [offlineMonitoringQuery.data]);
 
   const monitoringDetailsBySystemKey = useMemo(() => {
     return new Map<string, MonitoringDetailsRecord>(
@@ -5326,7 +5299,8 @@ export default function SolarRecDashboard() {
 
   const part2FilterAudit = useMemo(() => {
     const totalAbpRows = datasetSummariesByKey['abpReport']?.rowCount ?? 0;
-    const part2Rows = part2VerifiedAbpRows.length;
+    const part2Rows =
+      offlineMonitoringQuery.data?.part2VerifiedAbpRowsCount ?? 0;
     const excludedRows = Math.max(0, totalAbpRows - part2Rows);
     return {
       totalAbpRows,
@@ -5339,8 +5313,8 @@ export default function SolarRecDashboard() {
   }, [
     abpEligibleTotalSystems,
     datasetSummariesByKey,
+    offlineMonitoringQuery.data,
     part2EligibleSystemsForSizeReporting.length,
-    part2VerifiedAbpRows.length,
   ]);
 
   // sizeReportingChartRows, ownershipStackedChartRows
@@ -5391,14 +5365,13 @@ const deliveryTrackerData = deliveryTrackerQuery.data ?? EMPTY_DELIVERY_TRACKER_
 // comparisonInstallers, comparisonPlatforms — moved to @/solar-rec-dashboard/components/ComparisonsTab
 
 // ── Financials: Part II Verified System IDs (strict) ────────────
+// Phase 5e step 4 PR-C1 (2026-04-30) — server-driven via
+// `getDashboardOfflineMonitoring.part2VerifiedSystemIds`.
 const part2VerifiedSystemIds = useMemo(() => {
-  const ids = new Set<string>();
-  part2VerifiedAbpRows.forEach((row) => {
-    const appId = clean(row.Application_ID) || clean(row.system_id);
-    if (appId) ids.add(appId);
-  });
-  return ids;
-}, [part2VerifiedAbpRows]);
+  return new Set<string>(
+    offlineMonitoringQuery.data?.part2VerifiedSystemIds ?? []
+  );
+}, [offlineMonitoringQuery.data]);
 
 // part2VerifiedSystems, financialRevenueAtRisk — moved to @/solar-rec-dashboard/components/FinancialsTab
 // ── Financials: Profit & Collateralization ──────────────────────

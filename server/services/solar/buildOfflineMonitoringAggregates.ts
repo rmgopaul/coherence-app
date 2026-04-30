@@ -28,6 +28,9 @@ import {
   type CsvRow,
   clean,
   isPart2VerifiedAbpRow,
+  parseAbpAcSizeKw,
+  parsePart2VerificationDate,
+  resolvePart2ProjectIdentity,
 } from "./aggregatorHelpers";
 import { loadDatasetRows } from "./buildSystemSnapshot";
 import { jsonSerde, withArtifactCache } from "./withArtifactCache";
@@ -97,6 +100,56 @@ export interface OfflineMonitoringAggregate {
    * aggregator does not introduce a new API surface for it.
    */
   monitoringDetailsBySystemKey: Record<string, MonitoringDetailsRecord>;
+
+  /**
+   * Phase 5e step 4 PR-C1 (2026-04-30) — derived `part2VerifiedAbpRows`
+   * fields. The aggregator's name remains "OfflineMonitoring" for
+   * historical continuity; in practice it now serves any client
+   * memo that derives state from part2-verified ABP rows.
+   *
+   * `${idType}:${id}` → AC size in kW. First non-null value wins
+   * per key (mirrors the client memo's `setIfMissing` semantics).
+   * Used by SizeReportingTab and the snapshotPart2ValueSummary
+   * tile to attribute installed kW back to systems.
+   */
+  abpAcSizeKwBySystemKey: Record<string, number>;
+
+  /**
+   * Application-ID → AC size (first non-null wins). Mirrors the
+   * client's `abpAcSizeKwByApplicationId` memo.
+   */
+  abpAcSizeKwByApplicationId: Record<string, number>;
+
+  /**
+   * Application-ID → earliest Part-2 verification date (ISO
+   * `YYYY-MM-DD`). Mirrors the client's
+   * `abpPart2VerificationDateByApplicationId` memo. Stored as a
+   * string for plain-JSON serde — the client wraps each value in
+   * `new Date(...)` once, same as the prior local memo did.
+   */
+  abpPart2VerificationDateByApplicationId: Record<string, string>;
+
+  /**
+   * Distinct part-2-verified application IDs. Mirrors the client's
+   * `part2VerifiedSystemIds` memo (Set<string>). Returned as a
+   * sorted array; client wraps in `new Set(...)`.
+   */
+  part2VerifiedSystemIds: string[];
+
+  /**
+   * Count of part-2-verified rows in the active `srDsAbpReport`
+   * batch (post `isPart2VerifiedAbpRow` filter). Mirrors
+   * `part2VerifiedAbpRows.length` for the `part2FilterAudit`
+   * diagnostic.
+   */
+  part2VerifiedAbpRowsCount: number;
+
+  /**
+   * Count of unique part-2 projects keyed by
+   * `resolvePart2ProjectIdentity(row, index).dedupeKey`. Mirrors
+   * the client's `abpEligibleTotalSystems` memo.
+   */
+  abpEligibleTotalSystemsCount: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -109,15 +162,37 @@ export function buildOfflineMonitoringAggregates(
   const { abpReportRows, solarApplicationsRows } = input;
 
   // -------------------------------------------------------------------------
-  // ABP-derived eligibility + application-id mapping
+  // ABP-derived eligibility + application-id mapping + size/date/identity
+  // (Phase 5e step 4 PR-C1, 2026-04-30: extended with the 5
+  // `abp*By*` derivations the client used to compute locally —
+  // `abpAcSizeKwBySystemKey`, `abpAcSizeKwByApplicationId`,
+  // `abpPart2VerificationDateByApplicationId`,
+  // `part2VerifiedSystemIds`, plus the `part2FilterAudit` counts.)
   // -------------------------------------------------------------------------
   const eligibleApplicationIds = new Set<string>();
   const eligiblePortalSystemIds = new Set<string>();
   const eligibleTrackingIds = new Set<string>();
   const abpApplicationIdBySystemKey: Record<string, string> = {};
+  const abpAcSizeKwBySystemKey: Record<string, number> = {};
+  const abpAcSizeKwByApplicationId: Record<string, number> = {};
+  const abpPart2VerificationDateByApplicationId: Record<string, Date> = {};
+  const part2VerifiedSystemIdSet = new Set<string>();
+  const part2DedupeKeys = new Set<string>();
+  let part2VerifiedAbpRowsCount = 0;
 
-  for (const row of abpReportRows) {
-    if (!isPart2VerifiedAbpRow(row)) continue;
+  const setIfMissingNumber = (
+    target: Record<string, number>,
+    key: string,
+    value: number | null
+  ) => {
+    if (!key || value === null || !Number.isFinite(value)) return;
+    if (Object.prototype.hasOwnProperty.call(target, key)) return;
+    target[key] = value;
+  };
+
+  abpReportRows.forEach((row, index) => {
+    if (!isPart2VerifiedAbpRow(row)) return;
+    part2VerifiedAbpRowsCount += 1;
 
     const applicationId = clean(row.Application_ID);
     const portalSystemId = clean(row.system_id);
@@ -135,6 +210,7 @@ export function buildOfflineMonitoringAggregates(
     //   - name-key uses Project_Name OR system_name (lowercased)
     const abpApplicationId = applicationId || portalSystemId;
     const projectName = clean(row.Project_Name) || clean(row.system_name);
+    const projectNameKey = projectName.toLowerCase();
 
     if (abpApplicationId) {
       abpApplicationIdBySystemKey[`id:${abpApplicationId}`] = abpApplicationId;
@@ -142,11 +218,74 @@ export function buildOfflineMonitoringAggregates(
         abpApplicationIdBySystemKey[`tracking:${trackingId}`] = abpApplicationId;
       }
       if (projectName) {
-        abpApplicationIdBySystemKey[`name:${projectName.toLowerCase()}`] =
-          abpApplicationId;
+        abpApplicationIdBySystemKey[`name:${projectNameKey}`] = abpApplicationId;
       }
     }
-  }
+
+    // abpAcSizeKwBySystemKey — first-non-null per key (matches
+    // client `setIfMissing` semantics).
+    const acSizeKw = parseAbpAcSizeKw(row);
+    if (abpApplicationId) {
+      setIfMissingNumber(
+        abpAcSizeKwBySystemKey,
+        `id:${abpApplicationId}`,
+        acSizeKw
+      );
+    }
+    if (trackingId) {
+      setIfMissingNumber(
+        abpAcSizeKwBySystemKey,
+        `tracking:${trackingId}`,
+        acSizeKw
+      );
+    }
+    if (projectName) {
+      setIfMissingNumber(
+        abpAcSizeKwBySystemKey,
+        `name:${projectNameKey}`,
+        acSizeKw
+      );
+    }
+
+    // abpAcSizeKwByApplicationId — first-non-null per app id.
+    // Note: the client uses `Application_ID || application_id`
+    // here, NOT `Application_ID || system_id`. Preserved.
+    const appIdLowerFallback =
+      clean(row.Application_ID) || clean(row.application_id);
+    if (appIdLowerFallback && acSizeKw !== null) {
+      if (
+        !Object.prototype.hasOwnProperty.call(
+          abpAcSizeKwByApplicationId,
+          appIdLowerFallback
+        )
+      ) {
+        abpAcSizeKwByApplicationId[appIdLowerFallback] = acSizeKw;
+      }
+    }
+
+    // abpPart2VerificationDateByApplicationId — earliest date wins
+    // (client memo: `if (!existing || part2VerifiedDate < existing)`).
+    const part2VerifiedDateRaw =
+      clean(row.Part_2_App_Verification_Date) ||
+      clean(row.part_2_app_verification_date);
+    const part2VerifiedDate = parsePart2VerificationDate(part2VerifiedDateRaw);
+    if (part2VerifiedDate && abpApplicationId) {
+      const existing = abpPart2VerificationDateByApplicationId[abpApplicationId];
+      if (!existing || part2VerifiedDate < existing) {
+        abpPart2VerificationDateByApplicationId[abpApplicationId] =
+          part2VerifiedDate;
+      }
+    }
+
+    // part2VerifiedSystemIds — uses `Application_ID || system_id`
+    // as the key (matches client memo).
+    const verifiedSystemId = applicationId || portalSystemId;
+    if (verifiedSystemId) part2VerifiedSystemIdSet.add(verifiedSystemId);
+
+    // abpEligibleTotalSystemsCount — distinct dedupe keys.
+    const { dedupeKey } = resolvePart2ProjectIdentity(row, index);
+    part2DedupeKeys.add(dedupeKey);
+  });
 
   // -------------------------------------------------------------------------
   // Solar applications → monitoring details
@@ -207,12 +346,32 @@ export function buildOfflineMonitoringAggregates(
     if (systemName) mergeDetails(`name:${systemName.toLowerCase()}`, detail);
   }
 
+  // Serialize Date values to ISO yyyy-mm-dd strings for plain-JSON
+  // serde. Client wraps each back in `new Date(...)` once when
+  // building the consumer Map.
+  const abpPart2VerificationDateByApplicationIdString: Record<string, string> =
+    {};
+  for (const [key, date] of Object.entries(
+    abpPart2VerificationDateByApplicationId
+  )) {
+    abpPart2VerificationDateByApplicationIdString[key] = date
+      .toISOString()
+      .slice(0, 10);
+  }
+
   return {
     eligiblePart2ApplicationIds: Array.from(eligibleApplicationIds).sort(),
     eligiblePart2PortalSystemIds: Array.from(eligiblePortalSystemIds).sort(),
     eligiblePart2TrackingIds: Array.from(eligibleTrackingIds).sort(),
     abpApplicationIdBySystemKey,
     monitoringDetailsBySystemKey,
+    abpAcSizeKwBySystemKey,
+    abpAcSizeKwByApplicationId,
+    abpPart2VerificationDateByApplicationId:
+      abpPart2VerificationDateByApplicationIdString,
+    part2VerifiedSystemIds: Array.from(part2VerifiedSystemIdSet).sort(),
+    part2VerifiedAbpRowsCount,
+    abpEligibleTotalSystemsCount: part2DedupeKeys.size,
   };
 }
 
@@ -224,7 +383,13 @@ const OFFLINE_MONITORING_DEPS = ["abpReport", "solarApplications"] as const;
 const ARTIFACT_TYPE = "offlineMonitoring";
 
 export const OFFLINE_MONITORING_RUNNER_VERSION =
-  "phase-5e-step4a-offlinemonitoring@1";
+  // 2026-04-30 (@2): added 5 derived fields off `part2VerifiedAbpRows`
+  // for Phase 5e Followup #4 step 4 PR-C1 — abpAcSizeKwBySystemKey,
+  // abpAcSizeKwByApplicationId, abpPart2VerificationDateByApplicationId,
+  // part2VerifiedSystemIds, part2VerifiedAbpRowsCount,
+  // abpEligibleTotalSystemsCount. Cache invalidation forces a
+  // recompute against the new return type.
+  "phase-5e-step4c1-offlinemonitoring@2";
 
 interface OfflineMonitoringInputBatchIds {
   abpReportBatchId: string | null;
@@ -289,7 +454,11 @@ export async function getOrBuildOfflineMonitoringAggregates(
         agg.eligiblePart2PortalSystemIds.length +
         agg.eligiblePart2TrackingIds.length +
         Object.keys(agg.abpApplicationIdBySystemKey).length +
-        Object.keys(agg.monitoringDetailsBySystemKey).length,
+        Object.keys(agg.monitoringDetailsBySystemKey).length +
+        Object.keys(agg.abpAcSizeKwBySystemKey).length +
+        Object.keys(agg.abpAcSizeKwByApplicationId).length +
+        Object.keys(agg.abpPart2VerificationDateByApplicationId).length +
+        agg.part2VerifiedSystemIds.length,
       recompute: async () => {
         const [abpReportRows, solarApplicationsRows] = await Promise.all([
           abpReportBatchId
