@@ -3459,6 +3459,8 @@ export const solarRecDashboardRouter = t.router({
         );
       }
 
+      type PopulationStatus = "populated" | "empty" | "missing" | "failed";
+
       type Summary = {
         datasetKey: string;
         rowCount: number | null;
@@ -3468,6 +3470,18 @@ export const solarRecDashboardRouter = t.router({
         payloadSha256: string | null;
         cloudStatus: "synced" | "failed" | "missing";
         isRowBacked: boolean;
+        /**
+         * Phase 2.6 of the dashboard foundation repair (2026-05-01)
+         * — the locked v3 "populated dataset" definition. Mirrors
+         * the foundation's `populatedDatasets` derivation:
+         *
+         *   - "populated" — active batch + COUNT(*) > 0
+         *   - "empty"     — active batch + COUNT(*) === 0
+         *   - "missing"   — no active batch
+         *   - "failed"    — sync state indicates the upload failed
+         *                   to persist (chunked-CSV legacy path)
+         */
+        populationStatus: PopulationStatus;
       };
 
       const summaries: Summary[] = ALL_DATASET_KEYS.map((datasetKey) => {
@@ -3497,9 +3511,22 @@ export const solarRecDashboardRouter = t.router({
           cloudStatus = "failed";
         }
 
+        const rowCount = isRowBacked ? actualRowCount : null;
+
+        let populationStatus: PopulationStatus;
+        if (cloudStatus === "failed") {
+          populationStatus = "failed";
+        } else if (!activeBatch) {
+          populationStatus = "missing";
+        } else if ((rowCount ?? 0) > 0) {
+          populationStatus = "populated";
+        } else {
+          populationStatus = "empty";
+        }
+
         return {
           datasetKey,
-          rowCount: isRowBacked ? actualRowCount : null,
+          rowCount,
           byteCount: syncRow?.payloadBytes ?? null,
           lastUpdated:
             syncRow?.updatedAt?.toISOString() ??
@@ -3513,12 +3540,16 @@ export const solarRecDashboardRouter = t.router({
               : null,
           cloudStatus,
           isRowBacked,
+          populationStatus,
         };
       });
 
       return {
         _checkpoint: "dataset-summaries-all-v1",
-        _runnerVersion: "task-5.12-pr10" as const,
+        // Phase 2.6 (2026-05-01): bumped from "task-5.12-pr10" so the
+        // new `populationStatus` field is verifiable via the
+        // CLAUDE.md "_runnerVersion check" deploy recipe.
+        _runnerVersion: "task-5.12-pr10+phase-2.6" as const,
         scopeId,
         summaries,
       };
