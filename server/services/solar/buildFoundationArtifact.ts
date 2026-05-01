@@ -82,30 +82,107 @@ export { FOUNDATION_RUNNER_VERSION };
 
 // ---------------------------------------------------------------------------
 // Pure inputs / outputs — the testable surface
-//
-// Input types live in `./buildFoundationArtifact.types.ts` (split
-// out 2026-05-01 when the file passed the CLAUDE.md ~1000-LOC
-// threshold). Re-exported here so `import { ... } from "./buildFoundationArtifact"`
-// keeps working for the 7 existing consumers — moving the types
-// without re-exporting would mean updating every downstream import.
 // ---------------------------------------------------------------------------
 
-export type {
-  FoundationAbpCsgMappingInput,
-  FoundationAbpReportInput,
-  FoundationAccountSolarGenerationInput,
-  FoundationBuilderInputs,
-  FoundationContractedDateInput,
-  FoundationGenerationEntryInput,
-  FoundationSolarApplicationInput,
-  FoundationTransferHistoryInput,
-} from "./buildFoundationArtifact.types";
+/**
+ * Pre-resolved Solar Applications row used by the builder. The
+ * caller (`buildFoundationArtifact` below) extracts these fields
+ * from the typed `srDsSolarApplications` columns + the JSON
+ * `rawRow` for status fields. Tests construct fixtures directly.
+ */
+export type FoundationSolarApplicationInput = {
+  csgId: string | null;
+  applicationId: string | null;
+  systemName: string | null;
+  installedKwAc: number | null;
+  installedKwDc: number | null;
+  totalContractAmount: number | null;
+  contractType: string | null;
+  /**
+   * Concatenated status text from the row's status fields (see
+   * `client/src/solar-rec-dashboard/lib/buildSystems.ts:434-443` for
+   * the source-field list). Used to detect rejected/cancelled/
+   * withdrawn applications.
+   */
+  statusText: string | null;
+  /**
+   * Tracking-system ref ID — the linkage column that joins solar
+   * applications to generation/transfer rows. Same value appears
+   * as `gatsGenId` on `srDsAccountSolarGeneration` and `unitId` on
+   * `srDsGenerationEntry` + `srDsTransferHistory`.
+   */
+  trackingSystemRefId: string | null;
+  /** Zillow sold date (`Zillow_Sold_Date`) from the row's `rawRow` JSON. */
+  zillowSoldDate: string | null;
+  /** Zillow status text (`Zillow_Status` or nested `zillowData.status`). */
+  zillowStatus: string | null;
+};
 
-import type {
-  FoundationAbpReportInput,
-  FoundationBuilderInputs,
-  FoundationSolarApplicationInput,
-} from "./buildFoundationArtifact.types";
+export type FoundationAbpReportInput = {
+  applicationId: string | null;
+  part2AppVerificationDate: string | null;
+  projectName: string | null;
+};
+
+export type FoundationAbpCsgMappingInput = {
+  csgId: string | null;
+  /** From the mapping table's typed `systemId` column = ABP Application_ID. */
+  abpId: string | null;
+};
+
+/**
+ * Account Solar Generation row. `gatsGenId` is the join column to
+ * `solarApplications.trackingSystemRefId`. Both date columns are
+ * canonical ISO strings (`yyyy-mm-dd`) on production data.
+ */
+export type FoundationAccountSolarGenerationInput = {
+  gatsGenId: string | null;
+  monthOfGeneration: string | null;
+  lastMeterReadDate: string | null;
+  lastMeterReadKwh: number | null;
+};
+
+/**
+ * Generation Entry row. `unitId` is the join column to
+ * `solarApplications.trackingSystemRefId`. The kWh value isn't a
+ * typed column (legacy parses it from `GENERATION_BASELINE_VALUE_HEADERS`
+ * in `rawRow`), so the DB-bound builder pre-extracts it before
+ * passing to the pure builder.
+ */
+export type FoundationGenerationEntryInput = {
+  unitId: string | null;
+  lastMonthOfGen: string | null;
+  effectiveDate: string | null;
+  /** kWh value extracted from the row's rawRow (any of the 7 GENERATION_BASELINE_VALUE_HEADERS). */
+  generationKwh: number | null;
+};
+
+export type FoundationTransferHistoryInput = {
+  unitId: string | null;
+  transferCompletionDate: string | null;
+};
+
+export type FoundationContractedDateInput = {
+  csgId: string | null;
+  contractedDate: string | null;
+};
+
+export type FoundationBuilderInputs = {
+  scopeId: string;
+  inputVersions: Record<DatasetKey, { batchId: string | null; rowCount: number }>;
+  solarApplications: FoundationSolarApplicationInput[];
+  abpReport: FoundationAbpReportInput[];
+  abpCsgSystemMapping: FoundationAbpCsgMappingInput[];
+  accountSolarGeneration: FoundationAccountSolarGenerationInput[];
+  generationEntry: FoundationGenerationEntryInput[];
+  transferHistory: FoundationTransferHistoryInput[];
+  contractedDate: FoundationContractedDateInput[];
+  /**
+   * `populatedDatasets` is a function of `inputVersions`: a key is
+   * populated when its `rowCount > 0`. The builder derives this; the
+   * caller doesn't pass it separately.
+   */
+};
 
 // ---------------------------------------------------------------------------
 // Contract type heuristics — TEMPORARILY mirror the client logic.
@@ -267,10 +344,23 @@ function emptyCanonicalSystem(csgId: string): FoundationCanonicalSystem {
   return {
     csgId,
     abpIds: [],
+    sizeKwAc: null,
+    sizeKwDc: null,
+    contractValueUsd: null,
     isTerminated: false,
     isPart2Verified: false,
     isReporting: false,
+    anchorMonthIso: null,
+    contractType: null,
     ownershipStatus: null,
+    monitoringPlatform: null,
+    gatsId: null,
+    lastMeterReadDateIso: null,
+    lastMeterReadKwh: null,
+    abpStatus: null,
+    part2VerificationDateIso: null,
+    contractedDateIso: null,
+    energyYear: null,
     integrityWarningCodes: [],
   };
 }
@@ -367,10 +457,6 @@ export function buildFoundationFromInputs(
   // Earliest row wins on conflicts (later rows for the same csgId
   // trigger a soft warning but don't overwrite — solar applications
   // is supposed to be one row per CSG ID).
-  // contractType is dropped from FoundationCanonicalSystem (Phase 3.2
-  // payload slim) but step 9 still needs it to derive ownershipStatus.
-  // Sibling map keeps it in scope without inflating the cached payload.
-  const contractTypeByCsgId = new Map<string, string | null>();
   for (const row of inputs.solarApplications) {
     const csgId = (row.csgId ?? "").trim();
     if (!csgId) {
@@ -388,8 +474,11 @@ export function buildFoundationFromInputs(
       continue;
     }
     const system = emptyCanonicalSystem(csgId);
+    system.sizeKwAc = row.installedKwAc;
+    system.sizeKwDc = row.installedKwDc;
+    system.contractValueUsd = row.totalContractAmount;
+    system.contractType = row.contractType;
     system.isTerminated = isTerminatedContractType(row.contractType);
-    contractTypeByCsgId.set(csgId, row.contractType);
     systemsByCsgId[csgId] = system;
   }
 
@@ -512,6 +601,10 @@ export function buildFoundationFromInputs(
         // don't carry an authoritative status field today.
         statusText: getCsgStatusText(inputs.solarApplications, csgId),
       });
+      system.abpStatus = abpRow.part2AppVerificationDate
+        ? "part2-verified-candidate"
+        : null;
+      system.part2VerificationDateIso = abpRow.part2AppVerificationDate;
       if (verified && !system.isTerminated) {
         system.isPart2Verified = true;
         part2VerifiedCsgIds.add(csgId);
@@ -712,14 +805,19 @@ export function buildFoundationFromInputs(
   }
 
   // -------- Step 9: project per-system reporting + ownership state --------
-  // Reads from sibling maps (contractTypeByCsgId, contractedDateByCsgId,
-  // genByCsgId, etc.) rather than per-system fields. The dropped per-
-  // system date/contract fields are derived locally only.
   for (const csgId of Object.keys(systemsByCsgId)) {
     const system = systemsByCsgId[csgId];
 
     const contracted = contractedDateByCsgId.get(csgId) ?? null;
+    if (contracted) system.contractedDateIso = contracted;
+
     const gen = genByCsgId.get(csgId);
+    if (gen) {
+      system.lastMeterReadDateIso = gen.latestMeterReadDate;
+      system.lastMeterReadKwh = gen.latestMeterReadKwh;
+    }
+
+    system.anchorMonthIso = anchorMonthIso;
 
     if (
       gen &&
@@ -732,9 +830,9 @@ export function buildFoundationFromInputs(
       system.isReporting = true;
     }
 
-    const contractType = contractTypeByCsgId.get(csgId) ?? null;
     const transferSeen = transferSeenByCsgId.has(csgId);
-    const isContractTransferred = isTransferredContractType(contractType);
+    const isContractTerminated = isTerminatedContractType(system.contractType);
+    const isContractTransferred = isTransferredContractType(system.contractType);
     const zillowStatus = zillowStatusByCsgId.get(csgId);
     const zillowSoldDate = zillowSoldDateByCsgId.get(csgId);
     const isZillowSold =
@@ -743,10 +841,10 @@ export function buildFoundationFromInputs(
     const hasZillowConfirmedOwnershipChange =
       isZillowSold &&
       !!zillowSoldDate &&
-      !!contracted &&
-      zillowSoldDate > contracted;
+      !!system.contractedDateIso &&
+      zillowSoldDate > system.contractedDateIso;
 
-    if (system.isTerminated) {
+    if (isContractTerminated) {
       system.ownershipStatus = "terminated";
     } else if (isContractTransferred || transferSeen) {
       system.ownershipStatus = "transferred";

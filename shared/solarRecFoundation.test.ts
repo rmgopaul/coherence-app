@@ -37,10 +37,23 @@ function makeSystem(
   return {
     csgId: overrides.csgId,
     abpIds: overrides.abpIds ?? [],
+    sizeKwAc: overrides.sizeKwAc ?? null,
+    sizeKwDc: overrides.sizeKwDc ?? null,
+    contractValueUsd: overrides.contractValueUsd ?? null,
     isTerminated: overrides.isTerminated ?? false,
     isPart2Verified: overrides.isPart2Verified ?? false,
     isReporting: overrides.isReporting ?? false,
+    anchorMonthIso: overrides.anchorMonthIso ?? null,
+    contractType: overrides.contractType ?? null,
     ownershipStatus: overrides.ownershipStatus ?? null,
+    monitoringPlatform: overrides.monitoringPlatform ?? null,
+    gatsId: overrides.gatsId ?? null,
+    lastMeterReadDateIso: overrides.lastMeterReadDateIso ?? null,
+    lastMeterReadKwh: overrides.lastMeterReadKwh ?? null,
+    abpStatus: overrides.abpStatus ?? null,
+    part2VerificationDateIso: overrides.part2VerificationDateIso ?? null,
+    contractedDateIso: overrides.contractedDateIso ?? null,
+    energyYear: overrides.energyYear ?? null,
     integrityWarningCodes: overrides.integrityWarningCodes ?? [],
   };
 }
@@ -106,11 +119,7 @@ describe("foundation constants", () => {
     // Phase 2.7 follow-up bumped to 3 — invalidates v2 cached
     // artifacts that pre-date the trackingRef collision warning +
     // first-claim winner fix.
-    // Phase 3.2 (2026-05-01) bumped to 4 — payload slim (dropped 13
-    // unused per-system fields). Old v3 cache rows are too large to
-    // upsert into TiDB Serverless; bump invalidates them so the next
-    // build writes the slim shape.
-    expect(FOUNDATION_DEFINITION_VERSION).toBe(4);
+    expect(FOUNDATION_DEFINITION_VERSION).toBe(3);
   });
 
   it("definition version matches the empty artifact's version", () => {
