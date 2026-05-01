@@ -21,6 +21,7 @@ import { srDsAbpReport } from "../../../drizzle/schemas/solar";
 import { getActiveVersionsForKeys } from "../../db/solarRecDatasets";
 import {
   type CsvRow,
+  buildFoundationOverlayMap,
   clean,
   isPart2VerifiedAbpRow,
   resolvePart2ProjectIdentity,
@@ -31,6 +32,7 @@ import {
   getOrBuildSystemSnapshot,
   loadDatasetRows,
 } from "./buildSystemSnapshot";
+import { getOrBuildFoundation } from "./foundationRunner";
 import { superjsonSerde, withArtifactCache } from "./withArtifactCache";
 
 // ---------------------------------------------------------------------------
@@ -571,13 +573,19 @@ export function buildOverviewSummary(
 // ---------------------------------------------------------------------------
 
 const OVERVIEW_SUMMARY_DEPS = ["abpReport"] as const;
-const ARTIFACT_TYPE = "overviewSummary";
+// Phase 3.1 (2026-05-01) — bumped from `"overviewSummary"` so old
+// cache rows under the legacy snapshot-only definition don't leak
+// in. The new payload's `isReporting` / `isTerminated` /
+// `ownershipStatus` come from the foundation, not the snapshot's
+// legacy `today − 3 months` reporting math.
+const ARTIFACT_TYPE = "overviewSummary-v2";
 
 export const OVERVIEW_SUMMARY_RUNNER_VERSION =
-  "phase-5e-step4c2-overviewsummary@1";
+  "phase-3.1-overview-foundation@1";
 
 async function computeOverviewSummaryInputHash(
-  scopeId: string
+  scopeId: string,
+  foundationInputVersionHash: string
 ): Promise<{
   hash: string;
   abpReportBatchId: string | null;
@@ -597,6 +605,7 @@ async function computeOverviewSummaryInputHash(
         `runner:${OVERVIEW_SUMMARY_RUNNER_VERSION}`,
         `abp:${abpReportBatchId ?? ""}`,
         `snapshot:${snapshotHash}`,
+        `foundation:${foundationInputVersionHash}`,
       ].join("|")
     )
     .digest("hex")
@@ -608,8 +617,16 @@ async function computeOverviewSummaryInputHash(
 export async function getOrBuildOverviewSummary(
   scopeId: string
 ): Promise<{ result: OverviewSummaryAggregate; fromCache: boolean }> {
-  const { hash, abpReportBatchId } =
-    await computeOverviewSummaryInputHash(scopeId);
+  // Foundation drives canonical reporting/ownership state for every
+  // tab in Phase 3.1. We compute the hash up-front so the cache key
+  // changes when the foundation invalidates (new dataset upload).
+  const { payload: foundation, inputVersionHash: foundationHash } =
+    await getOrBuildFoundation(scopeId);
+
+  const { hash, abpReportBatchId } = await computeOverviewSummaryInputHash(
+    scopeId,
+    foundationHash
+  );
 
   // No abpReport → no part-2 verified rows possible → empty summary.
   // Skip both the snapshot build and the cache.
@@ -632,7 +649,22 @@ export async function getOrBuildOverviewSummary(
         const part2VerifiedAbpRows = abpReportRows.filter((row) =>
           isPart2VerifiedAbpRow(row)
         );
-        const systems = extractSnapshotSystemsForSummary(snapshot.systems);
+        const baseSystems = extractSnapshotSystemsForSummary(snapshot.systems);
+        // Overlay the canonical state from the foundation. Display
+        // fields (systemName, contractedDate, zillowStatus, etc.) and
+        // value math (totalContractAmount, deliveredValue) keep
+        // snapshot values; isReporting / isTerminated / isTransferred /
+        // ownershipStatus come from the foundation so all Phase 3.1
+        // tabs agree on the headline counts.
+        const overlayMap = buildFoundationOverlayMap(
+          foundation.canonicalSystemsByCsgId
+        );
+        const systems = baseSystems.map((sys) => {
+          if (!sys.systemId) return sys;
+          const overlay = overlayMap.get(sys.systemId);
+          if (!overlay) return sys;
+          return { ...sys, ...overlay };
+        });
         return buildOverviewSummary({ part2VerifiedAbpRows, systems });
       },
     }
