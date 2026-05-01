@@ -1062,6 +1062,33 @@ describe("buildFoundationFromInputs — ownership status (Phase 2.7)", () => {
     );
   });
 
+  it("Zillow status + soldDate split across two rows for the same CSG → COO detected", () => {
+    // Real production data has been seen with `Zillow_Status` set on
+    // one row and `Zillow_Sold_Date` set on a different row for the
+    // same CSG. The builder must merge first-non-null per FIELD, not
+    // per row, otherwise the status-only row locks out the soldDate
+    // row's later arrival and COO detection silently misses.
+    const payload = buildFoundationFromInputs(
+      makeInputs({
+        solarApplications: [
+          makeSolar("CSG-1", {
+            zillowStatus: "Sold",
+            zillowSoldDate: null,
+          }),
+          makeSolar("CSG-1", {
+            zillowStatus: null,
+            zillowSoldDate: "2024-03-01",
+          }),
+        ],
+        contractedDate: [makeContractedDate("CSG-1", "2022-01-15")],
+      }),
+      FIXED_BUILT_AT
+    );
+    expect(payload.canonicalSystemsByCsgId["CSG-1"].ownershipStatus).toBe(
+      "change-of-ownership"
+    );
+  });
+
   it("default contract type + no transfer + no Zillow → ownershipStatus=active", () => {
     const payload = buildFoundationFromInputs(
       makeInputs({

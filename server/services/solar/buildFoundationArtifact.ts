@@ -678,22 +678,26 @@ export function buildFoundationFromInputs(
     }
   }
 
-  // Zillow lookup map: avoids the O(N×M) re-scan that `getCsgStatusText`
+  // Zillow lookup maps: avoids the O(N×M) re-scan that `getCsgStatusText`
   // does for the Part II filter. Phase 6 cleanup hoists statusText to
   // the same map.
-  const zillowByCsgId = new Map<
-    string,
-    { status: string | null; soldDate: string | null }
-  >();
+  //
+  // Two independent first-non-null maps so a row carrying status only
+  // doesn't lock out a later row carrying soldDate (or vice versa).
+  // Real production data has been seen with the two fields split
+  // across different solarApps rows for the same CSG; locking the
+  // map on the first row with EITHER field would silently drop the
+  // other field's later arrival → COO detection misses.
+  const zillowStatusByCsgId = new Map<string, string>();
+  const zillowSoldDateByCsgId = new Map<string, string>();
   for (const row of inputs.solarApplications) {
     const csgId = (row.csgId ?? "").trim();
     if (!csgId) continue;
-    if (zillowByCsgId.has(csgId)) continue; // first non-null wins
-    if (row.zillowStatus || row.zillowSoldDate) {
-      zillowByCsgId.set(csgId, {
-        status: row.zillowStatus,
-        soldDate: row.zillowSoldDate,
-      });
+    if (row.zillowStatus && !zillowStatusByCsgId.has(csgId)) {
+      zillowStatusByCsgId.set(csgId, row.zillowStatus);
+    }
+    if (row.zillowSoldDate && !zillowSoldDateByCsgId.has(csgId)) {
+      zillowSoldDateByCsgId.set(csgId, row.zillowSoldDate);
     }
   }
 
@@ -825,15 +829,16 @@ export function buildFoundationFromInputs(
     const transferSeen = transferSeenByCsgId.has(csgId);
     const isContractTerminated = isTerminatedContractType(system.contractType);
     const isContractTransferred = isTransferredContractType(system.contractType);
-    const zillow = zillowByCsgId.get(csgId);
+    const zillowStatus = zillowStatusByCsgId.get(csgId);
+    const zillowSoldDate = zillowSoldDateByCsgId.get(csgId);
     const isZillowSold =
-      typeof zillow?.status === "string" &&
-      zillow.status.toLowerCase().includes("sold");
+      typeof zillowStatus === "string" &&
+      zillowStatus.toLowerCase().includes("sold");
     const hasZillowConfirmedOwnershipChange =
       isZillowSold &&
-      !!zillow?.soldDate &&
+      !!zillowSoldDate &&
       !!system.contractedDateIso &&
-      zillow.soldDate > system.contractedDateIso;
+      zillowSoldDate > system.contractedDateIso;
 
     if (isContractTerminated) {
       system.ownershipStatus = "terminated";
