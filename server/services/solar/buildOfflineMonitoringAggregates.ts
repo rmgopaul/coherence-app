@@ -23,6 +23,7 @@ import {
   srDsAbpReport,
   srDsSolarApplications,
 } from "../../../drizzle/schemas/solar";
+import type { FoundationArtifactPayload } from "../../../shared/solarRecFoundation";
 import { getActiveVersionsForKeys } from "../../db/solarRecDatasets";
 import {
   type CsvRow,
@@ -454,6 +455,43 @@ async function computeOfflineMonitoringInputHash(
 }
 
 /**
+ * Build the union of ABP application IDs the foundation considers
+ * Part II Verified. Walks `foundation.part2EligibleCsgIds` and
+ * collects `abpIds[]` per CSG. Used by both the cached entrypoint
+ * and the cross-tab parity test fixture.
+ */
+export function collectFoundationEligibleApplicationIds(
+  foundation: FoundationArtifactPayload
+): Set<string> {
+  const out = new Set<string>();
+  for (const csgId of foundation.part2EligibleCsgIds) {
+    const sys = foundation.canonicalSystemsByCsgId[csgId];
+    if (!sys) continue;
+    for (const abpId of sys.abpIds) {
+      out.add(abpId);
+    }
+  }
+  return out;
+}
+
+/**
+ * Pure recompute body — extracted so cross-tab parity tests can
+ * exercise the full foundation-eligibility path without touching
+ * the DB. Cached entrypoint passes already-loaded inputs.
+ */
+export function buildOfflineMonitoringAggregatesWithFoundationOverlay(
+  foundation: FoundationArtifactPayload,
+  abpReportRows: CsvRow[],
+  solarApplicationsRows: CsvRow[]
+): OfflineMonitoringAggregate {
+  return buildOfflineMonitoringAggregates({
+    abpReportRows,
+    solarApplicationsRows,
+    eligibleApplicationIds: collectFoundationEligibleApplicationIds(foundation),
+  });
+}
+
+/**
  * Public entrypoint for the tRPC query.
  *
  * Cache miss path:
@@ -479,15 +517,6 @@ export async function getOrBuildOfflineMonitoringAggregates(
 
   const { hash, abpReportBatchId, solarApplicationsBatchId } =
     await computeOfflineMonitoringInputHash(scopeId, foundationHash);
-
-  const eligibleApplicationIdsFromFoundation = new Set<string>();
-  for (const csgId of foundation.part2EligibleCsgIds) {
-    const sys = foundation.canonicalSystemsByCsgId[csgId];
-    if (!sys) continue;
-    for (const abpId of sys.abpIds) {
-      eligibleApplicationIdsFromFoundation.add(abpId);
-    }
-  }
 
   const { result, fromCache } = await withArtifactCache<OfflineMonitoringAggregate>(
     {
@@ -518,12 +547,11 @@ export async function getOrBuildOfflineMonitoringAggregates(
               )
             : Promise.resolve([] as CsvRow[]),
         ]);
-
-        return buildOfflineMonitoringAggregates({
+        return buildOfflineMonitoringAggregatesWithFoundationOverlay(
+          foundation,
           abpReportRows,
-          solarApplicationsRows,
-          eligibleApplicationIds: eligibleApplicationIdsFromFoundation,
-        });
+          solarApplicationsRows
+        );
       },
     }
   );
