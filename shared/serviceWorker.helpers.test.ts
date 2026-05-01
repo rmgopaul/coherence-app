@@ -9,8 +9,10 @@
 import { describe, expect, it } from "vitest";
 import {
   classifyServiceWorkerRequest,
+  extractBuildIdFromHtml,
   isPwaStandaloneMode,
   selectShellFallback,
+  shouldCacheHtmlForOffline,
 } from "./serviceWorker.helpers";
 
 const ORIGIN = "https://app.example.com";
@@ -153,22 +155,23 @@ describe("selectShellFallback", () => {
     expect(selectShellFallback("/feedback")).toBe("/");
   });
 
-  it("returns /solar-rec/ for solar-rec pages", () => {
-    expect(selectShellFallback("/solar-rec/")).toBe("/solar-rec/");
-    expect(selectShellFallback("/solar-rec/dashboard")).toBe("/solar-rec/");
-    expect(selectShellFallback("/solar-rec/monitoring")).toBe("/solar-rec/");
-    expect(selectShellFallback("/solar-rec/system/CSG-12345")).toBe(
-      "/solar-rec/"
-    );
-    expect(selectShellFallback("/solar-rec/meter-reads/enphase-v4")).toBe(
-      "/solar-rec/"
-    );
+  it("returns null for solar-rec pages — SW v3 disables shell fallback for the team app", () => {
+    // Solar-rec is multi-user team UI behind backend; serving stale
+    // shell HTML when offline is worse UX than the browser's native
+    // error page (the cached HTML can reference deleted Vite chunks
+    // after a deploy → blank page with chunk-404 in the network
+    // panel rather than an honest "no internet" message).
+    expect(selectShellFallback("/solar-rec/")).toBeNull();
+    expect(selectShellFallback("/solar-rec/dashboard")).toBeNull();
+    expect(selectShellFallback("/solar-rec/monitoring")).toBeNull();
+    expect(selectShellFallback("/solar-rec/system/CSG-12345")).toBeNull();
+    expect(selectShellFallback("/solar-rec/meter-reads/enphase-v4")).toBeNull();
   });
 
   it("treats /solar-rec (no trailing slash) as solar-rec too", () => {
     // Edge case — Wouter normalizes URLs but a hard navigation
     // typed in the URL bar can land here.
-    expect(selectShellFallback("/solar-rec")).toBe("/solar-rec/");
+    expect(selectShellFallback("/solar-rec")).toBeNull();
   });
 
   it("does NOT confuse /solar-rec-prefixed siblings", () => {
@@ -190,5 +193,90 @@ describe("selectShellFallback", () => {
     expect(
       selectShellFallback(undefined as unknown as string)
     ).toBe("/");
+  });
+});
+
+describe("shouldCacheHtmlForOffline", () => {
+  it("caches personal-app HTML so offline navigation has a shell", () => {
+    expect(shouldCacheHtmlForOffline("/")).toBe(true);
+    expect(shouldCacheHtmlForOffline("/dashboard")).toBe(true);
+    expect(shouldCacheHtmlForOffline("/notes")).toBe(true);
+    expect(shouldCacheHtmlForOffline("/widget/todoist")).toBe(true);
+  });
+
+  it("does NOT cache solar-rec HTML — network-only by design (SW v3)", () => {
+    expect(shouldCacheHtmlForOffline("/solar-rec/")).toBe(false);
+    expect(shouldCacheHtmlForOffline("/solar-rec/dashboard")).toBe(false);
+    expect(shouldCacheHtmlForOffline("/solar-rec/monitoring")).toBe(false);
+    expect(shouldCacheHtmlForOffline("/solar-rec/system/CSG-12345")).toBe(
+      false
+    );
+  });
+
+  it("treats bare /solar-rec as solar-rec too", () => {
+    expect(shouldCacheHtmlForOffline("/solar-rec")).toBe(false);
+  });
+
+  it("does NOT confuse /solar-rec-prefixed siblings", () => {
+    // Same edge-case shape as selectShellFallback — a hypothetical
+    // personal-app route at /solar-rec-archive should still cache.
+    expect(shouldCacheHtmlForOffline("/solar-rec-archive")).toBe(true);
+    expect(shouldCacheHtmlForOffline("/solar-recap")).toBe(true);
+  });
+
+  it("returns false defensively on non-string input", () => {
+    expect(shouldCacheHtmlForOffline(null as unknown as string)).toBe(false);
+    expect(shouldCacheHtmlForOffline(undefined as unknown as string)).toBe(
+      false
+    );
+  });
+});
+
+describe("extractBuildIdFromHtml", () => {
+  it("extracts the build-id meta tag content", () => {
+    const html = `<!doctype html><html><head>
+      <meta name="build-id" content="1730000000000-abc1234" />
+    </head><body></body></html>`;
+    expect(extractBuildIdFromHtml(html)).toBe("1730000000000-abc1234");
+  });
+
+  it("matches single-quoted attributes", () => {
+    const html = `<meta name='build-id' content='dev'>`;
+    expect(extractBuildIdFromHtml(html)).toBe("dev");
+  });
+
+  it("matches mixed-quote attributes (real-world Vite output)", () => {
+    const html = `<meta name="build-id" content='1730000000000-abc1234'>`;
+    expect(extractBuildIdFromHtml(html)).toBe("1730000000000-abc1234");
+  });
+
+  it("is case-insensitive on the META tag and attribute name", () => {
+    const html = `<META NAME="Build-Id" CONTENT="upper-case">`;
+    expect(extractBuildIdFromHtml(html)).toBe("upper-case");
+  });
+
+  it("returns null when no build-id meta tag exists", () => {
+    const html = `<!doctype html><html><head>
+      <meta name="theme-color" content="#000" />
+    </head></html>`;
+    expect(extractBuildIdFromHtml(html)).toBeNull();
+  });
+
+  it("returns null when content is missing", () => {
+    // A malformed `<meta name="build-id">` without content is not a
+    // useful signal — return null rather than empty string.
+    expect(extractBuildIdFromHtml(`<meta name="build-id">`)).toBeNull();
+  });
+
+  it("returns null on non-string input", () => {
+    expect(extractBuildIdFromHtml(null as unknown as string)).toBeNull();
+    expect(extractBuildIdFromHtml(undefined as unknown as string)).toBeNull();
+  });
+
+  it("does not match a build-id-like comment", () => {
+    // Belt-and-suspenders: only real meta tags should match.
+    expect(
+      extractBuildIdFromHtml(`<!-- build-id: 1730000000000-abc1234 -->`)
+    ).toBeNull();
   });
 });
