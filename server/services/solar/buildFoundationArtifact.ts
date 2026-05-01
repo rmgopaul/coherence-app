@@ -22,23 +22,25 @@
  *     checks the date; the foundation uses the new
  *     `isPart2VerifiedSystem` helper from `aggregatorHelpers.ts`.
  *
- * Deferred to follow-up PRs (still Phase 2 territory) — these
- * fields default to null/false in the artifact for now:
- *   - **Reporting status** — newest valid generation date as anchor
- *     and the per-system positive-generation check. Builder leaves
- *     `isReporting: false`, `anchorMonthIso: null`,
- *     `reportingCsgIds: []`, `summaryCounts.reporting: 0`. Tabs
- *     that depend on reporting (Overview, Trends, Performance
- *     Ratio) get this in the next builder pass before their
- *     Phase 3 migrations.
- *   - **Last meter read derivation** (`lastMeterReadDateIso`,
- *     `lastMeterReadKwh`).
+ * Phase 2.7 (2026-05-01) extends the builder with reporting +
+ * ownership state. The two new locked definitions:
+ *   - **Reporting** — anchor = newest valid generation date across
+ *     `srDsAccountSolarGeneration` ∪ `srDsGenerationEntry` where
+ *     kWh > 0. Per-system `isReporting` = true iff the system has a
+ *     positive generation reading inside `[firstDayOfAnchorMonth − 2
+ *     calendar months, firstDayOfAnchorMonth + 1 calendar month)`,
+ *     half-open, America/Chicago. Zero-production rows do not count.
+ *     Transfer history never affects reporting.
+ *   - **Ownership status** lifecycle bucket (4 states). Priority:
+ *     `terminated` (contract type) > `transferred` (contract type
+ *     OR transferHistory unitId match) > `change-of-ownership`
+ *     (Zillow sold > contracted) > `active`. Tabs combine this with
+ *     `isReporting` for the legacy 6-state UI enum.
+ *
+ * Still deferred (separate follow-up):
  *   - **GATS ID resolution** + the `CSG_ID_HAS_MULTIPLE_GATS_IDS`
- *     warning (depends on GATS resolution from generationEntry +
- *     accountSolarGeneration cross-reference).
- *   - **Ownership status state machine** (transferred /
- *     change-of-ownership detection from `transferHistory`).
- *   - **Contracted date** (`contractedDateIso`) and energy year.
+ *     warning.
+ *   - **Monitoring platform** + **energy year**.
  *
  * The deferred fields stay nullable; the builder fills them in
  * incrementally without breaking the artifact shape.
@@ -49,7 +51,11 @@ import { and, asc, eq, gt } from "drizzle-orm";
 import {
   srDsAbpCsgSystemMapping,
   srDsAbpReport,
+  srDsAccountSolarGeneration,
+  srDsContractedDate,
+  srDsGenerationEntry,
   srDsSolarApplications,
+  srDsTransferHistory,
 } from "../../../drizzle/schemas/solar";
 import {
   DATASET_KEYS,
@@ -70,6 +76,7 @@ import { getActiveDatasetVersions } from "../../db/solarRecDatasets";
 import { solarRecImportBatches } from "../../../drizzle/schemas/solar";
 import { inArray } from "drizzle-orm";
 import { isPart2VerifiedSystem } from "./aggregatorHelpers";
+import { parseIsoDate, toNullableNumber } from "./helpers";
 
 export { FOUNDATION_RUNNER_VERSION };
 
@@ -98,6 +105,17 @@ export type FoundationSolarApplicationInput = {
    * withdrawn applications.
    */
   statusText: string | null;
+  /**
+   * Tracking-system ref ID — the linkage column that joins solar
+   * applications to generation/transfer rows. Same value appears
+   * as `gatsGenId` on `srDsAccountSolarGeneration` and `unitId` on
+   * `srDsGenerationEntry` + `srDsTransferHistory`.
+   */
+  trackingSystemRefId: string | null;
+  /** Zillow sold date (`Zillow_Sold_Date`) from the row's `rawRow` JSON. */
+  zillowSoldDate: string | null;
+  /** Zillow status text (`Zillow_Status` or nested `zillowData.status`). */
+  zillowStatus: string | null;
 };
 
 export type FoundationAbpReportInput = {
@@ -112,12 +130,53 @@ export type FoundationAbpCsgMappingInput = {
   abpId: string | null;
 };
 
+/**
+ * Account Solar Generation row. `gatsGenId` is the join column to
+ * `solarApplications.trackingSystemRefId`. Both date columns are
+ * canonical ISO strings (`yyyy-mm-dd`) on production data.
+ */
+export type FoundationAccountSolarGenerationInput = {
+  gatsGenId: string | null;
+  monthOfGeneration: string | null;
+  lastMeterReadDate: string | null;
+  lastMeterReadKwh: number | null;
+};
+
+/**
+ * Generation Entry row. `unitId` is the join column to
+ * `solarApplications.trackingSystemRefId`. The kWh value isn't a
+ * typed column (legacy parses it from `GENERATION_BASELINE_VALUE_HEADERS`
+ * in `rawRow`), so the DB-bound builder pre-extracts it before
+ * passing to the pure builder.
+ */
+export type FoundationGenerationEntryInput = {
+  unitId: string | null;
+  lastMonthOfGen: string | null;
+  effectiveDate: string | null;
+  /** kWh value extracted from the row's rawRow (any of the 7 GENERATION_BASELINE_VALUE_HEADERS). */
+  generationKwh: number | null;
+};
+
+export type FoundationTransferHistoryInput = {
+  unitId: string | null;
+  transferCompletionDate: string | null;
+};
+
+export type FoundationContractedDateInput = {
+  csgId: string | null;
+  contractedDate: string | null;
+};
+
 export type FoundationBuilderInputs = {
   scopeId: string;
   inputVersions: Record<DatasetKey, { batchId: string | null; rowCount: number }>;
   solarApplications: FoundationSolarApplicationInput[];
   abpReport: FoundationAbpReportInput[];
   abpCsgSystemMapping: FoundationAbpCsgMappingInput[];
+  accountSolarGeneration: FoundationAccountSolarGenerationInput[];
+  generationEntry: FoundationGenerationEntryInput[];
+  transferHistory: FoundationTransferHistoryInput[];
+  contractedDate: FoundationContractedDateInput[];
   /**
    * `populatedDatasets` is a function of `inputVersions`: a key is
    * populated when its `rowCount > 0`. The builder derives this; the
@@ -126,13 +185,13 @@ export type FoundationBuilderInputs = {
 };
 
 // ---------------------------------------------------------------------------
-// Termination heuristic — TEMPORARILY mirrors the client logic.
+// Contract type heuristics — TEMPORARILY mirror the client logic.
 //
 // `client/src/solar-rec-dashboard/lib/helpers/abp.ts::isTerminatedContractType`
-// matches the contract type against `IL_ABP_TERMINATED_CONTRACT_TYPE`.
-// We don't want a server→client import here, so we inline the same
-// normalization. Phase 6 cleanup hoists both copies to
-// `shared/solarRecAbpStatus.ts`.
+// + `isTransferredContractType` match against constants defined in
+// `client/src/solar-rec-dashboard/lib/constants.ts:91-92`. Server→client
+// imports aren't allowed, so we inline the same normalization.
+// Phase 6 cleanup hoists both copies to `shared/solarRecAbpStatus.ts`.
 // ---------------------------------------------------------------------------
 
 function normalizeContractType(value: string | null | undefined): string {
@@ -141,11 +200,140 @@ function normalizeContractType(value: string | null | undefined): string {
 }
 
 const IL_ABP_TERMINATED_CONTRACT_TYPE = "il abp - terminated";
+const IL_ABP_TRANSFERRED_CONTRACT_TYPE = "il abp - transferred";
 
 function isTerminatedContractType(
   value: string | null | undefined
 ): boolean {
   return normalizeContractType(value) === IL_ABP_TERMINATED_CONTRACT_TYPE;
+}
+
+function isTransferredContractType(
+  value: string | null | undefined
+): boolean {
+  return normalizeContractType(value) === IL_ABP_TRANSFERRED_CONTRACT_TYPE;
+}
+
+// ---------------------------------------------------------------------------
+// Date helpers — month-level arithmetic on ISO `yyyy-mm-dd` strings.
+//
+// `parseIsoDate` + `shiftIsoDate` (days only) live in
+// `server/services/solar/helpers.ts`. The reporting window math
+// needs month-level shifts, which aren't there today. Inlining
+// rather than hoisting keeps Phase 2.7 surgical; if a third caller
+// needs month math, the helper hoists then.
+// ---------------------------------------------------------------------------
+
+/** First day of the month containing `dateIso`, formatted as `yyyy-mm-01`. */
+function firstDayOfMonthIso(dateIso: string): string | null {
+  const parsed = parseIsoDate(dateIso);
+  if (!parsed) return null;
+  return `${parsed.year}-${String(parsed.month).padStart(2, "0")}-01`;
+}
+
+/**
+ * Shift `dateIso` by `deltaMonths` calendar months and return the
+ * first day of the resulting month. Always returns `yyyy-mm-01`.
+ * Uses the JS Date constructor in local time — safe because we
+ * normalize to a day-zero-time anchor and only read year/month back.
+ */
+function shiftIsoMonth(dateIso: string, deltaMonths: number): string | null {
+  const parsed = parseIsoDate(dateIso);
+  if (!parsed) return null;
+  const date = new Date(parsed.year, parsed.month - 1, 1);
+  date.setMonth(date.getMonth() + deltaMonths);
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  return `${y}-${m}-01`;
+}
+
+/**
+ * Pull the typed-column candidates in priority order, return the first
+ * one that parses to a valid `yyyy-mm-dd` ISO string. Used to pick the
+ * "reporting date" for an account-solar-generation or generation-entry
+ * row when multiple date columns may be present.
+ *
+ * Lex comparison on `yyyy-mm-dd` strings is correct for ordering.
+ */
+function pickFirstValidIsoDate(
+  candidates: Array<string | null | undefined>
+): string | null {
+  for (const c of candidates) {
+    if (typeof c !== "string") continue;
+    const trimmed = c.trim();
+    if (!trimmed) continue;
+    if (parseIsoDate(trimmed)) return trimmed;
+  }
+  return null;
+}
+
+/**
+ * Extract kWh from a generation-entry rawRow JSON. Tries the seven
+ * `GENERATION_BASELINE_VALUE_HEADERS` from
+ * `client/src/solar-rec-dashboard/lib/constants.ts:127`. Returns the
+ * first parseable value, or null.
+ */
+const GENERATION_BASELINE_VALUE_HEADERS = [
+  "Last Meter Read (kWh)",
+  "Last Meter Read (kW)",
+  "Last Meter Read",
+  "Most Recent Production (kWh)",
+  "Most Recent Production",
+  "Generation (kWh)",
+  "Production (kWh)",
+] as const;
+
+function extractGenerationEntryKwh(rawRowJson: string | null): number | null {
+  if (!rawRowJson) return null;
+  let raw: Record<string, unknown>;
+  try {
+    raw = JSON.parse(rawRowJson) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+  for (const header of GENERATION_BASELINE_VALUE_HEADERS) {
+    const parsed = toNullableNumber(raw[header]);
+    if (parsed !== null) return parsed;
+  }
+  return null;
+}
+
+/**
+ * Extract Zillow status + sold date from a Solar Applications rawRow
+ * JSON. Field aliases per the v3 plan:
+ *   - status: `Zillow_Status` (flat) or `zillowData.status` (nested)
+ *   - sold date: `Zillow_Sold_Date`
+ */
+function extractZillowFromRawRow(rawRowJson: string | null): {
+  zillowStatus: string | null;
+  zillowSoldDate: string | null;
+} {
+  if (!rawRowJson) return { zillowStatus: null, zillowSoldDate: null };
+  let raw: Record<string, unknown>;
+  try {
+    raw = JSON.parse(rawRowJson) as Record<string, unknown>;
+  } catch {
+    return { zillowStatus: null, zillowSoldDate: null };
+  }
+  let status =
+    typeof raw["Zillow_Status"] === "string"
+      ? (raw["Zillow_Status"] as string).trim()
+      : "";
+  if (!status) {
+    const nested = raw["zillowData"];
+    if (nested && typeof nested === "object" && !Array.isArray(nested)) {
+      const nestedStatus = (nested as Record<string, unknown>)["status"];
+      if (typeof nestedStatus === "string") status = nestedStatus.trim();
+    }
+  }
+  const soldDate =
+    typeof raw["Zillow_Sold_Date"] === "string"
+      ? (raw["Zillow_Sold_Date"] as string).trim()
+      : "";
+  return {
+    zillowStatus: status || null,
+    zillowSoldDate: soldDate || null,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -424,10 +612,215 @@ export function buildFoundationFromInputs(
     }
   }
 
-  // -------- Step 5: lists + summaryCounts --------
+  // -------- Step 5: trackingSystemRefId / contractedDate / Zillow maps --------
+  // First-non-null wins per CSG: a later solarApps row carrying the
+  // tracking ref rescues a CSG whose first row was incomplete (otherwise
+  // the system silently loses its generation linkage).
+  const csgIdByTrackingRef = new Map<string, string>();
+  const trackingRefByCsgId = new Map<string, string>();
+  for (const row of inputs.solarApplications) {
+    const csgId = (row.csgId ?? "").trim();
+    if (!csgId) continue;
+    const trackingRef = (row.trackingSystemRefId ?? "").trim();
+    if (!trackingRef) continue;
+    if (!trackingRefByCsgId.has(csgId)) {
+      trackingRefByCsgId.set(csgId, trackingRef);
+      // Last-write-wins on the inverse map is fine: the trackingRef → csgId
+      // direction is unique for a healthy dataset. Cross-CSG collisions
+      // are a separate data-quality concern handled by the multi-mapping
+      // warnings above.
+      csgIdByTrackingRef.set(trackingRef, csgId);
+    }
+  }
+
+  const contractedDateByCsgId = new Map<string, string>();
+  for (const row of inputs.contractedDate) {
+    const csgId = (row.csgId ?? "").trim();
+    const date = (row.contractedDate ?? "").trim();
+    if (!csgId || !date) continue;
+    if (!contractedDateByCsgId.has(csgId)) {
+      contractedDateByCsgId.set(csgId, date);
+    }
+  }
+
+  // Zillow lookup map: avoids the O(N×M) re-scan that `getCsgStatusText`
+  // does for the Part II filter. Phase 6 cleanup hoists statusText to
+  // the same map.
+  const zillowByCsgId = new Map<
+    string,
+    { status: string | null; soldDate: string | null }
+  >();
+  for (const row of inputs.solarApplications) {
+    const csgId = (row.csgId ?? "").trim();
+    if (!csgId) continue;
+    if (zillowByCsgId.has(csgId)) continue; // first non-null wins
+    if (row.zillowStatus || row.zillowSoldDate) {
+      zillowByCsgId.set(csgId, {
+        status: row.zillowStatus,
+        soldDate: row.zillowSoldDate,
+      });
+    }
+  }
+
+  // -------- Step 6: per-system generation accumulator --------
+  // Track newest-positive-kWh date (anchor + isReporting) and newest
+  // meter-read date (lastMeterReadDateIso) separately. Zero-production
+  // rows still count as the latest meter read but never as positive
+  // generation.
+  type GenAccumulator = {
+    latestPositiveGenDate: string | null;
+    latestMeterReadDate: string | null;
+    latestMeterReadKwh: number | null;
+  };
+  const genByCsgId = new Map<string, GenAccumulator>();
+  let scopeLatestPositiveGenDate: string | null = null;
+
+  function isoMaxDate(a: string | null, b: string | null): string | null {
+    if (!a) return b;
+    if (!b) return a;
+    return a > b ? a : b;
+  }
+
+  function ensureGen(csgId: string): GenAccumulator {
+    let acc = genByCsgId.get(csgId);
+    if (!acc) {
+      acc = {
+        latestPositiveGenDate: null,
+        latestMeterReadDate: null,
+        latestMeterReadKwh: null,
+      };
+      genByCsgId.set(csgId, acc);
+    }
+    return acc;
+  }
+
+  function updateMeterRead(
+    acc: GenAccumulator,
+    date: string,
+    kWh: number | null
+  ): void {
+    if (acc.latestMeterReadDate === null || date > acc.latestMeterReadDate) {
+      acc.latestMeterReadDate = date;
+      acc.latestMeterReadKwh = kWh;
+    }
+  }
+
+  // Account Solar Generation: typed `lastMeterReadKwh` + `lastMeterReadDate`
+  // (fallback `monthOfGeneration`) are sufficient — no rawRow parse needed.
+  for (const row of inputs.accountSolarGeneration) {
+    const trackingRef = (row.gatsGenId ?? "").trim();
+    if (!trackingRef) continue;
+    const csgId = csgIdByTrackingRef.get(trackingRef);
+    if (!csgId) continue;
+    const date = pickFirstValidIsoDate([
+      row.lastMeterReadDate,
+      row.monthOfGeneration,
+    ]);
+    if (!date) continue;
+    const kWh = row.lastMeterReadKwh;
+    const acc = ensureGen(csgId);
+    updateMeterRead(acc, date, kWh);
+    if (kWh !== null && kWh > 0) {
+      acc.latestPositiveGenDate = isoMaxDate(acc.latestPositiveGenDate, date);
+      scopeLatestPositiveGenDate = isoMaxDate(scopeLatestPositiveGenDate, date);
+    }
+  }
+
+  // Generation Entry: kWh comes from rawRow (extracted upstream by the
+  // DB-bound builder; tests pass it directly via `generationKwh`).
+  for (const row of inputs.generationEntry) {
+    const trackingRef = (row.unitId ?? "").trim();
+    if (!trackingRef) continue;
+    const csgId = csgIdByTrackingRef.get(trackingRef);
+    if (!csgId) continue;
+    const date = pickFirstValidIsoDate([row.lastMonthOfGen, row.effectiveDate]);
+    if (!date) continue;
+    const kWh = row.generationKwh;
+    const acc = ensureGen(csgId);
+    updateMeterRead(acc, date, kWh);
+    if (kWh !== null && kWh > 0) {
+      acc.latestPositiveGenDate = isoMaxDate(acc.latestPositiveGenDate, date);
+      scopeLatestPositiveGenDate = isoMaxDate(scopeLatestPositiveGenDate, date);
+    }
+  }
+
+  // -------- Step 7: reporting anchor + window --------
+  const anchorMonthIso = scopeLatestPositiveGenDate
+    ? firstDayOfMonthIso(scopeLatestPositiveGenDate)
+    : null;
+  const windowStartIso = anchorMonthIso ? shiftIsoMonth(anchorMonthIso, -2) : null;
+  const windowEndIso = anchorMonthIso ? shiftIsoMonth(anchorMonthIso, 1) : null;
+
+  // -------- Step 8: transferHistory → transferSeen flag --------
+  const transferSeenByCsgId = new Set<string>();
+  for (const row of inputs.transferHistory) {
+    const trackingRef = (row.unitId ?? "").trim();
+    if (!trackingRef) continue;
+    const csgId = csgIdByTrackingRef.get(trackingRef);
+    if (!csgId) continue;
+    transferSeenByCsgId.add(csgId);
+  }
+
+  // -------- Step 9: project per-system reporting + ownership state --------
+  for (const csgId of Object.keys(systemsByCsgId)) {
+    const system = systemsByCsgId[csgId];
+
+    const contracted = contractedDateByCsgId.get(csgId) ?? null;
+    if (contracted) system.contractedDateIso = contracted;
+
+    const gen = genByCsgId.get(csgId);
+    if (gen) {
+      system.lastMeterReadDateIso = gen.latestMeterReadDate;
+      system.lastMeterReadKwh = gen.latestMeterReadKwh;
+    }
+
+    system.anchorMonthIso = anchorMonthIso;
+
+    if (
+      gen &&
+      gen.latestPositiveGenDate &&
+      windowStartIso &&
+      windowEndIso &&
+      gen.latestPositiveGenDate >= windowStartIso &&
+      gen.latestPositiveGenDate < windowEndIso
+    ) {
+      system.isReporting = true;
+    }
+
+    const transferSeen = transferSeenByCsgId.has(csgId);
+    const isContractTerminated = isTerminatedContractType(system.contractType);
+    const isContractTransferred = isTransferredContractType(system.contractType);
+    const zillow = zillowByCsgId.get(csgId);
+    const isZillowSold =
+      typeof zillow?.status === "string" &&
+      zillow.status.toLowerCase().includes("sold");
+    const hasZillowConfirmedOwnershipChange =
+      isZillowSold &&
+      !!zillow?.soldDate &&
+      !!system.contractedDateIso &&
+      zillow.soldDate > system.contractedDateIso;
+
+    if (isContractTerminated) {
+      system.ownershipStatus = "terminated";
+    } else if (isContractTransferred || transferSeen) {
+      system.ownershipStatus = "transferred";
+    } else if (hasZillowConfirmedOwnershipChange) {
+      system.ownershipStatus = "change-of-ownership";
+    } else {
+      system.ownershipStatus = "active";
+    }
+  }
+
+  // -------- Step 10: lists + summaryCounts --------
   const part2EligibleCsgIds = Array.from(part2VerifiedCsgIds).sort();
-  // Reporting deferred — fill in a follow-up PR.
-  const reportingCsgIds: string[] = [];
+  const reportingCsgIds = Object.values(systemsByCsgId)
+    .filter((s) => s.isReporting && !s.isTerminated)
+    .map((s) => s.csgId)
+    .sort();
+  const reportingCsgSet = new Set(reportingCsgIds);
+  const part2VerifiedAndReporting = part2EligibleCsgIds.filter((id) =>
+    reportingCsgSet.has(id)
+  ).length;
 
   const allSystems = Object.values(systemsByCsgId);
   const totalSystems = allSystems.filter((s) => !s.isTerminated).length;
@@ -450,7 +843,7 @@ export function buildFoundationFromInputs(
     definitionVersion: FOUNDATION_DEFINITION_VERSION,
     foundationHash,
     builtAt: builtAt.toISOString(),
-    reportingAnchorDateIso: null, // deferred
+    reportingAnchorDateIso: anchorMonthIso,
     inputVersions: inputs.inputVersions,
     canonicalSystemsByCsgId: systemsByCsgId,
     part2EligibleCsgIds,
@@ -460,7 +853,7 @@ export function buildFoundationFromInputs(
       terminated,
       part2Verified: part2EligibleCsgIds.length,
       reporting: reportingCsgIds.length,
-      part2VerifiedAndReporting: 0, // deferred (depends on reporting)
+      part2VerifiedAndReporting,
     },
     integrityWarnings,
     populatedDatasets,
@@ -684,6 +1077,10 @@ export async function buildFoundationArtifact(
   const solarBatch = inputVersions.solarApplications.batchId;
   const abpBatch = inputVersions.abpReport.batchId;
   const mappingBatch = inputVersions.abpCsgSystemMapping.batchId;
+  const accountSolarGenBatch = inputVersions.accountSolarGeneration.batchId;
+  const generationEntryBatch = inputVersions.generationEntry.batchId;
+  const transferHistoryBatch = inputVersions.transferHistory.batchId;
+  const contractedDateBatch = inputVersions.contractedDate.batchId;
 
   // Skip the heavy reads when the upstream datasets aren't
   // populated. The empty artifact still includes the per-key
@@ -704,8 +1101,8 @@ export async function buildFoundationArtifact(
     return payload;
   }
 
-  // Load typed columns + the rawRow JSON we need for status
-  // extraction. Direct typed-column queries skip the
+  // Load typed columns + the rawRow JSON we need for status +
+  // Zillow extraction. Direct typed-column queries skip the
   // `loadDatasetRows` CsvRow reconstruction (which hydrates rawRow
   // for every row even when we only want one field) — measurably
   // faster on the production dataset.
@@ -714,6 +1111,7 @@ export async function buildFoundationArtifact(
     systemId: string | null;
     applicationId: string | null;
     systemName: string | null;
+    trackingSystemRefId: string | null;
     installedKwAc: number | null;
     installedKwDc: number | null;
     totalContractAmount: number | null;
@@ -731,14 +1129,47 @@ export async function buildFoundationArtifact(
     csgId: string | null;
     systemId: string | null;
   };
+  type AccountSolarGenRow = {
+    id: string;
+    gatsGenId: string | null;
+    monthOfGeneration: string | null;
+    lastMeterReadDate: string | null;
+    lastMeterReadKwh: string | null;
+  };
+  type GenerationEntryRow = {
+    id: string;
+    unitId: string | null;
+    lastMonthOfGen: string | null;
+    effectiveDate: string | null;
+    rawRow: string | null;
+  };
+  type TransferHistoryRow = {
+    id: string;
+    unitId: string | null;
+    transferCompletionDate: string | null;
+  };
+  type ContractedDateRow = {
+    id: string;
+    systemId: string | null;
+    contractedDate: string | null;
+  };
 
-  const [solarRows, abpRows, mappingRows] = await Promise.all([
+  const [
+    solarRows,
+    abpRows,
+    mappingRows,
+    accountSolarGenRows,
+    generationEntryRows,
+    transferHistoryRows,
+    contractedDateRows,
+  ] = await Promise.all([
     solarBatch
       ? loadAllRowsByPage<SolarRow>(scopeId, solarBatch, srDsSolarApplications, {
           id: srDsSolarApplications.id,
           systemId: srDsSolarApplications.systemId,
           applicationId: srDsSolarApplications.applicationId,
           systemName: srDsSolarApplications.systemName,
+          trackingSystemRefId: srDsSolarApplications.trackingSystemRefId,
           installedKwAc: srDsSolarApplications.installedKwAc,
           installedKwDc: srDsSolarApplications.installedKwDc,
           totalContractAmount: srDsSolarApplications.totalContractAmount,
@@ -761,21 +1192,79 @@ export async function buildFoundationArtifact(
           systemId: srDsAbpCsgSystemMapping.systemId,
         })
       : (Promise.resolve([]) as Promise<MappingRow[]>),
+    accountSolarGenBatch
+      ? loadAllRowsByPage<AccountSolarGenRow>(
+          scopeId,
+          accountSolarGenBatch,
+          srDsAccountSolarGeneration,
+          {
+            id: srDsAccountSolarGeneration.id,
+            gatsGenId: srDsAccountSolarGeneration.gatsGenId,
+            monthOfGeneration: srDsAccountSolarGeneration.monthOfGeneration,
+            lastMeterReadDate: srDsAccountSolarGeneration.lastMeterReadDate,
+            lastMeterReadKwh: srDsAccountSolarGeneration.lastMeterReadKwh,
+          }
+        )
+      : (Promise.resolve([]) as Promise<AccountSolarGenRow[]>),
+    generationEntryBatch
+      ? loadAllRowsByPage<GenerationEntryRow>(
+          scopeId,
+          generationEntryBatch,
+          srDsGenerationEntry,
+          {
+            id: srDsGenerationEntry.id,
+            unitId: srDsGenerationEntry.unitId,
+            lastMonthOfGen: srDsGenerationEntry.lastMonthOfGen,
+            effectiveDate: srDsGenerationEntry.effectiveDate,
+            rawRow: srDsGenerationEntry.rawRow,
+          }
+        )
+      : (Promise.resolve([]) as Promise<GenerationEntryRow[]>),
+    transferHistoryBatch
+      ? loadAllRowsByPage<TransferHistoryRow>(
+          scopeId,
+          transferHistoryBatch,
+          srDsTransferHistory,
+          {
+            id: srDsTransferHistory.id,
+            unitId: srDsTransferHistory.unitId,
+            transferCompletionDate: srDsTransferHistory.transferCompletionDate,
+          }
+        )
+      : (Promise.resolve([]) as Promise<TransferHistoryRow[]>),
+    contractedDateBatch
+      ? loadAllRowsByPage<ContractedDateRow>(
+          scopeId,
+          contractedDateBatch,
+          srDsContractedDate,
+          {
+            id: srDsContractedDate.id,
+            systemId: srDsContractedDate.systemId,
+            contractedDate: srDsContractedDate.contractedDate,
+          }
+        )
+      : (Promise.resolve([]) as Promise<ContractedDateRow[]>),
   ]);
 
   const inputs: FoundationBuilderInputs = {
     scopeId,
     inputVersions,
-    solarApplications: solarRows.map((row) => ({
-      csgId: row.systemId,
-      applicationId: row.applicationId,
-      systemName: row.systemName,
-      installedKwAc: row.installedKwAc,
-      installedKwDc: row.installedKwDc,
-      totalContractAmount: row.totalContractAmount,
-      contractType: row.contractType,
-      statusText: statusTextFromRawRow(row.rawRow),
-    })),
+    solarApplications: solarRows.map((row) => {
+      const zillow = extractZillowFromRawRow(row.rawRow);
+      return {
+        csgId: row.systemId,
+        applicationId: row.applicationId,
+        systemName: row.systemName,
+        installedKwAc: row.installedKwAc,
+        installedKwDc: row.installedKwDc,
+        totalContractAmount: row.totalContractAmount,
+        contractType: row.contractType,
+        statusText: statusTextFromRawRow(row.rawRow),
+        trackingSystemRefId: row.trackingSystemRefId,
+        zillowSoldDate: zillow.zillowSoldDate,
+        zillowStatus: zillow.zillowStatus,
+      };
+    }),
     abpReport: abpRows.map((row) => ({
       applicationId: row.applicationId,
       part2AppVerificationDate: row.part2AppVerificationDate,
@@ -784,6 +1273,26 @@ export async function buildFoundationArtifact(
     abpCsgSystemMapping: mappingRows.map((row) => ({
       csgId: row.csgId,
       abpId: row.systemId,
+    })),
+    accountSolarGeneration: accountSolarGenRows.map((row) => ({
+      gatsGenId: row.gatsGenId,
+      monthOfGeneration: row.monthOfGeneration,
+      lastMeterReadDate: row.lastMeterReadDate,
+      lastMeterReadKwh: toNullableNumber(row.lastMeterReadKwh),
+    })),
+    generationEntry: generationEntryRows.map((row) => ({
+      unitId: row.unitId,
+      lastMonthOfGen: row.lastMonthOfGen,
+      effectiveDate: row.effectiveDate,
+      generationKwh: extractGenerationEntryKwh(row.rawRow),
+    })),
+    transferHistory: transferHistoryRows.map((row) => ({
+      unitId: row.unitId,
+      transferCompletionDate: row.transferCompletionDate,
+    })),
+    contractedDate: contractedDateRows.map((row) => ({
+      csgId: row.systemId,
+      contractedDate: row.contractedDate,
     })),
   };
 

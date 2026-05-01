@@ -23,8 +23,12 @@ import {
   buildFoundationFromInputs,
   type FoundationAbpCsgMappingInput,
   type FoundationAbpReportInput,
+  type FoundationAccountSolarGenerationInput,
   type FoundationBuilderInputs,
+  type FoundationContractedDateInput,
+  type FoundationGenerationEntryInput,
   type FoundationSolarApplicationInput,
+  type FoundationTransferHistoryInput,
 } from "./buildFoundationArtifact";
 
 const FIXED_BUILT_AT = new Date("2026-04-30T00:00:00.000Z");
@@ -51,6 +55,10 @@ function makeInputs(
     solarApplications: [],
     abpReport: [],
     abpCsgSystemMapping: [],
+    accountSolarGeneration: [],
+    generationEntry: [],
+    transferHistory: [],
+    contractedDate: [],
     ...overrides,
   };
 }
@@ -68,6 +76,9 @@ function makeSolar(
     totalContractAmount: 1000,
     contractType: null,
     statusText: null,
+    trackingSystemRefId: null,
+    zillowSoldDate: null,
+    zillowStatus: null,
     ...overrides,
   };
 }
@@ -88,6 +99,50 @@ function makeMapping(
   abpId: string
 ): FoundationAbpCsgMappingInput {
   return { csgId, abpId };
+}
+
+function makeAccountSolarGen(
+  gatsGenId: string,
+  date: string,
+  kWh: number | null,
+  overrides: Partial<FoundationAccountSolarGenerationInput> = {}
+): FoundationAccountSolarGenerationInput {
+  return {
+    gatsGenId,
+    monthOfGeneration: null,
+    lastMeterReadDate: date,
+    lastMeterReadKwh: kWh,
+    ...overrides,
+  };
+}
+
+function makeGenerationEntry(
+  unitId: string,
+  date: string,
+  kWh: number | null,
+  overrides: Partial<FoundationGenerationEntryInput> = {}
+): FoundationGenerationEntryInput {
+  return {
+    unitId,
+    lastMonthOfGen: date,
+    effectiveDate: null,
+    generationKwh: kWh,
+    ...overrides,
+  };
+}
+
+function makeTransferHistory(
+  unitId: string,
+  completionDate: string | null = "2024-04-15"
+): FoundationTransferHistoryInput {
+  return { unitId, transferCompletionDate: completionDate };
+}
+
+function makeContractedDate(
+  csgId: string,
+  date: string
+): FoundationContractedDateInput {
+  return { csgId, contractedDate: date };
 }
 
 // ============================================================================
@@ -664,5 +719,420 @@ describe("buildFoundationFromInputs — invariants pass on all generated payload
       "DUPLICATE_ABP_REPORT_ROW",
       "UNMATCHED_PART2_ABP_ID",
     ]);
+  });
+});
+
+// ============================================================================
+// Phase 2.7 — reporting anchor + isReporting + lastMeterRead*
+// ============================================================================
+
+describe("buildFoundationFromInputs — reporting anchor (Phase 2.7)", () => {
+  it("anchor is the newest valid generation date, not today", () => {
+    const payload = buildFoundationFromInputs(
+      makeInputs({
+        solarApplications: [
+          makeSolar("CSG-1", { trackingSystemRefId: "TR-1" }),
+        ],
+        accountSolarGeneration: [
+          makeAccountSolarGen("TR-1", "2024-04-15", 1500),
+          makeAccountSolarGen("TR-1", "2024-03-15", 1200),
+        ],
+      }),
+      FIXED_BUILT_AT
+    );
+    // Anchor = first day of newest valid date's month (2024-04-15 → 2024-04-01).
+    expect(payload.reportingAnchorDateIso).toBe("2024-04-01");
+    expect(payload.canonicalSystemsByCsgId["CSG-1"].anchorMonthIso).toBe(
+      "2024-04-01"
+    );
+  });
+
+  it("anchor ignores zero-production rows when picking newest", () => {
+    const payload = buildFoundationFromInputs(
+      makeInputs({
+        solarApplications: [
+          makeSolar("CSG-1", { trackingSystemRefId: "TR-1" }),
+        ],
+        accountSolarGeneration: [
+          // A newer zero-prod row should NOT win the anchor.
+          makeAccountSolarGen("TR-1", "2024-06-15", 0),
+          makeAccountSolarGen("TR-1", "2024-04-15", 1500),
+        ],
+      }),
+      FIXED_BUILT_AT
+    );
+    expect(payload.reportingAnchorDateIso).toBe("2024-04-01");
+  });
+
+  it("anchor is null when no positive-kWh generation exists", () => {
+    const payload = buildFoundationFromInputs(
+      makeInputs({
+        solarApplications: [
+          makeSolar("CSG-1", { trackingSystemRefId: "TR-1" }),
+        ],
+        accountSolarGeneration: [
+          makeAccountSolarGen("TR-1", "2024-06-15", 0),
+          makeAccountSolarGen("TR-1", "2024-04-15", null),
+        ],
+      }),
+      FIXED_BUILT_AT
+    );
+    expect(payload.reportingAnchorDateIso).toBeNull();
+    expect(payload.canonicalSystemsByCsgId["CSG-1"].anchorMonthIso).toBeNull();
+    expect(payload.canonicalSystemsByCsgId["CSG-1"].isReporting).toBe(false);
+  });
+
+  it("system with positive generation in window → isReporting=true", () => {
+    // Anchor = 2024-04-01. Window = [2024-02-01, 2024-05-01).
+    const payload = buildFoundationFromInputs(
+      makeInputs({
+        solarApplications: [
+          makeSolar("CSG-1", { trackingSystemRefId: "TR-1" }),
+        ],
+        accountSolarGeneration: [
+          makeAccountSolarGen("TR-1", "2024-04-15", 1500),
+        ],
+      }),
+      FIXED_BUILT_AT
+    );
+    expect(payload.canonicalSystemsByCsgId["CSG-1"].isReporting).toBe(true);
+    expect(payload.reportingCsgIds).toEqual(["CSG-1"]);
+    expect(payload.summaryCounts.reporting).toBe(1);
+  });
+
+  it("system with zero-production rows only → isReporting=false", () => {
+    // Force a non-null anchor via a second system so the window math runs.
+    const payload = buildFoundationFromInputs(
+      makeInputs({
+        solarApplications: [
+          makeSolar("CSG-1", { trackingSystemRefId: "TR-1" }),
+          makeSolar("CSG-ANCHOR", { trackingSystemRefId: "TR-ANCHOR" }),
+        ],
+        accountSolarGeneration: [
+          makeAccountSolarGen("TR-ANCHOR", "2024-04-15", 1500),
+          makeAccountSolarGen("TR-1", "2024-04-15", 0),
+        ],
+      }),
+      FIXED_BUILT_AT
+    );
+    expect(payload.canonicalSystemsByCsgId["CSG-1"].isReporting).toBe(false);
+    // CSG-ANCHOR should be reporting; CSG-1 should not.
+    expect(payload.reportingCsgIds).toEqual(["CSG-ANCHOR"]);
+  });
+
+  it("system with no generation rows at all → isReporting=false", () => {
+    const payload = buildFoundationFromInputs(
+      makeInputs({
+        solarApplications: [
+          makeSolar("CSG-1", { trackingSystemRefId: "TR-1" }),
+          makeSolar("CSG-2", { trackingSystemRefId: "TR-2" }),
+        ],
+        accountSolarGeneration: [
+          // Only TR-1 has generation; TR-2 has none.
+          makeAccountSolarGen("TR-1", "2024-04-15", 1500),
+        ],
+      }),
+      FIXED_BUILT_AT
+    );
+    expect(payload.canonicalSystemsByCsgId["CSG-1"].isReporting).toBe(true);
+    expect(payload.canonicalSystemsByCsgId["CSG-2"].isReporting).toBe(false);
+    expect(payload.canonicalSystemsByCsgId["CSG-2"].lastMeterReadDateIso).toBeNull();
+  });
+
+  it("reading just BEFORE windowStart is excluded", () => {
+    // Anchor 2024-04-01 → windowStart = 2024-02-01. A reading on
+    // 2024-01-31 is one day before the closed lower bound — must
+    // not count.
+    const payload = buildFoundationFromInputs(
+      makeInputs({
+        solarApplications: [
+          makeSolar("CSG-EARLY", { trackingSystemRefId: "TR-EARLY" }),
+          makeSolar("CSG-ANCHOR", { trackingSystemRefId: "TR-ANCHOR" }),
+        ],
+        accountSolarGeneration: [
+          // Anchor sits at 2024-04-15 → anchor month 2024-04-01.
+          makeAccountSolarGen("TR-ANCHOR", "2024-04-15", 1000),
+          // EARLY's only positive reading is one day before windowStart.
+          makeAccountSolarGen("TR-EARLY", "2024-01-31", 800),
+        ],
+      }),
+      FIXED_BUILT_AT
+    );
+    expect(payload.reportingAnchorDateIso).toBe("2024-04-01");
+    expect(payload.canonicalSystemsByCsgId["CSG-EARLY"].isReporting).toBe(false);
+    expect(payload.canonicalSystemsByCsgId["CSG-ANCHOR"].isReporting).toBe(true);
+  });
+
+  it("reading at windowStart is included (closed lower bound)", () => {
+    // Anchor 2024-04-01 → windowStart 2024-02-01. A reading on
+    // 2024-02-01 must count.
+    const payload = buildFoundationFromInputs(
+      makeInputs({
+        solarApplications: [
+          makeSolar("CSG-EDGE", { trackingSystemRefId: "TR-EDGE" }),
+          makeSolar("CSG-ANCHOR", { trackingSystemRefId: "TR-ANCHOR" }),
+        ],
+        accountSolarGeneration: [
+          makeAccountSolarGen("TR-ANCHOR", "2024-04-15", 1000),
+          makeAccountSolarGen("TR-EDGE", "2024-02-01", 800),
+        ],
+      }),
+      FIXED_BUILT_AT
+    );
+    expect(payload.reportingAnchorDateIso).toBe("2024-04-01");
+    expect(payload.canonicalSystemsByCsgId["CSG-EDGE"].isReporting).toBe(true);
+  });
+
+  it("system without trackingSystemRefId can't link to gen data → isReporting=false", () => {
+    const payload = buildFoundationFromInputs(
+      makeInputs({
+        solarApplications: [
+          // No trackingSystemRefId — generation rows cannot link.
+          makeSolar("CSG-1"),
+        ],
+        accountSolarGeneration: [
+          makeAccountSolarGen("TR-1", "2024-04-15", 1500),
+        ],
+      }),
+      FIXED_BUILT_AT
+    );
+    expect(payload.canonicalSystemsByCsgId["CSG-1"].isReporting).toBe(false);
+    expect(payload.reportingCsgIds).toEqual([]);
+    // The orphan generation row doesn't establish a scope-level
+    // anchor either — anchor is null.
+    expect(payload.reportingAnchorDateIso).toBeNull();
+  });
+
+  it("first non-null trackingSystemRefId across solar rows wins", () => {
+    // Phase 2.2's builder keeps the first solarApps row per CSG.
+    // Phase 2.7's tracking-ref scan must look at every row so a
+    // late-row trackingRef rescues a system whose first row was
+    // incomplete.
+    const payload = buildFoundationFromInputs(
+      makeInputs({
+        solarApplications: [
+          // First row wins for size etc., but its trackingRef is null.
+          makeSolar("CSG-1", { installedKwAc: 5 }),
+          // Later row carries the trackingRef the gen tables use.
+          makeSolar("CSG-1", {
+            trackingSystemRefId: "TR-1",
+            installedKwAc: 999, // ignored — first-wins
+          }),
+        ],
+        accountSolarGeneration: [
+          makeAccountSolarGen("TR-1", "2024-04-15", 1500),
+        ],
+      }),
+      FIXED_BUILT_AT
+    );
+    // First-row size is preserved.
+    expect(payload.canonicalSystemsByCsgId["CSG-1"].sizeKwAc).toBe(5);
+    // Late-row trackingRef wires up the generation data.
+    expect(payload.canonicalSystemsByCsgId["CSG-1"].isReporting).toBe(true);
+  });
+
+  it("lastMeterReadDateIso uses newest meter-read date (even if zero kWh)", () => {
+    const payload = buildFoundationFromInputs(
+      makeInputs({
+        solarApplications: [
+          makeSolar("CSG-1", { trackingSystemRefId: "TR-1" }),
+        ],
+        accountSolarGeneration: [
+          makeAccountSolarGen("TR-1", "2024-04-15", 1500),
+          // Newer zero-kWh reading: must win lastMeterReadDateIso
+          // but NOT the anchor or isReporting.
+          makeAccountSolarGen("TR-1", "2024-06-15", 0),
+        ],
+      }),
+      FIXED_BUILT_AT
+    );
+    const sys = payload.canonicalSystemsByCsgId["CSG-1"];
+    expect(sys.lastMeterReadDateIso).toBe("2024-06-15");
+    expect(sys.lastMeterReadKwh).toBe(0);
+    // Anchor still 2024-04-01 (newest positive-kWh row).
+    expect(payload.reportingAnchorDateIso).toBe("2024-04-01");
+  });
+
+  it("generationEntry rows participate in anchor + isReporting via unitId", () => {
+    const payload = buildFoundationFromInputs(
+      makeInputs({
+        solarApplications: [
+          makeSolar("CSG-1", { trackingSystemRefId: "TR-1" }),
+        ],
+        generationEntry: [
+          // No accountSolarGeneration; only Generation Entry as data source.
+          makeGenerationEntry("TR-1", "2024-04-10", 800),
+        ],
+      }),
+      FIXED_BUILT_AT
+    );
+    expect(payload.reportingAnchorDateIso).toBe("2024-04-01");
+    expect(payload.canonicalSystemsByCsgId["CSG-1"].isReporting).toBe(true);
+  });
+});
+
+// ============================================================================
+// Phase 2.7 — ownership state machine
+// ============================================================================
+
+describe("buildFoundationFromInputs — ownership status (Phase 2.7)", () => {
+  it("ownershipStatus=terminated takes priority over transferred", () => {
+    const payload = buildFoundationFromInputs(
+      makeInputs({
+        solarApplications: [
+          makeSolar("CSG-1", {
+            trackingSystemRefId: "TR-1",
+            // Terminated wins even if a transferHistory match exists.
+            contractType: "IL ABP - Terminated",
+          }),
+        ],
+        transferHistory: [makeTransferHistory("TR-1", "2024-04-15")],
+      }),
+      FIXED_BUILT_AT
+    );
+    expect(payload.canonicalSystemsByCsgId["CSG-1"].ownershipStatus).toBe(
+      "terminated"
+    );
+  });
+
+  it("transferHistory row linked via unitId flips ownershipStatus to transferred", () => {
+    const payload = buildFoundationFromInputs(
+      makeInputs({
+        solarApplications: [
+          makeSolar("CSG-1", { trackingSystemRefId: "TR-1" }),
+        ],
+        transferHistory: [makeTransferHistory("TR-1", "2024-04-15")],
+      }),
+      FIXED_BUILT_AT
+    );
+    expect(payload.canonicalSystemsByCsgId["CSG-1"].ownershipStatus).toBe(
+      "transferred"
+    );
+  });
+
+  it("contract type IL ABP - Transferred → ownershipStatus=transferred (no transferHistory needed)", () => {
+    const payload = buildFoundationFromInputs(
+      makeInputs({
+        solarApplications: [
+          makeSolar("CSG-1", { contractType: "IL ABP - Transferred" }),
+        ],
+      }),
+      FIXED_BUILT_AT
+    );
+    expect(payload.canonicalSystemsByCsgId["CSG-1"].ownershipStatus).toBe(
+      "transferred"
+    );
+  });
+
+  it("Zillow sold > contracted → ownershipStatus=change-of-ownership", () => {
+    const payload = buildFoundationFromInputs(
+      makeInputs({
+        solarApplications: [
+          makeSolar("CSG-1", {
+            trackingSystemRefId: "TR-1",
+            zillowStatus: "Sold",
+            zillowSoldDate: "2024-03-01",
+          }),
+        ],
+        contractedDate: [makeContractedDate("CSG-1", "2022-01-15")],
+      }),
+      FIXED_BUILT_AT
+    );
+    const sys = payload.canonicalSystemsByCsgId["CSG-1"];
+    expect(sys.contractedDateIso).toBe("2022-01-15");
+    expect(sys.ownershipStatus).toBe("change-of-ownership");
+  });
+
+  it("Zillow sold ≤ contracted → ownershipStatus=active (not COO)", () => {
+    const payload = buildFoundationFromInputs(
+      makeInputs({
+        solarApplications: [
+          makeSolar("CSG-1", {
+            zillowStatus: "Sold",
+            zillowSoldDate: "2022-01-15",
+          }),
+        ],
+        // Contracted AFTER sale → not a confirmed change of ownership.
+        contractedDate: [makeContractedDate("CSG-1", "2023-06-01")],
+      }),
+      FIXED_BUILT_AT
+    );
+    expect(payload.canonicalSystemsByCsgId["CSG-1"].ownershipStatus).toBe(
+      "active"
+    );
+  });
+
+  it("default contract type + no transfer + no Zillow → ownershipStatus=active", () => {
+    const payload = buildFoundationFromInputs(
+      makeInputs({
+        solarApplications: [makeSolar("CSG-1")],
+      }),
+      FIXED_BUILT_AT
+    );
+    expect(payload.canonicalSystemsByCsgId["CSG-1"].ownershipStatus).toBe(
+      "active"
+    );
+  });
+
+  it("reportingCsgIds excludes terminated systems even if they have recent generation", () => {
+    const payload = buildFoundationFromInputs(
+      makeInputs({
+        solarApplications: [
+          makeSolar("CSG-1", {
+            trackingSystemRefId: "TR-1",
+            contractType: "IL ABP - Terminated",
+          }),
+          makeSolar("CSG-2", { trackingSystemRefId: "TR-2" }),
+        ],
+        accountSolarGeneration: [
+          makeAccountSolarGen("TR-1", "2024-04-15", 1500),
+          makeAccountSolarGen("TR-2", "2024-04-15", 1500),
+        ],
+      }),
+      FIXED_BUILT_AT
+    );
+    // CSG-1 is reporting per gen data but terminated → not in list.
+    expect(payload.canonicalSystemsByCsgId["CSG-1"].isReporting).toBe(true);
+    expect(payload.canonicalSystemsByCsgId["CSG-1"].isTerminated).toBe(true);
+    expect(payload.reportingCsgIds).toEqual(["CSG-2"]);
+    expect(payload.summaryCounts.reporting).toBe(1);
+  });
+
+  it("part2VerifiedAndReporting matches the intersection (exercises invariant #12)", () => {
+    const payload = buildFoundationFromInputs(
+      makeInputs({
+        solarApplications: [
+          // CSG-A: Part II verified + reporting → counts.
+          makeSolar("CSG-A", {
+            trackingSystemRefId: "TR-A",
+            statusText: "Active",
+          }),
+          // CSG-B: Part II verified, NOT reporting.
+          makeSolar("CSG-B", {
+            trackingSystemRefId: "TR-B",
+            statusText: "Active",
+          }),
+          // CSG-C: NOT Part II verified (no ABP), reporting.
+          makeSolar("CSG-C", { trackingSystemRefId: "TR-C" }),
+        ],
+        abpCsgSystemMapping: [
+          makeMapping("CSG-A", "ABP-A"),
+          makeMapping("CSG-B", "ABP-B"),
+        ],
+        abpReport: [
+          makeAbpReport("ABP-A", "2024-06-01"),
+          makeAbpReport("ABP-B", "2024-06-01"),
+        ],
+        accountSolarGeneration: [
+          makeAccountSolarGen("TR-A", "2024-04-15", 1500),
+          // No row for TR-B → not reporting.
+          makeAccountSolarGen("TR-C", "2024-04-15", 800),
+        ],
+      }),
+      FIXED_BUILT_AT
+    );
+    expect(payload.summaryCounts.part2Verified).toBe(2); // A, B
+    expect(payload.summaryCounts.reporting).toBe(2); // A, C
+    expect(payload.summaryCounts.part2VerifiedAndReporting).toBe(1); // A only
   });
 });
