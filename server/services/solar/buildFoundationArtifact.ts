@@ -1237,8 +1237,19 @@ export async function buildFoundationArtifact(
   // largest single dataset. The wall-clock cost is small relative to
   // the build itself and TiDB Serverless throttles too-parallel reads
   // anyway.
-  const solarRows: SolarRow[] = solarBatch
-    ? await loadAllRowsByPage<SolarRow>(scopeId, solarBatch, srDsSolarApplications, {
+  // Stream-fold solarApplications. The typed columns are small but
+  // `rawRow` is a ~2 KB JSON string per row × ~32 k rows = ~64 MB
+  // peak heap when materialized as a typed array. We need rawRow
+  // only to extract Zillow + statusText fields per row, so project
+  // on-the-fly during the stream and drop the rawRow string before
+  // moving to the next page.
+  const solarApplicationsInputs: FoundationSolarApplicationInput[] = [];
+  if (solarBatch) {
+    await streamRowsByPage<SolarRow>(
+      scopeId,
+      solarBatch,
+      srDsSolarApplications,
+      {
         id: srDsSolarApplications.id,
         systemId: srDsSolarApplications.systemId,
         applicationId: srDsSolarApplications.applicationId,
@@ -1249,8 +1260,25 @@ export async function buildFoundationArtifact(
         totalContractAmount: srDsSolarApplications.totalContractAmount,
         contractType: srDsSolarApplications.contractType,
         rawRow: srDsSolarApplications.rawRow,
-      })
-    : [];
+      },
+      (row) => {
+        const zillow = extractZillowFromRawRow(row.rawRow);
+        solarApplicationsInputs.push({
+          csgId: row.systemId,
+          applicationId: row.applicationId,
+          systemName: row.systemName,
+          installedKwAc: row.installedKwAc,
+          installedKwDc: row.installedKwDc,
+          totalContractAmount: row.totalContractAmount,
+          contractType: row.contractType,
+          statusText: statusTextFromRawRow(row.rawRow),
+          trackingSystemRefId: row.trackingSystemRefId,
+          zillowSoldDate: zillow.zillowSoldDate,
+          zillowStatus: zillow.zillowStatus,
+        });
+      }
+    );
+  }
   const abpRows: AbpRow[] = abpBatch
     ? await loadAllRowsByPage<AbpRow>(scopeId, abpBatch, srDsAbpReport, {
         id: srDsAbpReport.id,
@@ -1438,22 +1466,7 @@ export async function buildFoundationArtifact(
   const inputs: FoundationBuilderInputs = {
     scopeId,
     inputVersions,
-    solarApplications: solarRows.map((row) => {
-      const zillow = extractZillowFromRawRow(row.rawRow);
-      return {
-        csgId: row.systemId,
-        applicationId: row.applicationId,
-        systemName: row.systemName,
-        installedKwAc: row.installedKwAc,
-        installedKwDc: row.installedKwDc,
-        totalContractAmount: row.totalContractAmount,
-        contractType: row.contractType,
-        statusText: statusTextFromRawRow(row.rawRow),
-        trackingSystemRefId: row.trackingSystemRefId,
-        zillowSoldDate: zillow.zillowSoldDate,
-        zillowStatus: zillow.zillowStatus,
-      };
-    }),
+    solarApplications: solarApplicationsInputs,
     abpReport: abpRows.map((row) => ({
       applicationId: row.applicationId,
       part2AppVerificationDate: row.part2AppVerificationDate,
