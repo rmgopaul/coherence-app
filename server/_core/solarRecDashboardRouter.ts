@@ -2676,6 +2676,73 @@ export const solarRecDashboardRouter = t.router({
     }),
 
   /**
+   * Phase 2.5 of the dashboard foundation repair (2026-05-01) —
+   * fire-and-forget warmup mutation. The dashboard's mount effect
+   * calls this once per page load; the request returns within ~50 ms
+   * either way (cache hit OR cache miss + background build kicked
+   * off). Tabs read the warmed artifact via `getFoundationArtifact`
+   * (the slim view) or via `getOrBuildFoundation` server-side (the
+   * full artifact, for tab aggregators).
+   *
+   * Returns a small status payload — never the full artifact —
+   * because the wire-payload contract for warm hits is "did the
+   * server already have it?", not "give me the data". Status
+   * values:
+   *
+   *   - `"hit"` — `solarRecComputedArtifacts` already had a row
+   *     under the current `inputVersionHash`. Tabs can fetch
+   *     immediately.
+   *   - `"built"` — cache was empty; this caller's warmup ran the
+   *     build inline (typical for the first request after a
+   *     deploy or dataset upload).
+   *   - `"building"` — another caller (same dyno or another) is
+   *     mid-build; tabs that read shortly after will join the
+   *     in-flight Promise / poll for the cross-process result.
+   *
+   * Best-effort: any error here is non-fatal. The client's
+   * `useEffect` swallows rejections; tabs that try to read before
+   * the warmup completes go through the same single-flight path
+   * and either join the in-flight build or run their own.
+   */
+  warmFoundation: requirePermission("solar-rec-dashboard", "read")
+    .input(z.object({ scopeId: z.string().min(1) }))
+    .mutation(async ({ input }) => {
+      const {
+        getOrBuildFoundation,
+        FOUNDATION_RUNNER_VERSION: runnerVersion,
+      } = await import("../services/solar/foundationRunner");
+
+      try {
+        const result = await getOrBuildFoundation(input.scopeId);
+        const status: "hit" | "built" | "building" = result.fromCache
+          ? "hit"
+          : result.fromInflight
+            ? "building"
+            : "built";
+        return {
+          status,
+          inputVersionHash: result.inputVersionHash,
+          _runnerVersion: runnerVersion,
+          _checkpoint: result.inputVersionHash,
+        };
+      } catch (err) {
+        // Don't propagate — warmup is best-effort. Tabs reading
+        // afterward will trip the same error and surface it
+        // through their own integrity-warnings / error UI.
+        console.warn(
+          "[warmFoundation] best-effort warmup failed:",
+          err instanceof Error ? err.message : err
+        );
+        return {
+          status: "building" as const,
+          inputVersionHash: "",
+          _runnerVersion: runnerVersion,
+          _checkpoint: "",
+        };
+      }
+    }),
+
+  /**
    * Phase 2.3 of the dashboard foundation repair (2026-05-01) —
    * cache-or-compute read path for the canonical dashboard
    * foundation artifact. Returns the SLIM summary view —
@@ -2693,8 +2760,9 @@ export const solarRecDashboardRouter = t.router({
    * `server/services/solar/foundationRunner.ts` — see the
    * docstring there for the two-layer protection logic.
    *
-   * Phase 2.5 adds a parallel `warmFoundation` mutation that fires
-   * on dashboard mount; this query is what tabs poll once warmed.
+   * Phase 2.5 added the parallel `warmFoundation` mutation that
+   * fires on dashboard mount; this query is what tabs poll once
+   * warmed.
    */
   getFoundationArtifact: requirePermission("solar-rec-dashboard", "read")
     .input(z.object({ scopeId: z.string().min(1) }))
