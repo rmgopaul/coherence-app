@@ -91,6 +91,97 @@ export function isPart2VerifiedAbpRow(row: CsvRow): boolean {
   return parsePart2VerificationDate(part2VerifiedDateRaw) !== null;
 }
 
+// ---------------------------------------------------------------------------
+// Phase 2.2 of the dashboard foundation repair (2026-04-30) —
+// canonical Part II Verified definition for the foundation builder.
+//
+// The legacy `isPart2VerifiedAbpRow` above only checks the date.
+// The locked v3 definition adds two more requirements that the
+// foundation builder enforces:
+//
+//   1. The ABP row's Application_ID must be MAPPED to a canonical
+//      CSG ID via `srDsAbpCsgSystemMapping`. Verified ABP rows
+//      without a CSG mapping surface as `UNMATCHED_PART2_ABP_ID`
+//      integrity warnings — they exist, but they aren't systems.
+//   2. The application's overall status must NOT be in
+//      {rejected, cancelled, canceled, withdrawn} — see
+//      `isPart2BlockingStatus` below.
+//
+// `isPart2VerifiedAbpRow` stays in place because:
+//   - Several existing builders call it on the legacy
+//     date-only meaning. Phase 3 migrates them to read the
+//     foundation directly (so neither helper is called from tabs).
+//   - Changing the signature here would break tsc across every
+//     caller in one PR; the foundation lands cleanly without
+//     touching the legacy semantics.
+// ---------------------------------------------------------------------------
+
+/**
+ * Pattern set for ABP application statuses that disqualify a
+ * system from Part II Verified, regardless of whether a Part II
+ * verification date exists. Matches case-insensitive whole-word
+ * substrings against the system's concatenated `statusText`
+ * (built upstream from `contract_status`, `internal_status`,
+ * `project.status`, `tracking_system_status`, `Part_1_Status`,
+ * `Part_2_Status`, `Batch_Status` — see
+ * `client/src/solar-rec-dashboard/lib/buildSystems.ts:434-443`).
+ *
+ * `cancelled` and `canceled` are both spellings users have entered
+ * in production; the regex covers both via `cancell?ed`.
+ */
+const PART2_BLOCKING_STATUS_PATTERNS: RegExp[] = [
+  /\brejected\b/i,
+  /\bcancell?ed\b/i,
+  /\bwithdrawn\b/i,
+];
+
+/**
+ * True when `statusText` matches any of the Part II-blocking
+ * patterns. Empty / null status defaults to FALSE (don't exclude
+ * on missing data — a system with no recorded status hasn't been
+ * affirmatively rejected).
+ *
+ * Pure.
+ */
+export function isPart2BlockingStatus(
+  statusText: string | null | undefined
+): boolean {
+  const cleaned = clean(statusText);
+  if (!cleaned) return false;
+  return PART2_BLOCKING_STATUS_PATTERNS.some((re) => re.test(cleaned));
+}
+
+/**
+ * Locked v3 Part II Verified predicate, given a system's
+ * pre-resolved fields:
+ *
+ *   - `hasMappedAbpId`: at least one ABP Application_ID maps to
+ *     this CSG via `srDsAbpCsgSystemMapping`.
+ *   - `part2VerificationDateRaw`: the ABP row's
+ *     `part2AppVerificationDate` value (or null). Falls through
+ *     to `parsePart2VerificationDate` for the same Excel-serial /
+ *     calendar-date parsing as the legacy helper.
+ *   - `statusText`: the concatenated lifecycle status from
+ *     solarApplications (see `PART2_BLOCKING_STATUS_PATTERNS`).
+ *
+ * Pure. The foundation builder is the only caller in Phase 2.2;
+ * Phase 3 tab migrations stop reading either Part II helper
+ * directly and read `FoundationCanonicalSystem.isPart2Verified`
+ * instead.
+ */
+export function isPart2VerifiedSystem(input: {
+  hasMappedAbpId: boolean;
+  part2VerificationDateRaw: string | null | undefined;
+  statusText: string | null | undefined;
+}): boolean {
+  if (!input.hasMappedAbpId) return false;
+  if (parsePart2VerificationDate(clean(input.part2VerificationDateRaw)) === null) {
+    return false;
+  }
+  if (isPart2BlockingStatus(input.statusText)) return false;
+  return true;
+}
+
 /**
  * Round a money value to two decimal places. Mirrors
  * `client/src/solar-rec-dashboard/lib/helpers/formatting.ts ::
