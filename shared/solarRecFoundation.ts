@@ -65,8 +65,14 @@ export const FOUNDATION_ARTIFACT_TYPE = "foundation-v1" as const;
  * artifacts whose `definitionVersion` doesn't match the current
  * value are stale even if the input dataset versions haven't
  * changed.
+ *
+ * v2 (2026-05-01, Phase 2.7) — extended the builder to populate
+ * reporting + ownership fields. Cached v1 artifacts had
+ * `isReporting: false` everywhere with `summaryCounts.reporting: 0`;
+ * bumping invalidates them so the first dashboard load after deploy
+ * rebuilds with real values.
  */
-export const FOUNDATION_DEFINITION_VERSION = 1;
+export const FOUNDATION_DEFINITION_VERSION = 2;
 
 /**
  * `_runnerVersion` shipped on every response that surfaces
@@ -149,25 +155,31 @@ export type FoundationCanonicalSystem = {
   isTerminated: boolean;
   /** Locked def: mapped CSG + valid Part II date + ABP status not in (rejected/cancelled/withdrawn). */
   isPart2Verified: boolean;
-  /** Locked def: positive generation in [anchor − 2mo, anchor + 1mo) America/Chicago. */
+  /** Locked def (v2): positive generation in [anchor − 2mo, anchor + 1mo) America/Chicago. */
   isReporting: boolean;
-  /** Newest valid generation date's month for this scope (yyyy-mm-01). Same value across all systems in a scope. */
+  /** Newest valid generation date's month for this scope (yyyy-mm-01). Same value across all systems in a scope. Null when no generation rows exist. */
   anchorMonthIso: string | null;
   contractType: string | null;
+  /** Lifecycle bucket (v2). Tabs combine with `isReporting` for the legacy 6-state combined enum (`Terminated and Reporting`, etc.). Null only when contractType is unknown AND no transferHistory match AND no Zillow signal. */
   ownershipStatus:
     | "active"
     | "transferred"
     | "change-of-ownership"
     | "terminated"
     | null;
+  /** Deferred — surfaces in a follow-up extension. */
   monitoringPlatform: string | null;
+  /** Deferred — surfaces in a follow-up extension. */
   gatsId: string | null;
-  /** Most recent date across Account Solar Generation, Generation Entry, Converted Reads. */
+  /** Most recent meter-read date across Account Solar Generation + Generation Entry. May correspond to a zero-production row (the kWh associated with this exact date). */
   lastMeterReadDateIso: string | null;
+  /** kWh value of the row at `lastMeterReadDateIso`. Can be 0 (a stale read still counts as the latest meter read). */
   lastMeterReadKwh: number | null;
   abpStatus: string | null;
   part2VerificationDateIso: string | null;
+  /** Contracted date from `srDsContractedDate` (v2). Used for the Zillow ownership-change check. */
   contractedDateIso: string | null;
+  /** Deferred — surfaces in a follow-up extension. */
   energyYear: number | null;
   /** Subset of warning codes that affect this system specifically. Empty → no per-row warning. */
   integrityWarningCodes: FoundationWarningCode[];
