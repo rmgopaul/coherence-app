@@ -20,7 +20,10 @@
  */
 import { createHash } from "node:crypto";
 import { srDsAbpReport } from "../../../drizzle/schemas/solar";
-import type { FoundationCanonicalSystem } from "../../../shared/solarRecFoundation";
+import type {
+  FoundationArtifactPayload,
+  FoundationCanonicalSystem,
+} from "../../../shared/solarRecFoundation";
 import { getActiveVersionsForKeys } from "../../db/solarRecDatasets";
 import {
   type CsvRow,
@@ -30,6 +33,10 @@ import {
   resolvePart2ProjectIdentity,
   toPercentValue,
 } from "./aggregatorHelpers";
+import {
+  computeFoundationHash,
+  loadInputVersions,
+} from "./buildFoundationArtifact";
 import {
   computeSystemSnapshotHash,
   getOrBuildSystemSnapshot,
@@ -761,11 +768,58 @@ async function computeChangeOwnershipInputHash(
   return { hash, abpReportBatchId, snapshotHash };
 }
 
+/**
+ * Pure recompute body — extracted so cross-tab parity tests can
+ * exercise the full foundation-overlay path without touching the
+ * DB. Cached entrypoint passes already-loaded inputs.
+ *
+ * Two-part overlay: 6-state canonical fields (shared via
+ * `buildFoundationOverlayMap`) + COO-specific fields
+ * (`hasChangedOwnership`, 7-state `changeOwnershipStatus`). Both
+ * come from the foundation so all 3 tabs agree on which systems
+ * have changed ownership and how many are reporting.
+ */
+export function buildChangeOwnershipWithFoundationOverlay(
+  foundation: FoundationArtifactPayload,
+  rawSnapshotSystems: readonly unknown[],
+  abpReportRows: CsvRow[]
+): ChangeOwnershipAggregate {
+  const part2VerifiedAbpRows = abpReportRows.filter((row) =>
+    isPart2VerifiedAbpRow(row)
+  );
+  const baseSystems = extractSnapshotSystemsForChangeOwnership(
+    rawSnapshotSystems
+  );
+
+  const overlayMap = buildFoundationOverlayMap(
+    foundation.canonicalSystemsByCsgId
+  );
+  const cooOverlayMap = new Map<string, ChangeOwnershipFoundationOverlay>();
+  for (const [csgId, sys] of Object.entries(
+    foundation.canonicalSystemsByCsgId
+  )) {
+    cooOverlayMap.set(csgId, foundationChangeOwnershipOverlay(sys));
+  }
+
+  const systems = baseSystems.map((sys) => {
+    if (!sys.systemId) return sys;
+    const baseOverlay = overlayMap.get(sys.systemId);
+    const cooOverlay = cooOverlayMap.get(sys.systemId);
+    if (!baseOverlay || !cooOverlay) return sys;
+    return { ...sys, ...baseOverlay, ...cooOverlay };
+  });
+
+  return buildChangeOwnership({ part2VerifiedAbpRows, systems });
+}
+
 export async function getOrBuildChangeOwnership(
   scopeId: string
 ): Promise<{ result: ChangeOwnershipAggregate; fromCache: boolean }> {
-  const { payload: foundation, inputVersionHash: foundationHash } =
-    await getOrBuildFoundation(scopeId);
+  // Foundation hash drives the cache key; the full payload only loads
+  // on cache miss. See `getOrBuildOverviewSummary` for the
+  // optimization rationale.
+  const inputVersions = await loadInputVersions(scopeId);
+  const foundationHash = computeFoundationHash(inputVersions);
 
   const { hash, abpReportBatchId } = await computeChangeOwnershipInputHash(
     scopeId,
@@ -784,41 +838,16 @@ export async function getOrBuildChangeOwnership(
       serde: superjsonSerde<ChangeOwnershipAggregate>(),
       rowCount: (agg) => agg.rows.length,
       recompute: async () => {
-        const [snapshot, abpReportRows] = await Promise.all([
+        const [foundationResult, snapshot, abpReportRows] = await Promise.all([
+          getOrBuildFoundation(scopeId),
           getOrBuildSystemSnapshot(scopeId),
           loadDatasetRows(scopeId, abpReportBatchId, srDsAbpReport),
         ]);
-        const part2VerifiedAbpRows = abpReportRows.filter((row) =>
-          isPart2VerifiedAbpRow(row)
+        return buildChangeOwnershipWithFoundationOverlay(
+          foundationResult.payload,
+          snapshot.systems,
+          abpReportRows
         );
-        const baseSystems = extractSnapshotSystemsForChangeOwnership(
-          snapshot.systems
-        );
-
-        // Two-part overlay: 6-state canonical fields (shared via
-        // `buildFoundationOverlayMap`) + COO-specific fields. Both
-        // come from the foundation so all 3 tabs agree on which
-        // systems have "changed ownership" and how many are
-        // reporting.
-        const overlayMap = buildFoundationOverlayMap(
-          foundation.canonicalSystemsByCsgId
-        );
-        const cooOverlayMap = new Map<string, ChangeOwnershipFoundationOverlay>();
-        for (const [csgId, sys] of Object.entries(
-          foundation.canonicalSystemsByCsgId
-        )) {
-          cooOverlayMap.set(csgId, foundationChangeOwnershipOverlay(sys));
-        }
-
-        const systems = baseSystems.map((sys) => {
-          if (!sys.systemId) return sys;
-          const baseOverlay = overlayMap.get(sys.systemId);
-          const cooOverlay = cooOverlayMap.get(sys.systemId);
-          if (!baseOverlay || !cooOverlay) return sys;
-          return { ...sys, ...baseOverlay, ...cooOverlay };
-        });
-
-        return buildChangeOwnership({ part2VerifiedAbpRows, systems });
       },
     }
   );

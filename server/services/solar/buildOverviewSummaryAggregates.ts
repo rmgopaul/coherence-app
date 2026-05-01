@@ -18,6 +18,7 @@
  */
 import { createHash } from "node:crypto";
 import { srDsAbpReport } from "../../../drizzle/schemas/solar";
+import type { FoundationArtifactPayload } from "../../../shared/solarRecFoundation";
 import { getActiveVersionsForKeys } from "../../db/solarRecDatasets";
 import {
   type CsvRow,
@@ -27,6 +28,10 @@ import {
   resolvePart2ProjectIdentity,
   toPercentValue,
 } from "./aggregatorHelpers";
+import {
+  computeFoundationHash,
+  loadInputVersions,
+} from "./buildFoundationArtifact";
 import {
   computeSystemSnapshotHash,
   getOrBuildSystemSnapshot,
@@ -614,14 +619,49 @@ async function computeOverviewSummaryInputHash(
   return { hash, abpReportBatchId, snapshotHash };
 }
 
+/**
+ * Pure recompute body — extracted so cross-tab parity tests can
+ * exercise the full foundation-overlay path without touching the
+ * DB. Cached entrypoint passes already-loaded inputs.
+ *
+ * Display fields (systemName, contractedDate, zillowStatus, etc.)
+ * and value math (totalContractAmount, deliveredValue) keep
+ * snapshot values; `isReporting` / `isTerminated` / `isTransferred`
+ * / `ownershipStatus` come from the foundation so all Phase 3.1
+ * tabs agree on the headline counts.
+ */
+export function buildOverviewSummaryWithFoundationOverlay(
+  foundation: FoundationArtifactPayload,
+  rawSnapshotSystems: readonly unknown[],
+  abpReportRows: CsvRow[]
+): OverviewSummaryAggregate {
+  const part2VerifiedAbpRows = abpReportRows.filter((row) =>
+    isPart2VerifiedAbpRow(row)
+  );
+  const baseSystems = extractSnapshotSystemsForSummary(rawSnapshotSystems);
+  const overlayMap = buildFoundationOverlayMap(
+    foundation.canonicalSystemsByCsgId
+  );
+  const systems = baseSystems.map((sys) => {
+    if (!sys.systemId) return sys;
+    const overlay = overlayMap.get(sys.systemId);
+    if (!overlay) return sys;
+    return { ...sys, ...overlay };
+  });
+  return buildOverviewSummary({ part2VerifiedAbpRows, systems });
+}
+
 export async function getOrBuildOverviewSummary(
   scopeId: string
 ): Promise<{ result: OverviewSummaryAggregate; fromCache: boolean }> {
-  // Foundation drives canonical reporting/ownership state for every
-  // tab in Phase 3.1. We compute the hash up-front so the cache key
-  // changes when the foundation invalidates (new dataset upload).
-  const { payload: foundation, inputVersionHash: foundationHash } =
-    await getOrBuildFoundation(scopeId);
+  // Foundation hash drives the cache key; the full payload only loads
+  // on cache miss. Splitting these two steps means a cache HIT skips
+  // the foundation build entirely (one DB query for `loadInputVersions`
+  // instead of the foundation build + invariant assertion + payload
+  // hydration). Three tabs share this optimization → ~3 foundation
+  // builds saved per dashboard load.
+  const inputVersions = await loadInputVersions(scopeId);
+  const foundationHash = computeFoundationHash(inputVersions);
 
   const { hash, abpReportBatchId } = await computeOverviewSummaryInputHash(
     scopeId,
@@ -642,30 +682,16 @@ export async function getOrBuildOverviewSummary(
       serde: superjsonSerde<OverviewSummaryAggregate>(),
       rowCount: (agg) => agg.ownershipRows.length,
       recompute: async () => {
-        const [snapshot, abpReportRows] = await Promise.all([
+        const [foundationResult, snapshot, abpReportRows] = await Promise.all([
+          getOrBuildFoundation(scopeId),
           getOrBuildSystemSnapshot(scopeId),
           loadDatasetRows(scopeId, abpReportBatchId, srDsAbpReport),
         ]);
-        const part2VerifiedAbpRows = abpReportRows.filter((row) =>
-          isPart2VerifiedAbpRow(row)
+        return buildOverviewSummaryWithFoundationOverlay(
+          foundationResult.payload,
+          snapshot.systems,
+          abpReportRows
         );
-        const baseSystems = extractSnapshotSystemsForSummary(snapshot.systems);
-        // Overlay the canonical state from the foundation. Display
-        // fields (systemName, contractedDate, zillowStatus, etc.) and
-        // value math (totalContractAmount, deliveredValue) keep
-        // snapshot values; isReporting / isTerminated / isTransferred /
-        // ownershipStatus come from the foundation so all Phase 3.1
-        // tabs agree on the headline counts.
-        const overlayMap = buildFoundationOverlayMap(
-          foundation.canonicalSystemsByCsgId
-        );
-        const systems = baseSystems.map((sys) => {
-          if (!sys.systemId) return sys;
-          const overlay = overlayMap.get(sys.systemId);
-          if (!overlay) return sys;
-          return { ...sys, ...overlay };
-        });
-        return buildOverviewSummary({ part2VerifiedAbpRows, systems });
       },
     }
   );

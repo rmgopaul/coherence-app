@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { FoundationCanonicalSystem } from "../../../shared/solarRecFoundation";
+import { makeFoundationSystem } from "./aggregatorTestFixtures";
 import {
   buildChangeOwnership,
   extractSnapshotSystemsForChangeOwnership,
@@ -425,34 +425,6 @@ describe("extractSnapshotSystemsForChangeOwnership", () => {
 // ============================================================================
 // Phase 3.1 — foundationChangeOwnershipOverlay
 // ============================================================================
-
-function makeFoundationSystem(
-  overrides: Partial<FoundationCanonicalSystem> = {}
-): FoundationCanonicalSystem {
-  return {
-    csgId: "CSG-1",
-    abpIds: [],
-    sizeKwAc: 9.5,
-    sizeKwDc: 10,
-    contractValueUsd: 1000,
-    isTerminated: false,
-    isPart2Verified: true,
-    isReporting: true,
-    anchorMonthIso: "2024-04-01",
-    contractType: null,
-    ownershipStatus: "active",
-    monitoringPlatform: null,
-    gatsId: null,
-    lastMeterReadDateIso: "2024-04-15",
-    lastMeterReadKwh: 1500,
-    abpStatus: null,
-    part2VerificationDateIso: "2024-06-01",
-    contractedDateIso: null,
-    energyYear: null,
-    integrityWarningCodes: [],
-    ...overrides,
-  };
-}
 
 describe("foundationChangeOwnershipOverlay", () => {
   it("active → hasChangedOwnership=false, changeOwnershipStatus=null", () => {

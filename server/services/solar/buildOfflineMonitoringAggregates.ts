@@ -23,6 +23,7 @@ import {
   srDsAbpReport,
   srDsSolarApplications,
 } from "../../../drizzle/schemas/solar";
+import type { FoundationArtifactPayload } from "../../../shared/solarRecFoundation";
 import { getActiveVersionsForKeys } from "../../db/solarRecDatasets";
 import {
   type CsvRow,
@@ -32,6 +33,10 @@ import {
   parsePart2VerificationDate,
   resolvePart2ProjectIdentity,
 } from "./aggregatorHelpers";
+import {
+  computeFoundationHash,
+  loadInputVersions,
+} from "./buildFoundationArtifact";
 import { loadDatasetRows } from "./buildSystemSnapshot";
 import { getOrBuildFoundation } from "./foundationRunner";
 import { jsonSerde, withArtifactCache } from "./withArtifactCache";
@@ -454,6 +459,43 @@ async function computeOfflineMonitoringInputHash(
 }
 
 /**
+ * Build the union of ABP application IDs the foundation considers
+ * Part II Verified. Walks `foundation.part2EligibleCsgIds` and
+ * collects `abpIds[]` per CSG. Used by both the cached entrypoint
+ * and the cross-tab parity test fixture.
+ */
+export function collectFoundationEligibleApplicationIds(
+  foundation: FoundationArtifactPayload
+): Set<string> {
+  const out = new Set<string>();
+  for (const csgId of foundation.part2EligibleCsgIds) {
+    const sys = foundation.canonicalSystemsByCsgId[csgId];
+    if (!sys) continue;
+    for (const abpId of sys.abpIds) {
+      out.add(abpId);
+    }
+  }
+  return out;
+}
+
+/**
+ * Pure recompute body — extracted so cross-tab parity tests can
+ * exercise the full foundation-eligibility path without touching
+ * the DB. Cached entrypoint passes already-loaded inputs.
+ */
+export function buildOfflineMonitoringAggregatesWithFoundationOverlay(
+  foundation: FoundationArtifactPayload,
+  abpReportRows: CsvRow[],
+  solarApplicationsRows: CsvRow[]
+): OfflineMonitoringAggregate {
+  return buildOfflineMonitoringAggregates({
+    abpReportRows,
+    solarApplicationsRows,
+    eligibleApplicationIds: collectFoundationEligibleApplicationIds(foundation),
+  });
+}
+
+/**
  * Public entrypoint for the tRPC query.
  *
  * Cache miss path:
@@ -471,23 +513,14 @@ async function computeOfflineMonitoringInputHash(
 export async function getOrBuildOfflineMonitoringAggregates(
   scopeId: string
 ): Promise<{ result: OfflineMonitoringAggregate; fromCache: boolean }> {
-  // Phase 3.1: foundation defines Part II eligibility for all 3
-  // tabs. The eligibility set passed to the pure builder is the
-  // union of `abpIds` across foundation.part2EligibleCsgIds.
-  const { payload: foundation, inputVersionHash: foundationHash } =
-    await getOrBuildFoundation(scopeId);
+  // Foundation hash drives the cache key; the full payload only loads
+  // on cache miss. See `getOrBuildOverviewSummary` for the
+  // optimization rationale.
+  const inputVersions = await loadInputVersions(scopeId);
+  const foundationHash = computeFoundationHash(inputVersions);
 
   const { hash, abpReportBatchId, solarApplicationsBatchId } =
     await computeOfflineMonitoringInputHash(scopeId, foundationHash);
-
-  const eligibleApplicationIdsFromFoundation = new Set<string>();
-  for (const csgId of foundation.part2EligibleCsgIds) {
-    const sys = foundation.canonicalSystemsByCsgId[csgId];
-    if (!sys) continue;
-    for (const abpId of sys.abpIds) {
-      eligibleApplicationIdsFromFoundation.add(abpId);
-    }
-  }
 
   const { result, fromCache } = await withArtifactCache<OfflineMonitoringAggregate>(
     {
@@ -506,24 +539,25 @@ export async function getOrBuildOfflineMonitoringAggregates(
         Object.keys(agg.abpPart2VerificationDateByApplicationId).length +
         agg.part2VerifiedSystemIds.length,
       recompute: async () => {
-        const [abpReportRows, solarApplicationsRows] = await Promise.all([
-          abpReportBatchId
-            ? loadDatasetRows(scopeId, abpReportBatchId, srDsAbpReport)
-            : Promise.resolve([] as CsvRow[]),
-          solarApplicationsBatchId
-            ? loadDatasetRows(
-                scopeId,
-                solarApplicationsBatchId,
-                srDsSolarApplications
-              )
-            : Promise.resolve([] as CsvRow[]),
-        ]);
-
-        return buildOfflineMonitoringAggregates({
+        const [foundationResult, abpReportRows, solarApplicationsRows] =
+          await Promise.all([
+            getOrBuildFoundation(scopeId),
+            abpReportBatchId
+              ? loadDatasetRows(scopeId, abpReportBatchId, srDsAbpReport)
+              : Promise.resolve([] as CsvRow[]),
+            solarApplicationsBatchId
+              ? loadDatasetRows(
+                  scopeId,
+                  solarApplicationsBatchId,
+                  srDsSolarApplications
+                )
+              : Promise.resolve([] as CsvRow[]),
+          ]);
+        return buildOfflineMonitoringAggregatesWithFoundationOverlay(
+          foundationResult.payload,
           abpReportRows,
-          solarApplicationsRows,
-          eligibleApplicationIds: eligibleApplicationIdsFromFoundation,
-        });
+          solarApplicationsRows
+        );
       },
     }
   );
