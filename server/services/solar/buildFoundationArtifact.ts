@@ -358,23 +358,10 @@ function emptyCanonicalSystem(csgId: string): FoundationCanonicalSystem {
   return {
     csgId,
     abpIds: [],
-    sizeKwAc: null,
-    sizeKwDc: null,
-    contractValueUsd: null,
     isTerminated: false,
     isPart2Verified: false,
     isReporting: false,
-    anchorMonthIso: null,
-    contractType: null,
     ownershipStatus: null,
-    monitoringPlatform: null,
-    gatsId: null,
-    lastMeterReadDateIso: null,
-    lastMeterReadKwh: null,
-    abpStatus: null,
-    part2VerificationDateIso: null,
-    contractedDateIso: null,
-    energyYear: null,
     integrityWarningCodes: [],
   };
 }
@@ -466,6 +453,10 @@ export function buildFoundationFromInputs(
 ): FoundationArtifactPayload {
   const systemsByCsgId: Record<string, FoundationCanonicalSystem> = {};
   const integrityWarnings: FoundationIntegrityWarning[] = [];
+  // contractType is dropped from FoundationCanonicalSystem (cache slim)
+  // but step 9 still needs it to derive ownershipStatus. Sibling map
+  // keeps it in scope without inflating the cached payload.
+  const contractTypeByCsgId = new Map<string, string | null>();
 
   // -------- Step 1: seed canonical systems from solarApplications --------
   // Earliest row wins on conflicts (later rows for the same csgId
@@ -488,11 +479,8 @@ export function buildFoundationFromInputs(
       continue;
     }
     const system = emptyCanonicalSystem(csgId);
-    system.sizeKwAc = row.installedKwAc;
-    system.sizeKwDc = row.installedKwDc;
-    system.contractValueUsd = row.totalContractAmount;
-    system.contractType = row.contractType;
     system.isTerminated = isTerminatedContractType(row.contractType);
+    contractTypeByCsgId.set(csgId, row.contractType);
     systemsByCsgId[csgId] = system;
   }
 
@@ -615,10 +603,6 @@ export function buildFoundationFromInputs(
         // don't carry an authoritative status field today.
         statusText: getCsgStatusText(inputs.solarApplications, csgId),
       });
-      system.abpStatus = abpRow.part2AppVerificationDate
-        ? "part2-verified-candidate"
-        : null;
-      system.part2VerificationDateIso = abpRow.part2AppVerificationDate;
       if (verified && !system.isTerminated) {
         system.isPart2Verified = true;
         part2VerifiedCsgIds.add(csgId);
@@ -824,19 +808,14 @@ export function buildFoundationFromInputs(
   });
 
   // -------- Step 9: project per-system reporting + ownership state --------
+  // Reads come from sibling maps (contractTypeByCsgId, contractedDate,
+  // genByCsgId, etc.) rather than per-system fields. The dropped per-
+  // system date/contract fields are derived locally only.
   for (const csgId of Object.keys(systemsByCsgId)) {
     const system = systemsByCsgId[csgId];
 
     const contracted = contractedDateByCsgId.get(csgId) ?? null;
-    if (contracted) system.contractedDateIso = contracted;
-
     const gen = genByCsgId.get(csgId);
-    if (gen) {
-      system.lastMeterReadDateIso = gen.latestMeterReadDate;
-      system.lastMeterReadKwh = gen.latestMeterReadKwh;
-    }
-
-    system.anchorMonthIso = anchorMonthIso;
 
     if (
       gen &&
@@ -849,9 +828,9 @@ export function buildFoundationFromInputs(
       system.isReporting = true;
     }
 
+    const contractType = contractTypeByCsgId.get(csgId) ?? null;
     const transferSeen = transferSeenByCsgId.has(csgId);
-    const isContractTerminated = isTerminatedContractType(system.contractType);
-    const isContractTransferred = isTransferredContractType(system.contractType);
+    const isContractTransferred = isTransferredContractType(contractType);
     const zillowStatus = zillowStatusByCsgId.get(csgId);
     const zillowSoldDate = zillowSoldDateByCsgId.get(csgId);
     const isZillowSold =
@@ -860,10 +839,10 @@ export function buildFoundationFromInputs(
     const hasZillowConfirmedOwnershipChange =
       isZillowSold &&
       !!zillowSoldDate &&
-      !!system.contractedDateIso &&
-      zillowSoldDate > system.contractedDateIso;
+      !!contracted &&
+      zillowSoldDate > contracted;
 
-    if (isContractTerminated) {
+    if (system.isTerminated) {
       system.ownershipStatus = "terminated";
     } else if (isContractTransferred || transferSeen) {
       system.ownershipStatus = "transferred";
