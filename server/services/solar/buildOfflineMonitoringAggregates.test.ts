@@ -287,4 +287,53 @@ describe("buildOfflineMonitoringAggregates", () => {
     ]);
     expect(out.eligiblePart2TrackingIds).toEqual(["ANON", "MNON", "ZNON"]);
   });
+
+  // ==========================================================================
+  // Phase 3.1 — foundation-defined eligibility
+  // ==========================================================================
+
+  it("uses foundation eligibility when provided (overrides legacy date-only filter)", () => {
+    const dateValid = abpRow({ Application_ID: "FOUND-OK" });
+    const dateValidButFoundationBlocked = abpRow({
+      Application_ID: "FOUND-BLOCKED",
+    });
+    const out = buildOfflineMonitoringAggregates({
+      abpReportRows: [dateValid, dateValidButFoundationBlocked],
+      solarApplicationsRows: [],
+      // Both rows would pass the legacy date-only filter; only
+      // FOUND-OK passes the foundation's stricter check (e.g. the
+      // other had a blocked status text).
+      eligibleApplicationIds: new Set(["FOUND-OK"]),
+    });
+    expect(out.eligiblePart2ApplicationIds).toEqual(["FOUND-OK"]);
+    expect(out.part2VerifiedAbpRowsCount).toBe(1);
+  });
+
+  it("foundation eligibility excludes rows with valid dates that the foundation rejects", () => {
+    const out = buildOfflineMonitoringAggregates({
+      abpReportRows: [
+        abpRow({ Application_ID: "VALID-DATE-1" }),
+        abpRow({ Application_ID: "VALID-DATE-2" }),
+      ],
+      solarApplicationsRows: [],
+      eligibleApplicationIds: new Set<string>(),
+    });
+    expect(out.eligiblePart2ApplicationIds).toEqual([]);
+    expect(out.part2VerifiedAbpRowsCount).toBe(0);
+  });
+
+  it("falls back to legacy date filter when no foundation set is provided", () => {
+    // Backward compat — existing 13 tests rely on this path.
+    const out = buildOfflineMonitoringAggregates({
+      abpReportRows: [
+        abpRow({ Application_ID: "VERIFIED" }),
+        abpRow({
+          Application_ID: "NOT-VERIFIED",
+          Part_2_App_Verification_Date: "",
+        }),
+      ],
+      solarApplicationsRows: [],
+    });
+    expect(out.eligiblePart2ApplicationIds).toEqual(["VERIFIED"]);
+  });
 });
