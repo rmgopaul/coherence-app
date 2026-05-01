@@ -20,9 +20,11 @@
  */
 import { createHash } from "node:crypto";
 import { srDsAbpReport } from "../../../drizzle/schemas/solar";
+import type { FoundationCanonicalSystem } from "../../../shared/solarRecFoundation";
 import { getActiveVersionsForKeys } from "../../db/solarRecDatasets";
 import {
   type CsvRow,
+  buildFoundationOverlayMap,
   clean,
   isPart2VerifiedAbpRow,
   resolvePart2ProjectIdentity,
@@ -33,6 +35,7 @@ import {
   getOrBuildSystemSnapshot,
   loadDatasetRows,
 } from "./buildSystemSnapshot";
+import { getOrBuildFoundation } from "./foundationRunner";
 import { superjsonSerde, withArtifactCache } from "./withArtifactCache";
 
 // ---------------------------------------------------------------------------
@@ -667,17 +670,69 @@ export function buildChangeOwnership(
 }
 
 // ---------------------------------------------------------------------------
+// Foundation overlay — Phase 3.1 (2026-05-01)
+//
+// Same overlay pattern as Overview, but with two extra fields the
+// Change of Ownership tab cares about:
+//   - `hasChangedOwnership`: true for any non-active foundation system.
+//   - `changeOwnershipStatus`: legacy 7-state enum derived from
+//     `(ownershipStatus, isReporting)`.
+//
+// Active systems get `null` for `changeOwnershipStatus` (the legacy
+// behavior — the tab filters those rows out).
+// ---------------------------------------------------------------------------
+
+type ChangeOwnershipFoundationOverlay = {
+  hasChangedOwnership: boolean;
+  changeOwnershipStatus: ChangeOwnershipStatus | null;
+};
+
+function foundationChangeOwnershipOverlay(
+  sys: FoundationCanonicalSystem
+): ChangeOwnershipFoundationOverlay {
+  const status = sys.ownershipStatus;
+  const isReporting = sys.isReporting;
+
+  if (status === null || status === "active") {
+    return { hasChangedOwnership: false, changeOwnershipStatus: null };
+  }
+
+  let changeOwnershipStatus: ChangeOwnershipStatus;
+  if (status === "terminated") {
+    changeOwnershipStatus = isReporting
+      ? "Terminated and Reporting"
+      : "Terminated and Not Reporting";
+  } else if (status === "transferred") {
+    changeOwnershipStatus = isReporting
+      ? "Transferred and Reporting"
+      : "Transferred and Not Reporting";
+  } else {
+    // change-of-ownership
+    changeOwnershipStatus = isReporting
+      ? "Change of Ownership - Not Transferred and Reporting"
+      : "Change of Ownership - Not Transferred and Not Reporting";
+  }
+  return { hasChangedOwnership: true, changeOwnershipStatus };
+}
+
+// ---------------------------------------------------------------------------
 // Cached server entrypoint
 // ---------------------------------------------------------------------------
 
 const CHANGE_OWNERSHIP_DEPS = ["abpReport"] as const;
-const ARTIFACT_TYPE = "changeOwnership";
+// Phase 3.1 (2026-05-01) — bumped from `"changeOwnership"` so old
+// cache rows under the legacy snapshot-only definition don't leak
+// in. The new payload's `hasChangedOwnership` /
+// `changeOwnershipStatus` come from the foundation, not the
+// snapshot.
+const ARTIFACT_TYPE = "changeOwnership-v2";
 
 export const CHANGE_OWNERSHIP_RUNNER_VERSION =
-  "phase-5e-step4c3-changeownership@1";
+  "phase-3.1-changeownership-foundation@1";
 
 async function computeChangeOwnershipInputHash(
-  scopeId: string
+  scopeId: string,
+  foundationInputVersionHash: string
 ): Promise<{
   hash: string;
   abpReportBatchId: string | null;
@@ -697,6 +752,7 @@ async function computeChangeOwnershipInputHash(
         `runner:${CHANGE_OWNERSHIP_RUNNER_VERSION}`,
         `abp:${abpReportBatchId ?? ""}`,
         `snapshot:${snapshotHash}`,
+        `foundation:${foundationInputVersionHash}`,
       ].join("|")
     )
     .digest("hex")
@@ -708,8 +764,13 @@ async function computeChangeOwnershipInputHash(
 export async function getOrBuildChangeOwnership(
   scopeId: string
 ): Promise<{ result: ChangeOwnershipAggregate; fromCache: boolean }> {
-  const { hash, abpReportBatchId } =
-    await computeChangeOwnershipInputHash(scopeId);
+  const { payload: foundation, inputVersionHash: foundationHash } =
+    await getOrBuildFoundation(scopeId);
+
+  const { hash, abpReportBatchId } = await computeChangeOwnershipInputHash(
+    scopeId,
+    foundationHash
+  );
 
   if (!abpReportBatchId) {
     return { result: EMPTY_CHANGE_OWNERSHIP, fromCache: false };
@@ -730,8 +791,33 @@ export async function getOrBuildChangeOwnership(
         const part2VerifiedAbpRows = abpReportRows.filter((row) =>
           isPart2VerifiedAbpRow(row)
         );
-        const systems =
-          extractSnapshotSystemsForChangeOwnership(snapshot.systems);
+        const baseSystems = extractSnapshotSystemsForChangeOwnership(
+          snapshot.systems
+        );
+
+        // Two-part overlay: 6-state canonical fields (shared via
+        // `buildFoundationOverlayMap`) + COO-specific fields. Both
+        // come from the foundation so all 3 tabs agree on which
+        // systems have "changed ownership" and how many are
+        // reporting.
+        const overlayMap = buildFoundationOverlayMap(
+          foundation.canonicalSystemsByCsgId
+        );
+        const cooOverlayMap = new Map<string, ChangeOwnershipFoundationOverlay>();
+        for (const [csgId, sys] of Object.entries(
+          foundation.canonicalSystemsByCsgId
+        )) {
+          cooOverlayMap.set(csgId, foundationChangeOwnershipOverlay(sys));
+        }
+
+        const systems = baseSystems.map((sys) => {
+          if (!sys.systemId) return sys;
+          const baseOverlay = overlayMap.get(sys.systemId);
+          const cooOverlay = cooOverlayMap.get(sys.systemId);
+          if (!baseOverlay || !cooOverlay) return sys;
+          return { ...sys, ...baseOverlay, ...cooOverlay };
+        });
+
         return buildChangeOwnership({ part2VerifiedAbpRows, systems });
       },
     }
@@ -739,3 +825,8 @@ export async function getOrBuildChangeOwnership(
 
   return { result, fromCache };
 }
+
+// Re-export for tests + future callers that want to derive the COO
+// overlay independently (e.g. server-side scripts, integration
+// fixtures).
+export { foundationChangeOwnershipOverlay };
