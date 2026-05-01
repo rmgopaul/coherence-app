@@ -172,7 +172,7 @@ function buildFixture() {
       { gatsGenId: "TR-E", monthOfGeneration: null, lastMeterReadDate: "2023-11-01", lastMeterReadKwh: 600 },
     ],
     generationEntry: [],
-    transferHistory: [],
+    transferUnitIds: new Set<string>(),
     contractedDate: [],
   };
 

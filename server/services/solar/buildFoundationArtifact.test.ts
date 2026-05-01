@@ -28,7 +28,6 @@ import {
   type FoundationContractedDateInput,
   type FoundationGenerationEntryInput,
   type FoundationSolarApplicationInput,
-  type FoundationTransferHistoryInput,
 } from "./buildFoundationArtifact";
 
 const FIXED_BUILT_AT = new Date("2026-04-30T00:00:00.000Z");
@@ -57,7 +56,7 @@ function makeInputs(
     abpCsgSystemMapping: [],
     accountSolarGeneration: [],
     generationEntry: [],
-    transferHistory: [],
+    transferUnitIds: new Set<string>(),
     contractedDate: [],
     ...overrides,
   };
@@ -129,13 +128,6 @@ function makeGenerationEntry(
     generationKwh: kWh,
     ...overrides,
   };
-}
-
-function makeTransferHistory(
-  unitId: string,
-  completionDate: string | null = "2024-04-15"
-): FoundationTransferHistoryInput {
-  return { unitId, transferCompletionDate: completionDate };
 }
 
 function makeContractedDate(
@@ -986,7 +978,7 @@ describe("buildFoundationFromInputs — ownership status (Phase 2.7)", () => {
             contractType: "IL ABP - Terminated",
           }),
         ],
-        transferHistory: [makeTransferHistory("TR-1", "2024-04-15")],
+        transferUnitIds: new Set(["TR-1"]),
       }),
       FIXED_BUILT_AT
     );
@@ -1001,7 +993,7 @@ describe("buildFoundationFromInputs — ownership status (Phase 2.7)", () => {
         solarApplications: [
           makeSolar("CSG-1", { trackingSystemRefId: "TR-1" }),
         ],
-        transferHistory: [makeTransferHistory("TR-1", "2024-04-15")],
+        transferUnitIds: new Set(["TR-1"]),
       }),
       FIXED_BUILT_AT
     );
