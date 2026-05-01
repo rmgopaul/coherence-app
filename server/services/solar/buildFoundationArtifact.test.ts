@@ -1136,3 +1136,101 @@ describe("buildFoundationFromInputs — ownership status (Phase 2.7)", () => {
     expect(payload.summaryCounts.part2VerifiedAndReporting).toBe(1); // A only
   });
 });
+
+// ============================================================================
+// Phase 2.7 follow-up — TRACKING_REF_COLLISION warning + first-claim winner
+// ============================================================================
+
+describe("buildFoundationFromInputs — trackingRef collision (Phase 2.7 follow-up)", () => {
+  it("first CSG to claim a trackingRef wins generation linkage", () => {
+    // CSG-A claims TR-1 first, CSG-B claims TR-1 later. The
+    // generation row for TR-1 must link to CSG-A (first claim),
+    // not silently re-attribute to CSG-B.
+    const payload = buildFoundationFromInputs(
+      makeInputs({
+        solarApplications: [
+          makeSolar("CSG-A", { trackingSystemRefId: "TR-1" }),
+          makeSolar("CSG-B", { trackingSystemRefId: "TR-1" }),
+        ],
+        accountSolarGeneration: [
+          makeAccountSolarGen("TR-1", "2024-04-15", 1500),
+        ],
+      }),
+      FIXED_BUILT_AT
+    );
+    expect(payload.canonicalSystemsByCsgId["CSG-A"].isReporting).toBe(true);
+    expect(payload.canonicalSystemsByCsgId["CSG-B"].isReporting).toBe(false);
+  });
+
+  it("emits TRACKING_REF_COLLISION listing every claimant", () => {
+    const payload = buildFoundationFromInputs(
+      makeInputs({
+        solarApplications: [
+          makeSolar("CSG-A", { trackingSystemRefId: "TR-1" }),
+          makeSolar("CSG-B", { trackingSystemRefId: "TR-1" }),
+          makeSolar("CSG-C", { trackingSystemRefId: "TR-1" }),
+        ],
+      }),
+      FIXED_BUILT_AT
+    );
+    const collision = payload.integrityWarnings.find(
+      (w) => w.code === "TRACKING_REF_COLLISION"
+    );
+    expect(collision).toEqual({
+      code: "TRACKING_REF_COLLISION",
+      trackingRef: "TR-1",
+      csgIds: ["CSG-A", "CSG-B", "CSG-C"],
+    });
+  });
+
+  it("attaches TRACKING_REF_COLLISION per-system on every claimant", () => {
+    const payload = buildFoundationFromInputs(
+      makeInputs({
+        solarApplications: [
+          makeSolar("CSG-A", { trackingSystemRefId: "TR-1" }),
+          makeSolar("CSG-B", { trackingSystemRefId: "TR-1" }),
+        ],
+      }),
+      FIXED_BUILT_AT
+    );
+    expect(
+      payload.canonicalSystemsByCsgId["CSG-A"].integrityWarningCodes
+    ).toContain("TRACKING_REF_COLLISION");
+    expect(
+      payload.canonicalSystemsByCsgId["CSG-B"].integrityWarningCodes
+    ).toContain("TRACKING_REF_COLLISION");
+  });
+
+  it("does NOT emit TRACKING_REF_COLLISION when one CSG claims a unique trackingRef", () => {
+    const payload = buildFoundationFromInputs(
+      makeInputs({
+        solarApplications: [
+          makeSolar("CSG-A", { trackingSystemRefId: "TR-1" }),
+          makeSolar("CSG-B", { trackingSystemRefId: "TR-2" }),
+        ],
+      }),
+      FIXED_BUILT_AT
+    );
+    expect(
+      payload.integrityWarnings.find((w) => w.code === "TRACKING_REF_COLLISION")
+    ).toBeUndefined();
+  });
+
+  it("does NOT emit TRACKING_REF_COLLISION when the same CSG appears twice with the same trackingRef", () => {
+    // Phase 2.2's first-row-wins for canonical system data already
+    // accepts duplicate solarApps rows for one CSG. Same trackingRef
+    // on both rows isn't a collision — it's the same claim.
+    const payload = buildFoundationFromInputs(
+      makeInputs({
+        solarApplications: [
+          makeSolar("CSG-A", { trackingSystemRefId: "TR-1" }),
+          makeSolar("CSG-A", { trackingSystemRefId: "TR-1" }),
+        ],
+      }),
+      FIXED_BUILT_AT
+    );
+    expect(
+      payload.integrityWarnings.find((w) => w.code === "TRACKING_REF_COLLISION")
+    ).toBeUndefined();
+  });
+});

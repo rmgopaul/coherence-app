@@ -616,8 +616,17 @@ export function buildFoundationFromInputs(
   // First-non-null wins per CSG: a later solarApps row carrying the
   // tracking ref rescues a CSG whose first row was incomplete (otherwise
   // the system silently loses its generation linkage).
+  //
+  // Cross-CSG collision policy: if two CSGs claim the same trackingRef,
+  // the FIRST claim (in row-iteration order) wins on the inverse map
+  // and gets the generation linkage. Losing CSGs are tracked here so
+  // we can emit `TRACKING_REF_COLLISION` warnings after the loop —
+  // attributing generation rows to a deterministic owner is more
+  // useful than silently last-write-wins, and the warning prompts
+  // upstream cleanup.
   const csgIdByTrackingRef = new Map<string, string>();
   const trackingRefByCsgId = new Map<string, string>();
+  const collisionCsgsByTrackingRef = new Map<string, Set<string>>();
   for (const row of inputs.solarApplications) {
     const csgId = (row.csgId ?? "").trim();
     if (!csgId) continue;
@@ -625,13 +634,39 @@ export function buildFoundationFromInputs(
     if (!trackingRef) continue;
     if (!trackingRefByCsgId.has(csgId)) {
       trackingRefByCsgId.set(csgId, trackingRef);
-      // Last-write-wins on the inverse map is fine: the trackingRef → csgId
-      // direction is unique for a healthy dataset. Cross-CSG collisions
-      // are a separate data-quality concern handled by the multi-mapping
-      // warnings above.
+    }
+    const existingOwner = csgIdByTrackingRef.get(trackingRef);
+    if (existingOwner === undefined) {
       csgIdByTrackingRef.set(trackingRef, csgId);
+    } else if (existingOwner !== csgId) {
+      // Same trackingRef, different CSG — collision. Record both
+      // (the existing owner + the loser); the warning lists every
+      // claimant.
+      let claimants = collisionCsgsByTrackingRef.get(trackingRef);
+      if (!claimants) {
+        claimants = new Set<string>([existingOwner]);
+        collisionCsgsByTrackingRef.set(trackingRef, claimants);
+      }
+      claimants.add(csgId);
     }
   }
+
+  // Emit collision warnings AFTER the full pass so each warning lists
+  // every claimant (not just the second one we hit). Per-system codes
+  // attached to every affected CSG so the Core System List filter
+  // surfaces them.
+  collisionCsgsByTrackingRef.forEach((claimants, trackingRef) => {
+    const csgList: string[] = Array.from(claimants).sort();
+    integrityWarnings.push({
+      code: "TRACKING_REF_COLLISION",
+      trackingRef,
+      csgIds: csgList,
+    });
+    for (const csgId of csgList) {
+      const system = systemsByCsgId[csgId];
+      if (system) attachWarningCode(system, "TRACKING_REF_COLLISION");
+    }
+  });
 
   const contractedDateByCsgId = new Map<string, string>();
   for (const row of inputs.contractedDate) {
