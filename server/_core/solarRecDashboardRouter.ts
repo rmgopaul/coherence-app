@@ -2676,6 +2676,48 @@ export const solarRecDashboardRouter = t.router({
     }),
 
   /**
+   * Phase 2.3 of the dashboard foundation repair (2026-05-01) —
+   * cache-or-compute read path for the canonical dashboard
+   * foundation artifact. Returns the SLIM summary view —
+   * `summaryCounts`, `integrityWarnings`, `populatedDatasets`,
+   * `inputVersions`, and metadata — but NOT
+   * `canonicalSystemsByCsgId` (the wide per-system row map can hit
+   * 25 MB on the wire on a production-size scope, well above
+   * CLAUDE.md's 1 MB hard rule). Phase 4's Core System List has its
+   * own paginated procedure for the wide rows; Phase 3 tab
+   * aggregators read the full artifact server-side via
+   * `getOrBuildFoundation` directly and project just what they need
+   * into per-tab responses.
+   *
+   * Single-flight + cache wiring lives in
+   * `server/services/solar/foundationRunner.ts` — see the
+   * docstring there for the two-layer protection logic.
+   *
+   * Phase 2.5 adds a parallel `warmFoundation` mutation that fires
+   * on dashboard mount; this query is what tabs poll once warmed.
+   */
+  getFoundationArtifact: requirePermission("solar-rec-dashboard", "read")
+    .input(z.object({ scopeId: z.string().min(1) }))
+    .query(async ({ input }) => {
+      const {
+        getOrBuildFoundation,
+        FOUNDATION_RUNNER_VERSION: runnerVersion,
+        projectFoundationSummary,
+      } = await import("../services/solar/foundationRunner");
+
+      const result = await getOrBuildFoundation(input.scopeId);
+      const summary = projectFoundationSummary(result.payload);
+
+      return {
+        ...summary,
+        fromCache: result.fromCache,
+        fromInflight: result.fromInflight,
+        _runnerVersion: runnerVersion,
+        _checkpoint: result.inputVersionHash,
+      };
+    }),
+
+  /**
    * Task 5.13 PR-1 (2026-04-27) — server-side Delivery Tracker
    * aggregate. Replaces the parent's
    * `useMemo(() => buildDeliveryTrackerData({...}))` over raw
