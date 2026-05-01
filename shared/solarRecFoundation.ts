@@ -71,8 +71,16 @@ export const FOUNDATION_ARTIFACT_TYPE = "foundation-v1" as const;
  * `isReporting: false` everywhere with `summaryCounts.reporting: 0`;
  * bumping invalidates them so the first dashboard load after deploy
  * rebuilds with real values.
+ *
+ * v3 (2026-05-01, Phase 2.7 follow-up) — added
+ * `TRACKING_REF_COLLISION` warning + first-claim winner on the
+ * inverse tracking-ref map. Cached v2 artifacts for scopes with
+ * cross-CSG trackingRef collisions had silently mis-attributed
+ * generation rows to whichever CSG happened to be processed last.
+ * Bumping invalidates them so the first dashboard load after
+ * deploy rebuilds with deterministic linkage + the new warning.
  */
-export const FOUNDATION_DEFINITION_VERSION = 2;
+export const FOUNDATION_DEFINITION_VERSION = 3;
 
 /**
  * `_runnerVersion` shipped on every response that surfaces
@@ -101,6 +109,17 @@ export type FoundationWarningCode =
   /** Active Solar Applications rows for one CSG ID imply multiple GATS IDs. */
   | "CSG_ID_HAS_MULTIPLE_GATS_IDS"
   /**
+   * Two or more CSG IDs claim the same `tracking_system_ref_id` in
+   * `srDsSolarApplications`. The builder keeps the first claim
+   * (sorted by row order in the typed-column scan) so generation +
+   * transferHistory rows for that trackingRef link to one
+   * deterministic CSG; the losing CSGs are flagged here so they
+   * can be reconciled upstream. Without the warning a losing CSG
+   * would silently appear "not reporting" because its generation
+   * data was attributed to the winner.
+   */
+  | "TRACKING_REF_COLLISION"
+  /**
    * ABP row passes Part II + status filter but its Application_ID has
    * no CSG mapping. The system can't be counted, but the row exists.
    */
@@ -124,6 +143,12 @@ export type FoundationIntegrityWarning =
   | { code: "ABP_ID_MAPS_TO_MULTIPLE_CSG_IDS"; abpId: string; csgIds: string[] }
   | { code: "CSG_ID_MAPS_TO_MULTIPLE_ABP_IDS"; csgId: string; abpIds: string[] }
   | { code: "CSG_ID_HAS_MULTIPLE_GATS_IDS"; csgId: string; gatsIds: string[] }
+  | {
+      code: "TRACKING_REF_COLLISION";
+      trackingRef: string;
+      /** Sorted, deduped CSG IDs that all claim `trackingRef`. The first entry is the winner; the rest lose their generation linkage. */
+      csgIds: string[];
+    }
   | { code: "UNMATCHED_PART2_ABP_ID"; abpId: string }
   | { code: "DUPLICATE_ABP_REPORT_ROW"; abpId: string; rowCount: number }
   | { code: "SOLAR_APPLICATION_MISSING_CSG_ID"; rowKey: string };

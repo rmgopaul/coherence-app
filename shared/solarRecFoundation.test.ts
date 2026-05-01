@@ -116,7 +116,10 @@ describe("foundation constants", () => {
     expect(FOUNDATION_RUNNER_VERSION).toBe("foundation-v1");
     // Phase 2.7 (2026-05-01) bumped to 2 — invalidates v1 cached
     // artifacts that have stale `isReporting: false` everywhere.
-    expect(FOUNDATION_DEFINITION_VERSION).toBe(2);
+    // Phase 2.7 follow-up bumped to 3 — invalidates v2 cached
+    // artifacts that pre-date the trackingRef collision warning +
+    // first-claim winner fix.
+    expect(FOUNDATION_DEFINITION_VERSION).toBe(3);
   });
 
   it("definition version matches the empty artifact's version", () => {
