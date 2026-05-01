@@ -959,6 +959,269 @@ export const solarRecDashboardRouter = t.router({
         verdict: { state: verdict, explanation },
       };
     }),
+  // Diagnostic: surface per-table null counts on the typed columns the
+  // foundation builder uses for system→generation linkage. If a typed
+  // column is null on every row of an active batch, the foundation
+  // silently produces `isReporting: false` / `lastMeterReadDateIso: null`
+  // for every system because the join key never matches. The 2026-04-30
+  // hotfix that dropped `srDsAccountSolarGeneration` rawRow loading from
+  // the snapshot builder created this exact failure mode for any batch
+  // ingested before that fix; same shape suspected on `srDsGenerationEntry`
+  // (no typed kWh column) and on `srDsSolarApplications.trackingSystemRefId`
+  // when CSV headers don't match the legacy `pick(row, "GATS Gen ID")`
+  // alias in `datasetRowPersistence.ts:252`. This proc is the cheap way
+  // to confirm/falsify before chasing a parser fix.
+  debugFoundationLinkage: requirePermission("solar-rec-dashboard", "read")
+    .query(async () => {
+      const { getActiveBatchForDataset } = await import("../db");
+      const { resolveSolarRecScopeId } = await import("./solarRecAuth");
+      const scopeId = await resolveSolarRecScopeId();
+      const db = await getDb();
+      if (!db) {
+        return {
+          _checkpoint: "debug-foundation-linkage-v1",
+          _runnerVersion: "phase-2-7-foundation@1" as const,
+          scopeId,
+          error: "Database not configured (DATABASE_URL missing).",
+          datasets: null,
+        };
+      }
+
+      const [
+        solarAppsBatch,
+        acctSolarGenBatch,
+        generationEntryBatch,
+        transferHistoryBatch,
+      ] = await Promise.all([
+        getActiveBatchForDataset(scopeId, "solarApplications"),
+        getActiveBatchForDataset(scopeId, "accountSolarGeneration"),
+        getActiveBatchForDataset(scopeId, "generationEntry"),
+        getActiveBatchForDataset(scopeId, "transferHistory"),
+      ]);
+
+      // `COUNT(col)` excludes NULLs in MySQL, so it doubles as the
+      // non-null count without an extra CASE expression.
+      const [
+        solarAppsRow,
+        acctSolarGenRow,
+        generationEntryRow,
+        transferHistoryRow,
+      ] = await Promise.all([
+        solarAppsBatch
+          ? db
+              .select({
+                totalRows: sql<number>`COUNT(*)`,
+                applicationIdNonNull: sql<number>`COUNT(${srDsSolarApplications.applicationId})`,
+                systemIdNonNull: sql<number>`COUNT(${srDsSolarApplications.systemId})`,
+                trackingRefNonNull: sql<number>`COUNT(${srDsSolarApplications.trackingSystemRefId})`,
+                distinctTrackingRef: sql<number>`COUNT(DISTINCT ${srDsSolarApplications.trackingSystemRefId})`,
+                rawRowNonNull: sql<number>`COUNT(${srDsSolarApplications.rawRow})`,
+              })
+              .from(srDsSolarApplications)
+              .where(
+                and(
+                  eq(srDsSolarApplications.scopeId, scopeId),
+                  eq(srDsSolarApplications.batchId, solarAppsBatch.id)
+                )
+              )
+              .then((r) => r[0])
+          : Promise.resolve(null),
+        acctSolarGenBatch
+          ? db
+              .select({
+                totalRows: sql<number>`COUNT(*)`,
+                gatsGenIdNonNull: sql<number>`COUNT(${srDsAccountSolarGeneration.gatsGenId})`,
+                distinctGatsGenId: sql<number>`COUNT(DISTINCT ${srDsAccountSolarGeneration.gatsGenId})`,
+                lastMeterReadDateNonNull: sql<number>`COUNT(${srDsAccountSolarGeneration.lastMeterReadDate})`,
+                lastMeterReadKwhNonNull: sql<number>`COUNT(${srDsAccountSolarGeneration.lastMeterReadKwh})`,
+                monthOfGenerationNonNull: sql<number>`COUNT(${srDsAccountSolarGeneration.monthOfGeneration})`,
+                rawRowNonNull: sql<number>`COUNT(${srDsAccountSolarGeneration.rawRow})`,
+              })
+              .from(srDsAccountSolarGeneration)
+              .where(
+                and(
+                  eq(srDsAccountSolarGeneration.scopeId, scopeId),
+                  eq(srDsAccountSolarGeneration.batchId, acctSolarGenBatch.id)
+                )
+              )
+              .then((r) => r[0])
+          : Promise.resolve(null),
+        generationEntryBatch
+          ? db
+              .select({
+                totalRows: sql<number>`COUNT(*)`,
+                unitIdNonNull: sql<number>`COUNT(${srDsGenerationEntry.unitId})`,
+                distinctUnitId: sql<number>`COUNT(DISTINCT ${srDsGenerationEntry.unitId})`,
+                lastMonthOfGenNonNull: sql<number>`COUNT(${srDsGenerationEntry.lastMonthOfGen})`,
+                effectiveDateNonNull: sql<number>`COUNT(${srDsGenerationEntry.effectiveDate})`,
+                rawRowNonNull: sql<number>`COUNT(${srDsGenerationEntry.rawRow})`,
+              })
+              .from(srDsGenerationEntry)
+              .where(
+                and(
+                  eq(srDsGenerationEntry.scopeId, scopeId),
+                  eq(srDsGenerationEntry.batchId, generationEntryBatch.id)
+                )
+              )
+              .then((r) => r[0])
+          : Promise.resolve(null),
+        transferHistoryBatch
+          ? db
+              .select({
+                totalRows: sql<number>`COUNT(*)`,
+                unitIdNonNull: sql<number>`COUNT(${srDsTransferHistory.unitId})`,
+                distinctUnitId: sql<number>`COUNT(DISTINCT ${srDsTransferHistory.unitId})`,
+              })
+              .from(srDsTransferHistory)
+              .where(
+                and(
+                  eq(srDsTransferHistory.scopeId, scopeId),
+                  eq(srDsTransferHistory.batchId, transferHistoryBatch.id)
+                )
+              )
+              .then((r) => r[0])
+          : Promise.resolve(null),
+      ]);
+
+      // Cross-table intersection: how many distinct trackingRefs in
+      // solarApplications actually appear as gatsGenId / unitId in the
+      // join targets? An intersection of 0 with both sides non-empty
+      // means the foundation builder's `csgIdByTrackingRef` lookup
+      // fails for every row → every system gets `isReporting: false`.
+      let trackingRefIntersectAcctGen: number | null = null;
+      let trackingRefIntersectGenEntry: number | null = null;
+      let trackingRefIntersectTransferHistory: number | null = null;
+      if (solarAppsBatch && acctSolarGenBatch) {
+        const [r] = await db
+          .select({ count: sql<number>`COUNT(DISTINCT sa.trackingSystemRefId)` })
+          .from(sql`${srDsSolarApplications} sa`)
+          .where(sql`
+            sa.scopeId = ${scopeId}
+            AND sa.batchId = ${solarAppsBatch.id}
+            AND sa.trackingSystemRefId IS NOT NULL
+            AND EXISTS (
+              SELECT 1 FROM ${srDsAccountSolarGeneration} ag
+              WHERE ag.scopeId = ${scopeId}
+                AND ag.batchId = ${acctSolarGenBatch.id}
+                AND ag.gatsGenId = sa.trackingSystemRefId
+            )
+          `);
+        trackingRefIntersectAcctGen = Number(r?.count ?? 0);
+      }
+      if (solarAppsBatch && generationEntryBatch) {
+        const [r] = await db
+          .select({ count: sql<number>`COUNT(DISTINCT sa.trackingSystemRefId)` })
+          .from(sql`${srDsSolarApplications} sa`)
+          .where(sql`
+            sa.scopeId = ${scopeId}
+            AND sa.batchId = ${solarAppsBatch.id}
+            AND sa.trackingSystemRefId IS NOT NULL
+            AND EXISTS (
+              SELECT 1 FROM ${srDsGenerationEntry} ge
+              WHERE ge.scopeId = ${scopeId}
+                AND ge.batchId = ${generationEntryBatch.id}
+                AND ge.unitId = sa.trackingSystemRefId
+            )
+          `);
+        trackingRefIntersectGenEntry = Number(r?.count ?? 0);
+      }
+      if (solarAppsBatch && transferHistoryBatch) {
+        const [r] = await db
+          .select({ count: sql<number>`COUNT(DISTINCT sa.trackingSystemRefId)` })
+          .from(sql`${srDsSolarApplications} sa`)
+          .where(sql`
+            sa.scopeId = ${scopeId}
+            AND sa.batchId = ${solarAppsBatch.id}
+            AND sa.trackingSystemRefId IS NOT NULL
+            AND EXISTS (
+              SELECT 1 FROM ${srDsTransferHistory} th
+              WHERE th.scopeId = ${scopeId}
+                AND th.batchId = ${transferHistoryBatch.id}
+                AND th.unitId = sa.trackingSystemRefId
+            )
+          `);
+        trackingRefIntersectTransferHistory = Number(r?.count ?? 0);
+      }
+
+      // Verdict — if every linkage column is null on every row, OR the
+      // intersection counts are all 0 with both sides populated, the
+      // foundation cannot produce a reporting result regardless of how
+      // much generation data the scope has.
+      const linkageRefSide =
+        solarAppsRow && Number(solarAppsRow.distinctTrackingRef ?? 0);
+      const intersections = [
+        trackingRefIntersectAcctGen,
+        trackingRefIntersectGenEntry,
+        trackingRefIntersectTransferHistory,
+      ].filter((n): n is number => n !== null);
+      const allIntersectionsZero =
+        intersections.length > 0 && intersections.every((n) => n === 0);
+      const refSidePopulated = (linkageRefSide ?? 0) > 0;
+      let verdict:
+        | "ok"
+        | "no-active-batch"
+        | "ref-side-empty"
+        | "linkage-broken";
+      let explanation: string;
+      if (
+        !solarAppsBatch ||
+        !acctSolarGenBatch ||
+        !generationEntryBatch ||
+        !transferHistoryBatch
+      ) {
+        verdict = "no-active-batch";
+        explanation =
+          "One or more of {solarApplications, accountSolarGeneration, generationEntry, transferHistory} has no active batch.";
+      } else if (!refSidePopulated) {
+        verdict = "ref-side-empty";
+        explanation = `srDsSolarApplications.trackingSystemRefId typed column is null on every row of the active batch (${solarAppsRow?.totalRows ?? 0} rows). Foundation csgIdByTrackingRef map is empty → every system gets isReporting=false.`;
+      } else if (refSidePopulated && allIntersectionsZero) {
+        verdict = "linkage-broken";
+        explanation = `solarApplications has ${linkageRefSide} distinct trackingRefs but ZERO match any gatsGenId / unitId across the three generation/transfer tables. Either the join-side typed columns are null or they hold values in a different format (CSV header drift?).`;
+      } else {
+        verdict = "ok";
+        explanation = `Linkage looks healthy: ${linkageRefSide} distinct trackingRefs, intersections [acctGen=${trackingRefIntersectAcctGen}, genEntry=${trackingRefIntersectGenEntry}, transferHistory=${trackingRefIntersectTransferHistory}].`;
+      }
+
+      return {
+        _checkpoint: "debug-foundation-linkage-v1",
+        _runnerVersion: "phase-2-7-foundation@1" as const,
+        scopeId,
+        datasets: {
+          solarApplications: solarAppsBatch
+            ? {
+                activeBatchId: solarAppsBatch.id,
+                ...(solarAppsRow ?? {}),
+              }
+            : null,
+          accountSolarGeneration: acctSolarGenBatch
+            ? {
+                activeBatchId: acctSolarGenBatch.id,
+                ...(acctSolarGenRow ?? {}),
+              }
+            : null,
+          generationEntry: generationEntryBatch
+            ? {
+                activeBatchId: generationEntryBatch.id,
+                ...(generationEntryRow ?? {}),
+              }
+            : null,
+          transferHistory: transferHistoryBatch
+            ? {
+                activeBatchId: transferHistoryBatch.id,
+                ...(transferHistoryRow ?? {}),
+              }
+            : null,
+        },
+        intersections: {
+          trackingRefMatchingAcctGen: trackingRefIntersectAcctGen,
+          trackingRefMatchingGenEntry: trackingRefIntersectGenEntry,
+          trackingRefMatchingTransferHistory:
+            trackingRefIntersectTransferHistory,
+        },
+        verdict: { state: verdict, explanation },
+      };
+    }),
   saveDataset: requirePermission("solar-rec-dashboard", "edit")
     .input(
       z.object({
