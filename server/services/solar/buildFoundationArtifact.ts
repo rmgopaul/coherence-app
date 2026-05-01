@@ -1287,34 +1287,137 @@ export async function buildFoundationArtifact(
         systemId: srDsAbpCsgSystemMapping.systemId,
       })
     : [];
-  const accountSolarGenRows: AccountSolarGenRow[] = accountSolarGenBatch
-    ? await loadAllRowsByPage<AccountSolarGenRow>(
-        scopeId,
-        accountSolarGenBatch,
-        srDsAccountSolarGeneration,
-        {
-          id: srDsAccountSolarGeneration.id,
-          gatsGenId: srDsAccountSolarGeneration.gatsGenId,
-          monthOfGeneration: srDsAccountSolarGeneration.monthOfGeneration,
-          lastMeterReadDate: srDsAccountSolarGeneration.lastMeterReadDate,
-          lastMeterReadKwh: srDsAccountSolarGeneration.lastMeterReadKwh,
-        }
-      )
-    : [];
-  const generationEntryRows: GenerationEntryRow[] = generationEntryBatch
-    ? await loadAllRowsByPage<GenerationEntryRow>(
-        scopeId,
-        generationEntryBatch,
-        srDsGenerationEntry,
-        {
-          id: srDsGenerationEntry.id,
-          unitId: srDsGenerationEntry.unitId,
-          lastMonthOfGen: srDsGenerationEntry.lastMonthOfGen,
-          effectiveDate: srDsGenerationEntry.effectiveDate,
-          rawRow: srDsGenerationEntry.rawRow,
-        }
-      )
-    : [];
+  // Stream-fold accountSolarGeneration + generationEntry into per-key
+  // accumulator Maps. The pure builder reduces by `csgId` keyed via
+  // the trackingRef map (built later from solarApps); pre-aggregating
+  // by `gatsGenId` / `unitId` at the DB layer collapses 405k+24k row
+  // objects (~115 MB heap) into ~25k Map entries (~3 MB). Synthetic
+  // representative rows preserve the existing pure-builder contract
+  // (no test churn).
+  type GenStateForKey = {
+    latestMeterReadDate: string | null;
+    latestMeterReadKwh: number | null;
+    latestPositiveGenDate: string | null;
+  };
+  function foldGenState(
+    map: Map<string, GenStateForKey>,
+    key: string,
+    date: string,
+    kWh: number | null
+  ): void {
+    let state = map.get(key);
+    if (!state) {
+      state = {
+        latestMeterReadDate: null,
+        latestMeterReadKwh: null,
+        latestPositiveGenDate: null,
+      };
+      map.set(key, state);
+    }
+    if (
+      state.latestMeterReadDate === null ||
+      date > state.latestMeterReadDate
+    ) {
+      state.latestMeterReadDate = date;
+      state.latestMeterReadKwh = kWh;
+    }
+    if (kWh !== null && kWh > 0) {
+      if (
+        state.latestPositiveGenDate === null ||
+        date > state.latestPositiveGenDate
+      ) {
+        state.latestPositiveGenDate = date;
+      }
+    }
+  }
+  function synthesizeGenRowsForState<TOut>(
+    state: GenStateForKey,
+    keyValue: string,
+    makeRow: (
+      key: string,
+      date: string,
+      kWh: number | null
+    ) => TOut
+  ): TOut[] {
+    const out: TOut[] = [];
+    if (state.latestMeterReadDate) {
+      out.push(
+        makeRow(
+          keyValue,
+          state.latestMeterReadDate,
+          state.latestMeterReadKwh
+        )
+      );
+    }
+    // Emit a second row only when the latest positive-gen date isn't
+    // already covered by the meter-read row above. Pure builder's
+    // `updateMeterRead` is monotonic so the older positive-gen row
+    // can't clobber the newer meter-read state, but its kWh > 0 path
+    // still updates `latestPositiveGenDate` correctly.
+    if (
+      state.latestPositiveGenDate &&
+      (state.latestPositiveGenDate !== state.latestMeterReadDate ||
+        !(typeof state.latestMeterReadKwh === "number" &&
+          state.latestMeterReadKwh > 0))
+    ) {
+      out.push(makeRow(keyValue, state.latestPositiveGenDate, 1));
+    }
+    return out;
+  }
+
+  const accountSolarGenStateByGatsGenId = new Map<string, GenStateForKey>();
+  if (accountSolarGenBatch) {
+    await streamRowsByPage<AccountSolarGenRow>(
+      scopeId,
+      accountSolarGenBatch,
+      srDsAccountSolarGeneration,
+      {
+        id: srDsAccountSolarGeneration.id,
+        gatsGenId: srDsAccountSolarGeneration.gatsGenId,
+        monthOfGeneration: srDsAccountSolarGeneration.monthOfGeneration,
+        lastMeterReadDate: srDsAccountSolarGeneration.lastMeterReadDate,
+        lastMeterReadKwh: srDsAccountSolarGeneration.lastMeterReadKwh,
+      },
+      (row) => {
+        const key = (row.gatsGenId ?? "").trim();
+        if (!key) return;
+        const date = pickFirstValidIsoDate([
+          row.lastMeterReadDate,
+          row.monthOfGeneration,
+        ]);
+        if (!date) return;
+        const kWh = toNullableNumber(row.lastMeterReadKwh);
+        foldGenState(accountSolarGenStateByGatsGenId, key, date, kWh);
+      }
+    );
+  }
+
+  const generationEntryStateByUnitId = new Map<string, GenStateForKey>();
+  if (generationEntryBatch) {
+    await streamRowsByPage<GenerationEntryRow>(
+      scopeId,
+      generationEntryBatch,
+      srDsGenerationEntry,
+      {
+        id: srDsGenerationEntry.id,
+        unitId: srDsGenerationEntry.unitId,
+        lastMonthOfGen: srDsGenerationEntry.lastMonthOfGen,
+        effectiveDate: srDsGenerationEntry.effectiveDate,
+        rawRow: srDsGenerationEntry.rawRow,
+      },
+      (row) => {
+        const key = (row.unitId ?? "").trim();
+        if (!key) return;
+        const date = pickFirstValidIsoDate([
+          row.lastMonthOfGen,
+          row.effectiveDate,
+        ]);
+        if (!date) return;
+        const kWh = extractGenerationEntryKwh(row.rawRow);
+        foldGenState(generationEntryStateByUnitId, key, date, kWh);
+      }
+    );
+  }
 
   // Stream-fold the transferHistory table directly into a Set<unitId>.
   // This is the largest table in production (633 k rows on the
@@ -1381,18 +1484,34 @@ export async function buildFoundationArtifact(
       csgId: row.csgId,
       abpId: row.systemId,
     })),
-    accountSolarGeneration: accountSolarGenRows.map((row) => ({
-      gatsGenId: row.gatsGenId,
-      monthOfGeneration: row.monthOfGeneration,
-      lastMeterReadDate: row.lastMeterReadDate,
-      lastMeterReadKwh: toNullableNumber(row.lastMeterReadKwh),
-    })),
-    generationEntry: generationEntryRows.map((row) => ({
-      unitId: row.unitId,
-      lastMonthOfGen: row.lastMonthOfGen,
-      effectiveDate: row.effectiveDate,
-      generationKwh: extractGenerationEntryKwh(row.rawRow),
-    })),
+    accountSolarGeneration: (() => {
+      const out: FoundationAccountSolarGenerationInput[] = [];
+      accountSolarGenStateByGatsGenId.forEach((state, gatsGenId) => {
+        for (const r of synthesizeGenRowsForState(state, gatsGenId, (k, d, kWh) => ({
+          gatsGenId: k,
+          monthOfGeneration: null,
+          lastMeterReadDate: d,
+          lastMeterReadKwh: kWh,
+        }))) {
+          out.push(r);
+        }
+      });
+      return out;
+    })(),
+    generationEntry: (() => {
+      const out: FoundationGenerationEntryInput[] = [];
+      generationEntryStateByUnitId.forEach((state, unitId) => {
+        for (const r of synthesizeGenRowsForState(state, unitId, (k, d, kWh) => ({
+          unitId: k,
+          lastMonthOfGen: d,
+          effectiveDate: null,
+          generationKwh: kWh,
+        }))) {
+          out.push(r);
+        }
+      });
+      return out;
+    })(),
     transferUnitIds,
     contractedDate: contractedDateRows.map((row) => ({
       csgId: row.systemId,
