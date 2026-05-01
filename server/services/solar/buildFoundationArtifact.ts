@@ -625,16 +625,20 @@ export function buildFoundationFromInputs(
   // useful than silently last-write-wins, and the warning prompts
   // upstream cleanup.
   const csgIdByTrackingRef = new Map<string, string>();
-  const trackingRefByCsgId = new Map<string, string>();
+  // Tracks which CSGs have already claimed *some* trackingRef so a
+  // CSG with two different trackingRefs across rows only registers
+  // the first (matches Phase 2.7's per-CSG first-non-null intent —
+  // multiple-trackingRef-per-CSG is its own data-quality issue
+  // covered by the deferred CSG_ID_HAS_MULTIPLE_GATS_IDS warning).
+  const csgsWithTrackingClaim = new Set<string>();
   const collisionCsgsByTrackingRef = new Map<string, Set<string>>();
   for (const row of inputs.solarApplications) {
     const csgId = (row.csgId ?? "").trim();
     if (!csgId) continue;
     const trackingRef = (row.trackingSystemRefId ?? "").trim();
     if (!trackingRef) continue;
-    if (!trackingRefByCsgId.has(csgId)) {
-      trackingRefByCsgId.set(csgId, trackingRef);
-    }
+    if (csgsWithTrackingClaim.has(csgId)) continue;
+    csgsWithTrackingClaim.add(csgId);
     const existingOwner = csgIdByTrackingRef.get(trackingRef);
     if (existingOwner === undefined) {
       csgIdByTrackingRef.set(trackingRef, csgId);
@@ -1014,18 +1018,6 @@ async function loadAllRowsByPage<TRow extends { id: string }>(
   }
   return out;
 }
-
-/** Foundation's input dataset keys — keep in sync with the type spec. */
-const FOUNDATION_INPUT_KEYS: DatasetKey[] = [
-  "solarApplications",
-  "abpReport",
-  "abpCsgSystemMapping",
-  "generationEntry",
-  "accountSolarGeneration",
-  "contractedDate",
-  "transferHistory",
-  "convertedReads",
-];
 
 /**
  * Load the active dataset versions for a scope, including the
