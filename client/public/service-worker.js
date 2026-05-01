@@ -1,60 +1,75 @@
 /* eslint-disable no-restricted-globals */
 /**
- * Coherence Service Worker — v2 (2026-04-28 hotfix follow-up).
+ * Coherence Service Worker — v3 (Phase 1.1 of the dashboard
+ * foundation repair, 2026-04-30).
  *
- * v2 fixes the dual-app shell bug from v1 (PR #223 → PR #234):
+ * v3 fixes the stale-shell / orphaned-chunk failure mode that
+ * surfaced under the v2 SW (which itself fixed the v1 dual-app
+ * crash from PR #223). The symptom: a user opens the dashboard,
+ * a deploy happens, the user reloads or navigates, and the SW
+ * either serves a cached HTML whose `<script src>` references
+ * deleted Vite chunks (because `build.emptyOutDir: true` wiped
+ * them) or — at minimum — has no way to detect the staleness.
  *
- *   - **Per-prefix shell fallback.** v1 fell back to `/` or
- *     `/dashboard` for ANY navigation that failed network — so a
- *     `/solar-rec/*` navigation that hit the fallback loaded the
- *     personal app's `index.html` and crashed on a missing route.
- *     v2 picks the shell by URL prefix: `/solar-rec/` for
- *     `/solar-rec/*` navigations, `/` otherwise.
+ * v3 changes vs v2:
  *
- *   - **No auto-skipWaiting.** v1 called `self.skipWaiting()` on
- *     install, so a fresh SW took over without waiting for the
- *     user to click "Refresh now." Combined with auto-reload on
- *     `controllerchange`, the page would flash-reload silently
- *     after a deploy. v2 only skips waiting when the page sends
- *     `{type: "SKIP_WAITING"}` (i.e., the user clicked the toast).
+ *   - **Solar-rec HTML is network-only.** Removed `/solar-rec/`
+ *     from PRECACHE_URLS; `cache.put` is gated on
+ *     `shouldCacheHtmlForOffline(pathname)` which returns false
+ *     for solar-rec paths; on network failure the SW throws
+ *     instead of falling back to a stale shell. Solar-rec is a
+ *     multi-user team app behind login — offline isn't a
+ *     feature, and a blank-with-chunk-404 page is worse than
+ *     the browser's native "no internet" page.
  *
- *   - **CACHE_VERSION bumped to v2.** The activate handler wipes
- *     every cache that doesn't match the current version, so any
- *     v1 caches users still have get cleared on first activation.
+ *   - **Build-id mismatch detection.** Each shell HTML carries
+ *     `<meta name="build-id" content="...">` (injected by the
+ *     Vite plugin in vite.config.ts). The SW bakes its own
+ *     `BUILD_ID` constant from the same plugin. On every
+ *     successful HTML fetch, the SW (best-effort, non-blocking)
+ *     extracts the live shell's build-id; on mismatch it wipes
+ *     the HTML cache, posts `BUILD_ID_MISMATCH` to all
+ *     controlled clients, and self-unregisters. The clients'
+ *     `registerServiceWorker.ts` listener receives the message
+ *     and `location.reload()`s — the reload bypasses the
+ *     unregistered SW and pulls fresh HTML + chunks.
  *
- *   - **HTML navigation strategy unchanged conceptually**
- *     (network-first), but the cache update is moved to the
- *     STATIC_CACHE so it doesn't compete with hashed-asset cache
- *     entries; and the cache update is gated on `text/html`
- *     content-type so a redirect to a login page (text/plain or
- *     application/json) doesn't take over the shell slot.
+ *   - **CACHE_VERSION bumped to v3.** The activate handler
+ *     wipes any cache that doesn't match — v2 caches are
+ *     evicted on first activation of v3.
  *
- *   - **Hashed assets remain cache-first.** Filename includes a
- *     content hash so each URL is content-addressed; once cached,
- *     never refetch.
+ *   - **Helpers mirrored from `shared/serviceWorker.helpers.ts`.**
+ *     Two new pure functions are duplicated here for runtime use:
+ *     `shouldCacheHtmlForOffline()` and `extractBuildIdFromHtml()`.
+ *     Tests in `shared/serviceWorker.helpers.test.ts` are the
+ *     source of truth — keep both implementations in lockstep.
  *
- * Caching contract by route family:
+ * Caching contract by route family (unchanged conceptually):
  *
- *   - HTML navigations       → network-first, fall back to a
- *                              prefix-correct cached shell when
- *                              offline.
+ *   - HTML navigations       → network-first; per-prefix shell
+ *                              fallback for personal app only;
+ *                              network-only for solar-rec.
  *   - /assets/*              → cache-first (hashed = stable).
  *   - Other static (svg/png) → stale-while-revalidate.
  *   - /api/* + /solar-rec/api/* + /trpc → never cached.
  */
 
-const CACHE_VERSION = "v2";
+// `__BUILD_ID__` is replaced at build time by the buildIdPlugin in
+// vite.config.ts. In dev (where the SW isn't registered anyway —
+// `registerServiceWorker.ts` no-ops on import.meta.env.DEV) the
+// literal placeholder is harmless because the SW never runs.
+const BUILD_ID = "__BUILD_ID__";
+
+const CACHE_VERSION = "v3";
 const CACHE_PREFIX = "coherence";
 const STATIC_CACHE = `${CACHE_PREFIX}-static-${CACHE_VERSION}`;
 const RUNTIME_CACHE = `${CACHE_PREFIX}-runtime-${CACHE_VERSION}`;
 
-// URLs precached on install. Both shell entry points are precached
-// so the offline-shell fallback below can serve the *correct* HTML
-// for whichever app the user navigated to.
+// URLs precached on install. v3: `/solar-rec/` is intentionally
+// absent — solar-rec HTML is network-only (see header comment).
 const PRECACHE_URLS = [
   "/",
   "/dashboard",
-  "/solar-rec/",
   "/manifest.webmanifest",
   "/favicon.png",
   "/apple-touch-icon.png",
@@ -122,18 +137,44 @@ function strategyFor(url) {
 
 /**
  * Pick the shell URL whose cached HTML should serve as the offline
- * fallback for `pathname`. For `/solar-rec/*` we use `/solar-rec/`
- * so the user lands on the team-app entry rather than the personal
- * app's `index.html` (which would hand `/solar-rec/...` to a Wouter
- * tree that has no matching route).
+ * fallback for `pathname`, or `null` to disable fallback entirely.
  *
- * Mirrored in `shared/serviceWorker.helpers.ts` — keep in lockstep.
+ * v3 returns `null` for solar-rec paths — see header comment for
+ * rationale. Mirrored in `shared/serviceWorker.helpers.ts`
+ * (`selectShellFallback`).
  */
 function shellFallbackFor(pathname) {
   if (pathname.startsWith("/solar-rec/") || pathname === "/solar-rec") {
-    return "/solar-rec/";
+    return null;
   }
   return "/";
+}
+
+/**
+ * True when an HTML response for `pathname` should be `cache.put`'d
+ * to the SW's static cache for offline fallback. Solar-rec HTML is
+ * not cached — see header comment. Mirrored in
+ * `shared/serviceWorker.helpers.ts` (`shouldCacheHtmlForOffline`).
+ */
+function shouldCacheHtmlForOffline(pathname) {
+  if (pathname.startsWith("/solar-rec/") || pathname === "/solar-rec") {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Extract the value of `<meta name="build-id" content="...">` from
+ * a fully-rendered HTML string, or null if no such tag exists.
+ * Mirrored in `shared/serviceWorker.helpers.ts`
+ * (`extractBuildIdFromHtml`).
+ */
+function extractBuildIdFromHtml(html) {
+  if (typeof html !== "string") return null;
+  const match = html.match(
+    /<meta\s+name=["']build-id["']\s+content=["']([^"']*)["']/i
+  );
+  return match ? match[1] : null;
 }
 
 self.addEventListener("fetch", (event) => {
@@ -199,7 +240,18 @@ async function networkFirstWithShellFallback(request, url) {
     if (response.ok) {
       const contentType = response.headers.get("content-type") ?? "";
       if (contentType.includes("text/html")) {
-        cache.put(request, response.clone()).catch(() => {});
+        // v3: only cache HTML that's eligible for offline fallback.
+        // Solar-rec HTML is intentionally not cached.
+        if (shouldCacheHtmlForOffline(url.pathname)) {
+          cache.put(request, response.clone()).catch(() => {});
+        }
+        // v3: best-effort build-id mismatch detection. Runs async
+        // and never blocks the response. The clone here is what
+        // we read in `maybeReportBuildIdMismatch` — the original
+        // response goes back to the page untouched.
+        maybeReportBuildIdMismatch(response.clone(), url.pathname).catch(
+          () => {}
+        );
       }
     }
     return response;
@@ -208,9 +260,13 @@ async function networkFirstWithShellFallback(request, url) {
     // navigated here before).
     const cached = await cache.match(request);
     if (cached) return cached;
-    // 2. Per-prefix shell fallback. Critical bug fix vs v1: solar-
-    // rec navigations fall back to /solar-rec/, not /.
+    // 2. Per-prefix shell fallback. v3: returns null for solar-rec,
+    // so solar-rec navigations skip the fallback and bubble the
+    // error up to the browser.
     const shellUrl = shellFallbackFor(url.pathname);
+    if (shellUrl === null) {
+      throw err;
+    }
     const shell = await cache.match(shellUrl);
     if (shell) return shell;
     // 3. Last-ditch fallback to root shell so the user at least
@@ -221,6 +277,52 @@ async function networkFirstWithShellFallback(request, url) {
     if (rootShell) return rootShell;
     throw err;
   }
+}
+
+/**
+ * Compare the live network shell's `build-id` meta to this SW's
+ * baked-in `BUILD_ID`. On mismatch: wipe HTML cache, post
+ * `BUILD_ID_MISMATCH` to every controlled client, self-unregister.
+ * Best-effort — any failure here is swallowed so a build-id check
+ * never breaks navigation.
+ *
+ * Skipped when `BUILD_ID === "__BUILD_ID__"` (the un-replaced
+ * placeholder, which can only happen if the Vite build-id plugin
+ * didn't run — e.g., legacy builds, dev mode, or a deploy of a
+ * branch without the plugin).
+ */
+async function maybeReportBuildIdMismatch(response, pathname) {
+  if (BUILD_ID === "__BUILD_ID__") return;
+  const text = await response.text();
+  const liveBuildId = extractBuildIdFromHtml(text);
+  if (!liveBuildId || liveBuildId === BUILD_ID) return;
+
+  // eslint-disable-next-line no-console
+  console.warn(
+    `[sw] build-id mismatch: SW=${BUILD_ID} live=${liveBuildId} (path=${pathname})`
+  );
+
+  // Wipe HTML cache so future navigations refetch fresh shells.
+  const cache = await caches.open(STATIC_CACHE);
+  await Promise.all(
+    PRECACHE_URLS.filter(
+      (u) => u === "/" || u === "/dashboard" || u.endsWith(".html")
+    ).map((u) => cache.delete(u))
+  );
+
+  // Tell every controlled client to reload. The unregister below
+  // means the reload bypasses this SW and pulls fresh HTML +
+  // chunks straight from the network.
+  const clients = await self.clients.matchAll({ includeUncontrolled: true });
+  for (const client of clients) {
+    client.postMessage({
+      type: "BUILD_ID_MISMATCH",
+      expected: BUILD_ID,
+      found: liveBuildId,
+    });
+  }
+
+  await self.registration.unregister();
 }
 
 self.addEventListener("message", (event) => {

@@ -87,11 +87,56 @@ export function isPwaStandaloneMode(
  * regardless of pathname, which crashed the solar-rec app when an
  * offline navigation hit the fallback path. PR #235 splits them.
  *
+ * SW v3 (Phase 1.1 of the dashboard foundation repair) returns
+ * `null` for solar-rec paths — solar-rec is a multi-user team app
+ * that requires the backend, so a stale-shell offline fallback is
+ * worse UX than the browser's native error page (the cached HTML
+ * could reference deleted chunks after a deploy, producing a blank
+ * screen with a 404 in the network panel rather than an honest
+ * "no internet" message).
+ *
  * Pure.
  */
-export function selectShellFallback(pathname: string): "/" | "/solar-rec/" {
+export function selectShellFallback(pathname: string): "/" | null {
   if (typeof pathname !== "string") return "/";
-  if (pathname.startsWith("/solar-rec/")) return "/solar-rec/";
-  if (pathname === "/solar-rec") return "/solar-rec/";
+  if (pathname.startsWith("/solar-rec/")) return null;
+  if (pathname === "/solar-rec") return null;
   return "/";
+}
+
+/**
+ * True when an HTML response for `pathname` should be `cache.put`'d
+ * to the SW's static cache for offline fallback. Solar-rec HTML is
+ * not cached for the same reason `selectShellFallback` returns null
+ * for it: serving stale solar-rec HTML after a deploy can reference
+ * deleted Vite chunks (`build.emptyOutDir: true`) and crash the app.
+ *
+ * Mirrored in `client/public/service-worker.js`. Pure.
+ */
+export function shouldCacheHtmlForOffline(pathname: string): boolean {
+  if (typeof pathname !== "string") return false;
+  if (pathname.startsWith("/solar-rec/")) return false;
+  if (pathname === "/solar-rec") return false;
+  return true;
+}
+
+/**
+ * Extract the value of `<meta name="build-id" content="...">` from
+ * a fully-rendered HTML string. Returns `null` if no such tag exists
+ * (e.g. dev mode, before the build-id Vite plugin lands, or when the
+ * page is served from a non-build source).
+ *
+ * Used by the SW to detect mismatches between the SW's baked-in
+ * `BUILD_ID` and the live network shell's `build-id`. On mismatch,
+ * the SW self-unregisters and posts `BUILD_ID_MISMATCH` to its
+ * controlled clients so they can `location.reload()` once.
+ *
+ * Mirrored in `client/public/service-worker.js`. Pure.
+ */
+export function extractBuildIdFromHtml(html: string): string | null {
+  if (typeof html !== "string") return null;
+  const match = html.match(
+    /<meta\s+name=["']build-id["']\s+content=["']([^"']*)["']/i
+  );
+  return match ? match[1] : null;
 }

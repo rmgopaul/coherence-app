@@ -13,6 +13,11 @@
          either entry point yields the same Coherence app icon. -->
     <link rel="manifest" href="/manifest.webmanifest" />
     <meta name="theme-color" content="#E8432A" />
+    <!-- Phase 1.1 of the dashboard foundation repair (2026-04-30) —
+         build-id meta tag for the SW build-id mismatch detector
+         (see client/public/service-worker.js v3). Replaced at build
+         time by the buildIdPlugin in vite.config.ts; "dev" in dev. -->
+    <meta name="build-id" content="%VITE_BUILD_ID%" />
     <!-- mobile-web-app-capable is the modern equivalent of the
          apple-prefixed tag below. Both are kept because Safari
          still reads the apple-prefixed one and Chrome warns when
