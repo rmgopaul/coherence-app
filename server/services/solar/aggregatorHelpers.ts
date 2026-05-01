@@ -18,9 +18,89 @@
  */
 
 import type { TransferDeliveryLookupPayload } from "./buildTransferDeliveryLookup";
+import type { FoundationCanonicalSystem } from "../../../shared/solarRecFoundation";
 
 /** CSV row shape returned by `loadDatasetRows`. */
 export type CsvRow = Record<string, string | undefined>;
+
+// ---------------------------------------------------------------------------
+// Foundation overlay (Phase 3.1 — 2026-05-01)
+//
+// The Overview / Change of Ownership aggregators consume `SystemRecord`-
+// shaped `SnapshotSystemFor*` arrays that include `isReporting`,
+// `isTransferred`, `isTerminated`, and the legacy 6-state combined
+// `ownershipStatus`. Phase 3.1 keeps the snapshot as the source of
+// display fields (systemName, contractedDate, zillowStatus, etc.) but
+// **overlays the canonical state** from the foundation so all 3 tabs
+// agree on Reporting / Transferred / Terminated counts.
+//
+// The per-system overlay maps `FoundationCanonicalSystem.ownershipStatus`
+// (4-state lifecycle) + `isReporting` → the legacy 6-state combined
+// label that the aggregator outputs (and the tab UIs consume).
+//
+// `change-of-ownership` lifecycle systems map to "Not Transferred"
+// on the main 6-state enum. The COO bucket only surfaces on the
+// separate `changeOwnershipStatus` field handled inside
+// `buildChangeOwnershipAggregates.ts`.
+// ---------------------------------------------------------------------------
+
+export type FoundationOverlayOwnershipStatus =
+  | "Transferred and Reporting"
+  | "Transferred and Not Reporting"
+  | "Not Transferred and Reporting"
+  | "Not Transferred and Not Reporting"
+  | "Terminated and Reporting"
+  | "Terminated and Not Reporting";
+
+export type FoundationCanonicalOverlay = {
+  isReporting: boolean;
+  isTransferred: boolean;
+  isTerminated: boolean;
+  ownershipStatus: FoundationOverlayOwnershipStatus;
+};
+
+/**
+ * Project a `FoundationCanonicalSystem` to the legacy 6-state
+ * canonical-state shape the snapshot aggregators expect.
+ */
+export function foundationCanonicalOverlay(
+  sys: FoundationCanonicalSystem
+): FoundationCanonicalOverlay {
+  const isReporting = sys.isReporting;
+  const isTerminated = sys.isTerminated;
+  const isTransferred = sys.ownershipStatus === "transferred";
+
+  let ownershipStatus: FoundationOverlayOwnershipStatus;
+  if (isTerminated) {
+    ownershipStatus = isReporting
+      ? "Terminated and Reporting"
+      : "Terminated and Not Reporting";
+  } else if (isTransferred) {
+    ownershipStatus = isReporting
+      ? "Transferred and Reporting"
+      : "Transferred and Not Reporting";
+  } else {
+    ownershipStatus = isReporting
+      ? "Not Transferred and Reporting"
+      : "Not Transferred and Not Reporting";
+  }
+
+  return { isReporting, isTransferred, isTerminated, ownershipStatus };
+}
+
+/**
+ * Build a `Map<csgId, FoundationCanonicalOverlay>` for O(1) lookup
+ * during the overlay step.
+ */
+export function buildFoundationOverlayMap(
+  canonicalSystemsByCsgId: Record<string, FoundationCanonicalSystem>
+): Map<string, FoundationCanonicalOverlay> {
+  const map = new Map<string, FoundationCanonicalOverlay>();
+  for (const [csgId, sys] of Object.entries(canonicalSystemsByCsgId)) {
+    map.set(csgId, foundationCanonicalOverlay(sys));
+  }
+  return map;
+}
 
 // ---------------------------------------------------------------------------
 // Pure parsing / formatting helpers.

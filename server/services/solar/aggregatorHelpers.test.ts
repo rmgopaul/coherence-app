@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
+import type { FoundationCanonicalSystem } from "../../../shared/solarRecFoundation";
 import {
+  buildFoundationOverlayMap,
   clean,
   extractSnapshotSystems,
+  foundationCanonicalOverlay,
   getDeliveredForYear,
   isPart2VerifiedAbpRow,
   parseDate,
@@ -259,5 +262,132 @@ describe("extractSnapshotSystems", () => {
 
   it("returns empty for empty input", () => {
     expect(extractSnapshotSystems([])).toEqual([]);
+  });
+});
+
+// ============================================================================
+// Phase 3.1 — foundationCanonicalOverlay
+// ============================================================================
+
+function makeFoundationSystem(
+  overrides: Partial<FoundationCanonicalSystem> = {}
+): FoundationCanonicalSystem {
+  return {
+    csgId: "CSG-1",
+    abpIds: [],
+    sizeKwAc: 9.5,
+    sizeKwDc: 10,
+    contractValueUsd: 1000,
+    isTerminated: false,
+    isPart2Verified: true,
+    isReporting: true,
+    anchorMonthIso: "2024-04-01",
+    contractType: null,
+    ownershipStatus: "active",
+    monitoringPlatform: null,
+    gatsId: null,
+    lastMeterReadDateIso: "2024-04-15",
+    lastMeterReadKwh: 1500,
+    abpStatus: null,
+    part2VerificationDateIso: "2024-06-01",
+    contractedDateIso: null,
+    energyYear: null,
+    integrityWarningCodes: [],
+    ...overrides,
+  };
+}
+
+describe("foundationCanonicalOverlay", () => {
+  it("active + reporting → 'Not Transferred and Reporting'", () => {
+    const out = foundationCanonicalOverlay(
+      makeFoundationSystem({ ownershipStatus: "active", isReporting: true })
+    );
+    expect(out).toEqual({
+      isReporting: true,
+      isTransferred: false,
+      isTerminated: false,
+      ownershipStatus: "Not Transferred and Reporting",
+    });
+  });
+
+  it("active + not reporting → 'Not Transferred and Not Reporting'", () => {
+    const out = foundationCanonicalOverlay(
+      makeFoundationSystem({ ownershipStatus: "active", isReporting: false })
+    );
+    expect(out.ownershipStatus).toBe("Not Transferred and Not Reporting");
+  });
+
+  it("transferred + reporting → 'Transferred and Reporting'", () => {
+    const out = foundationCanonicalOverlay(
+      makeFoundationSystem({
+        ownershipStatus: "transferred",
+        isReporting: true,
+      })
+    );
+    expect(out.isTransferred).toBe(true);
+    expect(out.ownershipStatus).toBe("Transferred and Reporting");
+  });
+
+  it("transferred + not reporting → 'Transferred and Not Reporting'", () => {
+    const out = foundationCanonicalOverlay(
+      makeFoundationSystem({
+        ownershipStatus: "transferred",
+        isReporting: false,
+      })
+    );
+    expect(out.ownershipStatus).toBe("Transferred and Not Reporting");
+  });
+
+  it("terminated + reporting → 'Terminated and Reporting' (terminated wins over reporting)", () => {
+    const out = foundationCanonicalOverlay(
+      makeFoundationSystem({
+        ownershipStatus: "terminated",
+        isTerminated: true,
+        isReporting: true,
+      })
+    );
+    expect(out.isTerminated).toBe(true);
+    expect(out.ownershipStatus).toBe("Terminated and Reporting");
+  });
+
+  it("change-of-ownership maps to 'Not Transferred' on the 6-state enum", () => {
+    // The COO bucket only surfaces on the separate `changeOwnershipStatus`
+    // field handled inside `buildChangeOwnershipAggregates.ts`.
+    const out = foundationCanonicalOverlay(
+      makeFoundationSystem({
+        ownershipStatus: "change-of-ownership",
+        isReporting: true,
+      })
+    );
+    expect(out.isTransferred).toBe(false);
+    expect(out.ownershipStatus).toBe("Not Transferred and Reporting");
+  });
+});
+
+describe("buildFoundationOverlayMap", () => {
+  it("builds a Map<csgId, overlay> for O(1) lookup", () => {
+    const map = buildFoundationOverlayMap({
+      "CSG-A": makeFoundationSystem({
+        csgId: "CSG-A",
+        ownershipStatus: "transferred",
+        isReporting: true,
+      }),
+      "CSG-B": makeFoundationSystem({
+        csgId: "CSG-B",
+        ownershipStatus: "terminated",
+        isTerminated: true,
+        isReporting: false,
+      }),
+    });
+    expect(map.size).toBe(2);
+    expect(map.get("CSG-A")?.ownershipStatus).toBe("Transferred and Reporting");
+    expect(map.get("CSG-B")?.ownershipStatus).toBe(
+      "Terminated and Not Reporting"
+    );
+    expect(map.get("CSG-MISSING")).toBeUndefined();
+  });
+
+  it("returns an empty map for empty foundation systems", () => {
+    expect(buildFoundationOverlayMap({}).size).toBe(0);
   });
 });

@@ -33,6 +33,7 @@ import {
   resolvePart2ProjectIdentity,
 } from "./aggregatorHelpers";
 import { loadDatasetRows } from "./buildSystemSnapshot";
+import { getOrBuildFoundation } from "./foundationRunner";
 import { jsonSerde, withArtifactCache } from "./withArtifactCache";
 
 // ---------------------------------------------------------------------------
@@ -66,6 +67,17 @@ export type MonitoringDetailsRecord = {
 export interface BuildOfflineMonitoringInput {
   abpReportRows: CsvRow[];
   solarApplicationsRows: CsvRow[];
+  /**
+   * Phase 3.1 (2026-05-01) — Set of ABP application IDs the foundation
+   * considers Part II Verified per the locked v3 def (mapped CSG +
+   * valid Part II date + ABP status not in
+   * {rejected, cancelled, withdrawn}). When provided, the builder
+   * uses it instead of the legacy `isPart2VerifiedAbpRow` date-only
+   * check so the 3 ID Sets and per-system maps include only systems
+   * the other Phase 3.1 tabs also count. When absent (older callers
+   * + the 22 existing pure-builder tests) the legacy filter applies.
+   */
+  eligibleApplicationIds?: Set<string>;
 }
 
 export interface OfflineMonitoringAggregate {
@@ -159,7 +171,11 @@ export interface OfflineMonitoringAggregate {
 export function buildOfflineMonitoringAggregates(
   input: BuildOfflineMonitoringInput
 ): OfflineMonitoringAggregate {
-  const { abpReportRows, solarApplicationsRows } = input;
+  const {
+    abpReportRows,
+    solarApplicationsRows,
+    eligibleApplicationIds: foundationEligibleApplicationIds,
+  } = input;
 
   // -------------------------------------------------------------------------
   // ABP-derived eligibility + application-id mapping + size/date/identity
@@ -168,6 +184,11 @@ export function buildOfflineMonitoringAggregates(
   // `abpAcSizeKwBySystemKey`, `abpAcSizeKwByApplicationId`,
   // `abpPart2VerificationDateByApplicationId`,
   // `part2VerifiedSystemIds`, plus the `part2FilterAudit` counts.)
+  //
+  // Phase 3.1 (2026-05-01): when `foundationEligibleApplicationIds`
+  // is supplied, that Set replaces `isPart2VerifiedAbpRow` as the
+  // eligibility filter so this aggregator agrees with the foundation
+  // definition the Overview + Change of Ownership tabs use.
   // -------------------------------------------------------------------------
   const eligibleApplicationIds = new Set<string>();
   const eligiblePortalSystemIds = new Set<string>();
@@ -191,10 +212,20 @@ export function buildOfflineMonitoringAggregates(
   };
 
   abpReportRows.forEach((row, index) => {
-    if (!isPart2VerifiedAbpRow(row)) return;
+    const applicationIdForFilter = clean(row.Application_ID);
+    if (foundationEligibleApplicationIds) {
+      if (
+        !applicationIdForFilter ||
+        !foundationEligibleApplicationIds.has(applicationIdForFilter)
+      ) {
+        return;
+      }
+    } else if (!isPart2VerifiedAbpRow(row)) {
+      return;
+    }
     part2VerifiedAbpRowsCount += 1;
 
-    const applicationId = clean(row.Application_ID);
+    const applicationId = applicationIdForFilter;
     const portalSystemId = clean(row.system_id);
     const trackingId =
       clean(row.PJM_GATS_or_MRETS_Unit_ID_Part_2) ||
@@ -380,16 +411,14 @@ export function buildOfflineMonitoringAggregates(
 // ---------------------------------------------------------------------------
 
 const OFFLINE_MONITORING_DEPS = ["abpReport", "solarApplications"] as const;
-const ARTIFACT_TYPE = "offlineMonitoring";
+// Phase 3.1 (2026-05-01) — bumped from `"offlineMonitoring"` so old
+// cache rows under the legacy date-only Part II filter don't leak
+// in. The new payload's eligibility comes from the foundation's
+// locked Part II definition.
+const ARTIFACT_TYPE = "offlineMonitoring-v2";
 
 export const OFFLINE_MONITORING_RUNNER_VERSION =
-  // 2026-04-30 (@2): added 5 derived fields off `part2VerifiedAbpRows`
-  // for Phase 5e Followup #4 step 4 PR-C1 — abpAcSizeKwBySystemKey,
-  // abpAcSizeKwByApplicationId, abpPart2VerificationDateByApplicationId,
-  // part2VerifiedSystemIds, part2VerifiedAbpRowsCount,
-  // abpEligibleTotalSystemsCount. Cache invalidation forces a
-  // recompute against the new return type.
-  "phase-5e-step4c1-offlinemonitoring@2";
+  "phase-3.1-offlinemonitoring-foundation@1";
 
 interface OfflineMonitoringInputBatchIds {
   abpReportBatchId: string | null;
@@ -397,7 +426,8 @@ interface OfflineMonitoringInputBatchIds {
 }
 
 async function computeOfflineMonitoringInputHash(
-  scopeId: string
+  scopeId: string,
+  foundationInputVersionHash: string
 ): Promise<{ hash: string } & OfflineMonitoringInputBatchIds> {
   const versions = await getActiveVersionsForKeys(
     scopeId,
@@ -414,6 +444,7 @@ async function computeOfflineMonitoringInputHash(
         `runner:${OFFLINE_MONITORING_RUNNER_VERSION}`,
         `abp:${abpReportBatchId ?? ""}`,
         `solarApps:${solarApplicationsBatchId ?? ""}`,
+        `foundation:${foundationInputVersionHash}`,
       ].join("|")
     )
     .digest("hex")
@@ -440,8 +471,23 @@ async function computeOfflineMonitoringInputHash(
 export async function getOrBuildOfflineMonitoringAggregates(
   scopeId: string
 ): Promise<{ result: OfflineMonitoringAggregate; fromCache: boolean }> {
+  // Phase 3.1: foundation defines Part II eligibility for all 3
+  // tabs. The eligibility set passed to the pure builder is the
+  // union of `abpIds` across foundation.part2EligibleCsgIds.
+  const { payload: foundation, inputVersionHash: foundationHash } =
+    await getOrBuildFoundation(scopeId);
+
   const { hash, abpReportBatchId, solarApplicationsBatchId } =
-    await computeOfflineMonitoringInputHash(scopeId);
+    await computeOfflineMonitoringInputHash(scopeId, foundationHash);
+
+  const eligibleApplicationIdsFromFoundation = new Set<string>();
+  for (const csgId of foundation.part2EligibleCsgIds) {
+    const sys = foundation.canonicalSystemsByCsgId[csgId];
+    if (!sys) continue;
+    for (const abpId of sys.abpIds) {
+      eligibleApplicationIdsFromFoundation.add(abpId);
+    }
+  }
 
   const { result, fromCache } = await withArtifactCache<OfflineMonitoringAggregate>(
     {
@@ -476,6 +522,7 @@ export async function getOrBuildOfflineMonitoringAggregates(
         return buildOfflineMonitoringAggregates({
           abpReportRows,
           solarApplicationsRows,
+          eligibleApplicationIds: eligibleApplicationIdsFromFoundation,
         });
       },
     }
