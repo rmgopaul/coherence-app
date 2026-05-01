@@ -319,6 +319,8 @@ describe("buildFoundationFromInputs — happy path", () => {
       "CSG-1",
       "CSG-2",
     ]);
+    expect(payload.canonicalSystemsByCsgId["CSG-1"].sizeKwAc).toBe(5);
+    expect(payload.canonicalSystemsByCsgId["CSG-2"].sizeKwAc).toBe(12);
     expect(payload.summaryCounts.totalSystems).toBe(2);
     expect(payload.summaryCounts.terminated).toBe(0);
   });
@@ -497,6 +499,9 @@ describe("buildFoundationFromInputs — ABP dedupe-by-ABP-ID (Phase 2.4)", () =>
       FIXED_BUILT_AT
     );
     expect(payload.summaryCounts.part2Verified).toBe(1);
+    expect(payload.canonicalSystemsByCsgId["CSG-1"].part2VerificationDateIso).toBe(
+      "2024-06-01"
+    );
   });
 
   it("never produces numerator > denominator (24,275/24,274 backstop)", () => {
@@ -737,6 +742,9 @@ describe("buildFoundationFromInputs — reporting anchor (Phase 2.7)", () => {
     );
     // Anchor = first day of newest valid date's month (2024-04-15 → 2024-04-01).
     expect(payload.reportingAnchorDateIso).toBe("2024-04-01");
+    expect(payload.canonicalSystemsByCsgId["CSG-1"].anchorMonthIso).toBe(
+      "2024-04-01"
+    );
   });
 
   it("anchor ignores zero-production rows when picking newest", () => {
@@ -770,6 +778,7 @@ describe("buildFoundationFromInputs — reporting anchor (Phase 2.7)", () => {
       FIXED_BUILT_AT
     );
     expect(payload.reportingAnchorDateIso).toBeNull();
+    expect(payload.canonicalSystemsByCsgId["CSG-1"].anchorMonthIso).toBeNull();
     expect(payload.canonicalSystemsByCsgId["CSG-1"].isReporting).toBe(false);
   });
 
@@ -827,6 +836,7 @@ describe("buildFoundationFromInputs — reporting anchor (Phase 2.7)", () => {
     );
     expect(payload.canonicalSystemsByCsgId["CSG-1"].isReporting).toBe(true);
     expect(payload.canonicalSystemsByCsgId["CSG-2"].isReporting).toBe(false);
+    expect(payload.canonicalSystemsByCsgId["CSG-2"].lastMeterReadDateIso).toBeNull();
   });
 
   it("reading just BEFORE windowStart is excluded", () => {
@@ -915,11 +925,13 @@ describe("buildFoundationFromInputs — reporting anchor (Phase 2.7)", () => {
       }),
       FIXED_BUILT_AT
     );
+    // First-row size is preserved.
+    expect(payload.canonicalSystemsByCsgId["CSG-1"].sizeKwAc).toBe(5);
     // Late-row trackingRef wires up the generation data.
     expect(payload.canonicalSystemsByCsgId["CSG-1"].isReporting).toBe(true);
   });
 
-  it("zero-kWh meter reads do not affect anchor or isReporting", () => {
+  it("lastMeterReadDateIso uses newest meter-read date (even if zero kWh)", () => {
     const payload = buildFoundationFromInputs(
       makeInputs({
         solarApplications: [
@@ -927,12 +939,16 @@ describe("buildFoundationFromInputs — reporting anchor (Phase 2.7)", () => {
         ],
         accountSolarGeneration: [
           makeAccountSolarGen("TR-1", "2024-04-15", 1500),
-          // Newer zero-kWh reading must NOT advance the anchor.
+          // Newer zero-kWh reading: must win lastMeterReadDateIso
+          // but NOT the anchor or isReporting.
           makeAccountSolarGen("TR-1", "2024-06-15", 0),
         ],
       }),
       FIXED_BUILT_AT
     );
+    const sys = payload.canonicalSystemsByCsgId["CSG-1"];
+    expect(sys.lastMeterReadDateIso).toBe("2024-06-15");
+    expect(sys.lastMeterReadKwh).toBe(0);
     // Anchor still 2024-04-01 (newest positive-kWh row).
     expect(payload.reportingAnchorDateIso).toBe("2024-04-01");
   });
@@ -1023,6 +1039,7 @@ describe("buildFoundationFromInputs — ownership status (Phase 2.7)", () => {
       FIXED_BUILT_AT
     );
     const sys = payload.canonicalSystemsByCsgId["CSG-1"];
+    expect(sys.contractedDateIso).toBe("2022-01-15");
     expect(sys.ownershipStatus).toBe("change-of-ownership");
   });
 

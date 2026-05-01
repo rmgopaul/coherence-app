@@ -25,7 +25,8 @@ export function buildTransferDeliveryLookupFixture(
 
 /**
  * Builds a `FoundationCanonicalSystem` with sensible defaults.
- * Tests override only the fields they care about.
+ * Tests override only the fields they care about. Avoids retyping
+ * the 22-field shape in every overlay / aggregator-helper test.
  *
  * Default state is "active, reporting, Part II Verified" so most
  * negative tests just flip a single field.
@@ -36,10 +37,23 @@ export function makeFoundationSystem(
   return {
     csgId: "CSG-1",
     abpIds: [],
+    sizeKwAc: 9.5,
+    sizeKwDc: 10,
+    contractValueUsd: 1000,
     isTerminated: false,
     isPart2Verified: true,
     isReporting: true,
+    anchorMonthIso: "2024-04-01",
+    contractType: null,
     ownershipStatus: "active",
+    monitoringPlatform: null,
+    gatsId: null,
+    lastMeterReadDateIso: "2024-04-15",
+    lastMeterReadKwh: 1500,
+    abpStatus: null,
+    part2VerificationDateIso: "2024-06-01",
+    contractedDateIso: null,
+    energyYear: null,
     integrityWarningCodes: [],
     ...overrides,
   };
