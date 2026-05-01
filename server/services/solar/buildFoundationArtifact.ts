@@ -184,7 +184,17 @@ function attachWarningCode(
   }
 }
 
-function computeFoundationHash(
+/**
+ * Deterministic hash of the foundation's input dataset versions
+ * + the locked definition version. Used as the cache key in
+ * `solarRecComputedArtifacts.inputVersionHash`.
+ *
+ * Exported so the foundation runner (Phase 2.3) can compute the
+ * cache key WITHOUT first loading source rows — the cache layer
+ * checks for an existing artifact before deciding to invoke the
+ * builder.
+ */
+export function computeFoundationHash(
   inputVersions: Record<
     DatasetKey,
     { batchId: string | null; rowCount: number }
@@ -584,7 +594,13 @@ const FOUNDATION_INPUT_KEYS: DatasetKey[] = [
   "convertedReads",
 ];
 
-async function loadInputVersions(
+/**
+ * Load the active dataset versions for a scope. Exported so the
+ * foundation runner (Phase 2.3) can compute the cache key from
+ * the input versions before deciding whether to invoke the
+ * builder.
+ */
+export async function loadInputVersions(
   scopeId: string
 ): Promise<
   Record<DatasetKey, { batchId: string | null; rowCount: number }>
