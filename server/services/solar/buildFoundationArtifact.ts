@@ -157,6 +157,13 @@ export type FoundationGenerationEntryInput = {
   generationKwh: number | null;
 };
 
+/**
+ * @deprecated The DB-bound builder no longer materializes transfer-
+ * history rows; it streams them and passes `transferUnitIds: Set` on
+ * `FoundationBuilderInputs` directly. Kept exported for compatibility
+ * with any callers that constructed full rows previously; can be
+ * removed in a follow-up.
+ */
 export type FoundationTransferHistoryInput = {
   unitId: string | null;
   transferCompletionDate: string | null;
@@ -175,7 +182,14 @@ export type FoundationBuilderInputs = {
   abpCsgSystemMapping: FoundationAbpCsgMappingInput[];
   accountSolarGeneration: FoundationAccountSolarGenerationInput[];
   generationEntry: FoundationGenerationEntryInput[];
-  transferHistory: FoundationTransferHistoryInput[];
+  /**
+   * Set of `unitId` values seen on `srDsTransferHistory` rows. The
+   * builder only needs presence ("has this unitId ever transferred?"),
+   * not the row-level detail; the DB-bound builder stream-folds the
+   * 600k+ row table directly into this Set so the row array is never
+   * materialized in memory (~95 MB savings on prod-size scopes).
+   */
+  transferUnitIds: ReadonlySet<string>;
   contractedDate: FoundationContractedDateInput[];
   /**
    * `populatedDatasets` is a function of `inputVersions`: a key is
@@ -794,15 +808,20 @@ export function buildFoundationFromInputs(
   const windowStartIso = anchorMonthIso ? shiftIsoMonth(anchorMonthIso, -2) : null;
   const windowEndIso = anchorMonthIso ? shiftIsoMonth(anchorMonthIso, 1) : null;
 
-  // -------- Step 8: transferHistory → transferSeen flag --------
+  // -------- Step 8: transferUnitIds → transferSeenByCsgId flag --------
+  // Inputs are a Set<unitId>; DB-bound builder stream-folds the
+  // (very large) transferHistory row table to avoid holding hundreds
+  // of MB of typed row objects in memory. `.forEach` instead of
+  // `for...of` avoids requiring `downlevelIteration` on the project
+  // tsconfig.
   const transferSeenByCsgId = new Set<string>();
-  for (const row of inputs.transferHistory) {
-    const trackingRef = (row.unitId ?? "").trim();
-    if (!trackingRef) continue;
+  inputs.transferUnitIds.forEach((unitId) => {
+    const trackingRef = unitId.trim();
+    if (!trackingRef) return;
     const csgId = csgIdByTrackingRef.get(trackingRef);
-    if (!csgId) continue;
+    if (!csgId) return;
     transferSeenByCsgId.add(csgId);
-  }
+  });
 
   // -------- Step 9: project per-system reporting + ownership state --------
   for (const csgId of Object.keys(systemsByCsgId)) {
@@ -979,6 +998,53 @@ function statusTextFromRawRow(rawRowJson: string | null): string | null {
  * builder retains everything). Larger tables are still bounded by
  * the loop accumulating to the natural row count.
  */
+/**
+ * Stream-fold variant — same paginated walk as `loadAllRowsByPage`,
+ * but the caller folds each page into an accumulator and the page is
+ * dropped before fetching the next one. Peak memory stays at one
+ * page (~5 k rows) instead of growing to the full row count.
+ *
+ * Used for the very large generation/transfer tables on prod-size
+ * scopes (633 k transferHistory rows × ~150 bytes/row materialized
+ * to ~95 MB; folding into a Set<unitId> of ~25 k entries drops
+ * peak by ~90 MB).
+ */
+async function streamRowsByPage<TRow extends { id: string }>(
+  scopeId: string,
+  batchId: string,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- drizzle table types are complex unions
+  table: any,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- typed select projection
+  selectCols: any,
+  onRow: (row: TRow) => void,
+  pageSize: number = 5000
+): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+
+  let cursor: string | null = null;
+  for (let page = 0; page < 200; page++) {
+    const rows = (await withDbRetry(`stream foundation page ${page}`, () => {
+      const baseWhere = and(
+        eq(table.scopeId, scopeId),
+        eq(table.batchId, batchId),
+        cursor ? gt(table.id, cursor) : undefined
+      );
+      return db
+        .select(selectCols)
+        .from(table)
+        .where(baseWhere)
+        .orderBy(asc(table.id))
+        .limit(pageSize);
+    })) as TRow[];
+
+    if (rows.length === 0) break;
+    for (const row of rows) onRow(row);
+    cursor = rows[rows.length - 1].id;
+    if (rows.length < pageSize) break;
+  }
+}
+
 async function loadAllRowsByPage<TRow extends { id: string }>(
   scopeId: string,
   batchId: string,
@@ -1186,97 +1252,106 @@ export async function buildFoundationArtifact(
     contractedDate: string | null;
   };
 
-  const [
-    solarRows,
-    abpRows,
-    mappingRows,
-    accountSolarGenRows,
-    generationEntryRows,
-    transferHistoryRows,
-    contractedDateRows,
-  ] = await Promise.all([
-    solarBatch
-      ? loadAllRowsByPage<SolarRow>(scopeId, solarBatch, srDsSolarApplications, {
-          id: srDsSolarApplications.id,
-          systemId: srDsSolarApplications.systemId,
-          applicationId: srDsSolarApplications.applicationId,
-          systemName: srDsSolarApplications.systemName,
-          trackingSystemRefId: srDsSolarApplications.trackingSystemRefId,
-          installedKwAc: srDsSolarApplications.installedKwAc,
-          installedKwDc: srDsSolarApplications.installedKwDc,
-          totalContractAmount: srDsSolarApplications.totalContractAmount,
-          contractType: srDsSolarApplications.contractType,
-          rawRow: srDsSolarApplications.rawRow,
-        })
-      : (Promise.resolve([]) as Promise<SolarRow[]>),
-    abpBatch
-      ? loadAllRowsByPage<AbpRow>(scopeId, abpBatch, srDsAbpReport, {
-          id: srDsAbpReport.id,
-          applicationId: srDsAbpReport.applicationId,
-          part2AppVerificationDate: srDsAbpReport.part2AppVerificationDate,
-          projectName: srDsAbpReport.projectName,
-        })
-      : (Promise.resolve([]) as Promise<AbpRow[]>),
-    mappingBatch
-      ? loadAllRowsByPage<MappingRow>(scopeId, mappingBatch, srDsAbpCsgSystemMapping, {
-          id: srDsAbpCsgSystemMapping.id,
-          csgId: srDsAbpCsgSystemMapping.csgId,
-          systemId: srDsAbpCsgSystemMapping.systemId,
-        })
-      : (Promise.resolve([]) as Promise<MappingRow[]>),
-    accountSolarGenBatch
-      ? loadAllRowsByPage<AccountSolarGenRow>(
-          scopeId,
-          accountSolarGenBatch,
-          srDsAccountSolarGeneration,
-          {
-            id: srDsAccountSolarGeneration.id,
-            gatsGenId: srDsAccountSolarGeneration.gatsGenId,
-            monthOfGeneration: srDsAccountSolarGeneration.monthOfGeneration,
-            lastMeterReadDate: srDsAccountSolarGeneration.lastMeterReadDate,
-            lastMeterReadKwh: srDsAccountSolarGeneration.lastMeterReadKwh,
-          }
-        )
-      : (Promise.resolve([]) as Promise<AccountSolarGenRow[]>),
-    generationEntryBatch
-      ? loadAllRowsByPage<GenerationEntryRow>(
-          scopeId,
-          generationEntryBatch,
-          srDsGenerationEntry,
-          {
-            id: srDsGenerationEntry.id,
-            unitId: srDsGenerationEntry.unitId,
-            lastMonthOfGen: srDsGenerationEntry.lastMonthOfGen,
-            effectiveDate: srDsGenerationEntry.effectiveDate,
-            rawRow: srDsGenerationEntry.rawRow,
-          }
-        )
-      : (Promise.resolve([]) as Promise<GenerationEntryRow[]>),
-    transferHistoryBatch
-      ? loadAllRowsByPage<TransferHistoryRow>(
-          scopeId,
-          transferHistoryBatch,
-          srDsTransferHistory,
-          {
-            id: srDsTransferHistory.id,
-            unitId: srDsTransferHistory.unitId,
-            transferCompletionDate: srDsTransferHistory.transferCompletionDate,
-          }
-        )
-      : (Promise.resolve([]) as Promise<TransferHistoryRow[]>),
-    contractedDateBatch
-      ? loadAllRowsByPage<ContractedDateRow>(
-          scopeId,
-          contractedDateBatch,
-          srDsContractedDate,
-          {
-            id: srDsContractedDate.id,
-            systemId: srDsContractedDate.systemId,
-            contractedDate: srDsContractedDate.contractedDate,
-          }
-        )
-      : (Promise.resolve([]) as Promise<ContractedDateRow[]>),
-  ]);
+  // Sequential loads, NOT Promise.all. Parallel loads ballooned peak
+  // heap (sum of all dataset arrays held simultaneously) and triggered
+  // OOM crashes on prod-size scopes. Sequential keeps peak at the
+  // largest single dataset. The wall-clock cost is small relative to
+  // the build itself and TiDB Serverless throttles too-parallel reads
+  // anyway.
+  const solarRows: SolarRow[] = solarBatch
+    ? await loadAllRowsByPage<SolarRow>(scopeId, solarBatch, srDsSolarApplications, {
+        id: srDsSolarApplications.id,
+        systemId: srDsSolarApplications.systemId,
+        applicationId: srDsSolarApplications.applicationId,
+        systemName: srDsSolarApplications.systemName,
+        trackingSystemRefId: srDsSolarApplications.trackingSystemRefId,
+        installedKwAc: srDsSolarApplications.installedKwAc,
+        installedKwDc: srDsSolarApplications.installedKwDc,
+        totalContractAmount: srDsSolarApplications.totalContractAmount,
+        contractType: srDsSolarApplications.contractType,
+        rawRow: srDsSolarApplications.rawRow,
+      })
+    : [];
+  const abpRows: AbpRow[] = abpBatch
+    ? await loadAllRowsByPage<AbpRow>(scopeId, abpBatch, srDsAbpReport, {
+        id: srDsAbpReport.id,
+        applicationId: srDsAbpReport.applicationId,
+        part2AppVerificationDate: srDsAbpReport.part2AppVerificationDate,
+        projectName: srDsAbpReport.projectName,
+      })
+    : [];
+  const mappingRows: MappingRow[] = mappingBatch
+    ? await loadAllRowsByPage<MappingRow>(scopeId, mappingBatch, srDsAbpCsgSystemMapping, {
+        id: srDsAbpCsgSystemMapping.id,
+        csgId: srDsAbpCsgSystemMapping.csgId,
+        systemId: srDsAbpCsgSystemMapping.systemId,
+      })
+    : [];
+  const accountSolarGenRows: AccountSolarGenRow[] = accountSolarGenBatch
+    ? await loadAllRowsByPage<AccountSolarGenRow>(
+        scopeId,
+        accountSolarGenBatch,
+        srDsAccountSolarGeneration,
+        {
+          id: srDsAccountSolarGeneration.id,
+          gatsGenId: srDsAccountSolarGeneration.gatsGenId,
+          monthOfGeneration: srDsAccountSolarGeneration.monthOfGeneration,
+          lastMeterReadDate: srDsAccountSolarGeneration.lastMeterReadDate,
+          lastMeterReadKwh: srDsAccountSolarGeneration.lastMeterReadKwh,
+        }
+      )
+    : [];
+  const generationEntryRows: GenerationEntryRow[] = generationEntryBatch
+    ? await loadAllRowsByPage<GenerationEntryRow>(
+        scopeId,
+        generationEntryBatch,
+        srDsGenerationEntry,
+        {
+          id: srDsGenerationEntry.id,
+          unitId: srDsGenerationEntry.unitId,
+          lastMonthOfGen: srDsGenerationEntry.lastMonthOfGen,
+          effectiveDate: srDsGenerationEntry.effectiveDate,
+          rawRow: srDsGenerationEntry.rawRow,
+        }
+      )
+    : [];
+
+  // Stream-fold the transferHistory table directly into a Set<unitId>.
+  // This is the largest table in production (633 k rows on the
+  // observed scope). Materializing it as a typed array previously
+  // cost ~95 MB peak heap; now we hold one 5 k-row page at a time
+  // and immediately drop each page after extracting its non-null
+  // unitIds.
+  const transferUnitIds = new Set<string>();
+  if (transferHistoryBatch) {
+    await streamRowsByPage<TransferHistoryRow>(
+      scopeId,
+      transferHistoryBatch,
+      srDsTransferHistory,
+      {
+        id: srDsTransferHistory.id,
+        unitId: srDsTransferHistory.unitId,
+        transferCompletionDate: srDsTransferHistory.transferCompletionDate,
+      },
+      (row) => {
+        const unitId = (row.unitId ?? "").trim();
+        if (unitId) transferUnitIds.add(unitId);
+      }
+    );
+  }
+
+  const contractedDateRows: ContractedDateRow[] = contractedDateBatch
+    ? await loadAllRowsByPage<ContractedDateRow>(
+        scopeId,
+        contractedDateBatch,
+        srDsContractedDate,
+        {
+          id: srDsContractedDate.id,
+          systemId: srDsContractedDate.systemId,
+          contractedDate: srDsContractedDate.contractedDate,
+        }
+      )
+    : [];
 
   const inputs: FoundationBuilderInputs = {
     scopeId,
@@ -1318,10 +1393,7 @@ export async function buildFoundationArtifact(
       effectiveDate: row.effectiveDate,
       generationKwh: extractGenerationEntryKwh(row.rawRow),
     })),
-    transferHistory: transferHistoryRows.map((row) => ({
-      unitId: row.unitId,
-      transferCompletionDate: row.transferCompletionDate,
-    })),
+    transferUnitIds,
     contractedDate: contractedDateRows.map((row) => ({
       csgId: row.systemId,
       contractedDate: row.contractedDate,
