@@ -34,6 +34,10 @@ import {
   toPercentValue,
 } from "./aggregatorHelpers";
 import {
+  computeFoundationHash,
+  loadInputVersions,
+} from "./buildFoundationArtifact";
+import {
   computeSystemSnapshotHash,
   getOrBuildSystemSnapshot,
   loadDatasetRows,
@@ -811,8 +815,11 @@ export function buildChangeOwnershipWithFoundationOverlay(
 export async function getOrBuildChangeOwnership(
   scopeId: string
 ): Promise<{ result: ChangeOwnershipAggregate; fromCache: boolean }> {
-  const { payload: foundation, inputVersionHash: foundationHash } =
-    await getOrBuildFoundation(scopeId);
+  // Foundation hash drives the cache key; the full payload only loads
+  // on cache miss. See `getOrBuildOverviewSummary` for the
+  // optimization rationale.
+  const inputVersions = await loadInputVersions(scopeId);
+  const foundationHash = computeFoundationHash(inputVersions);
 
   const { hash, abpReportBatchId } = await computeChangeOwnershipInputHash(
     scopeId,
@@ -831,12 +838,13 @@ export async function getOrBuildChangeOwnership(
       serde: superjsonSerde<ChangeOwnershipAggregate>(),
       rowCount: (agg) => agg.rows.length,
       recompute: async () => {
-        const [snapshot, abpReportRows] = await Promise.all([
+        const [foundationResult, snapshot, abpReportRows] = await Promise.all([
+          getOrBuildFoundation(scopeId),
           getOrBuildSystemSnapshot(scopeId),
           loadDatasetRows(scopeId, abpReportBatchId, srDsAbpReport),
         ]);
         return buildChangeOwnershipWithFoundationOverlay(
-          foundation,
+          foundationResult.payload,
           snapshot.systems,
           abpReportRows
         );

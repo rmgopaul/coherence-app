@@ -33,6 +33,10 @@ import {
   parsePart2VerificationDate,
   resolvePart2ProjectIdentity,
 } from "./aggregatorHelpers";
+import {
+  computeFoundationHash,
+  loadInputVersions,
+} from "./buildFoundationArtifact";
 import { loadDatasetRows } from "./buildSystemSnapshot";
 import { getOrBuildFoundation } from "./foundationRunner";
 import { jsonSerde, withArtifactCache } from "./withArtifactCache";
@@ -509,11 +513,11 @@ export function buildOfflineMonitoringAggregatesWithFoundationOverlay(
 export async function getOrBuildOfflineMonitoringAggregates(
   scopeId: string
 ): Promise<{ result: OfflineMonitoringAggregate; fromCache: boolean }> {
-  // Phase 3.1: foundation defines Part II eligibility for all 3
-  // tabs. The eligibility set passed to the pure builder is the
-  // union of `abpIds` across foundation.part2EligibleCsgIds.
-  const { payload: foundation, inputVersionHash: foundationHash } =
-    await getOrBuildFoundation(scopeId);
+  // Foundation hash drives the cache key; the full payload only loads
+  // on cache miss. See `getOrBuildOverviewSummary` for the
+  // optimization rationale.
+  const inputVersions = await loadInputVersions(scopeId);
+  const foundationHash = computeFoundationHash(inputVersions);
 
   const { hash, abpReportBatchId, solarApplicationsBatchId } =
     await computeOfflineMonitoringInputHash(scopeId, foundationHash);
@@ -535,20 +539,22 @@ export async function getOrBuildOfflineMonitoringAggregates(
         Object.keys(agg.abpPart2VerificationDateByApplicationId).length +
         agg.part2VerifiedSystemIds.length,
       recompute: async () => {
-        const [abpReportRows, solarApplicationsRows] = await Promise.all([
-          abpReportBatchId
-            ? loadDatasetRows(scopeId, abpReportBatchId, srDsAbpReport)
-            : Promise.resolve([] as CsvRow[]),
-          solarApplicationsBatchId
-            ? loadDatasetRows(
-                scopeId,
-                solarApplicationsBatchId,
-                srDsSolarApplications
-              )
-            : Promise.resolve([] as CsvRow[]),
-        ]);
+        const [foundationResult, abpReportRows, solarApplicationsRows] =
+          await Promise.all([
+            getOrBuildFoundation(scopeId),
+            abpReportBatchId
+              ? loadDatasetRows(scopeId, abpReportBatchId, srDsAbpReport)
+              : Promise.resolve([] as CsvRow[]),
+            solarApplicationsBatchId
+              ? loadDatasetRows(
+                  scopeId,
+                  solarApplicationsBatchId,
+                  srDsSolarApplications
+                )
+              : Promise.resolve([] as CsvRow[]),
+          ]);
         return buildOfflineMonitoringAggregatesWithFoundationOverlay(
-          foundation,
+          foundationResult.payload,
           abpReportRows,
           solarApplicationsRows
         );

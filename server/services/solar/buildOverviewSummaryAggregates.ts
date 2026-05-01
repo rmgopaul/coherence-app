@@ -29,6 +29,10 @@ import {
   toPercentValue,
 } from "./aggregatorHelpers";
 import {
+  computeFoundationHash,
+  loadInputVersions,
+} from "./buildFoundationArtifact";
+import {
   computeSystemSnapshotHash,
   getOrBuildSystemSnapshot,
   loadDatasetRows,
@@ -650,11 +654,14 @@ export function buildOverviewSummaryWithFoundationOverlay(
 export async function getOrBuildOverviewSummary(
   scopeId: string
 ): Promise<{ result: OverviewSummaryAggregate; fromCache: boolean }> {
-  // Foundation drives canonical reporting/ownership state for every
-  // tab in Phase 3.1. We compute the hash up-front so the cache key
-  // changes when the foundation invalidates (new dataset upload).
-  const { payload: foundation, inputVersionHash: foundationHash } =
-    await getOrBuildFoundation(scopeId);
+  // Foundation hash drives the cache key; the full payload only loads
+  // on cache miss. Splitting these two steps means a cache HIT skips
+  // the foundation build entirely (one DB query for `loadInputVersions`
+  // instead of the foundation build + invariant assertion + payload
+  // hydration). Three tabs share this optimization → ~3 foundation
+  // builds saved per dashboard load.
+  const inputVersions = await loadInputVersions(scopeId);
+  const foundationHash = computeFoundationHash(inputVersions);
 
   const { hash, abpReportBatchId } = await computeOverviewSummaryInputHash(
     scopeId,
@@ -675,12 +682,13 @@ export async function getOrBuildOverviewSummary(
       serde: superjsonSerde<OverviewSummaryAggregate>(),
       rowCount: (agg) => agg.ownershipRows.length,
       recompute: async () => {
-        const [snapshot, abpReportRows] = await Promise.all([
+        const [foundationResult, snapshot, abpReportRows] = await Promise.all([
+          getOrBuildFoundation(scopeId),
           getOrBuildSystemSnapshot(scopeId),
           loadDatasetRows(scopeId, abpReportBatchId, srDsAbpReport),
         ]);
         return buildOverviewSummaryWithFoundationOverlay(
-          foundation,
+          foundationResult.payload,
           snapshot.systems,
           abpReportRows
         );
