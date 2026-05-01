@@ -67,6 +67,8 @@ import {
 } from "../../../shared/solarRecFoundation";
 import { getDb, withDbRetry } from "../../db/_core";
 import { getActiveDatasetVersions } from "../../db/solarRecDatasets";
+import { solarRecImportBatches } from "../../../drizzle/schemas/solar";
+import { inArray } from "drizzle-orm";
 import { isPart2VerifiedSystem } from "./aggregatorHelpers";
 
 export { FOUNDATION_RUNNER_VERSION };
@@ -431,16 +433,14 @@ export function buildFoundationFromInputs(
   const totalSystems = allSystems.filter((s) => !s.isTerminated).length;
   const terminated = allSystems.filter((s) => s.isTerminated).length;
 
-  // Phase 2.2: derive `populatedDatasets` from `batchId !== null`.
-  // The locked v3 definition is "active batch with COUNT(*) > 0",
-  // but the COUNT(*) check needs Phase 2.6's consolidated dataset-
-  // summaries query — until then, "active batch exists" is the
-  // best we can determine without N additional SELECT COUNT(*)
-  // round-trips per builder run.
+  // Phase 2.6 (2026-05-01) closes the locked v3 def for "populated
+  // dataset": active batch in `solarRecActiveDatasetVersions` with
+  // recorded `rowCount > 0`. The earlier `batchId !== null`
+  // fallback is gone — `loadInputVersions` now wires real
+  // rowCounts via `solarRecImportBatches`, so the count is
+  // authoritative.
   const populatedDatasets: DatasetKey[] = DATASET_KEYS.filter(
-    (k) =>
-      inputs.inputVersions[k]?.batchId !== null ||
-      (inputs.inputVersions[k]?.rowCount ?? 0) > 0
+    (k) => (inputs.inputVersions[k]?.rowCount ?? 0) > 0
   );
 
   const foundationHash = computeFoundationHash(inputs.inputVersions);
@@ -595,40 +595,67 @@ const FOUNDATION_INPUT_KEYS: DatasetKey[] = [
 ];
 
 /**
- * Load the active dataset versions for a scope. Exported so the
- * foundation runner (Phase 2.3) can compute the cache key from
- * the input versions before deciding whether to invoke the
- * builder.
+ * Load the active dataset versions for a scope, including the
+ * recorded `rowCount` from `solarRecImportBatches` (one JOIN per
+ * scope — bounded fan-out). Exported so the foundation runner
+ * (Phase 2.3) can compute the cache key from the input versions
+ * before deciding whether to invoke the builder.
+ *
+ * Phase 2.6 (2026-05-01) wired in real rowCounts. Earlier the
+ * function returned `rowCount: 0` everywhere, which made
+ * `populatedDatasets` derive from `batchId !== null` only.
+ *
+ * Note: `solarRecImportBatches.rowCount` is the count recorded
+ * at upload time, not a live `SELECT COUNT(*)`. For most
+ * purposes this matches; row deletions outside the upload path
+ * could in theory drift the count, but no production code does
+ * such deletions — the v3 plan accepts the recorded count as
+ * authoritative for `populatedDatasets`.
  */
 export async function loadInputVersions(
   scopeId: string
 ): Promise<
   Record<DatasetKey, { batchId: string | null; rowCount: number }>
 > {
-  // `solarRecActiveDatasetVersions` carries `(scopeId, datasetKey,
-  // batchId, activatedAt)` — NO rowCount column. The v3 spec calls
-  // for "active batch with COUNT(*) > 0" but that's a per-dataset
-  // SELECT COUNT(*) round-trip, which we don't take in Phase 2.2.
-  // Phase 2.6's "Loaded → Populated" rename consolidates the
-  // dataset-summaries query and supplies real counts; until then,
-  // `populatedDatasets` is derived from `batchId !== null` (i.e.,
-  // "an active batch exists" rather than "an active batch with
-  // rows"). False positives on this are surfaced as zero systems
-  // in the artifact, which won't mislead any consumer.
   const activeRows = await getActiveDatasetVersions(scopeId);
   const batchByKey = new Map<string, string>();
+  const batchIds: string[] = [];
   for (const row of activeRows) {
-    if (row.batchId) batchByKey.set(row.datasetKey, row.batchId);
+    if (row.batchId) {
+      batchByKey.set(row.datasetKey, row.batchId);
+      batchIds.push(row.batchId);
+    }
+  }
+
+  // Single batched query for every active batch's recorded
+  // rowCount. No-op when there are no active batches.
+  const rowCountByBatchId = new Map<string, number>();
+  if (batchIds.length > 0) {
+    const db = await getDb();
+    if (db) {
+      const rows = (await withDbRetry("foundation: load batch rowCounts", () =>
+        db
+          .select({
+            id: solarRecImportBatches.id,
+            rowCount: solarRecImportBatches.rowCount,
+          })
+          .from(solarRecImportBatches)
+          .where(inArray(solarRecImportBatches.id, batchIds))
+      )) as Array<{ id: string; rowCount: number | null }>;
+      for (const row of rows) {
+        rowCountByBatchId.set(row.id, row.rowCount ?? 0);
+      }
+    }
   }
 
   const result = Object.fromEntries(
-    DATASET_KEYS.map((k) => [
-      k,
-      {
-        batchId: batchByKey.get(k) ?? null,
-        rowCount: 0, // Phase 2.6 fills this in.
-      },
-    ])
+    DATASET_KEYS.map((k) => {
+      const batchId = batchByKey.get(k) ?? null;
+      const rowCount = batchId
+        ? rowCountByBatchId.get(batchId) ?? 0
+        : 0;
+      return [k, { batchId, rowCount }];
+    })
   ) as Record<DatasetKey, { batchId: string | null; rowCount: number }>;
   return result;
 }
@@ -670,9 +697,7 @@ export async function buildFoundationArtifact(
       builtAt: new Date().toISOString(),
       inputVersions,
       populatedDatasets: DATASET_KEYS.filter(
-        (k) =>
-          inputVersions[k]?.batchId !== null ||
-          (inputVersions[k]?.rowCount ?? 0) > 0
+        (k) => (inputVersions[k]?.rowCount ?? 0) > 0
       ),
     };
     assertFoundationInvariants(payload);

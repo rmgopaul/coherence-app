@@ -4809,7 +4809,17 @@ const aiDataContext = useMemo(() => {
           <CardContent className="py-3">
             <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-7">
               <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
-                <p className="text-xs uppercase tracking-wide text-slate-500">Datasets Loaded</p>
+                {/* Phase 2.6 of the dashboard foundation repair
+                    (2026-05-01) — "Datasets Loaded" → "Populated
+                    Datasets". The locked v3 definition is "active
+                    batch + recorded rowCount > 0", which is what
+                    `dataHealthSummary.loadedDatasetCount` already
+                    measures (see useMemo at L4381 — it filters
+                    `datasetSummariesByKey[key]?.rowCount > 0`).
+                    The internal variable name still reads "loaded";
+                    it's renamed in a separate sweep so this PR
+                    stays scoped to user-facing copy. */}
+                <p className="text-xs uppercase tracking-wide text-slate-500">Populated Datasets</p>
                 <p className="text-lg font-semibold text-slate-900">
                   {formatNumber(dataHealthSummary.loadedDatasetCount)} / {formatNumber(dataHealthSummary.totalDatasetCount)}
                 </p>
@@ -4820,7 +4830,7 @@ const aiDataContext = useMemo(() => {
                     nothing to "force-load" client-side anymore. */}
               </div>
               <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
-                <p className="text-xs uppercase tracking-wide text-slate-500">Rows Loaded</p>
+                <p className="text-xs uppercase tracking-wide text-slate-500">Total Rows</p>
                 <p className="text-lg font-semibold text-slate-900">{formatNumber(dataHealthSummary.totalRowsLoaded)}</p>
               </div>
               <div
@@ -5641,7 +5651,7 @@ const aiDataContext = useMemo(() => {
                               by `buildLazyCsvDataset` and matches
                               `rows.length` exactly.
                             */}
-                            {dataset.rowCount} rows loaded
+                            {dataset.rowCount} rows
                           </Badge>
                           {localOnlyDatasets[key] ? (
                             <Badge className="border-amber-200 bg-amber-100 text-amber-900">
