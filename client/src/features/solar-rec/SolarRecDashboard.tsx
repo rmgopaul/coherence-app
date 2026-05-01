@@ -1297,6 +1297,39 @@ export default function SolarRecDashboard() {
   const scopeIdRef = useRef<string | null>(scopeId);
   scopeIdRef.current = scopeId;
 
+  // Phase 2.5 of the dashboard foundation repair (2026-05-01) —
+  // warm the canonical foundation artifact on first paint so tabs
+  // that read it (Phase 3 migrations) hit a populated cache.
+  // Fire-and-forget: failures are non-fatal — tabs reading
+  // afterward go through the same single-flight path and either
+  // join the in-flight build or run their own.
+  const warmFoundationMutation =
+    solarRecTrpc.solarRecDashboard.warmFoundation.useMutation();
+  const warmFoundationFiredRef = useRef(false);
+  useEffect(() => {
+    if (warmFoundationFiredRef.current) return;
+    if (!scopeId) return;
+    warmFoundationFiredRef.current = true;
+    warmFoundationMutation.mutate(
+      { scopeId },
+      {
+        onError: (err) => {
+          // Never throw render — this is best-effort warmup.
+          // eslint-disable-next-line no-console
+          console.warn(
+            "[SolarRecDashboard] warmFoundation failed (non-fatal):",
+            err
+          );
+        },
+      }
+    );
+    // We deliberately don't list `warmFoundationMutation` as a dep —
+    // tRPC's mutation hook returns a fresh object on every render
+    // and the `firedRef` guard above is the canonical "fire once"
+    // signal.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scopeId]);
+
   const remoteDashboardStateQuery = solarRecTrpc.solarRecDashboard.getState.useQuery(undefined, {
     retry: 4,
     retryDelay: (attempt) => Math.min(2000 * (attempt + 1), 10_000),
