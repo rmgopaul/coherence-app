@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { initTRPC } from "@trpc/server";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   DASHBOARD_OVERSIZE_ALLOWLIST,
@@ -135,184 +138,162 @@ describe("DASHBOARD_OVERSIZE_ALLOWLIST", () => {
   it("contains exactly the documented set of known-oversized procedures", () => {
     // Every entry here is a known regression scheduled for the data-plane
     // rebuild. Adding or removing an entry should be a deliberate diff
-    // tied to the migration that justifies it; this snapshot test makes
-    // accidental drift impossible.
+    // tied to the migration that justifies it.
     expect([...DASHBOARD_OVERSIZE_ALLOWLIST].sort()).toEqual(
       [
-        "getDashboardChangeOwnership",
-        "getDashboardOfflineMonitoring",
-        "getDashboardOverviewSummary",
-        "getDatasetCsv",
-        "getSystemSnapshot",
+        "solarRecDashboard.getDashboardChangeOwnership",
+        "solarRecDashboard.getDashboardOfflineMonitoring",
+        "solarRecDashboard.getDashboardOverviewSummary",
+        "solarRecDashboard.getDatasetCsv",
+        "solarRecDashboard.getSystemSnapshot",
       ].sort()
     );
+  });
+
+  it("uses fully-qualified router-prefixed paths (no bare procedure names)", () => {
+    // A bare entry like `"getSystemSnapshot"` would silently allowlist a
+    // same-named procedure on a different router. Every entry must carry
+    // its router prefix.
+    for (const entry of DASHBOARD_OVERSIZE_ALLOWLIST) {
+      expect(entry).toMatch(/^solarRecDashboard\.[A-Za-z]+$/);
+    }
   });
 });
 
 describe("checkDashboardResponseSize", () => {
-  it("returns ok for a small response well under the limit and reports measured bytes", () => {
+  it("returns ok with measured bytes for a small response under the limit", () => {
     const verdict = checkDashboardResponseSize(
       { hello: "world" },
       "solarRecDashboard.someProc",
-      { limitBytes: 1024, enforcement: "throw" }
+      { limitBytes: 1024 }
     );
-    expect(verdict.ok).toBe(true);
-    if (verdict.ok) {
-      expect(verdict.limit).toBe(1024);
-      expect(verdict.bytes).toBeGreaterThan(0);
-      expect(verdict.bytes).toBeLessThanOrEqual(1024);
+    if (!verdict.ok) {
+      throw new Error(`expected ok verdict, got bytes=${verdict.bytes}`);
     }
+    expect(verdict.limit).toBe(1024);
+    expect(verdict.bytes).toBeGreaterThan(0);
+    expect(verdict.bytes).toBeLessThanOrEqual(1024);
   });
 
-  it("measures bytes via superjson + JSON.stringify of the result", () => {
-    // A 16-char string serializes to roughly its quoted form. Exact byte
-    // counts depend on superjson's wrapping; we don't pin them, just
-    // assert "non-zero and below limit".
-    const verdict = checkDashboardResponseSize(
-      "hello-world-1234",
-      "solarRecDashboard.someProc",
-      { limitBytes: 1024, enforcement: "warn" }
-    );
-    expect(verdict.ok).toBe(true);
-  });
-
-  it("counts Date | null fields toward the byte total via superjson", () => {
-    // Regression rail for the OwnershipOverviewExportRow shape that
-    // pushed getDashboardOverviewSummary over budget. superjson has to
-    // emit a parallel `meta` tree to round-trip Date values, which costs
-    // ~50 bytes per Date cell on top of the ISO string. A row with three
-    // Date fields × 21k rows is the structure the rebuild plan retires.
-    const withDates = checkDashboardResponseSize(
-      {
-        rows: Array.from({ length: 100 }, (_, i) => ({
-          id: i,
-          a: new Date("2026-01-01T00:00:00Z"),
-          b: new Date("2026-02-01T00:00:00Z"),
-          c: null,
-        })),
-      },
-      "solarRecDashboard.someProc",
-      { limitBytes: Number.MAX_SAFE_INTEGER, enforcement: "warn" }
-    );
-    const withoutDates = checkDashboardResponseSize(
-      {
-        rows: Array.from({ length: 100 }, (_, i) => ({
-          id: i,
-          a: "2026-01-01T00:00:00.000Z",
-          b: "2026-02-01T00:00:00.000Z",
-          c: null,
-        })),
-      },
-      "solarRecDashboard.someProc",
-      { limitBytes: Number.MAX_SAFE_INTEGER, enforcement: "warn" }
-    );
-    if (!withDates.ok || !withoutDates.ok) {
-      throw new Error("expected both checks to land under the limit");
-    }
-    // The Date payload should be strictly larger than the equivalent
-    // string payload because superjson adds a meta tree.
-    expect(withDates.bytes).toBeGreaterThan(withoutDates.bytes);
-  });
-
-  it("flags an oversized response and recommends a throw under throw enforcement", () => {
+  it("flags an oversized non-allowlisted response", () => {
     const big = { rows: Array.from({ length: 5000 }, (_, i) => ({ i })) };
     const verdict = checkDashboardResponseSize(
       big,
       "solarRecDashboard.someProc",
-      { limitBytes: 1024, enforcement: "throw" }
+      { limitBytes: 1024 }
     );
-    expect(verdict.ok).toBe(false);
-    if (verdict.ok) return;
+    if (verdict.ok) {
+      throw new Error("expected oversized verdict");
+    }
     expect(verdict.bytes).toBeGreaterThan(verdict.limit);
     expect(verdict.allowlisted).toBe(false);
-    expect(verdict.shouldThrow).toBe(true);
-    expect(verdict.procedureName).toBe("someProc");
   });
 
-  it("does not recommend a throw when the procedure is allowlisted", () => {
+  it("flags an oversized allowlisted response with allowlisted=true", () => {
     const big = { rows: Array.from({ length: 5000 }, (_, i) => ({ i })) };
     const verdict = checkDashboardResponseSize(
       big,
       "solarRecDashboard.getSystemSnapshot",
-      { limitBytes: 1024, enforcement: "throw" }
+      { limitBytes: 1024 }
     );
-    expect(verdict.ok).toBe(false);
-    if (verdict.ok) return;
-    expect(verdict.allowlisted).toBe(true);
-    expect(verdict.shouldThrow).toBe(false);
-  });
-
-  it("does not recommend a throw under warn enforcement, allowlist or not", () => {
-    const big = { rows: Array.from({ length: 5000 }, (_, i) => ({ i })) };
-    const allowlisted = checkDashboardResponseSize(
-      big,
-      "solarRecDashboard.getDashboardOverviewSummary",
-      { limitBytes: 1024, enforcement: "warn" }
-    );
-    const notAllowlisted = checkDashboardResponseSize(
-      big,
-      "solarRecDashboard.someProc",
-      { limitBytes: 1024, enforcement: "warn" }
-    );
-    expect(allowlisted.ok).toBe(false);
-    expect(notAllowlisted.ok).toBe(false);
-    if (allowlisted.ok || notAllowlisted.ok) return;
-    expect(allowlisted.shouldThrow).toBe(false);
-    expect(notAllowlisted.shouldThrow).toBe(false);
-  });
-
-  it("bypasses the check entirely when enforcement=off", () => {
-    // 'off' is a kill switch for incident response; it must not call
-    // through to superjson at all.
-    const verdict = checkDashboardResponseSize(
-      { rows: Array.from({ length: 5000 }, (_, i) => ({ i })) },
-      "solarRecDashboard.someProc",
-      { limitBytes: 1, enforcement: "off" }
-    );
-    expect(verdict.ok).toBe(true);
-    if (!verdict.ok) return;
-    expect(verdict.bytes).toBe(0);
-  });
-
-  it("matches the allowlist on the trailing procedure name regardless of router prefix", () => {
-    const big = { rows: Array.from({ length: 5000 }, (_, i) => ({ i })) };
-    const flat = checkDashboardResponseSize(big, "getSystemSnapshot", {
-      limitBytes: 1024,
-      enforcement: "throw",
-    });
-    const nested = checkDashboardResponseSize(
-      big,
-      "solarRecDashboard.getSystemSnapshot",
-      { limitBytes: 1024, enforcement: "throw" }
-    );
-    const doubleNested = checkDashboardResponseSize(
-      big,
-      "solar.rec.dashboard.getSystemSnapshot",
-      { limitBytes: 1024, enforcement: "throw" }
-    );
-    for (const verdict of [flat, nested, doubleNested]) {
-      expect(verdict.ok).toBe(false);
-      if (verdict.ok) continue;
-      expect(verdict.allowlisted).toBe(true);
-      expect(verdict.shouldThrow).toBe(false);
-      expect(verdict.procedureName).toBe("getSystemSnapshot");
+    if (verdict.ok) {
+      throw new Error("expected oversized verdict");
     }
+    expect(verdict.allowlisted).toBe(true);
+  });
+
+  it("requires the full router-prefixed path to match the allowlist", () => {
+    // Bare procedure name must NOT match — we removed the trailing-suffix
+    // matcher that allowed `getSystemSnapshot` on any router to slip through.
+    const big = { rows: Array.from({ length: 5000 }, (_, i) => ({ i })) };
+    const bare = checkDashboardResponseSize(big, "getSystemSnapshot", {
+      limitBytes: 1024,
+    });
+    if (bare.ok) throw new Error("expected oversized verdict");
+    expect(bare.allowlisted).toBe(false);
+
+    // Same procedure name on a different router must NOT match.
+    const otherRouter = checkDashboardResponseSize(
+      big,
+      "otherRouter.getSystemSnapshot",
+      { limitBytes: 1024 }
+    );
+    if (otherRouter.ok) throw new Error("expected oversized verdict");
+    expect(otherRouter.allowlisted).toBe(false);
+
+    // The full-path entry matches.
+    const fq = checkDashboardResponseSize(
+      big,
+      "solarRecDashboard.getSystemSnapshot",
+      { limitBytes: 1024 }
+    );
+    if (fq.ok) throw new Error("expected oversized verdict");
+    expect(fq.allowlisted).toBe(true);
   });
 
   it("respects a custom allowlist passed via options", () => {
     const big = { rows: Array.from({ length: 5000 }, (_, i) => ({ i })) };
     const verdict = checkDashboardResponseSize(
       big,
-      "solarRecDashboard.someExperimentalProc",
+      "myRouter.someExperimentalProc",
       {
         limitBytes: 1024,
-        enforcement: "throw",
-        allowlist: new Set(["someExperimentalProc"]),
+        allowlist: new Set(["myRouter.someExperimentalProc"]),
       }
     );
-    expect(verdict.ok).toBe(false);
-    if (verdict.ok) return;
+    if (verdict.ok) throw new Error("expected oversized verdict");
     expect(verdict.allowlisted).toBe(true);
-    expect(verdict.shouldThrow).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Real-router middleware integration: confirm that tRPC reports the
+// fully-qualified path to middleware after sub-router composition. The
+// allowlist relies on this format.
+// ---------------------------------------------------------------------------
+
+describe("tRPC middleware path format", () => {
+  it("reports the full dotted path inside a composed sub-router", async () => {
+    const tT = initTRPC.create();
+    const observed: string[] = [];
+
+    const captureMiddleware = tT.middleware(async ({ path, next }) => {
+      observed.push(path);
+      return next();
+    });
+
+    const subRouter = tT.router({
+      myProc: tT.procedure
+        .use(captureMiddleware)
+        .query(() => ({ ok: true })),
+    });
+    const appRouter = tT.router({ solarRecDashboard: subRouter });
+
+    const caller = appRouter.createCaller({});
+    await caller.solarRecDashboard.myProc();
+
+    expect(observed).toEqual(["solarRecDashboard.myProc"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Regression rail: every dashboard procedure must go through
+// dashboardProcedure(), not raw requirePermission(). A future PR that
+// adds a procedure with the wrong builder loses the size guard silently;
+// this asserts the contract on the source file.
+// ---------------------------------------------------------------------------
+
+describe("solarRecDashboardRouter wiring", () => {
+  it("uses dashboardProcedure exclusively (no raw requirePermission)", () => {
+    const filePath = resolve(__dirname, "solarRecDashboardRouter.ts");
+    const source = readFileSync(filePath, "utf8");
+
+    // No raw requirePermission( call sites in the dashboard router.
+    expect(source).not.toMatch(/\brequirePermission\s*\(/);
+
+    // dashboardProcedure( should still be the gating idiom; if every
+    // procedure has been removed something else has gone very wrong.
+    const matches = source.match(/\bdashboardProcedure\s*\(/g) ?? [];
+    expect(matches.length).toBeGreaterThanOrEqual(40);
   });
 });
