@@ -3,7 +3,8 @@ import { mkdir, appendFile, readFile, rm, writeFile } from "node:fs/promises";
 import { nanoid } from "nanoid";
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
-import { t, requirePermission } from "./solarRecBase";
+import { t } from "./solarRecBase";
+import { dashboardProcedure } from "./dashboardResponseGuard";
 import { and, eq, sql } from "drizzle-orm";
 import {
   scheduleBImportFiles,
@@ -285,7 +286,7 @@ export const solarRecDashboardRouter = t.router({
    * Returns the scopeId for the current user's Solar REC context.
    * Used by the client to pass to server-side dataset endpoints.
    */
-  getScopeId: requirePermission("solar-rec-dashboard", "read").query(async () => {
+  getScopeId: dashboardProcedure("solar-rec-dashboard", "read").query(async () => {
     const { resolveSolarRecScopeId } = await import("../_core/solarRecAuth");
     const { resolveSolarRecOwnerUserId } = await import("../_core/solarRecAuth");
     const { getOrCreateScope } = await import("../db");
@@ -304,7 +305,7 @@ export const solarRecDashboardRouter = t.router({
    * This sidesteps the browser-based migration for users whose
    * datasets are too large for the tab to hold in memory.
    */
-  startServerSideMigration: requirePermission("solar-rec-dashboard", "admin").mutation(async () => {
+  startServerSideMigration: dashboardProcedure("solar-rec-dashboard", "admin").mutation(async () => {
     const { resolveSolarRecScopeId, resolveSolarRecOwnerUserId } = await import(
       "../_core/solarRecAuth"
     );
@@ -322,7 +323,7 @@ export const solarRecDashboardRouter = t.router({
   /**
    * Poll the status of a server-side migration job.
    */
-  getServerSideMigrationStatus: requirePermission("solar-rec-dashboard", "read")
+  getServerSideMigrationStatus: dashboardProcedure("solar-rec-dashboard", "read")
     .input(z.object({ jobId: z.string().min(1) }))
     .query(async ({ input }) => {
       const { getServerMigrationJob } = await import(
@@ -338,7 +339,7 @@ export const solarRecDashboardRouter = t.router({
    * this scope, or null. Lets the client resume polling after a
    * tab reload without needing to persist the jobId.
    */
-  getActiveServerSideMigration: requirePermission("solar-rec-dashboard", "read").query(async () => {
+  getActiveServerSideMigration: dashboardProcedure("solar-rec-dashboard", "read").query(async () => {
     const { resolveSolarRecScopeId } = await import("../_core/solarRecAuth");
     const { getActiveJobForScope } = await import(
       "../services/solar/serverSideMigration"
@@ -367,7 +368,7 @@ export const solarRecDashboardRouter = t.router({
    * See commits de59fca (in-process single-flight v1) and
    * 06fdda4 (move to background job) for the history.
    */
-  syncCoreDatasetFromStorage: requirePermission("solar-rec-dashboard", "edit")
+  syncCoreDatasetFromStorage: dashboardProcedure("solar-rec-dashboard", "edit")
     .input(z.object({ datasetKey: z.string().min(1) }))
     .mutation(async ({ input }) => {
       const { resolveSolarRecScopeId, resolveSolarRecOwnerUserId } =
@@ -399,7 +400,7 @@ export const solarRecDashboardRouter = t.router({
    * persist for up to 30 min so a slow poller doesn't miss the
    * transition.
    */
-  getCoreDatasetSyncStatus: requirePermission("solar-rec-dashboard", "read")
+  getCoreDatasetSyncStatus: dashboardProcedure("solar-rec-dashboard", "read")
     .input(z.object({ jobId: z.string().min(1) }))
     .query(async ({ input }) => {
       const { getSyncJob } = await import(
@@ -435,7 +436,7 @@ export const solarRecDashboardRouter = t.router({
    * 200 batches per call so the request doesn't exceed Render's
    * proxy timeout; run twice if `skippedDueToLimit` is true.
    */
-  purgeOrphanedDatasetRows: requirePermission("solar-rec-dashboard", "admin").mutation(async () => {
+  purgeOrphanedDatasetRows: dashboardProcedure("solar-rec-dashboard", "admin").mutation(async () => {
     try {
       const { purgeOrphanedDatasetRowsNow } = await import(
         "../db/solarRecDatasets"
@@ -460,7 +461,7 @@ export const solarRecDashboardRouter = t.router({
    * resumes polling instead of losing track of the background
    * work.
    */
-  getActiveCoreDatasetSyncJobs: requirePermission("solar-rec-dashboard", "read").query(async () => {
+  getActiveCoreDatasetSyncJobs: dashboardProcedure("solar-rec-dashboard", "read").query(async () => {
     const { resolveSolarRecScopeId } = await import("../_core/solarRecAuth");
     const { listActiveJobsForScope } = await import(
       "../services/solar/coreDatasetSyncJobs"
@@ -476,7 +477,7 @@ export const solarRecDashboardRouter = t.router({
     }));
   }),
 
-  getState: requirePermission("solar-rec-dashboard", "read").query(async ({ ctx }) => {
+  getState: dashboardProcedure("solar-rec-dashboard", "read").query(async ({ ctx }) => {
     const { key, legacyKey } = await buildDashboardStorageKeys(
       ctx.userId,
       "state.json"
@@ -487,7 +488,7 @@ export const solarRecDashboardRouter = t.router({
       () => loadDashboardPayload(ctx.userId, dbStorageKey, key, legacyKey)
     );
   }),
-  saveState: requirePermission("solar-rec-dashboard", "edit")
+  saveState: dashboardProcedure("solar-rec-dashboard", "edit")
     .input(
       z.object({
         payload: z.string(),
@@ -517,7 +518,7 @@ export const solarRecDashboardRouter = t.router({
         throw storageError;
       }
     }),
-  getDataset: requirePermission("solar-rec-dashboard", "read")
+  getDataset: dashboardProcedure("solar-rec-dashboard", "read")
     .input(
       z.object({
         key: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/),
@@ -563,7 +564,7 @@ export const solarRecDashboardRouter = t.router({
   // construction — wire-bound by page size, never the full dataset.
   // The client hook and ref were also removed in this PR.
 
-  getDatasetCloudStatuses: requirePermission("solar-rec-dashboard", "read")
+  getDatasetCloudStatuses: dashboardProcedure("solar-rec-dashboard", "read")
     .input(
       z.object({
         keys: z.array(z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/)).min(1).max(32),
@@ -603,7 +604,7 @@ export const solarRecDashboardRouter = t.router({
    * Diagnostic use only — not wired into the UI path. Callers should
    * treat this as slow (O(chunks) HEAD checks) and not poll it.
    */
-  debugDatasetSyncStateRaw: requirePermission("solar-rec-dashboard", "read")
+  debugDatasetSyncStateRaw: dashboardProcedure("solar-rec-dashboard", "read")
     .input(
       z.object({
         datasetKey: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/),
@@ -741,7 +742,7 @@ export const solarRecDashboardRouter = t.router({
    * Wired into the dashboard's per-dataset card as an admin-only
    * "Inspect" link in PR-2. For now, callable via devtools / curl.
    */
-  debugDatasetPersistenceRaw: requirePermission("solar-rec-dashboard", "read")
+  debugDatasetPersistenceRaw: dashboardProcedure("solar-rec-dashboard", "read")
     .input(
       z.object({
         datasetKey: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/),
@@ -959,7 +960,7 @@ export const solarRecDashboardRouter = t.router({
         verdict: { state: verdict, explanation },
       };
     }),
-  saveDataset: requirePermission("solar-rec-dashboard", "edit")
+  saveDataset: dashboardProcedure("solar-rec-dashboard", "edit")
     .input(
       z.object({
         key: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/),
@@ -1061,7 +1062,7 @@ export const solarRecDashboardRouter = t.router({
    * sees the same rows — matching how `isTeamWideDatasetKey` routes the
    * manifest + chunk reads.
    */
-  pushConvertedReadsSource: requirePermission("solar-rec-dashboard", "edit")
+  pushConvertedReadsSource: dashboardProcedure("solar-rec-dashboard", "edit")
     .input(
       z.object({
         providerKey: z
@@ -1103,7 +1104,7 @@ export const solarRecDashboardRouter = t.router({
    * blobs for its user-uploaded sources. This mutation only rewrites
    * the manifest blob at `dataset:convertedReads`.
    */
-  syncConvertedReadsUserSources: requirePermission("solar-rec-dashboard", "edit")
+  syncConvertedReadsUserSources: dashboardProcedure("solar-rec-dashboard", "edit")
     .input(
       z.object({
         userSources: z
@@ -1145,7 +1146,7 @@ export const solarRecDashboardRouter = t.router({
         userSourceCount: result.userSourceCount,
       };
     }),
-  ensureScheduleBImportJob: requirePermission("solar-rec-dashboard", "edit")
+  ensureScheduleBImportJob: dashboardProcedure("solar-rec-dashboard", "edit")
     .mutation(async ({ ctx }) => {
       const job = await getOrCreateLatestScheduleBImportJob(ctx.scopeId, ctx.userId);
       const counts = await getScheduleBImportJobCounts(job.id);
@@ -1199,7 +1200,7 @@ export const solarRecDashboardRouter = t.router({
    * Response carries _checkpoint: "drive-link-v1" for deploy
    * verification per docs/server-routing.md.
    */
-  linkScheduleBDriveFolder: requirePermission("solar-rec-dashboard", "edit")
+  linkScheduleBDriveFolder: dashboardProcedure("solar-rec-dashboard", "edit")
     .input(
       z.object({
         folderUrl: z.string().min(1).max(500),
@@ -1264,7 +1265,7 @@ export const solarRecDashboardRouter = t.router({
         skippedExisting: skipped,
       };
     }),
-  importScheduleBFromCsgPortal: requirePermission("solar-rec-dashboard", "edit")
+  importScheduleBFromCsgPortal: dashboardProcedure("solar-rec-dashboard", "edit")
     .input(
       z.object({
         csgIds: z.array(z.string().min(1).max(64)).min(1).max(1000),
@@ -1313,7 +1314,7 @@ export const solarRecDashboardRouter = t.router({
         skippedExisting: skipped,
       };
     }),
-  getScheduleBImportStatus: requirePermission("solar-rec-dashboard", "read")
+  getScheduleBImportStatus: dashboardProcedure("solar-rec-dashboard", "read")
     .query(async ({ ctx }) => {
       const job = await getLatestScheduleBImportJob(ctx.scopeId);
       if (!job) {
@@ -1422,7 +1423,7 @@ export const solarRecDashboardRouter = t.router({
         },
       };
     }),
-  listScheduleBImportResults: requirePermission("solar-rec-dashboard", "read")
+  listScheduleBImportResults: dashboardProcedure("solar-rec-dashboard", "read")
     .input(
       z
         .object({
@@ -1490,7 +1491,7 @@ export const solarRecDashboardRouter = t.router({
         total: result.total,
       };
     }),
-  applyScheduleBToDeliveryObligations: requirePermission("solar-rec-dashboard", "edit")
+  applyScheduleBToDeliveryObligations: dashboardProcedure("solar-rec-dashboard", "edit")
     .input(
       z
         .object({
@@ -1828,7 +1829,7 @@ export const solarRecDashboardRouter = t.router({
    * Returns _checkpoint so the client can confirm live deployment via
    * the browser devtools Network tab (per CLAUDE.md convention).
    */
-  uploadDeliveryScheduleCsv: requirePermission("solar-rec-dashboard", "edit")
+  uploadDeliveryScheduleCsv: dashboardProcedure("solar-rec-dashboard", "edit")
     .input(
       z.object({
         csvText: z.string().min(1).max(10 * 1024 * 1024),
@@ -1975,7 +1976,7 @@ export const solarRecDashboardRouter = t.router({
    *      "Last mapping: X patched, Y unchanged" panel and so
    *      onApplyComplete can reload the dataset from cloud.
    */
-  getScheduleBContractIdMapping: requirePermission("solar-rec-dashboard", "read").query(async ({ ctx }) => {
+  getScheduleBContractIdMapping: dashboardProcedure("solar-rec-dashboard", "read").query(async ({ ctx }) => {
     const mappingText = await getSolarRecDashboardPayload(
       ctx.userId,
       "dashboard:schedule_b_contract_id_mapping"
@@ -1985,7 +1986,7 @@ export const solarRecDashboardRouter = t.router({
       mappingText: mappingText ?? "",
     };
   }),
-  applyScheduleBContractIdMapping: requirePermission("solar-rec-dashboard", "edit")
+  applyScheduleBContractIdMapping: dashboardProcedure("solar-rec-dashboard", "edit")
     .input(
       z.object({
         // 24k entries × ~30 bytes/line = ~720KB. Cap at 5 MB to
@@ -2190,7 +2191,7 @@ export const solarRecDashboardRouter = t.router({
         mappingTextSaved: true,
       };
     }),
-  uploadScheduleBFileChunk: requirePermission("solar-rec-dashboard", "edit")
+  uploadScheduleBFileChunk: dashboardProcedure("solar-rec-dashboard", "edit")
     .input(
       z.object({
         jobId: z.string().min(1).max(64),
@@ -2345,7 +2346,7 @@ export const solarRecDashboardRouter = t.router({
         await rm(tempPath, { force: true }).catch(() => undefined);
       }
     }),
-  forceRunScheduleBImport: requirePermission("solar-rec-dashboard", "admin")
+  forceRunScheduleBImport: dashboardProcedure("solar-rec-dashboard", "admin")
     .mutation(async ({ ctx }) => {
       const job = await getLatestScheduleBImportJob(ctx.scopeId);
       if (!job) {
@@ -2364,7 +2365,7 @@ export const solarRecDashboardRouter = t.router({
       void runScheduleBImportJob(job.id);
       return { success: true, jobId: job.id };
     }),
-  clearScheduleBImport: requirePermission("solar-rec-dashboard", "admin")
+  clearScheduleBImport: dashboardProcedure("solar-rec-dashboard", "admin")
     .mutation(async ({ ctx }) => {
       const job = await getLatestScheduleBImportJob(ctx.scopeId);
       if (job) {
@@ -2387,7 +2388,7 @@ export const solarRecDashboardRouter = t.router({
    * afterwards so the job row's totalFiles counter catches up and the
    * runner re-evaluates whether to finalize as 'completed'.
    */
-  clearScheduleBImportStuckUploads: requirePermission("solar-rec-dashboard", "admin")
+  clearScheduleBImportStuckUploads: dashboardProcedure("solar-rec-dashboard", "admin")
     .mutation(async ({ ctx }) => {
       const job = await getLatestScheduleBImportJob(ctx.scopeId);
       if (!job) {
@@ -2442,7 +2443,7 @@ export const solarRecDashboardRouter = t.router({
    * card. Shows the actual DB counts instead of any client-side
    * interpretation so we can diagnose counter-vs-result divergence.
    */
-  debugScheduleBImportRaw: requirePermission("solar-rec-dashboard", "read")
+  debugScheduleBImportRaw: dashboardProcedure("solar-rec-dashboard", "read")
     .query(async ({ ctx }) => {
       const job = await getLatestScheduleBImportJob(ctx.scopeId);
       if (!job) {
@@ -2558,7 +2559,7 @@ export const solarRecDashboardRouter = t.router({
         sampleFilesWithNoResult,
       };
     }),
-  askTabQuestion: requirePermission("solar-rec-dashboard", "edit")
+  askTabQuestion: dashboardProcedure("solar-rec-dashboard", "edit")
     .input(
       z.object({
         tabId: z.string().min(1).max(64),
@@ -2619,7 +2620,7 @@ export const solarRecDashboardRouter = t.router({
 
   // -- Server-side dataset architecture (Step 2) -------------------------
 
-  getImportStatus: requirePermission("solar-rec-dashboard", "read")
+  getImportStatus: dashboardProcedure("solar-rec-dashboard", "read")
     .input(z.object({ batchId: z.string().min(1) }))
     .query(async ({ input }) => {
       const { getImportBatch, getImportErrors } = await import("../db");
@@ -2657,7 +2658,7 @@ export const solarRecDashboardRouter = t.router({
    * Tabs that consume this: Overview, Ownership, Offline, Size, Value,
    * Change Ownership, and any tab that reads the `systems` prop.
    */
-  getSystemSnapshot: requirePermission("solar-rec-dashboard", "read")
+  getSystemSnapshot: dashboardProcedure("solar-rec-dashboard", "read")
     .input(z.object({ scopeId: z.string().min(1) }))
     .query(async ({ input }) => {
       const { getOrBuildSystemSnapshot } = await import(
@@ -2704,7 +2705,7 @@ export const solarRecDashboardRouter = t.router({
    * the warmup completes go through the same single-flight path
    * and either join the in-flight build or run their own.
    */
-  warmFoundation: requirePermission("solar-rec-dashboard", "read")
+  warmFoundation: dashboardProcedure("solar-rec-dashboard", "read")
     .input(z.object({ scopeId: z.string().min(1) }))
     .mutation(async ({ input }) => {
       const {
@@ -2764,7 +2765,7 @@ export const solarRecDashboardRouter = t.router({
    * fires on dashboard mount; this query is what tabs poll once
    * warmed.
    */
-  getFoundationArtifact: requirePermission("solar-rec-dashboard", "read")
+  getFoundationArtifact: dashboardProcedure("solar-rec-dashboard", "read")
     .input(z.object({ scopeId: z.string().min(1) }))
     .query(async ({ input }) => {
       const {
@@ -2801,7 +2802,7 @@ export const solarRecDashboardRouter = t.router({
    * pre-bucketed. Even on a portfolio with thousands of obligations the
    * response stays under the 1 MB hard rule (rows are 9 fields each).
    */
-  getDashboardDeliveryTrackerAggregates: requirePermission(
+  getDashboardDeliveryTrackerAggregates: dashboardProcedure(
     "solar-rec-dashboard",
     "read"
   ).query(async ({ ctx }) => {
@@ -2829,7 +2830,7 @@ export const solarRecDashboardRouter = t.router({
    * UTC day bucket because `now` participates in active-window
    * detection and the time-elapsed expected-pace calculation.
    */
-  getDashboardTrendDeliveryPace: requirePermission(
+  getDashboardTrendDeliveryPace: dashboardProcedure(
     "solar-rec-dashboard",
     "read"
   ).query(async ({ ctx }) => {
@@ -2865,7 +2866,7 @@ export const solarRecDashboardRouter = t.router({
    * batch IDs and the system-snapshot hash, so any input invalidation
    * (new ABP report upload, snapshot refresh, etc.) propagates.
    */
-  getDashboardContractVintageAggregates: requirePermission(
+  getDashboardContractVintageAggregates: dashboardProcedure(
     "solar-rec-dashboard",
     "read"
   ).query(async ({ ctx }) => {
@@ -2894,7 +2895,7 @@ export const solarRecDashboardRouter = t.router({
    * the `convertedReads` batch ID — recompute fires only when a
    * new convertedReads dataset lands.
    */
-  getDashboardTrendsProduction: requirePermission(
+  getDashboardTrendsProduction: dashboardProcedure(
     "solar-rec-dashboard",
     "read"
   ).query(async ({ ctx }) => {
@@ -2926,7 +2927,7 @@ export const solarRecDashboardRouter = t.router({
    * snapshot's part-2-eligibility filter). The client tab paginates
    * its detail table client-side from the returned rows.
    */
-  getDashboardPerformanceRatio: requirePermission(
+  getDashboardPerformanceRatio: dashboardProcedure(
     "solar-rec-dashboard",
     "read"
   ).query(async ({ ctx }) => {
@@ -2959,7 +2960,7 @@ export const solarRecDashboardRouter = t.router({
    * tiny (~7.5 KB on a typical portfolio: ~50 contract rows × 10
    * numeric fields).
    */
-  getDashboardForecast: requirePermission(
+  getDashboardForecast: dashboardProcedure(
     "solar-rec-dashboard",
     "read"
   ).query(async ({ ctx }) => {
@@ -2990,7 +2991,7 @@ export const solarRecDashboardRouter = t.router({
    * Wire payload is one row per system with financial data and should
    * stay well below the 200 KB target on populated scopes.
    */
-  getDashboardFinancials: requirePermission(
+  getDashboardFinancials: dashboardProcedure(
     "solar-rec-dashboard",
     "read"
   ).query(async ({ ctx }) => {
@@ -3020,7 +3021,7 @@ export const solarRecDashboardRouter = t.router({
    * superjson serde because `rows[i].{contractedDate,
    * zillowSoldDate, latestReportingDate}` are `Date | null`.
    */
-  getDashboardChangeOwnership: requirePermission(
+  getDashboardChangeOwnership: dashboardProcedure(
     "solar-rec-dashboard",
     "read"
   ).query(async ({ ctx }) => {
@@ -3053,7 +3054,7 @@ export const solarRecDashboardRouter = t.router({
    * superjson serde because `ownershipRows[i].{latestReportingDate,
    * contractedDate, zillowSoldDate}` are `Date | null`.
    */
-  getDashboardOverviewSummary: requirePermission(
+  getDashboardOverviewSummary: dashboardProcedure(
     "solar-rec-dashboard",
     "read"
   ).query(async ({ ctx }) => {
@@ -3092,7 +3093,7 @@ export const solarRecDashboardRouter = t.router({
    * solarApplications). Plain JSON serde — output is all strings
    * and string-keyed records.
    */
-  getDashboardOfflineMonitoring: requirePermission(
+  getDashboardOfflineMonitoring: dashboardProcedure(
     "solar-rec-dashboard",
     "read"
   ).query(async ({ ctx }) => {
@@ -3139,7 +3140,7 @@ export const solarRecDashboardRouter = t.router({
    * auto-apply hybrid can drop its `onApply(rows)` client-state side
    * effect.
    */
-  getDashboardPerformanceSourceRows: requirePermission(
+  getDashboardPerformanceSourceRows: dashboardProcedure(
     "solar-rec-dashboard",
     "read"
   ).query(async ({ ctx }) => {
@@ -3169,7 +3170,7 @@ export const solarRecDashboardRouter = t.router({
    * lists (capped at 10 000 each for wire-payload safety) are
    * everything the tab's reconciliation card needs.
    */
-  getDashboardDataQualityReconciliation: requirePermission(
+  getDashboardDataQualityReconciliation: dashboardProcedure(
     "solar-rec-dashboard",
     "read"
   ).query(async ({ ctx }) => {
@@ -3203,7 +3204,7 @@ export const solarRecDashboardRouter = t.router({
    * sub-millisecond on prod scale. `_runnerVersion` is bumped on
    * matcher-shape or sort-order changes.
    */
-  getSystemRecentMeterReads: requirePermission("solar-rec-dashboard", "read")
+  getSystemRecentMeterReads: dashboardProcedure("solar-rec-dashboard", "read")
     .input(
       z.object({
         systemId: z.string().nullable(),
@@ -3236,7 +3237,7 @@ export const solarRecDashboardRouter = t.router({
    * Part 1 / Part 2 / Interconnected counts + AC kW + prior-year
    * comparison fields.
    */
-  getDashboardAppPipelineMonthly: requirePermission(
+  getDashboardAppPipelineMonthly: dashboardProcedure(
     "solar-rec-dashboard",
     "read"
   ).query(async ({ ctx }) => {
@@ -3265,7 +3266,7 @@ export const solarRecDashboardRouter = t.router({
    * cache key bundles a stable hash of the override map so cache
    * misses fire only when the user actually changes an override.
    */
-  getDashboardAppPipelineCashFlow: requirePermission(
+  getDashboardAppPipelineCashFlow: dashboardProcedure(
     "solar-rec-dashboard",
     "read"
   )
@@ -3322,7 +3323,7 @@ export const solarRecDashboardRouter = t.router({
    *     the same DB read so callers don't have to issue both
    *     queries.
    */
-  getDatasetSummariesAll: requirePermission("solar-rec-dashboard", "read")
+  getDatasetSummariesAll: dashboardProcedure("solar-rec-dashboard", "read")
     .query(async ({ ctx }) => {
       void ctx;
       const { resolveSolarRecScopeId } = await import("./solarRecAuth");
@@ -3577,7 +3578,7 @@ export const solarRecDashboardRouter = t.router({
    * returns a signed download URL pointing at an Express stream
    * route. The internal page-cursor logic transfers directly.
    */
-  getDatasetCsv: requirePermission("solar-rec-dashboard", "read")
+  getDatasetCsv: dashboardProcedure("solar-rec-dashboard", "read")
     .input(
       z.object({
         datasetKey: z.enum([
@@ -3747,7 +3748,7 @@ export const solarRecDashboardRouter = t.router({
    *     scroll) or drop on page change. Either way, never the full
    *     dataset.
    */
-  getDatasetRowsPage: requirePermission("solar-rec-dashboard", "read")
+  getDatasetRowsPage: dashboardProcedure("solar-rec-dashboard", "read")
     .input(
       z.object({
         datasetKey: z.enum([
@@ -3851,7 +3852,7 @@ export const solarRecDashboardRouter = t.router({
    * 25k tracking IDs × ~3 years), so runs synchronously without
    * the snapshot-style async build machinery.
    */
-  getTransferDeliveryLookup: requirePermission("solar-rec-dashboard", "read")
+  getTransferDeliveryLookup: dashboardProcedure("solar-rec-dashboard", "read")
     .input(z.object({ scopeId: z.string().min(1) }))
     .query(async ({ input }) => {
       const { buildTransferDeliveryLookupForScope } = await import(
@@ -3881,7 +3882,7 @@ export const solarRecDashboardRouter = t.router({
    * problem. Exact-key dupes imply a logic bug in ingestion; near-
    * dupes imply the dedup key is too strict for GATS's behavior.
    */
-  debugTransferHistoryRaw: requirePermission("solar-rec-dashboard", "read")
+  debugTransferHistoryRaw: dashboardProcedure("solar-rec-dashboard", "read")
     .input(z.object({ scopeId: z.string().min(1) }))
     .query(async ({ input }) => {
       const CHECKPOINT = "transfer-history-audit-v2-2026-04-22";
@@ -4143,7 +4144,7 @@ export const solarRecDashboardRouter = t.router({
    * Lets us answer "where does DY3 (actual) for NON258210 come from?"
    * without wading through IDB or the 600k-row lookup.
    */
-  debugSystemDeliveryBreakdown: requirePermission("solar-rec-dashboard", "read")
+  debugSystemDeliveryBreakdown: dashboardProcedure("solar-rec-dashboard", "read")
     .input(
       z.object({
         scopeId: z.string().min(1),
@@ -4573,7 +4574,7 @@ export const solarRecDashboardRouter = t.router({
    * Get the current input version hash for the system snapshot.
    * Clients use this to check freshness without fetching the full payload.
    */
-  getSystemSnapshotHash: requirePermission("solar-rec-dashboard", "read")
+  getSystemSnapshotHash: dashboardProcedure("solar-rec-dashboard", "read")
     .input(z.object({ scopeId: z.string().min(1) }))
     .query(async ({ input }) => {
       const { computeSystemSnapshotHash } = await import(
@@ -4587,7 +4588,7 @@ export const solarRecDashboardRouter = t.router({
    * Get the active dataset versions for a scope.
    * Used by the client to show which datasets are loaded and their batch IDs.
    */
-  getActiveDatasetVersions: requirePermission("solar-rec-dashboard", "read")
+  getActiveDatasetVersions: dashboardProcedure("solar-rec-dashboard", "read")
     .input(z.object({ scopeId: z.string().min(1) }))
     .query(async ({ input }) => {
       const { getActiveDatasetVersions } = await import("../db");
@@ -4610,7 +4611,7 @@ export const solarRecDashboardRouter = t.router({
    * deliveryScheduleBase + transferHistory. Independent version hash
    * from the system snapshot.
    */
-  getDeliverySnapshot: requirePermission("solar-rec-dashboard", "read")
+  getDeliverySnapshot: dashboardProcedure("solar-rec-dashboard", "read")
     .input(z.object({ scopeId: z.string().min(1) }))
     .query(async ({ input }) => {
       const { getOrBuildDeliverySnapshot } = await import(
@@ -4632,7 +4633,7 @@ export const solarRecDashboardRouter = t.router({
    * Includes CSV dataset versions + completed scan job + latest override.
    * Clients use this to check if their cached financials data is stale.
    */
-  getFinancialsHash: requirePermission("solar-rec-dashboard", "read")
+  getFinancialsHash: dashboardProcedure("solar-rec-dashboard", "read")
     .input(z.object({ scopeId: z.string().min(1) }))
     .query(async ({ input }) => {
       const { computeFinancialsHash } = await import(
@@ -4665,7 +4666,7 @@ export const solarRecDashboardRouter = t.router({
   // message, so the legacy path remains the supported route for
   // them until Phase 4 lands.
 
-  startDatasetUpload: requirePermission("solar-rec-dashboard", "edit")
+  startDatasetUpload: dashboardProcedure("solar-rec-dashboard", "edit")
     .input(
       z.object({
         datasetKey: z.string().min(1).max(64),
@@ -4711,7 +4712,7 @@ export const solarRecDashboardRouter = t.router({
       };
     }),
 
-  uploadDatasetChunk: requirePermission("solar-rec-dashboard", "edit")
+  uploadDatasetChunk: dashboardProcedure("solar-rec-dashboard", "edit")
     .input(
       z.object({
         jobId: z.string().min(1).max(64),
@@ -4797,7 +4798,7 @@ export const solarRecDashboardRouter = t.router({
       };
     }),
 
-  finalizeDatasetUpload: requirePermission("solar-rec-dashboard", "edit")
+  finalizeDatasetUpload: dashboardProcedure("solar-rec-dashboard", "edit")
     .input(z.object({ jobId: z.string().min(1).max(64) }))
     .mutation(async ({ ctx, input }) => {
       const { getDatasetUploadJob } = await import(
@@ -4843,7 +4844,7 @@ export const solarRecDashboardRouter = t.router({
       return { jobId: job.id, status: "running" as const };
     }),
 
-  getDatasetUploadStatus: requirePermission("solar-rec-dashboard", "read")
+  getDatasetUploadStatus: dashboardProcedure("solar-rec-dashboard", "read")
     .input(z.object({ jobId: z.string().min(1).max(64) }))
     .query(async ({ ctx, input }) => {
       const {
@@ -4903,7 +4904,7 @@ export const solarRecDashboardRouter = t.router({
       };
     }),
 
-  listDatasetUploadJobs: requirePermission("solar-rec-dashboard", "read")
+  listDatasetUploadJobs: dashboardProcedure("solar-rec-dashboard", "read")
     .input(
       z
         .object({
