@@ -28,12 +28,14 @@ import { DockChip } from "./DockChip";
 export function DropDock() {
   const utils = trpc.useUtils();
   const inputRef = useRef<HTMLInputElement>(null);
+  const taskInputRef = useRef<HTMLInputElement>(null);
   // 200ms cooldown between accepted paste/drop events so a user
   // mashing ⌘V doesn't fire two overlapping enrich+add round-trips
   // that race the dedup check.
   const pasteCooldownRef = useRef(false);
   const [hint, setHint] = useState<string | null>(null);
   const [dragActive, setDragActive] = useState(false);
+  const [taskInput, setTaskInput] = useState("");
 
   const { data: items = [], isLoading } = trpc.dock.list.useQuery(undefined, {
     refetchInterval: 60_000,
@@ -51,6 +53,17 @@ export function DropDock() {
     onSuccess: () => void utils.dock.list.invalidate(),
   });
   const enrich = trpc.dock.getItemDetails.useMutation();
+  const createTask = trpc.todoist.createTask.useMutation({
+    onSuccess: (task) => {
+      const label = task.content || "Task added";
+      toast.success(`Added to Todoist: ${label}`);
+      setTaskInput("");
+      taskInputRef.current?.focus();
+    },
+    onError: (err) => {
+      toast.error(`Failed to add task: ${err.message ?? "unknown error"}`);
+    },
+  });
   const mutationBusy = addItem.isPending || enrich.isPending;
 
   function armPasteCooldown() {
@@ -141,6 +154,13 @@ export function DropDock() {
     if (inputRef.current) inputRef.current.value = "";
   }
 
+  function onQuickTaskSubmit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const content = taskInput.trim();
+    if (!content || createTask.isPending) return;
+    createTask.mutate({ content });
+  }
+
   function onDragOver(e: React.DragEvent<HTMLDivElement>) {
     if (e.dataTransfer.types.includes("text/uri-list") || e.dataTransfer.types.includes("text/plain")) {
       e.preventDefault();
@@ -206,6 +226,30 @@ export function DropDock() {
         >
           ↻
         </button>
+        <form
+          className="fp-dock__paste fp-dock__quick-task"
+          onSubmit={onQuickTaskSubmit}
+        >
+          <span className="fp-dock__kbd" aria-hidden="true">+ TASK</span>
+          <input
+            ref={taskInputRef}
+            type="text"
+            spellCheck
+            autoComplete="off"
+            placeholder="quick add a Todoist task…"
+            value={taskInput}
+            onChange={(e) => setTaskInput(e.target.value)}
+            disabled={createTask.isPending}
+            aria-label="Quick add a Todoist task"
+          />
+          <button
+            type="submit"
+            className="fp-dock__add"
+            disabled={createTask.isPending || !taskInput.trim()}
+          >
+            {createTask.isPending ? "…" : "ADD"}
+          </button>
+        </form>
       </header>
 
       <div className="fp-dock__zone" role="list">

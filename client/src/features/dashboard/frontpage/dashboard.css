@@ -320,6 +320,12 @@ html[data-focus="1"] .fp-root {
   padding: 4px 10px;
 }
 
+.fp-dock__quick-task {
+  grid-column: 1 / -1;
+  border-style: solid;
+  border-color: var(--fp-yellow);
+}
+
 .fp-dock__zone {
   display: flex;
   flex-wrap: wrap;
