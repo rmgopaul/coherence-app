@@ -1810,6 +1810,13 @@ export default function SolarRecDashboard() {
   useEffect(() => {
     visitedTabsRef.current.add(activeTab);
   }, [activeTab]);
+  // Reactive gate for heavy mount-tier queries: stays false until the
+  // user does something that signals they need full-fidelity data
+  // (a tab navigation, a CSV export click, etc.). Default Overview
+  // mount thus does NOT fire `getDashboardOverviewSummary`; tile
+  // values come from the slim summary instead.
+  const [hasUserInteractedWithDashboard, setHasUserInteractedWithDashboard] =
+    useState(false);
   // pipeline{Count,Kw,Interconnected,CashFlow}Range, pipelineReportLoading,
   // generatePipelineReport — moved to @/solar-rec-dashboard/components/AppPipelineTab
   // Tab-active flags kept in the parent are the ones that still
@@ -1834,6 +1841,9 @@ export default function SolarRecDashboard() {
   const handleActiveTabChange = useCallback(
     (nextTabValue: string) => {
       if (!isDashboardTabId(nextTabValue)) return;
+      // Mark the dashboard interactive so heavy mount-tier queries
+      // (overview-summary) become eligible to fetch.
+      setHasUserInteractedWithDashboard(true);
       startTransition(() => {
         setActiveTab(nextTabValue as DashboardTabId);
       });
@@ -2907,38 +2917,50 @@ export default function SolarRecDashboard() {
   // reads `datasets[k].rows` for ANY of the 18 dataset keys —
   // PR-D (delete cloud-fallback hydration) is unblocked.
 
-  // Phase 5e Followup #4 step 4 PR-A (2026-04-30) — server-side
-  // aggregator that replaces 4 client useMemos that read
-  // `datasets.abpReport.rows` + `datasets.solarApplications.rows`
-  // (`abpEligibleTrackingIdsStrict`, `abpApplicationIdBySystemKey`,
-  // `monitoringDetailsBySystemKey`, plus the 3 ID Sets behind
-  // `part2EligibleSystemsForSizeReporting`). Not tab-gated — the
-  // outputs feed Overview, ApplicationPipeline, the contracts-
-  // computation umbrella, and OfflineMonitoring; the cached server
-  // path (`solarRecComputedArtifacts`) makes the cost negligible
-  // after the first hit.
-  //
-  // PR-C1 (2026-04-30) extended the same aggregator with 5 derived
-  // `abp*By*` Maps + 2 counts (abpAcSizeKwBySystemKey,
-  // abpAcSizeKwByApplicationId, abpPart2VerificationDateByApplicationId,
-  // part2VerifiedSystemIds, part2VerifiedAbpRowsCount,
-  // abpEligibleTotalSystemsCount). The aggregator name remains
-  // "OfflineMonitoring" for historical continuity but its scope is
-  // now broadly "any abp-derived state the dashboard consumes".
+  // Slim mount summary — fires unconditionally on mount. Returns
+  // headline counts, ownership tile breakdown, size buckets,
+  // totalContractAmount-based value totals, ABP counts. Wire payload
+  // is < 1 MB on prod-shape data and does NOT carry any per-system
+  // arrays or maps. The dashboard parent reads its first-paint tile
+  // values from this query so the heavy overview/offline-monitoring
+  // procedures stop firing on initial mount.
+  const dashboardSummaryQuery =
+    solarRecTrpc.solarRecDashboard.getDashboardSummary.useQuery(undefined, {
+      staleTime: 60_000,
+    });
+  const slimSummary = dashboardSummaryQuery.data;
+
+  // Heavy offline-monitoring aggregator. Carries per-system maps
+  // (~2-5 MB on prod). Only fetched when a tab that needs that
+  // detail is active — Offline Monitoring, Ownership, Size, or any
+  // tab in the performance-ratio cluster. React-query dedups across
+  // multiple gated queries.
+  const isOfflineMonitoringHeavyNeeded =
+    isOfflineMonitoringTabActive ||
+    activeTab === "ownership" ||
+    activeTab === "size" ||
+    activeTab === "performance-ratio" ||
+    isPerformanceEvalTabActive;
   const offlineMonitoringQuery =
     solarRecTrpc.solarRecDashboard.getDashboardOfflineMonitoring.useQuery(
       undefined,
       {
         staleTime: 60_000,
+        enabled: isOfflineMonitoringHeavyNeeded,
       }
     );
 
-  // Count comes from the aggregator's
-  // `abpEligibleTotalSystemsCount` field — server walks the same
-  // `resolvePart2ProjectIdentity` dedupeKey logic.
+  // Count now comes from the slim mount summary so it's available on
+  // first paint without firing the heavy offlineMonitoring query.
   const abpEligibleTotalSystems =
-    offlineMonitoringQuery.data?.abpEligibleTotalSystemsCount ?? 0;
+    slimSummary?.abpEligibleTotalSystemsCount ??
+    offlineMonitoringQuery.data?.abpEligibleTotalSystemsCount ??
+    0;
 
+  // High-cardinality eligibility set (~21k strings on prod). Only
+  // populated once the heavy offlineMonitoring query has loaded
+  // (i.e. when an offline-monitoring/ownership/size/perf-ratio tab
+  // has been activated). Empty on initial dashboard mount.
   const abpEligibleTrackingIdsStrict = useMemo(() => {
     return new Set<string>(
       offlineMonitoringQuery.data?.eligiblePart2TrackingIds ?? []
@@ -2974,23 +2996,22 @@ export default function SolarRecDashboard() {
   );
 
 
-  // Phase 5e Followup #4 step 4 PR-C2 (2026-04-30) — `summary`
-  // moved to a server-side aggregator
-  // (`getDashboardOverviewSummary`). The 208-LOC walk over
-  // `part2VerifiedAbpRows × systems` runs on the server now,
-  // cached by abpReport batch + system snapshot hash. The wire
-  // payload includes the full `ownershipRows` array (used for
-  // CSV export) — superjson preserves the Date fields end-to-end.
+  // Heavy overview-summary aggregator. Carries `ownershipRows` (~5-15
+  // MB on prod) used only by the Overview tab's CSV export. NOT
+  // fetched on initial mount even when the default tab is Overview —
+  // the slim summary above already covers every tile-value field the
+  // parent renders. Enables once the user has interacted (navigated
+  // tabs OR triggered an action that needs ownership rows). After
+  // first interaction, stays gated on `isOverviewTabActive` so it
+  // stops firing once the user moves away.
   const overviewSummaryQuery =
     solarRecTrpc.solarRecDashboard.getDashboardOverviewSummary.useQuery(
       undefined,
       {
         staleTime: 60_000,
+        enabled: isOverviewTabActive && hasUserInteractedWithDashboard,
       }
     );
-  // Empty-state sentinel matched to the shape the server returns
-  // when it has no abpReport data. Must include `_runnerVersion`
-  // and `fromCache` to satisfy the inferred query-data type.
   type OverviewSummaryData = NonNullable<typeof overviewSummaryQuery.data>;
   const EMPTY_OVERVIEW_SUMMARY = useMemo<OverviewSummaryData>(
     () => ({
@@ -3025,10 +3046,40 @@ export default function SolarRecDashboard() {
     }),
     []
   );
-  const summary = useMemo(
-    () => overviewSummaryQuery.data ?? EMPTY_OVERVIEW_SUMMARY,
-    [overviewSummaryQuery.data, EMPTY_OVERVIEW_SUMMARY]
-  );
+  // `summary` is a hybrid view: prefer the heavy aggregator's data
+  // when the Overview tab has loaded it (only path that produces
+  // `ownershipRows` and exact `deliveredValue` totals). On initial
+  // mount the heavy query is gated off, so we project the slim
+  // summary into the same shape — every tile-value field is
+  // available, plus `ownershipRows: []` and zero/null delivered-value
+  // fields. Tabs that need ownershipRows / delivered-value fields
+  // either consume them only after navigating to Overview (CSV
+  // download) or accept the slim approximation.
+  const summary = useMemo<OverviewSummaryData>(() => {
+    if (overviewSummaryQuery.data) return overviewSummaryQuery.data;
+    if (!slimSummary) return EMPTY_OVERVIEW_SUMMARY;
+    return {
+      ...EMPTY_OVERVIEW_SUMMARY,
+      totalSystems: slimSummary.totalSystems,
+      reportingSystems: slimSummary.reportingSystems,
+      reportingPercent: slimSummary.reportingPercent,
+      smallSystems: slimSummary.smallSystems,
+      largeSystems: slimSummary.largeSystems,
+      unknownSizeSystems: slimSummary.unknownSizeSystems,
+      ownershipOverview: slimSummary.ownershipOverview,
+      withValueDataCount: slimSummary.withValueDataCount,
+      totalContractedValue: slimSummary.totalContractedValue,
+      contractedValueReporting: slimSummary.contractedValueReporting,
+      contractedValueNotReporting: slimSummary.contractedValueNotReporting,
+      contractedValueReportingPercent:
+        slimSummary.contractedValueReportingPercent,
+      // totalDeliveredValue / totalGap / deliveredValuePercent stay at
+      // their EMPTY defaults (0/null) until the user visits Overview;
+      // computing those requires delivery-schedule data the slim path
+      // intentionally skips to keep the mount under 1 MB.
+      _runnerVersion: "slim-mount",
+    };
+  }, [overviewSummaryQuery.data, slimSummary, EMPTY_OVERVIEW_SUMMARY]);
 
   const part2EligibleSystemsForSizeReporting = useMemo(() => {
     const data = offlineMonitoringQuery.data;
@@ -3270,6 +3321,11 @@ export default function SolarRecDashboard() {
   // downloadPerformanceRatioCsv, downloadCompliantPerformanceRatioCsv
   // — ALL moved to @/solar-rec-dashboard/components/PerformanceRatioTab
   const downloadOwnershipCountTileCsv = (tile: "reporting" | "notReporting" | "terminated") => {
+    // CSV download needs ownershipRows from the heavy overview
+    // aggregator. Mark the dashboard interactive so the heavy query
+    // is eligible to fetch — caller may need to retry once data
+    // arrives if this is the first interaction.
+    setHasUserInteractedWithDashboard(true);
     const tileRows = ownershipCountTileRows[tile]
       .slice()
       .sort((a, b) => a.systemName.localeCompare(b.systemName, undefined, { sensitivity: "base", numeric: true }));

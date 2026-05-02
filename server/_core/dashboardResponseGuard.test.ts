@@ -1,4 +1,7 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { initTRPC } from "@trpc/server";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   DASHBOARD_OVERSIZE_ALLOWLIST,
   DASHBOARD_RESPONSE_LIMIT_BYTES_DEFAULT,
@@ -49,34 +52,18 @@ describe("getDashboardResponseLimitBytes", () => {
     expect(getDashboardResponseLimitBytes()).toBe(262144);
   });
 
+  it("falls back to the default for non-numeric / non-positive / whitespace values", () => {
+    for (const raw of ["not-a-number", "0", "-1024", "   "]) {
+      process.env.DASHBOARD_RESPONSE_LIMIT_BYTES = raw;
+      expect(getDashboardResponseLimitBytes()).toBe(
+        DASHBOARD_RESPONSE_LIMIT_BYTES_DEFAULT
+      );
+    }
+  });
+
   it("floors a fractional positive value", () => {
     process.env.DASHBOARD_RESPONSE_LIMIT_BYTES = "131072.9";
     expect(getDashboardResponseLimitBytes()).toBe(131072);
-  });
-
-  it("falls back to the default for non-numeric values", () => {
-    process.env.DASHBOARD_RESPONSE_LIMIT_BYTES = "not-a-number";
-    expect(getDashboardResponseLimitBytes()).toBe(
-      DASHBOARD_RESPONSE_LIMIT_BYTES_DEFAULT
-    );
-  });
-
-  it("falls back to the default for non-positive values", () => {
-    process.env.DASHBOARD_RESPONSE_LIMIT_BYTES = "0";
-    expect(getDashboardResponseLimitBytes()).toBe(
-      DASHBOARD_RESPONSE_LIMIT_BYTES_DEFAULT
-    );
-    process.env.DASHBOARD_RESPONSE_LIMIT_BYTES = "-1024";
-    expect(getDashboardResponseLimitBytes()).toBe(
-      DASHBOARD_RESPONSE_LIMIT_BYTES_DEFAULT
-    );
-  });
-
-  it("falls back to the default for whitespace-only values", () => {
-    process.env.DASHBOARD_RESPONSE_LIMIT_BYTES = "   ";
-    expect(getDashboardResponseLimitBytes()).toBe(
-      DASHBOARD_RESPONSE_LIMIT_BYTES_DEFAULT
-    );
   });
 });
 
@@ -95,16 +82,12 @@ describe("getDashboardResponseEnforcement", () => {
     expect(getDashboardResponseEnforcement()).toBe("warn");
   });
 
-  it("returns 'throw' in development by default", () => {
+  it("returns 'throw' in dev/test by default", () => {
     delete process.env.DASHBOARD_RESPONSE_ENFORCEMENT;
-    process.env.NODE_ENV = "development";
-    expect(getDashboardResponseEnforcement()).toBe("throw");
-  });
-
-  it("returns 'throw' in test by default", () => {
-    delete process.env.DASHBOARD_RESPONSE_ENFORCEMENT;
-    process.env.NODE_ENV = "test";
-    expect(getDashboardResponseEnforcement()).toBe("throw");
+    for (const env of ["development", "test"]) {
+      process.env.NODE_ENV = env;
+      expect(getDashboardResponseEnforcement()).toBe("throw");
+    }
   });
 
   it.each(["warn", "throw", "off"] as const)(
@@ -133,186 +116,260 @@ describe("getDashboardResponseEnforcement", () => {
 
 describe("DASHBOARD_OVERSIZE_ALLOWLIST", () => {
   it("contains exactly the documented set of known-oversized procedures", () => {
-    // Every entry here is a known regression scheduled for the data-plane
-    // rebuild. Adding or removing an entry should be a deliberate diff
-    // tied to the migration that justifies it; this snapshot test makes
-    // accidental drift impossible.
     expect([...DASHBOARD_OVERSIZE_ALLOWLIST].sort()).toEqual(
       [
-        "getDashboardChangeOwnership",
-        "getDashboardOfflineMonitoring",
-        "getDashboardOverviewSummary",
-        "getDatasetCsv",
-        "getSystemSnapshot",
+        "solarRecDashboard.getDashboardChangeOwnership",
+        "solarRecDashboard.getDashboardOfflineMonitoring",
+        "solarRecDashboard.getDashboardOverviewSummary",
+        "solarRecDashboard.getDatasetCsv",
+        "solarRecDashboard.getSystemSnapshot",
       ].sort()
     );
+  });
+
+  it("uses fully-qualified router-prefixed paths (no bare procedure names)", () => {
+    for (const entry of DASHBOARD_OVERSIZE_ALLOWLIST) {
+      expect(entry).toMatch(/^solarRecDashboard\.[A-Za-z]+$/);
+    }
   });
 });
 
 describe("checkDashboardResponseSize", () => {
-  it("returns ok for a small response well under the limit and reports measured bytes", () => {
+  it("returns ok with measured bytes for a small response", () => {
     const verdict = checkDashboardResponseSize(
       { hello: "world" },
       "solarRecDashboard.someProc",
-      { limitBytes: 1024, enforcement: "throw" }
+      { limitBytes: 1024 }
     );
-    expect(verdict.ok).toBe(true);
-    if (verdict.ok) {
-      expect(verdict.limit).toBe(1024);
-      expect(verdict.bytes).toBeGreaterThan(0);
-      expect(verdict.bytes).toBeLessThanOrEqual(1024);
+    if (!verdict.ok) {
+      throw new Error(`expected ok verdict, got bytes=${verdict.bytes}`);
     }
+    expect(verdict.limit).toBe(1024);
+    expect(verdict.bytes).toBeGreaterThan(0);
+    expect(verdict.bytes).toBeLessThanOrEqual(1024);
   });
 
-  it("measures bytes via superjson + JSON.stringify of the result", () => {
-    // A 16-char string serializes to roughly its quoted form. Exact byte
-    // counts depend on superjson's wrapping; we don't pin them, just
-    // assert "non-zero and below limit".
-    const verdict = checkDashboardResponseSize(
-      "hello-world-1234",
-      "solarRecDashboard.someProc",
-      { limitBytes: 1024, enforcement: "warn" }
-    );
-    expect(verdict.ok).toBe(true);
-  });
-
-  it("counts Date | null fields toward the byte total via superjson", () => {
-    // Regression rail for the OwnershipOverviewExportRow shape that
-    // pushed getDashboardOverviewSummary over budget. superjson has to
-    // emit a parallel `meta` tree to round-trip Date values, which costs
-    // ~50 bytes per Date cell on top of the ISO string. A row with three
-    // Date fields × 21k rows is the structure the rebuild plan retires.
-    const withDates = checkDashboardResponseSize(
-      {
-        rows: Array.from({ length: 100 }, (_, i) => ({
-          id: i,
-          a: new Date("2026-01-01T00:00:00Z"),
-          b: new Date("2026-02-01T00:00:00Z"),
-          c: null,
-        })),
-      },
-      "solarRecDashboard.someProc",
-      { limitBytes: Number.MAX_SAFE_INTEGER, enforcement: "warn" }
-    );
-    const withoutDates = checkDashboardResponseSize(
-      {
-        rows: Array.from({ length: 100 }, (_, i) => ({
-          id: i,
-          a: "2026-01-01T00:00:00.000Z",
-          b: "2026-02-01T00:00:00.000Z",
-          c: null,
-        })),
-      },
-      "solarRecDashboard.someProc",
-      { limitBytes: Number.MAX_SAFE_INTEGER, enforcement: "warn" }
-    );
-    if (!withDates.ok || !withoutDates.ok) {
-      throw new Error("expected both checks to land under the limit");
-    }
-    // The Date payload should be strictly larger than the equivalent
-    // string payload because superjson adds a meta tree.
-    expect(withDates.bytes).toBeGreaterThan(withoutDates.bytes);
-  });
-
-  it("flags an oversized response and recommends a throw under throw enforcement", () => {
-    const big = { rows: Array.from({ length: 5000 }, (_, i) => ({ i })) };
-    const verdict = checkDashboardResponseSize(
-      big,
-      "solarRecDashboard.someProc",
-      { limitBytes: 1024, enforcement: "throw" }
-    );
-    expect(verdict.ok).toBe(false);
-    if (verdict.ok) return;
-    expect(verdict.bytes).toBeGreaterThan(verdict.limit);
-    expect(verdict.allowlisted).toBe(false);
-    expect(verdict.shouldThrow).toBe(true);
-    expect(verdict.procedureName).toBe("someProc");
-  });
-
-  it("does not recommend a throw when the procedure is allowlisted", () => {
-    const big = { rows: Array.from({ length: 5000 }, (_, i) => ({ i })) };
-    const verdict = checkDashboardResponseSize(
-      big,
-      "solarRecDashboard.getSystemSnapshot",
-      { limitBytes: 1024, enforcement: "throw" }
-    );
-    expect(verdict.ok).toBe(false);
-    if (verdict.ok) return;
-    expect(verdict.allowlisted).toBe(true);
-    expect(verdict.shouldThrow).toBe(false);
-  });
-
-  it("does not recommend a throw under warn enforcement, allowlist or not", () => {
+  it("flags oversize and reports allowlisted=true only for fully-qualified entries", () => {
     const big = { rows: Array.from({ length: 5000 }, (_, i) => ({ i })) };
     const allowlisted = checkDashboardResponseSize(
       big,
-      "solarRecDashboard.getDashboardOverviewSummary",
-      { limitBytes: 1024, enforcement: "warn" }
-    );
-    const notAllowlisted = checkDashboardResponseSize(
-      big,
-      "solarRecDashboard.someProc",
-      { limitBytes: 1024, enforcement: "warn" }
-    );
-    expect(allowlisted.ok).toBe(false);
-    expect(notAllowlisted.ok).toBe(false);
-    if (allowlisted.ok || notAllowlisted.ok) return;
-    expect(allowlisted.shouldThrow).toBe(false);
-    expect(notAllowlisted.shouldThrow).toBe(false);
-  });
-
-  it("bypasses the check entirely when enforcement=off", () => {
-    // 'off' is a kill switch for incident response; it must not call
-    // through to superjson at all.
-    const verdict = checkDashboardResponseSize(
-      { rows: Array.from({ length: 5000 }, (_, i) => ({ i })) },
-      "solarRecDashboard.someProc",
-      { limitBytes: 1, enforcement: "off" }
-    );
-    expect(verdict.ok).toBe(true);
-    if (!verdict.ok) return;
-    expect(verdict.bytes).toBe(0);
-  });
-
-  it("matches the allowlist on the trailing procedure name regardless of router prefix", () => {
-    const big = { rows: Array.from({ length: 5000 }, (_, i) => ({ i })) };
-    const flat = checkDashboardResponseSize(big, "getSystemSnapshot", {
-      limitBytes: 1024,
-      enforcement: "throw",
-    });
-    const nested = checkDashboardResponseSize(
-      big,
       "solarRecDashboard.getSystemSnapshot",
-      { limitBytes: 1024, enforcement: "throw" }
+      { limitBytes: 1024 }
     );
-    const doubleNested = checkDashboardResponseSize(
+    const bare = checkDashboardResponseSize(big, "getSystemSnapshot", {
+      limitBytes: 1024,
+    });
+    const otherRouter = checkDashboardResponseSize(
       big,
-      "solar.rec.dashboard.getSystemSnapshot",
-      { limitBytes: 1024, enforcement: "throw" }
+      "otherRouter.getSystemSnapshot",
+      { limitBytes: 1024 }
     );
-    for (const verdict of [flat, nested, doubleNested]) {
-      expect(verdict.ok).toBe(false);
-      if (verdict.ok) continue;
-      expect(verdict.allowlisted).toBe(true);
-      expect(verdict.shouldThrow).toBe(false);
-      expect(verdict.procedureName).toBe("getSystemSnapshot");
+    if (allowlisted.ok || bare.ok || otherRouter.ok) {
+      throw new Error("expected oversize verdicts");
     }
+    expect(allowlisted.allowlisted).toBe(true);
+    expect(bare.allowlisted).toBe(false);
+    expect(otherRouter.allowlisted).toBe(false);
   });
 
-  it("respects a custom allowlist passed via options", () => {
+  it("respects a custom allowlist via options", () => {
     const big = { rows: Array.from({ length: 5000 }, (_, i) => ({ i })) };
     const verdict = checkDashboardResponseSize(
       big,
-      "solarRecDashboard.someExperimentalProc",
+      "myRouter.someExperimentalProc",
       {
         limitBytes: 1024,
-        enforcement: "throw",
-        allowlist: new Set(["someExperimentalProc"]),
+        allowlist: new Set(["myRouter.someExperimentalProc"]),
       }
     );
-    expect(verdict.ok).toBe(false);
-    if (verdict.ok) return;
+    if (verdict.ok) throw new Error("expected oversize verdict");
     expect(verdict.allowlisted).toBe(true);
-    expect(verdict.shouldThrow).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Real-router middleware integration: confirm tRPC reports the
+// fully-qualified path to middleware after sub-router composition.
+// The allowlist relies on this format.
+// ---------------------------------------------------------------------------
+
+describe("tRPC middleware path format", () => {
+  it("reports the full dotted path inside a composed sub-router", async () => {
+    const tT = initTRPC.create();
+    const observed: string[] = [];
+
+    const captureMiddleware = tT.middleware(async ({ path, next }) => {
+      observed.push(path);
+      return next();
+    });
+
+    const subRouter = tT.router({
+      myProc: tT.procedure
+        .use(captureMiddleware)
+        .query(() => ({ ok: true })),
+    });
+    const appRouter = tT.router({ solarRecDashboard: subRouter });
+
+    const caller = appRouter.createCaller({});
+    await caller.solarRecDashboard.myProc();
+
+    expect(observed).toEqual(["solarRecDashboard.myProc"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Allowlist serialization-skip behavior. The whole point of the warn-
+// mode short-circuit is to avoid `JSON.stringify`-ing 20–60 MB
+// allowlisted responses. The "sentinel" object below has a `toJSON`
+// that throws — if the middleware tries to serialize it, the test
+// fails. Tests are at the procedure-handler level so we exercise the
+// real middleware (not just `checkDashboardResponseSize`).
+// ---------------------------------------------------------------------------
+
+describe("dashboardResponseGuardMiddleware allowlist short-circuit", () => {
+  let envSnapshot: ReturnType<typeof snapshotEnv>;
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    envSnapshot = snapshotEnv();
+    warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    restoreEnv(envSnapshot);
+    warnSpy.mockRestore();
+    vi.resetModules();
+    vi.doUnmock("./solarRecBase");
+  });
+
+  /**
+   * Builds a tiny tRPC dispatcher that uses the real
+   * `dashboardResponseGuardMiddleware`. Returns a caller against a
+   * router shaped like `solarRecDashboard.<procName>` so the path the
+   * middleware sees matches the production-format allowlist entries.
+   *
+   * `requirePermission` is mocked to a passthrough so we do not need
+   * a real DB or solar-rec context just to drive the guard.
+   */
+  async function buildHarness(procedureName: string, payload: unknown) {
+    vi.resetModules();
+    vi.doMock("./solarRecBase", async () => {
+      const trpc = await import("@trpc/server");
+      const localT = trpc.initTRPC.create();
+      const passthrough = localT.middleware(async ({ next }) => next());
+      return {
+        t: localT,
+        requirePermission: () => localT.procedure.use(passthrough),
+      };
+    });
+
+    const { dashboardProcedure } = await import("./dashboardResponseGuard");
+    // Reuse the same `t` we just gave to dashboardResponseGuard via the
+    // mock so middleware composition shares one tRPC instance.
+    const { t: localT } = (await import("./solarRecBase")) as unknown as {
+      t: ReturnType<typeof initTRPC.create>;
+    };
+    const subRouter = localT.router({
+      [procedureName]: dashboardProcedure(
+        "solar-rec-dashboard",
+        "read"
+      ).query(() => payload),
+    });
+    const appRouter = localT.router({ solarRecDashboard: subRouter });
+    return appRouter.createCaller({});
+  }
+
+  /**
+   * A response whose JSON serialization would throw. If the middleware
+   * tries to stringify it, the throw surfaces during the call.
+   */
+  function sentinel() {
+    return {
+      toJSON: () => {
+        throw new Error(
+          "[test] sentinel response was serialized by the guard"
+        );
+      },
+    };
+  }
+
+  it("warn mode + allowlisted: does NOT serialize the response", async () => {
+    process.env.DASHBOARD_RESPONSE_ENFORCEMENT = "warn";
+    const caller = await buildHarness("getSystemSnapshot", sentinel());
+    // If the guard serialized the sentinel, this would throw.
+    await expect(
+      (caller.solarRecDashboard as { getSystemSnapshot: () => Promise<unknown> }).getSystemSnapshot()
+    ).resolves.toBeTruthy();
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it("warn mode + non-allowlisted: serializes (to log) but does not throw", async () => {
+    process.env.DASHBOARD_RESPONSE_ENFORCEMENT = "warn";
+    process.env.DASHBOARD_RESPONSE_LIMIT_BYTES = "32"; // tiny budget
+    const caller = await buildHarness("someExperimentalProc", {
+      rows: Array.from({ length: 100 }, (_, i) => ({ i })),
+    });
+    const result = await (caller.solarRecDashboard as {
+      someExperimentalProc: () => Promise<unknown>;
+    }).someExperimentalProc();
+    expect(result).toBeTruthy();
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy.mock.calls[0][0]).toContain(
+      "[dashboard:oversize-response]"
+    );
+  });
+
+  it("throw mode + allowlisted: serializes (to log) but does not throw", async () => {
+    process.env.DASHBOARD_RESPONSE_ENFORCEMENT = "throw";
+    process.env.DASHBOARD_RESPONSE_LIMIT_BYTES = "32";
+    const caller = await buildHarness("getSystemSnapshot", {
+      rows: Array.from({ length: 100 }, (_, i) => ({ i })),
+    });
+    await expect(
+      (caller.solarRecDashboard as {
+        getSystemSnapshot: () => Promise<unknown>;
+      }).getSystemSnapshot()
+    ).resolves.toBeTruthy();
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("throw mode + non-allowlisted: serializes and throws TRPCError", async () => {
+    process.env.DASHBOARD_RESPONSE_ENFORCEMENT = "throw";
+    process.env.DASHBOARD_RESPONSE_LIMIT_BYTES = "32";
+    const caller = await buildHarness("someExperimentalProc", {
+      rows: Array.from({ length: 100 }, (_, i) => ({ i })),
+    });
+    await expect(
+      (caller.solarRecDashboard as {
+        someExperimentalProc: () => Promise<unknown>;
+      }).someExperimentalProc()
+    ).rejects.toThrow(/exceeded 32 bytes/);
+  });
+
+  it("off mode: bypasses the guard entirely (no measurement, no log)", async () => {
+    process.env.DASHBOARD_RESPONSE_ENFORCEMENT = "off";
+    const caller = await buildHarness("someExperimentalProc", sentinel());
+    await expect(
+      (caller.solarRecDashboard as {
+        someExperimentalProc: () => Promise<unknown>;
+      }).someExperimentalProc()
+    ).resolves.toBeTruthy();
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Regression rail: every dashboard procedure must go through
+// dashboardProcedure(), not raw requirePermission(). A future PR that
+// adds a procedure with the wrong builder loses the size guard
+// silently; this asserts the contract on the source file.
+// ---------------------------------------------------------------------------
+
+describe("solarRecDashboardRouter wiring", () => {
+  it("uses dashboardProcedure exclusively (no raw requirePermission)", () => {
+    const filePath = resolve(__dirname, "solarRecDashboardRouter.ts");
+    const source = readFileSync(filePath, "utf8");
+    expect(source).not.toMatch(/\brequirePermission\s*\(/);
+    const matches = source.match(/\bdashboardProcedure\s*\(/g) ?? [];
+    expect(matches.length).toBeGreaterThanOrEqual(40);
   });
 });
