@@ -17,14 +17,59 @@
  *   - PROJECT-LEVEL Change-Ownership counts + stacked chart rows +
  *     `cooNotTransferredNotReportingCurrentCount`. Status order
  *     matches the heavy aggregator's 5-status contract (with the
- *     virtual "Terminated" collapsing reporting/non-reporting).
- *   - ABP row counts (legacy date-only filter, dedupe semantics).
+ *     virtual "Terminated" collapsing reporting/non-reporting). Per-
+ *     project reporting is tracked independently of status so a
+ *     terminated-reporting project still contributes to
+ *     `summary.reporting` and `contractedValueReporting`.
+ *
+ * Change Ownership eligibility — IMPORTANT. Part II eligibility for
+ * Change Ownership counts/charts/value totals comes from the
+ * FOUNDATION, not from ABP-row date sanity. A row is allowed to
+ * contribute only when its matched canonical system has
+ * `isPart2Verified === true` AND `csgId ∈ foundation.part2EligibleCsgIds`.
+ * The legacy date-only ABP-row counts are kept as diagnostic fields
+ * (`part2VerifiedAbpRowsCount`, `abpEligibleTotalSystemsCount`) but
+ * do NOT drive any first-paint Change Ownership numbers.
+ *
+ * Project ↔ system matching is multi-valued. One ABP applicationId can
+ * map to multiple CSG systems (foundation surfaces this as
+ * `ABP_ID_MAPS_TO_MULTIPLE_CSG_IDS`). The slim builder collects ALL
+ * matched canonical systems for a project (deduped by CSG ID) and
+ * classifies the project from project-level booleans:
+ *   - projectIsReporting       = any matched eligible system reports
+ *   - projectHasTransferred    = any matched eligible non-terminated
+ *                                 system has ownershipStatus
+ *                                 "transferred"
+ *   - projectHasChangeOwnership = any matched eligible non-terminated
+ *                                 system has ownershipStatus
+ *                                 "change-of-ownership"
+ *   - projectAllTerminated     = matched eligible length > 0 AND every
+ *                                 matched eligible system is terminated
+ *
+ * Value attribution. `solarContractedValueByCsg` records the first
+ * recorded `totalContractAmount` per CSG. Slim attributes a
+ * representative amount per project (first recorded amount across
+ * matched eligible systems, deterministic by sorted CSG ID). Projects
+ * where no matched eligible system has a recorded amount are NOT
+ * silently summed as 0 — they are counted on
+ * `contractedValueProjectsMissingDataCount`. Consumers that depend on
+ * total fidelity must check the missing-data count before treating
+ * `contractedValueTotal` as authoritative.
  *
  * Solar Applications duplicate-row handling: production data has
  * occasional duplicate rows for the same CSG. Foundation keeps the
  * first row per CSG (`buildFoundationArtifact.ts:478`). Slim mirrors
  * that exactly — every aggregation over solar rows skips
  * already-seen CSGs so size/value/kW totals do not double-count.
+ *
+ * Delivered-value fields are NOT in this shape. The slim summary
+ * does not return `totalDeliveredValue`, `totalGap`, or
+ * `deliveredValuePercent`; computing them requires the per-system
+ * `deliveredValue` walk that lives behind the heavy
+ * `getDashboardOverviewSummary` (and the SystemSnapshot it depends
+ * on). Slim consumers must either render an explicit "—" /
+ * "Unavailable" placeholder for those tiles, or wait for the heavy
+ * query to load.
  *
  * Percent semantics: every `*Percent` field is in 0–100
  * (percentage points), matching `aggregatorHelpers.toPercentValue`.
@@ -48,8 +93,8 @@ import { getOrBuildFoundation } from "./foundationRunner";
 import { jsonSerde, withArtifactCache } from "./withArtifactCache";
 
 export const SLIM_DASHBOARD_SUMMARY_RUNNER_VERSION =
-  "slim-dashboard-summary-v3" as const;
-const ARTIFACT_TYPE = "slim-dashboard-summary-v3";
+  "slim-dashboard-summary-v4" as const;
+const ARTIFACT_TYPE = "slim-dashboard-summary-v4";
 
 export type SizeBucket = "<=10 kW AC" | ">10 kW AC" | "Unknown";
 
@@ -111,6 +156,23 @@ export interface SlimChangeOwnershipSummary {
   contractedValueTotal: number;
   contractedValueReporting: number;
   contractedValueNotReporting: number;
+  /**
+   * Number of Change-Ownership projects whose matched-eligible
+   * systems contributed at least one recorded `totalContractAmount`
+   * to `contractedValueTotal`. Equals `total` when every counted
+   * project had value data.
+   */
+  contractedValueProjectsWithDataCount: number;
+  /**
+   * Number of Change-Ownership projects with NO recorded
+   * `totalContractAmount` across any of their matched-eligible
+   * systems. These projects are NOT summed as 0 silently — this
+   * count surfaces the gap so consumers can render a partial-data
+   * indicator instead of treating `contractedValueTotal` as
+   * authoritative. `contractedValueProjectsWithDataCount +
+   * contractedValueProjectsMissingDataCount === total`.
+   */
+  contractedValueProjectsMissingDataCount: number;
   counts: SlimChangeOwnershipCount[];
 }
 
@@ -211,6 +273,8 @@ const EMPTY_CHANGE_OWNERSHIP: SlimChangeOwnership = {
     contractedValueTotal: 0,
     contractedValueReporting: 0,
     contractedValueNotReporting: 0,
+    contractedValueProjectsWithDataCount: 0,
+    contractedValueProjectsMissingDataCount: 0,
     counts: CHANGE_OWNERSHIP_STATUS_ORDER.map((status) => ({
       status,
       count: 0,
@@ -277,14 +341,21 @@ async function computeSlimDashboardSummary(
 ): Promise<SlimDashboardSummary> {
   const part2EligibleSet = new Set(foundation.part2EligibleCsgIds);
 
-  // Build reverse lookup: ABP applicationId → canonical CSG system.
-  // Used by project-level Change-Ownership matching. Foundation
-  // already wrote `abpIds[]` per canonical system, so this is a
-  // free walk.
-  const abpAppIdToSystem = new Map<string, FoundationCanonicalSystem>();
+  // Reverse lookup: ABP applicationId → canonical CSG system(s). One
+  // ABP applicationId can map to MULTIPLE CSGs (foundation surfaces
+  // this as `ABP_ID_MAPS_TO_MULTIPLE_CSG_IDS`). Storing a single
+  // system per ABP id silently drops one of those mappings on every
+  // collision, classifying the project off whichever CSG happened to
+  // be processed last. Multi-valued so project classification can
+  // see every match.
+  const abpAppIdToSystems = new Map<string, FoundationCanonicalSystem[]>();
   for (const sys of Object.values(foundation.canonicalSystemsByCsgId)) {
     for (const abpId of sys.abpIds) {
-      abpAppIdToSystem.set(abpId, sys);
+      const trimmed = abpId.trim();
+      if (!trimmed) continue;
+      const existing = abpAppIdToSystems.get(trimmed);
+      if (existing) existing.push(sys);
+      else abpAppIdToSystems.set(trimmed, [sys]);
     }
   }
 
@@ -443,24 +514,41 @@ async function computeSlimDashboardSummary(
   //   1. Compute dedupe key per `resolvePart2ProjectIdentity`
   //      (system → tracking → application → name → row-index).
   //   2. First row per dedupe key wins.
-  //   3. Match the project to a canonical system via the ABP
-  //      applicationId reverse lookup, then by direct `system_id`
-  //      = `csgId`. If unmatched, the ABP row is a foundation
+  //   3. Match the project to ALL canonical systems via the ABP
+  //      applicationId reverse lookup AND direct `system_id`
+  //      = `csgId` lookup. Dedupe matched systems by CSG ID.
+  //      If unmatched, the ABP row is a foundation
   //      `UNMATCHED_PART2_ABP_ID` integrity warning; skipped.
-  //   4. Classify into the 5-status contract:
-  //      terminated → "Terminated" (virtual single bucket);
-  //      transferred → "Transferred and Reporting/Not Reporting";
-  //      change-of-ownership → "Change of Ownership - Not
-  //      Transferred and Reporting/Not Reporting"; active → not
-  //      counted in change-ownership totals (still appears in the
-  //      stacked chart's `notTransferred` bucket if matched and
-  //      non-terminated).
-  //   5. Sum value totals from the per-CSG amount map populated
-  //      during the solar walk.
+  //   4. Filter matched systems to FOUNDATION Part-II eligibility
+  //      (`isPart2Verified === true && part2EligibleSet.has(csgId)`).
+  //      Date-only ABP filter is NOT enough — a row's ABP status can
+  //      be rejected/cancelled/withdrawn while still having a valid
+  //      Part II date. Foundation already excludes those.
+  //   5. Classify into the 5-status contract from PROJECT-LEVEL
+  //      booleans over the eligible matched set (mirrors heavy
+  //      `buildChangeOwnershipAggregates`):
+  //        projectAllTerminated → "Terminated" (virtual);
+  //        projectHasChangeOwnership → "Change of Ownership - Not
+  //          Transferred and Reporting/Not Reporting";
+  //        projectHasTransferred → "Transferred and Reporting/Not
+  //          Reporting";
+  //        active-only → not counted in change-ownership totals
+  //          (still in stacked chart's notTransferred bucket).
+  //   6. Track per-project reporting INDEPENDENTLY of status so
+  //      terminated-reporting projects still contribute to
+  //      `summary.reporting` and `contractedValueReporting`.
+  //   7. Attribute a single representative `totalContractAmount` per
+  //      project (first recorded amount across matched-eligible
+  //      systems, sorted by csgId for determinism). Projects with no
+  //      recorded amount across any matched system are tracked on
+  //      `contractedValueProjectsMissingDataCount` rather than
+  //      silently summed as 0.
   const abpBatchId = foundation.inputVersions.abpReport.batchId;
   let part2VerifiedAbpRowsCount = 0;
   const abpDedupeKeys = new Set<string>();
   const projectStatusByDedupe = new Map<string, ChangeOwnershipStatus>();
+  const projectReportingByDedupe = new Map<string, boolean>();
+  const projectAmountByDedupe = new Map<string, number | null>();
 
   let stackedReportingNotTransferred = 0;
   let stackedReportingTransferred = 0;
@@ -469,10 +557,6 @@ async function computeSlimDashboardSummary(
   let stackedNotReportingTransferred = 0;
   let stackedNotReportingChangeOwnership = 0;
   let cooNotTransferredNotReportingCurrentCount = 0;
-
-  let changeOwnershipContractedValueTotal = 0;
-  let changeOwnershipContractedValueReporting = 0;
-  let changeOwnershipContractedValueNotReporting = 0;
 
   if (abpBatchId) {
     type AbpRow = {
@@ -505,53 +589,107 @@ async function computeSlimDashboardSummary(
         if (abpDedupeKeys.has(dedupeKey)) return;
         abpDedupeKeys.add(dedupeKey);
 
-        // Project-level matching.
-        const matched =
-          (row.applicationId
-            ? abpAppIdToSystem.get(row.applicationId.trim())
-            : undefined) ??
-          (row.systemId
-            ? foundation.canonicalSystemsByCsgId[row.systemId.trim()]
-            : undefined);
-        if (!matched) return;
+        // Collect ALL matched canonical systems (multi-map +
+        // direct system_id lookup), deduped by CSG ID.
+        const matchedByCsgId = new Map<string, FoundationCanonicalSystem>();
+        const trimmedAppId = row.applicationId?.trim();
+        if (trimmedAppId) {
+          const fromAppId = abpAppIdToSystems.get(trimmedAppId);
+          if (fromAppId) {
+            for (const sys of fromAppId) {
+              matchedByCsgId.set(sys.csgId, sys);
+            }
+          }
+        }
+        const trimmedSystemId = row.systemId?.trim();
+        if (trimmedSystemId) {
+          const fromSystemId =
+            foundation.canonicalSystemsByCsgId[trimmedSystemId];
+          if (fromSystemId) {
+            matchedByCsgId.set(fromSystemId.csgId, fromSystemId);
+          }
+        }
+        if (matchedByCsgId.size === 0) return;
 
-        const reporting = matched.isReporting;
-        const amount = solarContractedValueByCsg.get(matched.csgId) ?? 0;
+        // Foundation Part-II gate. Date-only ABP filter is NOT
+        // sufficient: the foundation excludes rejected/cancelled/
+        // withdrawn ABP statuses even when the date column is
+        // populated. `part2EligibleSet` is the canonical truth.
+        const matchedEligible: FoundationCanonicalSystem[] = [];
+        Array.from(matchedByCsgId.values()).forEach((sys) => {
+          if (sys.isPart2Verified && part2EligibleSet.has(sys.csgId)) {
+            matchedEligible.push(sys);
+          }
+        });
+        if (matchedEligible.length === 0) return;
 
-        // Classify into the 5-status contract.
+        // Project-level booleans over the eligible matched set.
+        const projectIsReporting = matchedEligible.some((s) => s.isReporting);
+        const matchedEligibleNonTerminated = matchedEligible.filter(
+          (s) => !s.isTerminated
+        );
+        const projectAllTerminated = matchedEligibleNonTerminated.length === 0;
+        const projectHasTransferred = matchedEligibleNonTerminated.some(
+          (s) => s.ownershipStatus === "transferred"
+        );
+        const projectHasChangeOwnership = matchedEligibleNonTerminated.some(
+          (s) => s.ownershipStatus === "change-of-ownership"
+        );
+
+        // Status classification — mirrors heavy aggregator's
+        // priority order: change-of-ownership outranks transferred
+        // when both are present; terminated outranks both when ALL
+        // matched eligible systems are terminated.
         let status: ChangeOwnershipStatus | null = null;
-        if (matched.isTerminated) {
+        if (projectAllTerminated) {
           status = "Terminated";
-        } else if (matched.ownershipStatus === "transferred") {
-          status = reporting
-            ? "Transferred and Reporting"
-            : "Transferred and Not Reporting";
-        } else if (matched.ownershipStatus === "change-of-ownership") {
-          status = reporting
+        } else if (projectHasChangeOwnership) {
+          status = projectIsReporting
             ? "Change of Ownership - Not Transferred and Reporting"
             : "Change of Ownership - Not Transferred and Not Reporting";
-          if (!reporting) cooNotTransferredNotReportingCurrentCount++;
-        }
-        if (status !== null) {
-          projectStatusByDedupe.set(dedupeKey, status);
-          changeOwnershipContractedValueTotal += amount;
-          if (reporting) changeOwnershipContractedValueReporting += amount;
-          else changeOwnershipContractedValueNotReporting += amount;
+          if (!projectIsReporting) cooNotTransferredNotReportingCurrentCount++;
+        } else if (projectHasTransferred) {
+          status = projectIsReporting
+            ? "Transferred and Reporting"
+            : "Transferred and Not Reporting";
         }
 
-        // Stacked chart: matched non-terminated project bucketed by
-        // reporting × {notTransferred (active), transferred,
-        // changeOwnership}.
-        if (!matched.isTerminated) {
-          if (matched.ownershipStatus === "change-of-ownership") {
-            if (reporting) stackedReportingChangeOwnership++;
+        if (status !== null) {
+          projectStatusByDedupe.set(dedupeKey, status);
+          projectReportingByDedupe.set(dedupeKey, projectIsReporting);
+
+          // Representative project amount: first recorded amount
+          // across matched eligible systems, sorted by csgId for
+          // determinism. `null` means no matched eligible system
+          // had a recorded `totalContractAmount` — must NOT be
+          // summed as 0 silently.
+          const sortedByCsgId = [...matchedEligible].sort((a, b) =>
+            a.csgId.localeCompare(b.csgId)
+          );
+          let representativeAmount: number | null = null;
+          for (const sys of sortedByCsgId) {
+            const amt = solarContractedValueByCsg.get(sys.csgId);
+            if (amt !== undefined) {
+              representativeAmount = amt;
+              break;
+            }
+          }
+          projectAmountByDedupe.set(dedupeKey, representativeAmount);
+        }
+
+        // Stacked chart: project bucketed by reporting ×
+        // {notTransferred (active), transferred, changeOwnership}.
+        // Project-all-terminated is excluded (mirrors heavy).
+        if (!projectAllTerminated) {
+          if (projectHasChangeOwnership) {
+            if (projectIsReporting) stackedReportingChangeOwnership++;
             else stackedNotReportingChangeOwnership++;
-          } else if (matched.ownershipStatus === "transferred") {
-            if (reporting) stackedReportingTransferred++;
+          } else if (projectHasTransferred) {
+            if (projectIsReporting) stackedReportingTransferred++;
             else stackedNotReportingTransferred++;
           } else {
-            // Active or null — counted in notTransferred bucket.
-            if (reporting) stackedReportingNotTransferred++;
+            // Active-only matched non-terminated set.
+            if (projectIsReporting) stackedReportingNotTransferred++;
             else stackedNotReportingNotTransferred++;
           }
         }
@@ -587,14 +725,32 @@ async function computeSlimDashboardSummary(
     statusCounts.set(status, (statusCounts.get(status) ?? 0) + 1);
   }
   const changeOwnershipTotal = projectStatusByDedupe.size;
+
+  // Reporting count derived from per-project flag, NOT from status
+  // text. A terminated project with isReporting=true must
+  // contribute to reporting (heavy aggregator does the same — its
+  // `summary.reporting = rows.filter(r => r.isReporting).length`
+  // counts terminated rows too).
   let changeOwnershipReporting = 0;
-  for (const status of projectStatuses) {
-    if (status === "Transferred and Reporting") changeOwnershipReporting++;
-    else if (status === "Change of Ownership - Not Transferred and Reporting") {
-      changeOwnershipReporting++;
+  let changeOwnershipContractedValueTotal = 0;
+  let changeOwnershipContractedValueReporting = 0;
+  let changeOwnershipContractedValueNotReporting = 0;
+  let changeOwnershipValueProjectsWithDataCount = 0;
+  let changeOwnershipValueProjectsMissingDataCount = 0;
+  Array.from(projectStatusByDedupe.keys()).forEach((dedupeKey) => {
+    const reporting = projectReportingByDedupe.get(dedupeKey) ?? false;
+    if (reporting) changeOwnershipReporting++;
+
+    const amount = projectAmountByDedupe.get(dedupeKey) ?? null;
+    if (amount === null) {
+      changeOwnershipValueProjectsMissingDataCount++;
+      return;
     }
-    // "Terminated" is virtual and not split by reporting.
-  }
+    changeOwnershipValueProjectsWithDataCount++;
+    changeOwnershipContractedValueTotal += amount;
+    if (reporting) changeOwnershipContractedValueReporting += amount;
+    else changeOwnershipContractedValueNotReporting += amount;
+  });
 
   const changeOwnershipCounts: SlimChangeOwnershipCount[] =
     CHANGE_OWNERSHIP_STATUS_ORDER.map((status) => ({
@@ -654,6 +810,10 @@ async function computeSlimDashboardSummary(
         contractedValueTotal: changeOwnershipContractedValueTotal,
         contractedValueReporting: changeOwnershipContractedValueReporting,
         contractedValueNotReporting: changeOwnershipContractedValueNotReporting,
+        contractedValueProjectsWithDataCount:
+          changeOwnershipValueProjectsWithDataCount,
+        contractedValueProjectsMissingDataCount:
+          changeOwnershipValueProjectsMissingDataCount,
         counts: changeOwnershipCounts,
       },
       cooNotTransferredNotReportingCurrentCount,

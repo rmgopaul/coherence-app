@@ -257,13 +257,22 @@ export default memo(function OverviewTab(props: OverviewTabProps) {
         </Card>
       </div>
 
-      {/* Row 3: Financial totals from Profit & Collateralization */}
+      {/* Row 3: Financial totals from Profit & Collateralization.
+          PR #332 follow-up item 8 (2026-05-02): when
+          `kpiDataAvailable === false`, the dashboard is on the slim
+          Overview-mount path with a cold financials side cache.
+          Render "N/A" rather than zeros so the gap is explicit. The
+          KPIs become available the first time any user opens the
+          Financials/Pipeline tab (which warms the side cache for
+          subsequent Overview mounts). */}
       <div className="grid gap-4 grid-cols-2 xl:grid-cols-4">
         <Card>
           <CardHeader>
             <CardDescription>Total Vendor Fee</CardDescription>
             <CardTitle className="text-2xl">
-              {formatCurrency(financialProfitData.totalProfit)}
+              {financialProfitData.kpiDataAvailable
+                ? formatCurrency(financialProfitData.totalProfit)
+                : "N/A"}
             </CardTitle>
           </CardHeader>
         </Card>
@@ -271,7 +280,9 @@ export default memo(function OverviewTab(props: OverviewTabProps) {
           <CardHeader>
             <CardDescription>Total Utility Collateral</CardDescription>
             <CardTitle className="text-2xl">
-              {formatCurrency(financialProfitData.totalUtilityCollateral)}
+              {financialProfitData.kpiDataAvailable
+                ? formatCurrency(financialProfitData.totalUtilityCollateral)
+                : "N/A"}
             </CardTitle>
           </CardHeader>
         </Card>
@@ -279,7 +290,9 @@ export default memo(function OverviewTab(props: OverviewTabProps) {
           <CardHeader>
             <CardDescription>Total Additional Collateral</CardDescription>
             <CardTitle className="text-2xl">
-              {formatCurrency(financialProfitData.totalAdditionalCollateral)}
+              {financialProfitData.kpiDataAvailable
+                ? formatCurrency(financialProfitData.totalAdditionalCollateral)
+                : "N/A"}
             </CardTitle>
           </CardHeader>
         </Card>
@@ -287,7 +300,9 @@ export default memo(function OverviewTab(props: OverviewTabProps) {
           <CardHeader>
             <CardDescription>Total CC Auth Collateral</CardDescription>
             <CardTitle className="text-2xl">
-              {formatCurrency(financialProfitData.totalCcAuth)}
+              {financialProfitData.kpiDataAvailable
+                ? formatCurrency(financialProfitData.totalCcAuth)
+                : "N/A"}
             </CardTitle>
           </CardHeader>
         </Card>

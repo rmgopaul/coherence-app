@@ -785,8 +785,298 @@ describe("getOrBuildSlimDashboardSummary", () => {
     expect(foundationMocks.streamRowsByPage).not.toHaveBeenCalled();
   });
 
-  it("uses runner version v3 (post percent-scale + project-level + DC-null fixes)", () => {
-    expect(SLIM_DASHBOARD_SUMMARY_RUNNER_VERSION).toBe("slim-dashboard-summary-v3");
+  it("uses runner version v4 (post foundation Part-II gate + multi-map + project-reporting + value-coverage fixes)", () => {
+    expect(SLIM_DASHBOARD_SUMMARY_RUNNER_VERSION).toBe("slim-dashboard-summary-v4");
+  });
+
+  it("ABP row whose matched system has isPart2Verified=false does NOT contribute to Change Ownership", async () => {
+    // Foundation has the system but with isPart2Verified=false. The
+    // legacy date-only ABP filter would still count this row; the
+    // foundation Part-II gate must drop it.
+    const systems = [
+      makeCanonicalSystem("CSG-NOT-VERIFIED", {
+        isPart2Verified: false,
+        isReporting: true,
+        ownershipStatus: "transferred",
+        abpIds: ["ABP-NV"],
+      }),
+    ];
+    runnerMocks.getOrBuildFoundation.mockResolvedValue({
+      payload: makeFoundation(systems),
+      fromCache: false,
+      fromInflight: false,
+      inputVersionHash: HASH,
+    });
+    setupStreamMock({
+      solarRows: [
+        {
+          id: "1",
+          systemId: "CSG-NOT-VERIFIED",
+          installedKwAc: 8,
+          installedKwDc: 10,
+          totalContractAmount: 5000,
+        },
+      ],
+      abpRows: [
+        {
+          id: "abp-nv",
+          applicationId: "ABP-NV",
+          systemId: null,
+          trackingSystemRefId: null,
+          projectName: "Project Not Verified",
+          // Valid date — date-only filter would PASS this row.
+          part2AppVerificationDate: "2024-06-15",
+        },
+      ],
+    });
+
+    const { result } = await getOrBuildSlimDashboardSummary(SCOPE);
+
+    // Diagnostic legacy counters still tick — that's their job.
+    expect(result.part2VerifiedAbpRowsCount).toBe(1);
+    expect(result.abpEligibleTotalSystemsCount).toBe(1);
+    // But Change Ownership numbers are zero — the foundation gate
+    // dropped the row before classification.
+    expect(result.changeOwnership.summary.total).toBe(0);
+    expect(result.changeOwnership.summary.reporting).toBe(0);
+    expect(result.changeOwnership.summary.contractedValueTotal).toBe(0);
+    expect(
+      result.changeOwnership.summary.contractedValueProjectsWithDataCount
+    ).toBe(0);
+    expect(
+      result.changeOwnership.summary.contractedValueProjectsMissingDataCount
+    ).toBe(0);
+    // No stacked-chart contribution either.
+    const reportingChart =
+      result.changeOwnership.ownershipStackedChartRows.find(
+        (r) => r.label === "Reporting"
+      )!;
+    expect(reportingChart.transferred).toBe(0);
+    expect(reportingChart.notTransferred).toBe(0);
+    expect(reportingChart.changeOwnership).toBe(0);
+  });
+
+  it("ABP row mapping to foundation-excluded system (not in part2EligibleCsgIds) does NOT contribute", async () => {
+    // System has isPart2Verified=true on its record but is NOT in
+    // foundation.part2EligibleCsgIds. The slim builder must check
+    // BOTH (defensive — foundation invariant ties them, but the
+    // eligibility set is the canonical truth that drives KPI gates).
+    const systems = [
+      makeCanonicalSystem("CSG-EXCLUDED", {
+        isPart2Verified: true,
+        isReporting: true,
+        ownershipStatus: "change-of-ownership",
+        abpIds: ["ABP-X"],
+      }),
+    ];
+    const foundation = makeFoundation(systems);
+    // Force the eligibility set to be empty even though the per-
+    // system isPart2Verified flag says true. This simulates the
+    // foundation excluding the CSG (e.g. ABP status filter would
+    // catch it upstream).
+    foundation.part2EligibleCsgIds = [];
+    foundation.summaryCounts.part2Verified = 0;
+    runnerMocks.getOrBuildFoundation.mockResolvedValue({
+      payload: foundation,
+      fromCache: false,
+      fromInflight: false,
+      inputVersionHash: HASH,
+    });
+    setupStreamMock({
+      solarRows: [],
+      abpRows: [
+        {
+          id: "abp-x",
+          applicationId: "ABP-X",
+          systemId: null,
+          trackingSystemRefId: null,
+          projectName: "Excluded",
+          part2AppVerificationDate: "2024-06-15",
+        },
+      ],
+    });
+
+    const { result } = await getOrBuildSlimDashboardSummary(SCOPE);
+
+    expect(result.changeOwnership.summary.total).toBe(0);
+    expect(result.changeOwnership.summary.reporting).toBe(0);
+  });
+
+  it("multi-map: one ABP applicationId mapped to two CSGs (transferred + change-of-ownership) classifies the project from BOTH systems", async () => {
+    // ABP-MULTI maps to CSG-T (transferred) AND CSG-C (change-of-
+    // ownership). Single-map would silently drop one. Multi-map
+    // must see both, and project classification picks
+    // "Change of Ownership" (it outranks "Transferred" when both
+    // are present, mirroring heavy aggregator priority).
+    const systems = [
+      makeCanonicalSystem("CSG-T", {
+        isReporting: true,
+        ownershipStatus: "transferred",
+        abpIds: ["ABP-MULTI"],
+      }),
+      makeCanonicalSystem("CSG-C", {
+        isReporting: true,
+        ownershipStatus: "change-of-ownership",
+        abpIds: ["ABP-MULTI"],
+      }),
+    ];
+    runnerMocks.getOrBuildFoundation.mockResolvedValue({
+      payload: makeFoundation(systems),
+      fromCache: false,
+      fromInflight: false,
+      inputVersionHash: HASH,
+    });
+    setupStreamMock({
+      solarRows: [
+        {
+          id: "1",
+          systemId: "CSG-T",
+          installedKwAc: 8,
+          installedKwDc: null,
+          totalContractAmount: 1000,
+        },
+        {
+          id: "2",
+          systemId: "CSG-C",
+          installedKwAc: 8,
+          installedKwDc: null,
+          totalContractAmount: 2000,
+        },
+      ],
+      abpRows: [
+        {
+          id: "abp-multi",
+          applicationId: "ABP-MULTI",
+          systemId: null,
+          trackingSystemRefId: null,
+          projectName: "Multi-System Project",
+          part2AppVerificationDate: "2024-06-15",
+        },
+      ],
+    });
+
+    const { result } = await getOrBuildSlimDashboardSummary(SCOPE);
+
+    // ONE project; classified as Change of Ownership (CoO outranks
+    // Transferred when both are present in the matched eligible set).
+    expect(result.changeOwnership.summary.total).toBe(1);
+    const cooReporting = result.changeOwnership.summary.counts.find(
+      (c) => c.status === "Change of Ownership - Not Transferred and Reporting"
+    )!;
+    expect(cooReporting.count).toBe(1);
+    const xferReporting = result.changeOwnership.summary.counts.find(
+      (c) => c.status === "Transferred and Reporting"
+    )!;
+    // Single-map bug would have classified this as Transferred.
+    expect(xferReporting.count).toBe(0);
+  });
+
+  it("preserves reporting state for terminated projects — terminated reporting contributes to summary.reporting + contractedValueReporting", async () => {
+    // A terminated project that is STILL reporting (positive
+    // generation in the anchor window). The status collapse to
+    // "Terminated" must NOT drop it from reporting totals.
+    const systems = [
+      makeCanonicalSystem("CSG-TERM-REPORTING", {
+        isTerminated: true,
+        isReporting: true,
+        ownershipStatus: "terminated",
+        abpIds: ["ABP-TR"],
+      }),
+    ];
+    runnerMocks.getOrBuildFoundation.mockResolvedValue({
+      payload: makeFoundation(systems),
+      fromCache: false,
+      fromInflight: false,
+      inputVersionHash: HASH,
+    });
+    setupStreamMock({
+      solarRows: [
+        {
+          id: "1",
+          systemId: "CSG-TERM-REPORTING",
+          installedKwAc: 8,
+          installedKwDc: null,
+          totalContractAmount: 7500,
+        },
+      ],
+      abpRows: [
+        {
+          id: "abp-tr",
+          applicationId: "ABP-TR",
+          systemId: null,
+          trackingSystemRefId: null,
+          projectName: "Terminated but Reporting",
+          part2AppVerificationDate: "2024-06-15",
+        },
+      ],
+    });
+
+    const { result } = await getOrBuildSlimDashboardSummary(SCOPE);
+
+    // Status: Terminated.
+    const terminated = result.changeOwnership.summary.counts.find(
+      (c) => c.status === "Terminated"
+    )!;
+    expect(terminated.count).toBe(1);
+    // BUT reporting state is preserved — the project IS reporting.
+    expect(result.changeOwnership.summary.reporting).toBe(1);
+    expect(result.changeOwnership.summary.notReporting).toBe(0);
+    // Value totals: reporting bucket carries the amount, NOT the
+    // not-reporting bucket.
+    expect(result.changeOwnership.summary.contractedValueTotal).toBe(7500);
+    expect(result.changeOwnership.summary.contractedValueReporting).toBe(7500);
+    expect(result.changeOwnership.summary.contractedValueNotReporting).toBe(0);
+    expect(
+      result.changeOwnership.summary.contractedValueProjectsWithDataCount
+    ).toBe(1);
+    expect(
+      result.changeOwnership.summary.contractedValueProjectsMissingDataCount
+    ).toBe(0);
+  });
+
+  it("tracks Change Ownership value coverage when no matched system has a recorded totalContractAmount", async () => {
+    // CoO project with NO solarApplications row → no recorded
+    // amount in `solarContractedValueByCsg`. Pre-fix: silently summed
+    // as 0. Post-fix: counted on
+    // `contractedValueProjectsMissingDataCount` and excluded from
+    // `contractedValueTotal`.
+    const systems = [
+      makeCanonicalSystem("CSG-NO-AMOUNT", {
+        isReporting: false,
+        ownershipStatus: "change-of-ownership",
+        abpIds: ["ABP-NA"],
+      }),
+    ];
+    runnerMocks.getOrBuildFoundation.mockResolvedValue({
+      payload: makeFoundation(systems),
+      fromCache: false,
+      fromInflight: false,
+      inputVersionHash: HASH,
+    });
+    setupStreamMock({
+      solarRows: [], // no solarApplications row → no amount.
+      abpRows: [
+        {
+          id: "abp-na",
+          applicationId: "ABP-NA",
+          systemId: null,
+          trackingSystemRefId: null,
+          projectName: "No-amount project",
+          part2AppVerificationDate: "2024-06-15",
+        },
+      ],
+    });
+
+    const { result } = await getOrBuildSlimDashboardSummary(SCOPE);
+
+    expect(result.changeOwnership.summary.total).toBe(1);
+    expect(result.changeOwnership.summary.contractedValueTotal).toBe(0);
+    expect(
+      result.changeOwnership.summary.contractedValueProjectsWithDataCount
+    ).toBe(0);
+    expect(
+      result.changeOwnership.summary.contractedValueProjectsMissingDataCount
+    ).toBe(1);
   });
 });
 

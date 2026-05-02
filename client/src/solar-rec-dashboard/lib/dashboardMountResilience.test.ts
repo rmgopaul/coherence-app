@@ -136,7 +136,59 @@ describe("Solar REC dashboard mount: heavy-query gates", () => {
       /downloadOwnershipCountTileCsv[\s\S]{0,2000}rowCount\s*===\s*0[\s\S]{0,200}toast\.error/
     );
   });
+
+  it("CSV export click does NOT flip hasUserInteractedWithDashboard (heavy queries stay disabled)", () => {
+    // PR #332 follow-up item 7 (2026-05-02). Flipping the
+    // interaction flag inside the CSV handlers silently enables the
+    // mount-tier heavy queries (overview-summary / offlineMonitoring
+    // / change-ownership) on the next render, dragging multi-MB JSON
+    // into the browser as a side-effect of an export click. The
+    // handler bodies must NOT call setHasUserInteractedWithDashboard(true).
+    const ownershipCsvHandler = sliceFn(code, "downloadOwnershipCountTileCsv");
+    expect(ownershipCsvHandler).not.toBeNull();
+    expect(ownershipCsvHandler!).not.toMatch(
+      /setHasUserInteractedWithDashboard\s*\(\s*true\s*\)/
+    );
+    const changeOwnershipCsvHandler = sliceFn(
+      code,
+      "downloadChangeOwnershipCountTileCsv"
+    );
+    expect(changeOwnershipCsvHandler).not.toBeNull();
+    expect(changeOwnershipCsvHandler!).not.toMatch(
+      /setHasUserInteractedWithDashboard\s*\(\s*true\s*\)/
+    );
+  });
 });
+
+/**
+ * Pull a function/arrow-function body out of the source as a string,
+ * so a regex assertion only inspects that handler's body — not the
+ * whole 6000-line file. Matches `const NAME = ... =>` then walks
+ * matching braces.
+ */
+function sliceFn(source: string, name: string): string | null {
+  const declRegex = new RegExp(
+    `const\\s+${name.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\$&")}\\s*=\\s*async`
+  );
+  const declMatch = declRegex.exec(source);
+  if (!declMatch) return null;
+  const arrowIdx = source.indexOf("=>", declMatch.index);
+  if (arrowIdx === -1) return null;
+  const openBrace = source.indexOf("{", arrowIdx);
+  if (openBrace === -1) return null;
+  let depth = 0;
+  for (let i = openBrace; i < source.length; i++) {
+    const ch = source[i];
+    if (ch === "{") depth++;
+    else if (ch === "}") {
+      depth--;
+      if (depth === 0) {
+        return source.slice(declMatch.index, i + 1);
+      }
+    }
+  }
+  return null;
+}
 
 /**
  * Pull a useQuery call site out of the source as a string so we can
@@ -191,5 +243,84 @@ describe("Solar REC dashboard mount: high-cardinality fields stay off mount path
   it("cumulativeKwAcPart2 / cumulativeKwDcPart2 flow into OverviewTab from the slim summary", () => {
     expect(code).toMatch(/cumulativeKwAcPart2:\s*\n?\s*slimSummary\.cumulativeKwAcPart2/);
     expect(code).toMatch(/cumulativeKwDcPart2:\s*\n?\s*slimSummary\.cumulativeKwDcPart2/);
+  });
+});
+
+describe("Solar REC dashboard mount: financials gating (PR #332 follow-up item 8)", () => {
+  const code = codeOnly();
+
+  it("getDashboardFinancials is NOT enabled for Overview mount — only Financials/Pipeline tabs", () => {
+    // The row-materializing aggregator is reserved for the tabs
+    // that actually render rows. Overview reads only the slim KPI
+    // summary endpoint below. Letting Overview enable the heavy
+    // proc was the bug item 8 retires — the heavy proc loads
+    // mapping/icc/abp rows BEFORE its cache check, paying the
+    // full hydration cost on every cold mount.
+    const block = extractUseQueryBlock(
+      code,
+      "getDashboardFinancials.useQuery"
+    );
+    expect(block).not.toBeNull();
+    expect(block!).toMatch(/enabled\s*:[^,}]*isFinancialsTabActive/);
+    expect(block!).toMatch(/isPipelineTabActive/);
+    expect(block!).not.toMatch(/isOverviewTabActive/);
+  });
+
+  it("contractScanResultsQuery is NOT enabled for Overview mount", () => {
+    // Same row-materializing concern as `getDashboardFinancials` —
+    // the contract-scan join shouldn't fire on Overview mount.
+    const block = extractUseQueryBlock(
+      code,
+      "contractScan.getContractScanResultsByCsgIds.useQuery"
+    );
+    expect(block).not.toBeNull();
+    expect(block!).toMatch(/isFinancialsTabActive/);
+    expect(block!).toMatch(/isPipelineTabActive/);
+    expect(block!).not.toMatch(/isOverviewTabActive/);
+  });
+
+  it("Overview mount uses the slim getDashboardFinancialKpiSummary proc", () => {
+    // The replacement endpoint MUST exist and be gated specifically
+    // on Overview activity so first-paint KPI tiles render without
+    // pulling the heavy aggregator.
+    const block = extractUseQueryBlock(
+      code,
+      "getDashboardFinancialKpiSummary.useQuery"
+    );
+    expect(block).not.toBeNull();
+    expect(block!).toMatch(/enabled\s*:[^,}]*isOverviewTabActive/);
+  });
+
+  it("financialProfitData carries kpiDataAvailable so OverviewTab can render N/A on slim cold cache", () => {
+    // Heavy success path sets kpiDataAvailable: true. Slim path
+    // either inherits true from the KPI summary cache hit, or stays
+    // at FINANCIAL_PROFIT_EMPTY's false default. UI consumers branch
+    // on it so the 4 tile values are explicit about availability.
+    expect(code).toMatch(/kpiDataAvailable\s*:\s*true/);
+    expect(code).toMatch(/kpiDataAvailable\s*:\s*false/);
+  });
+});
+
+describe("Solar REC dashboard mount: slim summary discriminator (PR #332 follow-up item 4)", () => {
+  const code = codeOnly();
+
+  it("`summary` is a discriminated union — heavy-only fields cannot be read as silent zeros on the slim path", () => {
+    // The projection literal flips on the data source: heavy data
+    // returns kind: "heavy", slim data returns kind: "slim". TS
+    // narrows on `summary.kind === "heavy"` for any consumer that
+    // wants to read totalDeliveredValue/totalGap/ownershipRows.
+    expect(code).toMatch(/kind\s*:\s*["']heavy["']/);
+    expect(code).toMatch(/kind\s*:\s*["']slim["']/);
+    // No `as { _runnerVersion?: string }` cast — the inferred tRPC
+    // type already carries the field.
+    expect(code).not.toMatch(/as\s*\{\s*_runnerVersion\?:\s*string\s*\}/);
+  });
+
+  it("dead `ownershipCountTileRows` memo (which read summary.ownershipRows) is gone", () => {
+    // The memo was the only client reader of `summary.ownershipRows`,
+    // and it had no consumers. CSV exports go through the server-side
+    // `exportOwnershipTileCsv` proc instead.
+    expect(code).not.toMatch(/const\s+ownershipCountTileRows\s*=/);
+    expect(code).not.toMatch(/summary\.ownershipRows\.filter/);
   });
 });

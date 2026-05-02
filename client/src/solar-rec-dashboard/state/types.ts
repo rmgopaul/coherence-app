@@ -274,8 +274,19 @@ export type ProfitRow = {
 
 /**
  * The full output of the `financialProfitData` useMemo. The parent
- * computes it (gated on Financials + Overview tabs) and passes it to
- * the extracted FinancialsTab as a prop.
+ * computes it (gated on Financials/Pipeline tabs for the heavy
+ * row-materializing path) and passes it to FinancialsTab + Overview
+ * tab as a prop.
+ *
+ * `kpiDataAvailable` is the slim/heavy discriminator for the 4
+ * Overview KPI tiles. PR #332 follow-up item 8 (2026-05-02): the
+ * Overview mount no longer invokes the row-materializing
+ * `getDashboardFinancials` aggregator. It reads only the
+ * cache-only `getDashboardFinancialKpiSummary` proc, which returns
+ * `available: false` when the side cache is cold. UI consumers MUST
+ * render an explicit "—" / "N/A" placeholder when
+ * `kpiDataAvailable === false` rather than treating the zeroed
+ * fields as real values.
  */
 export type FinancialProfitData = {
   rows: ProfitRow[];
@@ -286,6 +297,7 @@ export type FinancialProfitData = {
   totalAdditionalCollateral: number;
   totalCcAuth: number;
   systemsWithData: number;
+  kpiDataAvailable: boolean;
 };
 
 // ---------------------------------------------------------------------------
