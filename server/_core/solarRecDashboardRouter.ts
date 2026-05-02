@@ -3077,6 +3077,38 @@ export const solarRecDashboardRouter = t.router({
   }),
 
   /**
+   * Phase 3a (2026-05-01) — slim dashboard-mount summary that
+   * projects `getDashboardOverviewSummary` + `getDashboardOffline
+   * Monitoring` into a <1 MB wire shape. Carries headline counts,
+   * ownership-overview tile values, value totals, and the three
+   * Part-II eligibility ID lists — but NOT the heavy
+   * `ownershipRows[]` (Overview tab CSV export) or the per-system
+   * lookup objects (Offline Monitoring tab). Phase 3b switches the
+   * dashboard mount from the two heavy procs to this one; the
+   * heavy procs become tab-only.
+   *
+   * No additional cache layer here: the projection is cheap and the
+   * upstream aggregates are already cached + single-flighted.
+   */
+  getDashboardSummary: dashboardProcedure(
+    "solar-rec-dashboard",
+    "read"
+  ).query(async ({ ctx }) => {
+    const {
+      getDashboardSummary,
+      DASHBOARD_SUMMARY_RUNNER_VERSION,
+    } = await import("../services/solar/buildDashboardSummary");
+
+    const { result, fromCache } = await getDashboardSummary(ctx.scopeId);
+
+    return {
+      ...result,
+      fromCache,
+      _runnerVersion: DASHBOARD_SUMMARY_RUNNER_VERSION,
+    };
+  }),
+
+  /**
    * Phase 5e Followup #4 step 4 PR-A (2026-04-30) — server-side
    * aggregator for the Offline Monitoring tab. Replaces four client
    * useMemos in `SolarRecDashboard.tsx` that derived from
