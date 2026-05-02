@@ -119,11 +119,15 @@ export interface OverviewTabProps {
    * the heavy offlineMonitoring + system-snapshot fetch. When
    * non-null, takes precedence over the parent's
    * `part2EligibleSystemsForSizeReporting` walk.
+   *
+   * `cumulativeKwDcPart2` is `null` when no Part-II-eligible system
+   * has recorded DC kW data — UI must render an explicit
+   * partial-data placeholder rather than misleading 0.
    */
   slimPart2Totals: {
     totalContractedValuePart2: number;
     cumulativeKwAcPart2: number;
-    cumulativeKwDcPart2: number;
+    cumulativeKwDcPart2: number | null;
   } | null;
   onDownloadOwnershipTile: (tile: "reporting" | "notReporting" | "terminated") => void;
   onDownloadChangeOwnershipTile: (status: ChangeOwnershipStatus) => void;

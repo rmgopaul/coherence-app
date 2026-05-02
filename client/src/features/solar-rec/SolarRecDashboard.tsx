@@ -2979,14 +2979,26 @@ export default function SolarRecDashboard() {
   }, [offlineMonitoringQuery.data]);
 
   // System snapshot is the legacy ~26 MB allowlisted SystemRecord[]
-  // payload. Default Overview mount does NOT need it — slim summary
-  // covers headline tiles, charts, and value totals. Only enabled
-  // once the user interacts (any tab navigation) so default Overview
-  // first paint never fires it. Tabs that consume the full systems[]
-  // (Alerts, Comparisons, Financials, Forecast, SystemDetailSheet)
-  // see populated `systems` once interaction has flipped the gate.
+  // payload. Only the tabs that genuinely need a per-system row
+  // walk should enable it. Overview, Change Ownership summary,
+  // Offline Monitoring summary, and CSV export do NOT — they are
+  // backed by the slim summary or by future paginated/server-side
+  // export endpoints.
+  //
+  // Generic interaction is too broad: a user clicking through tabs
+  // would re-enable the 26 MB fetch even if they never visited an
+  // Alerts/Comparisons/Financials/Forecast tab. The predicate below
+  // is the narrow contract — only the tabs that walk full system
+  // records, plus the SystemDetailSheet drill-in (which needs a
+  // selected system to render at all).
+  const isSystemSnapshotNeeded =
+    isAlertsTabActive ||
+    isComparisonsTabActive ||
+    isFinancialsTabActive ||
+    isForecastTabActive ||
+    selectedSystemKey !== null;
   const serverSnapshot = useSystemSnapshot({
-    enabled: hasUserInteractedWithDashboard,
+    enabled: isSystemSnapshotNeeded,
   });
 
   const systems = useMemo<SystemRecord[]>(
@@ -3045,15 +3057,21 @@ export default function SolarRecDashboard() {
     }),
     []
   );
-  // `summary` is a hybrid view: prefer the heavy aggregator's data
-  // when the Overview tab has loaded it (only path that produces
-  // `ownershipRows` and exact `deliveredValue` totals). On initial
-  // mount the heavy query is gated off, so we project the slim
-  // summary into the same shape — every tile-value field is
-  // available, plus `ownershipRows: []` and zero/null delivered-value
-  // fields. Tabs that need ownershipRows / delivered-value fields
-  // either consume them only after navigating to Overview (CSV
-  // download) or accept the slim approximation.
+  // `summary` is the projection used by Overview tile-value
+  // consumers. `summaryDataKind` carries explicit slim-vs-heavy
+  // provenance so consumers that need to discriminate (e.g.
+  // delivered-value tiles, CSV export) can branch instead of reading
+  // a silent zero from the slim projection.
+  //
+  // Heavy-only fields (totalDeliveredValue, totalGap,
+  // deliveredValuePercent, ownershipRows) stay at the EMPTY sentinel
+  // values when slim. The dataKind discriminator is the contract for
+  // whether they're trustworthy. UI code that displays delivered
+  // values must check `summaryDataKind === "heavy"` and render an
+  // explicit "—" placeholder otherwise.
+  const summaryDataKind: "slim" | "heavy" = overviewSummaryQuery.data
+    ? "heavy"
+    : "slim";
   const summary = useMemo<OverviewSummaryData>(() => {
     if (overviewSummaryQuery.data) return overviewSummaryQuery.data;
     if (!slimSummary) return EMPTY_OVERVIEW_SUMMARY;
@@ -3072,11 +3090,13 @@ export default function SolarRecDashboard() {
       contractedValueNotReporting: slimSummary.contractedValueNotReporting,
       contractedValueReportingPercent:
         slimSummary.contractedValueReportingPercent,
-      // totalDeliveredValue / totalGap / deliveredValuePercent stay at
-      // their EMPTY defaults (0/null) until the user visits Overview;
-      // computing those requires delivery-schedule data the slim path
-      // intentionally skips to keep the mount under 1 MB.
-      _runnerVersion: "slim-mount",
+      // Heavy-only fields stay at EMPTY defaults. summaryDataKind ===
+      // "slim" tells consumers these are placeholders, not real zeros.
+      // Carry the slim's server-emitted runner version forward so log
+      // entries / diagnostics surface the actual provenance.
+      _runnerVersion:
+        (slimSummary as { _runnerVersion?: string })._runnerVersion ??
+        "slim-dashboard-summary",
     };
   }, [overviewSummaryQuery.data, slimSummary, EMPTY_OVERVIEW_SUMMARY]);
 
@@ -3386,147 +3406,74 @@ export default function SolarRecDashboard() {
   // compliantPerformanceRatioRows, compliantPerformanceRatioSummary, compliantReportTotalPages/visible*,
   // downloadPerformanceRatioCsv, downloadCompliantPerformanceRatioCsv
   // — ALL moved to @/solar-rec-dashboard/components/PerformanceRatioTab
-  // Heavy ownershipRows is only loaded once the user is on Overview
-  // AND has interacted (gate above). Track whether the export is
-  // ready so the UI can show "Loading…" instead of producing an
-  // empty CSV. The heavy query state itself is the source of truth.
-  const overviewExportReady =
-    overviewSummaryQuery.isSuccess && !overviewSummaryQuery.isFetching;
-  const overviewExportLoading = overviewSummaryQuery.isFetching;
-
-  const downloadOwnershipCountTileCsv = (
+  // Server-side CSV export: ownership-tile filter runs entirely
+  // server-side. The browser never holds the heavy ownershipRows[]
+  // JSON; it just downloads the CSV string the server returns. First
+  // click is correct (no double-click required, no false-empty
+  // file). User feedback via sonner toast — never window.alert.
+  const downloadOwnershipCountTileCsv = async (
     tile: "reporting" | "notReporting" | "terminated"
   ) => {
-    // First click in a fresh session: heavy query may not have
-    // started yet because the interaction gate hasn't flipped.
-    // Flip it so the query enables, then ALSO refuse to produce a
-    // CSV until rows are actually loaded — the legacy behavior of
-    // returning a 0-row file on the first click is a bug, not a
-    // graceful degradation.
     setHasUserInteractedWithDashboard(true);
-    if (!overviewExportReady) {
-      // Trigger a refetch in case it wasn't already enabled.
-      void overviewSummaryQuery.refetch();
-      // Surface a toast / alert. Falling back to alert keeps the
-      // dependency surface minimal; real toast plumbing is a
-      // follow-up.
-      if (typeof window !== "undefined") {
-        window.alert(
-          "Loading the Ownership Status export — please click again in a moment."
+    const tileLabel =
+      tile === "reporting"
+        ? "Reporting"
+        : tile === "notReporting"
+          ? "Not Reporting"
+          : "Terminated";
+    const toastId = toast.loading(
+      `Preparing ${tileLabel} ownership-status export…`
+    );
+    try {
+      const result =
+        await solarRecTrpcUtils.solarRecDashboard.exportOwnershipTileCsv.fetch({
+          tile,
+        });
+      if (result.rowCount === 0) {
+        toast.error(
+          `No systems match the ${tileLabel} ownership-status tile.`,
+          { id: toastId }
         );
+        return;
       }
-      return;
+      triggerCsvDownload(result.fileName, result.csv);
+      toast.success(
+        `Exported ${result.rowCount} system${result.rowCount === 1 ? "" : "s"} (${tileLabel}).`,
+        { id: toastId }
+      );
+    } catch (error) {
+      toast.error("Failed to export ownership-status CSV.", { id: toastId });
+      console.error("[ownership-csv-export]", error);
     }
-    const tileRows = ownershipCountTileRows[tile]
-      .slice()
-      .sort((a, b) => a.systemName.localeCompare(b.systemName, undefined, { sensitivity: "base", numeric: true }));
-
-    const headers = [
-      "system_name",
-      "system_id",
-      "tracking_id",
-      "state_application_id",
-      "part2_project_name",
-      "part2_application_id",
-      "part2_system_id",
-      "part2_tracking_id",
-      "source",
-      "status_category",
-      "reporting",
-      "transferred",
-      "terminated",
-      "contract_type",
-      "contract_status",
-      "last_reporting_date",
-      "contract_date",
-      "zillow_status",
-      "zillow_sold_date",
-    ];
-
-    const rows = tileRows.map((row) => ({
-      system_name: row.systemName,
-      system_id: row.systemId ?? "",
-      tracking_id: row.trackingSystemRefId ?? "",
-      state_application_id: row.stateApplicationRefId ?? "",
-      part2_project_name: row.part2ProjectName,
-      part2_application_id: row.part2ApplicationId ?? "",
-      part2_system_id: row.part2SystemId ?? "",
-      part2_tracking_id: row.part2TrackingId ?? "",
-      source: row.source,
-      status_category: row.ownershipStatus,
-      reporting: row.isReporting ? "Yes" : "No",
-      transferred: row.isTransferred ? "Yes" : "No",
-      terminated: row.isTerminated ? "Yes" : "No",
-      contract_type: row.contractType ?? "",
-      contract_status: row.contractStatusText,
-      last_reporting_date: row.latestReportingDate ? row.latestReportingDate.toISOString().slice(0, 10) : "",
-      contract_date: row.contractedDate ? row.contractedDate.toISOString().slice(0, 10) : "",
-      zillow_status: row.zillowStatus ?? "",
-      zillow_sold_date: row.zillowSoldDate ? row.zillowSoldDate.toISOString().slice(0, 10) : "",
-    }));
-
-    const tileLabel = tile === "reporting" ? "Reporting" : tile === "notReporting" ? "Not Reporting" : "Terminated";
-    const csv = buildCsv(headers, rows);
-    const fileName = `ownership-status-${toCsvFileSlug(tileLabel)}-${timestampForCsvFileName()}.csv`;
-    triggerCsvDownload(fileName, csv);
   };
 
-  const downloadChangeOwnershipCountTileCsv = (status: ChangeOwnershipStatus) => {
-    // The heavy `changeOwnershipQuery` is only enabled once the user
-    // is on the Change Ownership tab AND has interacted. Refuse to
-    // produce a CSV with empty rows when the export isn't ready —
-    // the previous behavior silently produced a 0-row file.
+  const downloadChangeOwnershipCountTileCsv = async (
+    status: ChangeOwnershipStatus
+  ) => {
     setHasUserInteractedWithDashboard(true);
-    if (!changeOwnershipQuery.isSuccess || changeOwnershipQuery.isFetching) {
-      void changeOwnershipQuery.refetch();
-      if (typeof window !== "undefined") {
-        window.alert(
-          "Loading the Change-of-Ownership export — please click again in a moment."
+    const toastId = toast.loading(`Preparing ${status} export…`);
+    try {
+      const result =
+        await solarRecTrpcUtils.solarRecDashboard.exportChangeOwnershipTileCsv.fetch(
+          { status }
         );
+      if (result.rowCount === 0) {
+        toast.error(`No projects match the ${status} status.`, {
+          id: toastId,
+        });
+        return;
       }
-      return;
+      triggerCsvDownload(result.fileName, result.csv);
+      toast.success(
+        `Exported ${result.rowCount} project${result.rowCount === 1 ? "" : "s"} (${status}).`,
+        { id: toastId }
+      );
+    } catch (error) {
+      toast.error("Failed to export Change-of-Ownership CSV.", {
+        id: toastId,
+      });
+      console.error("[change-ownership-csv-export]", error);
     }
-    const rows = changeOwnershipRows
-      .filter((system) => system.changeOwnershipStatus === status)
-      .slice()
-      .sort((a, b) => a.systemName.localeCompare(b.systemName, undefined, { sensitivity: "base", numeric: true }))
-      .map((system) => ({
-        system_name: system.systemName,
-        system_id: system.systemId ?? "",
-        tracking_id: system.trackingSystemRefId ?? "",
-        status_category: system.ownershipStatus,
-        change_ownership_status: system.changeOwnershipStatus ?? "",
-        reporting: system.isReporting ? "Yes" : "No",
-        transferred: system.isTransferred ? "Yes" : "No",
-        terminated: system.isTerminated ? "Yes" : "No",
-        contract_type: system.contractType ?? "",
-        contract_status: system.contractStatusText,
-        contract_date: system.contractedDate ? system.contractedDate.toISOString().slice(0, 10) : "",
-        zillow_status: system.zillowStatus ?? "",
-        zillow_sold_date: system.zillowSoldDate ? system.zillowSoldDate.toISOString().slice(0, 10) : "",
-        last_reporting_date: system.latestReportingDate ? system.latestReportingDate.toISOString().slice(0, 10) : "",
-      }));
-
-    const headers = [
-      "system_name",
-      "system_id",
-      "tracking_id",
-      "status_category",
-      "change_ownership_status",
-      "reporting",
-      "transferred",
-      "terminated",
-      "contract_type",
-      "contract_status",
-      "contract_date",
-      "zillow_status",
-      "zillow_sold_date",
-      "last_reporting_date",
-    ];
-
-    const csv = buildCsv(headers, rows);
-    const fileName = `ownership-change-${toCsvFileSlug(status)}-${timestampForCsvFileName()}.csv`;
-    triggerCsvDownload(fileName, csv);
   };
 
   // downloadChangeOwnershipDetailFilteredCsv — moved to @/solar-rec-dashboard/components/ChangeOwnershipTab
