@@ -79,9 +79,19 @@ describe("Solar REC dashboard mount: heavy-query gates", () => {
     expect(block!).toMatch(/hasUserInteractedWithDashboard/);
   });
 
-  it("useSystemSnapshot is invoked with enabled gated on hasUserInteractedWithDashboard", () => {
+  it("useSystemSnapshot is invoked with a narrow tab-specific predicate, not generic interaction", () => {
+    // Generic-interaction gates re-enable the legacy 26 MB
+    // SystemRecord[] payload as soon as the user clicks anything.
+    // The predicate must be tab-specific.
     expect(code).toMatch(
-      /useSystemSnapshot\s*\(\s*\{\s*[\s\S]*?enabled\s*:\s*hasUserInteractedWithDashboard/
+      /useSystemSnapshot\s*\(\s*\{\s*[\s\S]*?enabled\s*:\s*isSystemSnapshotNeeded/
+    );
+    expect(code).toMatch(
+      /const\s+isSystemSnapshotNeeded\s*=[\s\S]*?isAlertsTabActive[\s\S]*?isComparisonsTabActive[\s\S]*?isFinancialsTabActive[\s\S]*?isForecastTabActive[\s\S]*?selectedSystemKey/
+    );
+    // Generic interaction gating is NOT used for the snapshot.
+    expect(code).not.toMatch(
+      /useSystemSnapshot\s*\(\s*\{\s*[\s\S]{0,200}enabled\s*:\s*hasUserInteractedWithDashboard/
     );
   });
 
@@ -103,12 +113,27 @@ describe("Solar REC dashboard mount: heavy-query gates", () => {
     expect(block!).not.toMatch(/enabled\s*:/);
   });
 
-  it("ownership CSV download refuses to produce empty rows on first click", () => {
+  it("ownership CSV download flows through the server-side export proc, not client-side row hydration", () => {
+    // Both download handlers must call the server-side export
+    // procs. Client-side filtering of the heavy aggregator's rows is
+    // the bug this PR retires — it required the user to click twice
+    // and held megabytes of detail rows in browser heap.
     expect(code).toMatch(
-      /downloadOwnershipCountTileCsv[\s\S]*?overviewExportReady[\s\S]*?return;/
+      /downloadOwnershipCountTileCsv[\s\S]*?solarRecTrpcUtils\.solarRecDashboard\.exportOwnershipTileCsv\.fetch/
     );
     expect(code).toMatch(
-      /downloadChangeOwnershipCountTileCsv[\s\S]*?changeOwnershipQuery\.isSuccess[\s\S]*?return;/
+      /downloadChangeOwnershipCountTileCsv[\s\S]*?solarRecTrpcUtils\.solarRecDashboard\.exportChangeOwnershipTileCsv\.fetch/
+    );
+    // No window.alert in the export path — toasts only.
+    expect(code).not.toMatch(/downloadOwnershipCountTileCsv[\s\S]{0,2000}window\.alert/);
+    expect(code).not.toMatch(
+      /downloadChangeOwnershipCountTileCsv[\s\S]{0,2000}window\.alert/
+    );
+    // No empty-result fallback to a 0-row CSV — the handler explicitly
+    // surfaces "no rows" via toast.error instead of triggering a
+    // download.
+    expect(code).toMatch(
+      /downloadOwnershipCountTileCsv[\s\S]{0,2000}rowCount\s*===\s*0[\s\S]{0,200}toast\.error/
     );
   });
 });

@@ -62,6 +62,12 @@ export const DASHBOARD_OVERSIZE_ALLOWLIST: ReadonlySet<string> = new Set([
   // Paginates DB reads but joins the full CSV in memory before returning.
   // Rebuild plan replaces with a streaming background export job.
   "solarRecDashboard.getDatasetCsv",
+  // Ownership-tile CSV export — CSV string can be MB-scale on prod.
+  // The client never receives ownershipRows JSON; it just downloads
+  // this CSV. Streaming via Express is the next iteration.
+  "solarRecDashboard.exportOwnershipTileCsv",
+  // Change-Ownership status CSV export — same shape as above.
+  "solarRecDashboard.exportChangeOwnershipTileCsv",
 ]);
 
 export type DashboardResponseEnforcement = "warn" | "throw" | "off";

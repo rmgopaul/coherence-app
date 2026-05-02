@@ -123,6 +123,8 @@ describe("DASHBOARD_OVERSIZE_ALLOWLIST", () => {
         "solarRecDashboard.getDashboardOverviewSummary",
         "solarRecDashboard.getDatasetCsv",
         "solarRecDashboard.getSystemSnapshot",
+        "solarRecDashboard.exportOwnershipTileCsv",
+        "solarRecDashboard.exportChangeOwnershipTileCsv",
       ].sort()
     );
   });
@@ -376,12 +378,37 @@ describe("solarRecDashboardRouter wiring", () => {
   it("registers getDashboardSummary as a dashboardProcedure", () => {
     const filePath = resolve(__dirname, "solarRecDashboardRouter.ts");
     const source = readFileSync(filePath, "utf8");
-    // Pinning the slim mount-summary entry point so a future PR
-    // can't accidentally rename or unwrap it without a deliberate
-    // diff. The dashboard parent's first paint depends on this
-    // procedure being live.
     expect(source).toMatch(
       /getDashboardSummary\s*:\s*dashboardProcedure\s*\(/
+    );
+  });
+
+  it("registers exportOwnershipTileCsv + exportChangeOwnershipTileCsv as dashboardProcedure", () => {
+    const filePath = resolve(__dirname, "solarRecDashboardRouter.ts");
+    const source = readFileSync(filePath, "utf8");
+    // Server-side CSV export procs are the resilient pattern for
+    // ownership/change-ownership exports — the client never receives
+    // the heavy aggregator's row arrays. Pinning their registration
+    // so a future PR can't accidentally remove them and silently
+    // regress export-on-first-click.
+    expect(source).toMatch(
+      /exportOwnershipTileCsv\s*:\s*dashboardProcedure\s*\(/
+    );
+    expect(source).toMatch(
+      /exportChangeOwnershipTileCsv\s*:\s*dashboardProcedure\s*\(/
+    );
+  });
+
+  it("allowlists the CSV export procs (response payloads can be MB-scale)", () => {
+    const guardSource = readFileSync(
+      resolve(__dirname, "dashboardResponseGuard.ts"),
+      "utf8"
+    );
+    expect(guardSource).toContain(
+      '"solarRecDashboard.exportOwnershipTileCsv"'
+    );
+    expect(guardSource).toContain(
+      '"solarRecDashboard.exportChangeOwnershipTileCsv"'
     );
   });
 });

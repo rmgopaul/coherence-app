@@ -3105,6 +3105,87 @@ export const solarRecDashboardRouter = t.router({
   }),
 
   /**
+   * Server-side CSV export for the Overview ownership-status tile
+   * filters. Replaces the client-side flow that hydrated the heavy
+   * `getDashboardOverviewSummary.ownershipRows[]` (~5–15 MB) into the
+   * browser, filtered, and joined a CSV string. The new flow runs
+   * the same heavy aggregator server-side (cached + single-flighted),
+   * filters by tile, returns the CSV string + filename. The client
+   * never receives the JSON detail rows; it just downloads the CSV.
+   *
+   * The proc IS large by design (the CSV string itself can be MB-
+   * scale on prod) — added to `DASHBOARD_OVERSIZE_ALLOWLIST`. Future
+   * iteration: stream the CSV via Express to bypass tRPC's
+   * single-response shape entirely.
+   */
+  exportOwnershipTileCsv: dashboardProcedure(
+    "solar-rec-dashboard",
+    "read"
+  )
+    .input(
+      z.object({
+        tile: z.enum(["reporting", "notReporting", "terminated"]),
+      })
+    )
+    .query(async ({ ctx, input }) => {
+      const { getOrBuildOverviewSummary } = await import(
+        "../services/solar/buildOverviewSummaryAggregates"
+      );
+      const { buildOwnershipTileCsv } = await import(
+        "../services/solar/buildDashboardCsvExport"
+      );
+      const { result } = await getOrBuildOverviewSummary(ctx.scopeId);
+      const csv = buildOwnershipTileCsv(result.ownershipRows, input.tile);
+      return {
+        ...csv,
+        _runnerVersion: "ownership-tile-csv-export-v1",
+      };
+    }),
+
+  /**
+   * Server-side CSV export for the Change-Ownership status filters.
+   * Mirrors `exportOwnershipTileCsv` against the heavy
+   * `getDashboardChangeOwnership` aggregator's per-project rows.
+   */
+  exportChangeOwnershipTileCsv: dashboardProcedure(
+    "solar-rec-dashboard",
+    "read"
+  )
+    .input(
+      z.object({
+        // Accept the wider client-side `ChangeOwnershipStatus` union
+        // (7 values incl. legacy split-Terminated) so the client
+        // handler doesn't need to narrow at the call site. The heavy
+        // aggregator's rows only carry the 5 canonical values, so a
+        // legacy split-Terminated input will return rowCount=0 and
+        // surface to the user as "no projects match."
+        status: z.enum([
+          "Transferred and Reporting",
+          "Transferred and Not Reporting",
+          "Terminated",
+          "Terminated and Reporting",
+          "Terminated and Not Reporting",
+          "Change of Ownership - Not Transferred and Reporting",
+          "Change of Ownership - Not Transferred and Not Reporting",
+        ]),
+      })
+    )
+    .query(async ({ ctx, input }) => {
+      const { getOrBuildChangeOwnership } = await import(
+        "../services/solar/buildChangeOwnershipAggregates"
+      );
+      const { buildChangeOwnershipTileCsv } = await import(
+        "../services/solar/buildDashboardCsvExport"
+      );
+      const { result } = await getOrBuildChangeOwnership(ctx.scopeId);
+      const csv = buildChangeOwnershipTileCsv(result.rows, input.status);
+      return {
+        ...csv,
+        _runnerVersion: "change-ownership-tile-csv-export-v1",
+      };
+    }),
+
+  /**
    * Phase 5e Followup #4 step 4 PR-A (2026-04-30) — server-side
    * aggregator for the Offline Monitoring tab. Replaces four client
    * useMemos in `SolarRecDashboard.tsx` that derived from
