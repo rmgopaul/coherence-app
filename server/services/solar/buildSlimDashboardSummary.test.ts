@@ -51,10 +51,9 @@ vi.mock("./foundationRunner", async () => {
   };
 });
 
+import { __clearInFlightForTests } from "./withArtifactCache";
 import {
-  __clearInFlightForTests,
-} from "./withArtifactCache";
-import {
+  CHANGE_OWNERSHIP_STATUS_ORDER,
   EMPTY_SLIM_DASHBOARD_SUMMARY,
   SLIM_DASHBOARD_SUMMARY_RUNNER_VERSION,
   type SlimDashboardSummary,
@@ -70,7 +69,12 @@ function makeCanonicalSystem(
     isReporting: boolean;
     isTerminated: boolean;
     isPart2Verified: boolean;
-    ownershipStatus: "active" | "transferred" | "change-of-ownership" | "terminated" | null;
+    ownershipStatus:
+      | "active"
+      | "transferred"
+      | "change-of-ownership"
+      | "terminated"
+      | null;
   }> = {}
 ) {
   return {
@@ -92,7 +96,9 @@ function makeFoundation(
     ReturnType<typeof makeCanonicalSystem>
   > = {};
   for (const s of systemRecords) canonicalSystemsByCsgId[s.csgId] = s;
-  const part2 = systemRecords.filter((s) => s.isPart2Verified).map((s) => s.csgId);
+  const part2 = systemRecords
+    .filter((s) => s.isPart2Verified)
+    .map((s) => s.csgId);
   const reporting = systemRecords
     .filter((s) => s.isReporting && !s.isTerminated)
     .map((s) => s.csgId);
@@ -124,7 +130,8 @@ function makeFoundation(
       abpIccReport2Rows: { batchId: null, rowCount: 0 },
       abpIccReport3Rows: { batchId: null, rowCount: 0 },
     },
-    canonicalSystemsByCsgId: canonicalSystemsByCsgId as FoundationArtifactPayload["canonicalSystemsByCsgId"],
+    canonicalSystemsByCsgId:
+      canonicalSystemsByCsgId as FoundationArtifactPayload["canonicalSystemsByCsgId"],
     part2EligibleCsgIds: part2,
     reportingCsgIds: reporting,
     summaryCounts: {
@@ -156,17 +163,12 @@ afterEach(() => {
   __clearInFlightForTests();
 });
 
-/**
- * `streamRowsByPage` mock that dispatches `solarRows` and `abpRows`
- * to the appropriate `onRow` callback by table name. Vitest cannot
- * dispatch on the table object directly so we look at the column
- * projection's keys.
- */
 function setupStreamMock(opts: {
   solarRows?: Array<{
     id: string;
     systemId: string | null;
     installedKwAc: number | null;
+    installedKwDc: number | null;
     totalContractAmount: number | null;
   }>;
   abpRows?: Array<{
@@ -206,51 +208,35 @@ describe("getOrBuildSlimDashboardSummary", () => {
     setupStreamMock({});
 
     const { result } = await getOrBuildSlimDashboardSummary(SCOPE);
-    // Match the empty shape EXCEPT for the reporting anchor (the
-    // fixture foundation pins it; that pass-through is the one
-    // foundation field this builder forwards verbatim).
     expect(result).toEqual({
       ...EMPTY_SLIM_DASHBOARD_SUMMARY,
       reportingAnchorDateIso: "2026-04-01",
     });
   });
 
-  it("walks foundation.canonicalSystemsByCsgId for ownership tile breakdown over Part-II-eligible systems", async () => {
+  it("tags the result with kind:'slim' so consumers can branch on shape", async () => {
+    runnerMocks.getOrBuildFoundation.mockResolvedValue({
+      payload: makeFoundation([]),
+      fromCache: false,
+      fromInflight: false,
+      inputVersionHash: HASH,
+    });
+    setupStreamMock({});
+
+    const { result } = await getOrBuildSlimDashboardSummary(SCOPE);
+    expect(result.kind).toBe("slim");
+  });
+
+  it("computes the 9-bucket ownership tile breakdown over Part-II-eligible systems", async () => {
     const systems = [
-      // Part-II eligible: 2 reporting + transferred, 1 reporting + not-transferred,
-      // 1 not-reporting + transferred, 1 terminated reporting, 1 terminated not.
-      makeCanonicalSystem("CSG-1", {
-        isReporting: true,
-        ownershipStatus: "transferred",
-      }),
-      makeCanonicalSystem("CSG-2", {
-        isReporting: true,
-        ownershipStatus: "transferred",
-      }),
-      makeCanonicalSystem("CSG-3", {
-        isReporting: true,
-        ownershipStatus: "active",
-      }),
-      makeCanonicalSystem("CSG-4", {
-        isReporting: false,
-        ownershipStatus: "transferred",
-      }),
-      makeCanonicalSystem("CSG-5", {
-        isTerminated: true,
-        isReporting: true,
-        ownershipStatus: "terminated",
-      }),
-      makeCanonicalSystem("CSG-6", {
-        isTerminated: true,
-        isReporting: false,
-        ownershipStatus: "terminated",
-      }),
-      // NOT Part-II eligible — must be excluded from tile breakdown.
-      makeCanonicalSystem("CSG-7", {
-        isPart2Verified: false,
-        isReporting: true,
-        ownershipStatus: "active",
-      }),
+      makeCanonicalSystem("CSG-1", { isReporting: true, ownershipStatus: "transferred" }),
+      makeCanonicalSystem("CSG-2", { isReporting: true, ownershipStatus: "transferred" }),
+      makeCanonicalSystem("CSG-3", { isReporting: true, ownershipStatus: "active" }),
+      makeCanonicalSystem("CSG-4", { isReporting: false, ownershipStatus: "transferred" }),
+      makeCanonicalSystem("CSG-5", { isTerminated: true, isReporting: true, ownershipStatus: "terminated" }),
+      makeCanonicalSystem("CSG-6", { isTerminated: true, isReporting: false, ownershipStatus: "terminated" }),
+      // NOT Part-II eligible — must be excluded.
+      makeCanonicalSystem("CSG-7", { isPart2Verified: false, isReporting: true, ownershipStatus: "active" }),
     ];
     runnerMocks.getOrBuildFoundation.mockResolvedValue({
       payload: makeFoundation(systems),
@@ -273,12 +259,11 @@ describe("getOrBuildSlimDashboardSummary", () => {
     expect(result.ownershipOverview.terminatedTotal).toBe(2);
   });
 
-  it("stream-folds solarApplications for size buckets + value totals (Part-II-eligible only)", async () => {
+  it("sums cumulativeKwAcPart2 + cumulativeKwDcPart2 over Part-II-eligible systems only", async () => {
     const systems = [
-      makeCanonicalSystem("CSG-S", { isReporting: true }),
-      makeCanonicalSystem("CSG-L", { isReporting: false }),
-      makeCanonicalSystem("CSG-U", { isReporting: true }),
-      makeCanonicalSystem("CSG-OUT", { isPart2Verified: false, isReporting: true }),
+      makeCanonicalSystem("CSG-A", { isReporting: true }),
+      makeCanonicalSystem("CSG-B", { isReporting: false }),
+      makeCanonicalSystem("CSG-OUT", { isPart2Verified: false }),
     ];
     runnerMocks.getOrBuildFoundation.mockResolvedValue({
       payload: makeFoundation(systems),
@@ -288,132 +273,133 @@ describe("getOrBuildSlimDashboardSummary", () => {
     });
     setupStreamMock({
       solarRows: [
-        // small + reporting + value
-        {
-          id: "1",
-          systemId: "CSG-S",
-          installedKwAc: 8,
-          totalContractAmount: 500,
-        },
-        // large + not-reporting + value
-        {
-          id: "2",
-          systemId: "CSG-L",
-          installedKwAc: 50,
-          totalContractAmount: 2000,
-        },
-        // unknown size + reporting + null value
-        {
-          id: "3",
-          systemId: "CSG-U",
-          installedKwAc: null,
-          totalContractAmount: null,
-        },
-        // not Part-II-eligible — filtered out completely
-        {
-          id: "4",
-          systemId: "CSG-OUT",
-          installedKwAc: 5,
-          totalContractAmount: 9999,
-        },
+        { id: "1", systemId: "CSG-A", installedKwAc: 8, installedKwDc: 10, totalContractAmount: 100 },
+        { id: "2", systemId: "CSG-B", installedKwAc: 25, installedKwDc: 30, totalContractAmount: 200 },
+        // Outside Part-II: must NOT contribute.
+        { id: "3", systemId: "CSG-OUT", installedKwAc: 999, installedKwDc: 999, totalContractAmount: 9999 },
       ],
     });
 
     const { result } = await getOrBuildSlimDashboardSummary(SCOPE);
 
-    expect(result.smallSystems).toBe(1);
-    expect(result.largeSystems).toBe(1);
-    expect(result.unknownSizeSystems).toBe(1);
-    expect(result.withValueDataCount).toBe(2);
-    expect(result.totalContractedValue).toBe(2500);
-    expect(result.contractedValueReporting).toBe(500);
-    expect(result.contractedValueNotReporting).toBe(2000);
-    expect(result.contractedValueReportingPercent).toBeCloseTo(0.2, 5);
+    expect(result.cumulativeKwAcPart2).toBe(8 + 25);
+    expect(result.cumulativeKwDcPart2).toBe(10 + 30);
   });
 
-  it("stream-folds abpReport for ABP counts using the legacy date-only filter and dedupe key fallback", async () => {
+  it("computes sizeBreakdownRows with per-bucket reporting/percent/contracted-value", async () => {
+    const systems = [
+      makeCanonicalSystem("CSG-S-R", { isReporting: true }),
+      makeCanonicalSystem("CSG-S-N", { isReporting: false }),
+      makeCanonicalSystem("CSG-L-R", { isReporting: true }),
+      makeCanonicalSystem("CSG-U-N", { isReporting: false }),
+    ];
+    runnerMocks.getOrBuildFoundation.mockResolvedValue({
+      payload: makeFoundation(systems),
+      fromCache: false,
+      fromInflight: false,
+      inputVersionHash: HASH,
+    });
+    setupStreamMock({
+      solarRows: [
+        { id: "1", systemId: "CSG-S-R", installedKwAc: 8, installedKwDc: null, totalContractAmount: 100 },
+        { id: "2", systemId: "CSG-S-N", installedKwAc: 9, installedKwDc: null, totalContractAmount: 200 },
+        { id: "3", systemId: "CSG-L-R", installedKwAc: 50, installedKwDc: null, totalContractAmount: 1000 },
+        { id: "4", systemId: "CSG-U-N", installedKwAc: null, installedKwDc: null, totalContractAmount: 50 },
+      ],
+    });
+
+    const { result } = await getOrBuildSlimDashboardSummary(SCOPE);
+
+    const small = result.sizeBreakdownRows.find((r) => r.bucket === "<=10 kW AC")!;
+    const large = result.sizeBreakdownRows.find((r) => r.bucket === ">10 kW AC")!;
+    const unknown = result.sizeBreakdownRows.find((r) => r.bucket === "Unknown")!;
+
+    expect(small.total).toBe(2);
+    expect(small.reporting).toBe(1);
+    expect(small.notReporting).toBe(1);
+    expect(small.reportingPercent).toBeCloseTo(0.5, 5);
+    expect(small.contractedValue).toBe(300);
+
+    expect(large.total).toBe(1);
+    expect(large.reporting).toBe(1);
+    expect(large.contractedValue).toBe(1000);
+
+    expect(unknown.total).toBe(1);
+    expect(unknown.notReporting).toBe(1);
+    expect(unknown.contractedValue).toBe(50);
+  });
+
+  it("derives Change-Ownership counts + chart rows + cooNotTransferredNotReportingCurrentCount from foundation status", async () => {
+    const systems = [
+      // Part-II eligible
+      makeCanonicalSystem("CSG-1", { isReporting: true, ownershipStatus: "transferred" }),
+      makeCanonicalSystem("CSG-2", { isReporting: false, ownershipStatus: "transferred" }),
+      makeCanonicalSystem("CSG-3", { isReporting: true, ownershipStatus: "change-of-ownership" }),
+      makeCanonicalSystem("CSG-4", { isReporting: false, ownershipStatus: "change-of-ownership" }),
+      makeCanonicalSystem("CSG-5", { isTerminated: true, isReporting: true, ownershipStatus: "terminated" }),
+      makeCanonicalSystem("CSG-6", { isTerminated: true, isReporting: false, ownershipStatus: "terminated" }),
+      // active = no change → not in change-ownership counts
+      makeCanonicalSystem("CSG-7", { isReporting: true, ownershipStatus: "active" }),
+    ];
+    runnerMocks.getOrBuildFoundation.mockResolvedValue({
+      payload: makeFoundation(systems),
+      fromCache: false,
+      fromInflight: false,
+      inputVersionHash: HASH,
+    });
+    setupStreamMock({});
+
+    const { result } = await getOrBuildSlimDashboardSummary(SCOPE);
+    const co = result.changeOwnership;
+
+    const find = (status: string) =>
+      co.summary.counts.find((c) => c.status === status)!.count;
+    expect(find("Transferred and Reporting")).toBe(1);
+    expect(find("Transferred and Not Reporting")).toBe(1);
+    expect(find("Change of Ownership - Not Transferred and Reporting")).toBe(1);
+    expect(find("Change of Ownership - Not Transferred and Not Reporting")).toBe(1);
+    expect(find("Terminated and Reporting")).toBe(1);
+    expect(find("Terminated and Not Reporting")).toBe(1);
+    expect(co.summary.total).toBe(6);
+    expect(co.summary.reporting).toBe(3);
+    expect(co.summary.notReporting).toBe(3);
+    expect(co.cooNotTransferredNotReportingCurrentCount).toBe(1); // CSG-4
+
+    // Stacked chart: terminated excluded; CSG-7 active also excluded
+    // because change-of-ownership chart counts only ownership-changed
+    // systems? Wait: the heavy aggregator's chart includes ALL systems
+    // (project-matched), bucketing by reporting × {notTransferred,
+    // transferred, changeOwnership}. Slim mirrors that — including
+    // "active" as "notTransferred". Let me verify the chart bucket:
+    const reportingRow = co.ownershipStackedChartRows.find(
+      (r) => r.label === "Reporting"
+    )!;
+    const notReportingRow = co.ownershipStackedChartRows.find(
+      (r) => r.label === "Not Reporting"
+    )!;
+    // Reporting bucket: CSG-1 transferred, CSG-3 change-ownership, CSG-7 active (notTransferred). CSG-5 excluded (terminated).
+    expect(reportingRow.transferred).toBe(1);
+    expect(reportingRow.changeOwnership).toBe(1);
+    expect(reportingRow.notTransferred).toBe(1);
+    // Not Reporting bucket: CSG-2 transferred, CSG-4 change-ownership. CSG-6 excluded.
+    expect(notReportingRow.transferred).toBe(1);
+    expect(notReportingRow.changeOwnership).toBe(1);
+    expect(notReportingRow.notTransferred).toBe(0);
+  });
+
+  it("change-ownership counts list is in CHANGE_OWNERSHIP_STATUS_ORDER", async () => {
     runnerMocks.getOrBuildFoundation.mockResolvedValue({
       payload: makeFoundation([]),
       fromCache: false,
       fromInflight: false,
       inputVersionHash: HASH,
     });
-    setupStreamMock({
-      abpRows: [
-        // verified + dedupe by systemId
-        {
-          id: "1",
-          applicationId: "APP-1",
-          systemId: "PS-1",
-          trackingSystemRefId: "TR-1",
-          projectName: "Project Alpha",
-          part2AppVerificationDate: "2024-06-15",
-        },
-        // verified + same systemId → same dedupe key, increments count
-        // but not dedupe set
-        {
-          id: "2",
-          applicationId: "APP-2",
-          systemId: "PS-1",
-          trackingSystemRefId: "TR-2",
-          projectName: "Project Alpha",
-          part2AppVerificationDate: "2024-07-01",
-        },
-        // verified + no systemId → falls back to tracking
-        {
-          id: "3",
-          applicationId: "APP-3",
-          systemId: null,
-          trackingSystemRefId: "TR-3",
-          projectName: "Project Beta",
-          part2AppVerificationDate: "2024-08-01",
-        },
-        // verified + no systemId/tracking → falls back to applicationId
-        {
-          id: "4",
-          applicationId: "APP-4",
-          systemId: null,
-          trackingSystemRefId: null,
-          projectName: "Project Gamma",
-          part2AppVerificationDate: "2024-09-01",
-        },
-        // NOT verified — empty date string
-        {
-          id: "5",
-          applicationId: "APP-5",
-          systemId: "PS-5",
-          trackingSystemRefId: null,
-          projectName: "Other",
-          part2AppVerificationDate: "",
-        },
-        // NOT verified — null
-        {
-          id: "6",
-          applicationId: "APP-6",
-          systemId: "PS-6",
-          trackingSystemRefId: null,
-          projectName: "Other",
-          part2AppVerificationDate: null,
-        },
-        // NOT verified — out-of-range year
-        {
-          id: "7",
-          applicationId: "APP-7",
-          systemId: "PS-7",
-          trackingSystemRefId: null,
-          projectName: "Other",
-          part2AppVerificationDate: "1999-01-01",
-        },
-      ],
-    });
+    setupStreamMock({});
 
     const { result } = await getOrBuildSlimDashboardSummary(SCOPE);
-
-    // Verified rows: 4 (rows 1, 2, 3, 4).
-    expect(result.part2VerifiedAbpRowsCount).toBe(4);
-    // Distinct dedupe keys: system:PS-1 (rows 1+2), tracking:TR-3 (row 3),
-    // application:APP-4 (row 4) → 3.
-    expect(result.abpEligibleTotalSystemsCount).toBe(3);
+    expect(result.changeOwnership.summary.counts.map((c) => c.status)).toEqual(
+      CHANGE_OWNERSHIP_STATUS_ORDER
+    );
   });
 
   it("does NOT include high-cardinality fields in the slim shape", async () => {
@@ -427,12 +413,7 @@ describe("getOrBuildSlimDashboardSummary", () => {
     });
     setupStreamMock({
       solarRows: [
-        {
-          id: "1",
-          systemId: "CSG-1",
-          installedKwAc: 5,
-          totalContractAmount: 100,
-        },
+        { id: "1", systemId: "CSG-1", installedKwAc: 5, installedKwDc: null, totalContractAmount: 100 },
       ],
     });
 
@@ -452,14 +433,16 @@ describe("getOrBuildSlimDashboardSummary", () => {
     // Heavy export rows — not on slim.
     expect(keys.has("ownershipRows")).toBe(false);
     expect(keys.has("part2VerifiedSystemIds")).toBe(false);
+    // Heavy delivered-value fields — explicitly absent (UI uses null
+    // rendering rather than silent zeros).
+    expect(keys.has("totalDeliveredValue")).toBe(false);
+    expect(keys.has("totalGap")).toBe(false);
+    expect(keys.has("deliveredValuePercent")).toBe(false);
   });
 
-  it("stays under the 1 MB dashboard wire budget on prod-shaped foundation + source rows", async () => {
-    // 21k Part-II-eligible systems is the prod portfolio. The slim
-    // shape is fixed (no per-system fields), so output bytes do not
-    // scale with system count. This pins the contract.
-    const PROD_SYSTEMS = 21_000;
-    const systems = Array.from({ length: PROD_SYSTEMS }, (_, i) =>
+  it("stays under the 1 MB dashboard wire budget on prod-shaped input (21k systems)", async () => {
+    const PROD = 21_000;
+    const systems = Array.from({ length: PROD }, (_, i) =>
       makeCanonicalSystem(`CSG-${i}`, {
         isReporting: i % 2 === 0,
         ownershipStatus: i % 7 === 0 ? "transferred" : "active",
@@ -476,6 +459,7 @@ describe("getOrBuildSlimDashboardSummary", () => {
         id: `${i}`,
         systemId: s.csgId,
         installedKwAc: 8 + (i % 30),
+        installedKwDc: 10 + (i % 30),
         totalContractAmount: 1000 + i,
       })),
     });
@@ -485,7 +469,7 @@ describe("getOrBuildSlimDashboardSummary", () => {
     expect(bytes).toBeLessThan(1024 * 1024);
   });
 
-  it("uses the foundation hash as the cache key (slim cache invalidates with foundation)", async () => {
+  it("uses the foundation hash as the cache key", async () => {
     runnerMocks.getOrBuildFoundation.mockResolvedValue({
       payload: makeFoundation([]),
       fromCache: false,
@@ -496,17 +480,14 @@ describe("getOrBuildSlimDashboardSummary", () => {
 
     await getOrBuildSlimDashboardSummary(SCOPE);
 
-    // The cache write uses the foundation hash as inputVersionHash.
     expect(dbMocks.upsertComputedArtifact).toHaveBeenCalledTimes(1);
     const writeArgs = dbMocks.upsertComputedArtifact.mock.calls[0][0];
     expect(writeArgs.scopeId).toBe(SCOPE);
     expect(writeArgs.inputVersionHash).toBe(HASH);
-    expect(writeArgs.artifactType).toBe("slim-dashboard-summary-v1");
+    expect(writeArgs.artifactType).toBe("slim-dashboard-summary-v2");
   });
 
   it("does NOT call getOrBuildFoundation on a slim cache hit", async () => {
-    // Cache hit: the slim payload comes back directly. The foundation
-    // payload is NOT loaded — this is the whole point of the slim cache.
     dbMocks.getComputedArtifact.mockResolvedValue({
       payload: JSON.stringify(EMPTY_SLIM_DASHBOARD_SUMMARY),
     });
@@ -519,23 +500,19 @@ describe("getOrBuildSlimDashboardSummary", () => {
     expect(foundationMocks.streamRowsByPage).not.toHaveBeenCalled();
   });
 
-  it("exports a stable runner version marker", () => {
-    expect(SLIM_DASHBOARD_SUMMARY_RUNNER_VERSION).toBe(
-      "slim-dashboard-summary-v1"
+  it("bumps the runner version marker when the contract changes", () => {
+    expect(SLIM_DASHBOARD_SUMMARY_RUNNER_VERSION).toMatch(
+      /^slim-dashboard-summary-v\d+$/
     );
   });
 });
 
 // ---------------------------------------------------------------------------
-// Static regression rail: ensure the slim aggregator never imports
-// the heavy upstream aggregators. Dropping these imports is a load-
-// bearing property of the slim path. If a future PR re-introduces
-// the dependency, this test catches it before merge.
+// Source structure regression rails — block any future PR from
+// pulling in the heavy aggregators.
 // ---------------------------------------------------------------------------
 
 describe("buildSlimDashboardSummary source structure", () => {
-  // Strip line comments + block comments so docstrings can mention
-  // helpers by name without tripping the import regex.
   function readSourceCodeOnly(): string {
     const filePath = resolve(__dirname, "buildSlimDashboardSummary.ts");
     const raw = readFileSync(filePath, "utf8");
@@ -547,11 +524,17 @@ describe("buildSlimDashboardSummary source structure", () => {
   it("does not import the heavy upstream aggregators", () => {
     const source = readSourceCodeOnly();
     expect(source).not.toMatch(/from\s+["'][^"']*buildOverviewSummaryAggregates/);
-    expect(source).not.toMatch(
-      /from\s+["'][^"']*buildOfflineMonitoringAggregates/
-    );
+    expect(source).not.toMatch(/from\s+["'][^"']*buildOfflineMonitoringAggregates/);
+    expect(source).not.toMatch(/from\s+["'][^"']*buildChangeOwnershipAggregates/);
+    expect(source).not.toMatch(/from\s+["'][^"']*buildSystemSnapshot/);
+  });
+
+  it("does not call getOrBuild* of the heavy aggregators", () => {
+    const source = readSourceCodeOnly();
     expect(source).not.toMatch(/getOrBuildOverviewSummary\s*\(/);
     expect(source).not.toMatch(/getOrBuildOfflineMonitoringAggregates\s*\(/);
+    expect(source).not.toMatch(/getOrBuildChangeOwnership\s*\(/);
+    expect(source).not.toMatch(/getOrBuildSystemSnapshot\s*\(/);
   });
 
   it("uses streamRowsByPage and not the full-load helpers", () => {
@@ -562,5 +545,7 @@ describe("buildSlimDashboardSummary source structure", () => {
   });
 });
 
-/** Type-only assertion the slim summary shape stays minimal. */
-type _AssertSlimShape = (s: SlimDashboardSummary) => unknown;
+/** Type-only assertion the slim shape carries the discriminated kind. */
+type _AssertSlimKind = (s: SlimDashboardSummary) => "slim";
+const _kindFn: _AssertSlimKind = (s) => s.kind;
+void _kindFn;

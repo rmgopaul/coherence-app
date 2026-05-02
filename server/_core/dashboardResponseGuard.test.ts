@@ -372,4 +372,16 @@ describe("solarRecDashboardRouter wiring", () => {
     const matches = source.match(/\bdashboardProcedure\s*\(/g) ?? [];
     expect(matches.length).toBeGreaterThanOrEqual(40);
   });
+
+  it("registers getDashboardSummary as a dashboardProcedure", () => {
+    const filePath = resolve(__dirname, "solarRecDashboardRouter.ts");
+    const source = readFileSync(filePath, "utf8");
+    // Pinning the slim mount-summary entry point so a future PR
+    // can't accidentally rename or unwrap it without a deliberate
+    // diff. The dashboard parent's first paint depends on this
+    // procedure being live.
+    expect(source).toMatch(
+      /getDashboardSummary\s*:\s*dashboardProcedure\s*\(/
+    );
+  });
 });

@@ -113,6 +113,18 @@ export interface OverviewTabProps {
   ownershipStackedChartRows: readonly OverviewOwnershipStackedChartRow[];
   /** Foundation memo — the 440-line parent `systems` list. */
   systems: SystemRecord[];
+  /**
+   * Slim mount summary's pre-computed Part-II totals. Overview
+   * uses these directly so first-paint values are correct without
+   * the heavy offlineMonitoring + system-snapshot fetch. When
+   * non-null, takes precedence over the parent's
+   * `part2EligibleSystemsForSizeReporting` walk.
+   */
+  slimPart2Totals: {
+    totalContractedValuePart2: number;
+    cumulativeKwAcPart2: number;
+    cumulativeKwDcPart2: number;
+  } | null;
   onDownloadOwnershipTile: (tile: "reporting" | "notReporting" | "terminated") => void;
   onDownloadChangeOwnershipTile: (status: ChangeOwnershipStatus) => void;
   onJumpToOfflineMonitoring: () => void;
@@ -131,6 +143,7 @@ export default memo(function OverviewTab(props: OverviewTabProps) {
     sizeBreakdownRows,
     ownershipStackedChartRows,
     systems,
+    slimPart2Totals,
     onDownloadOwnershipTile,
     onDownloadChangeOwnershipTile,
     onJumpToOfflineMonitoring,
@@ -138,8 +151,13 @@ export default memo(function OverviewTab(props: OverviewTabProps) {
 
   // Part II verified KPI totals: contracted value + cumulative
   // installed kW AC/DC across the scoped systems. Used for Row 2
-  // of the KPI grid.
+  // of the KPI grid. Prefers the slim mount summary's pre-computed
+  // values so first-paint Overview is correct without firing the
+  // heavy offlineMonitoring + snapshot queries.
   const overviewPart2Totals = useMemo(() => {
+    if (slimPart2Totals && part2EligibleSystemsForSizeReporting.length === 0) {
+      return slimPart2Totals;
+    }
     let totalContractedValuePart2 = 0;
     let cumulativeKwAcPart2 = 0;
     let cumulativeKwDcPart2 = 0;
@@ -153,7 +171,7 @@ export default memo(function OverviewTab(props: OverviewTabProps) {
       cumulativeKwAcPart2,
       cumulativeKwDcPart2,
     };
-  }, [part2EligibleSystemsForSizeReporting]);
+  }, [part2EligibleSystemsForSizeReporting, slimPart2Totals]);
 
   // Compact projection of sizeBreakdownRows for the stacked
   // reporting-by-size bar chart.

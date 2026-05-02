@@ -66,8 +66,17 @@ export type SystemSnapshotState = {
 /**
  * Fetch the server-computed system snapshot for the Solar REC
  * dashboard.
+ *
+ * The snapshot is the legacy ~26 MB allowlisted SystemRecord[] payload
+ * — known oversized. Callers MUST gate it: pass `enabled: false` for
+ * mount paths that don't need full per-system records. Default
+ * Overview mount uses the slim dashboard summary instead and never
+ * sets `enabled: true` until the user has interacted.
  */
-export function useSystemSnapshot(): SystemSnapshotState {
+export function useSystemSnapshot(
+  options: { enabled?: boolean } = {}
+): SystemSnapshotState {
+  const { enabled: callerEnabled = true } = options;
   // Resolve scopeId first so we can key the snapshot query.
   const scopeQuery = trpc.solarRecDashboard.getScopeId.useQuery(undefined, {
     staleTime: Infinity,
@@ -78,7 +87,7 @@ export function useSystemSnapshot(): SystemSnapshotState {
   const snapshotQuery = trpc.solarRecDashboard.getSystemSnapshot.useQuery(
     { scopeId: scopeId ?? "" },
     {
-      enabled: !!scopeId,
+      enabled: !!scopeId && callerEnabled,
       // While the server reports building=true, poll every 3s so we
       // flip to the real result as soon as it's cached server-side.
       refetchInterval: (query) => {
