@@ -1,58 +1,26 @@
 /**
- * Generic cache wrapper for the Task 5.13 server-side aggregators.
+ * Cache wrapper for the Task 5.13 server-side aggregators.
  *
- * Each aggregator's "cache hit → parse → return; else compute → write
- * back" state machine used to be copy-pasted three times (PR-1, PR-2,
- * PR-3). Three things were inconsistent across copies:
+ * On every call:
+ *   1. Read `solarRecComputedArtifacts(scopeId, artifactType, hash)`.
+ *      Cache hit → parse via the caller-supplied serde and return.
+ *      Corrupt payloads fall through to recompute and self-heal on
+ *      the next upsert.
+ *   2. Cache miss → in-process single-flight: if another caller is
+ *      already recomputing this key, share their Promise. Otherwise
+ *      run `recompute`, write the cache (best-effort, warn on
+ *      failure), and return.
  *
- *   1. **Error handling on cache write** — PR-1 + PR-2 propagated
- *      `upsertComputedArtifact` errors; PR-3 swallowed them with a
- *      `console.warn`. Best-effort is correct (cache write failure is
- *      a perf hit, not a data-loss bug; matches `buildSystemSnapshot`'s
- *      existing pattern). This wrapper makes that uniform.
- *   2. **Serde** — PR-1/PR-3 use `superjson` to round-trip Date fields
- *      through the cache; PR-2 uses plain `JSON` because its result
- *      has no Date fields. Caller picks via the `serde` option.
- *   3. **Lazy vs top-level superjson import** — PR-3 lazy-loaded
- *      superjson inside the function for no good reason. Now the
- *      shared `superjsonSerde` constant captures the import once at
- *      the top of the wrapper file.
+ * Single-flight scope is per-Node-process. Multi-instance deploys
+ * still risk N parallel recomputes; cross-process dedup via
+ * `solarRecComputeRuns` (mirroring `getOrBuildSystemSnapshot`) is the
+ * next phase. Disable with
+ * `WITH_ARTIFACT_CACHE_SINGLE_FLIGHT_ENABLED=0` if it ever misbehaves
+ * in prod.
  *
- * Note: this wrapper is for *cache*, not data persistence. The
- * CLAUDE.md hard rule "no silent error swallowing in persistence
- * paths" governs `saveDataset` etc., where a failed write is a
- * data-loss surface. Cache writes are an optimization; failure
- * means the next call recomputes. Logging at `warn` (not `error`)
- * is intentional.
- *
- * ## In-process single-flight (2026-05-01)
- *
- * Per-process `Promise` deduplication keyed by
- * `(scopeId, artifactType, inputVersionHash)`. When N concurrent
- * callers miss the cache for the same key, only the first runs
- * `recompute()`; the rest await the same in-flight Promise and
- * receive the same result. The map entry is cleared as soon as the
- * computation settles (success or failure), so failures retry
- * cleanly.
- *
- * This addresses the per-tab aggregator stampede documented in
- * `docs/triage/dashboard-502-findings.md` §2: 12 concurrent cold-
- * cache opens of `getDashboardOverviewSummary` previously ran 12
- * parallel `recompute()` calls, each materializing its own ~28k
- * abpReport rows. The single-flight cuts that to one compute per
- * Node process per `(scope, artifactType, hash)`.
- *
- * Scope of protection:
- *   - **Same process** — full dedup. The other 11 callers await the
- *     first caller's Promise and get the same result.
- *   - **Different processes** (multi-instance Render, deploy
- *     overlap) — NOT covered. A cross-process DB-claim
- *     (`solarRecComputeRuns`) is the next phase, mirroring the
- *     pattern already used by `getOrBuildSystemSnapshot`.
- *
- * The in-process dedup is intentionally additive: response shape is
- * unchanged (no `building: true` field, no client polling protocol),
- * so it ships without a client-side change.
+ * Cache writes are an optimization, not persistence. Failed writes
+ * log at `warn` (not `error`) and the next call recomputes — see
+ * `saveDataset` etc. for the persistence-path contract.
  */
 
 import superjson from "superjson";
@@ -107,19 +75,23 @@ function singleFlightKey(
   artifactType: string,
   inputVersionHash: string
 ): string {
-  // Pipe separator chosen because none of the three components are
-  // user-typeable identifiers that contain it (`scopeId` is a UUID-
-  // style slug, `artifactType` is a code-defined enum, `inputVersionHash`
-  // is hex). Test below pins this to catch accidental collisions.
-  return `${scopeId}|${artifactType}|${inputVersionHash}`;
+  // JSON.stringify of a tuple is collision-free regardless of what
+  // characters appear in the components.
+  return JSON.stringify([scopeId, artifactType, inputVersionHash]);
 }
 
-/** Test-only: snapshot the in-flight set. Not exported on the public surface. */
-export function __getInFlightKeysForTests(): string[] {
-  return Array.from(inFlightRecomputes.keys());
+function isSingleFlightEnabled(): boolean {
+  const raw =
+    process.env.WITH_ARTIFACT_CACHE_SINGLE_FLIGHT_ENABLED?.trim().toLowerCase();
+  return raw !== "0" && raw !== "false" && raw !== "off" && raw !== "no";
 }
 
-/** Test-only: clear the in-flight registry between cases. */
+/**
+ * Test-only: clear the in-flight registry between cases. Module-level
+ * state needs an explicit reset hook for test isolation; clearing it
+ * in production would only cause a duplicate recompute on the next
+ * call (no data corruption).
+ */
 export function __clearInFlightForTests(): void {
   inFlightRecomputes.clear();
 }
@@ -128,19 +100,6 @@ export function __clearInFlightForTests(): void {
 // withArtifactCache
 // ---------------------------------------------------------------------------
 
-/**
- * Cache-or-compute helper.
- *
- *   1. Look up `solarRecComputedArtifacts(scopeId, artifactType, hash)`.
- *   2. On hit, parse via the serde and return — cache miss falls
- *      through if the parse throws (corrupt payload).
- *   3. On miss, dedup against any in-flight recompute for the same
- *      key; otherwise run `recompute`, write the result back to the
- *      cache (best-effort), and return.
- *
- * Returns the result plus a `fromCache` flag so callers can surface
- * the hit/miss state to clients (we already do via tRPC responses).
- */
 export async function withArtifactCache<T>(
   input: WithArtifactCacheInput<T>
 ): Promise<{ result: T; fromCache: boolean }> {
@@ -153,6 +112,11 @@ export async function withArtifactCache<T>(
     rowCount,
   } = input;
 
+  // Cache reads are NOT single-flighted. On a warm cache, N concurrent
+  // callers each pay one indexed DB SELECT against
+  // `solarRecComputedArtifacts`. Acceptable since the cache hit path
+  // is cheap; the stampede this guard exists to prevent is the cold-
+  // miss recompute that materializes ~28k+ row arrays.
   const cached = await getComputedArtifact(
     scopeId,
     artifactType,
@@ -160,58 +124,86 @@ export async function withArtifactCache<T>(
   );
   if (cached) {
     try {
-      const parsed = serde.parse(cached.payload);
-      return { result: parsed, fromCache: true };
+      return { result: serde.parse(cached.payload), fromCache: true };
     } catch {
       // Corrupt payload — fall through to recompute. The bad row will
       // be overwritten by the upsert below, healing on its own.
     }
   }
 
+  if (!isSingleFlightEnabled()) {
+    return runRecomputeAndCache(input);
+  }
+
   // In-process single-flight: if another caller is already recomputing
   // this key, share their Promise rather than running a parallel
-  // recompute. The Map.get / Map.set window inside this function is
-  // synchronous, so a caller arriving immediately after another's cache
-  // miss will see the in-flight entry the previous caller just wrote.
+  // recompute. The Map.get / Map.set window is synchronous so a caller
+  // arriving immediately after another's cache miss will see the
+  // in-flight entry the previous caller just wrote.
   const key = singleFlightKey(scopeId, artifactType, inputVersionHash);
   const inFlight = inFlightRecomputes.get(key) as Promise<T> | undefined;
   if (inFlight) {
-    const result = await inFlight;
-    return { result, fromCache: false };
+    return { result: await inFlight, fromCache: false };
   }
 
-  const computation = (async (): Promise<T> => {
-    try {
-      const result = await recompute();
-
-      // Best-effort cache write. Cache failure ≠ data-loss; logging at
-      // `warn` (not `error`) so it doesn't trigger error-tracking alerts
-      // for transient DB hiccups.
-      try {
-        await upsertComputedArtifact({
-          scopeId,
-          artifactType,
-          inputVersionHash,
-          payload: serde.stringify(result),
-          rowCount: rowCount(result),
-        });
-      } catch (error) {
-        console.warn(
-          `[withArtifactCache] cache write failed for ${artifactType}:`,
-          error instanceof Error ? error.message : error
-        );
-      }
-
-      return result;
-    } finally {
-      // Always clear the in-flight entry, even on recompute failure.
-      // This makes failures retryable: the next caller starts fresh.
+  // Critical: the in-flight entry MUST be visible to other callers
+  // before `recompute()` can run. If we built the promise via
+  // `(async () => { try { await recompute(); } finally { delete } })()`
+  // and `recompute` threw synchronously (e.g. because the caller
+  // passed `() => { throw }` instead of an async function), the
+  // synchronous body — including the `finally` — would run during
+  // IIFE construction, BEFORE the outer `set(key, computation)`. The
+  // `delete` would no-op (key not yet set), then the outer `set`
+  // would install the rejected promise permanently. Subsequent
+  // callers would join the rejected promise and every retry would
+  // fail.
+  //
+  // The fix: wrap recompute in `Promise.resolve().then(...)` so its
+  // body runs on a microtask, AFTER the synchronous `set` below. The
+  // `finally` is now guaranteed to run only after `set` has happened.
+  // The identity check (`get(key) === computation`) is defensive
+  // against a future caller replacing the entry between recompute
+  // settle and finally; if they did, we leave their promise alone.
+  const computation: Promise<T> = Promise.resolve().then(async () =>
+    (await runRecomputeAndCache(input)).result
+  );
+  inFlightRecomputes.set(key, computation);
+  // Clean up the registry once `computation` settles. We use
+  // `.then(cleanup, cleanup)` rather than `.finally(cleanup)` because
+  // `.finally` re-emits the upstream rejection, and this side chain
+  // has no awaiter — that would surface as an "unhandled rejection."
+  // The original `computation` is still awaited below by us and by
+  // any joined waiters; they see the rejection. This branch only
+  // exists to reset the map.
+  const cleanup = () => {
+    if (inFlightRecomputes.get(key) === computation) {
       inFlightRecomputes.delete(key);
     }
-  })();
+  };
+  computation.then(cleanup, cleanup);
 
-  inFlightRecomputes.set(key, computation);
+  return { result: await computation, fromCache: false };
+}
 
-  const result = await computation;
+async function runRecomputeAndCache<T>(
+  input: WithArtifactCacheInput<T>
+): Promise<{ result: T; fromCache: false }> {
+  const result = await input.recompute();
+
+  try {
+    await upsertComputedArtifact({
+      scopeId: input.scopeId,
+      artifactType: input.artifactType,
+      inputVersionHash: input.inputVersionHash,
+      payload: input.serde.stringify(result),
+      rowCount: input.rowCount(result),
+    });
+  } catch (error) {
+    console.warn(
+      `[withArtifactCache] cache write failed for ${input.artifactType}:`,
+      error instanceof Error ? error.message : error
+    );
+  }
+
   return { result, fromCache: false };
 }

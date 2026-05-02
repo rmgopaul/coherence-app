@@ -3077,6 +3077,34 @@ export const solarRecDashboardRouter = t.router({
   }),
 
   /**
+   * Slim mount summary. Headline counts, ownership tile breakdown,
+   * size buckets, totalContractAmount-based value totals, ABP
+   * counts. NO per-system arrays or maps; does NOT call the heavy
+   * overview/offline-monitoring aggregators. The dashboard parent
+   * uses this for first-paint so the heavy procedures stop firing
+   * on initial mount.
+   */
+  getDashboardSummary: dashboardProcedure(
+    "solar-rec-dashboard",
+    "read"
+  ).query(async ({ ctx }) => {
+    const {
+      getOrBuildSlimDashboardSummary,
+      SLIM_DASHBOARD_SUMMARY_RUNNER_VERSION,
+    } = await import("../services/solar/buildSlimDashboardSummary");
+
+    const { result, fromCache } = await getOrBuildSlimDashboardSummary(
+      ctx.scopeId
+    );
+
+    return {
+      ...result,
+      fromCache,
+      _runnerVersion: SLIM_DASHBOARD_SUMMARY_RUNNER_VERSION,
+    };
+  }),
+
+  /**
    * Phase 5e Followup #4 step 4 PR-A (2026-04-30) — server-side
    * aggregator for the Offline Monitoring tab. Replaces four client
    * useMemos in `SolarRecDashboard.tsx` that derived from

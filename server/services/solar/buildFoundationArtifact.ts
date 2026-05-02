@@ -988,7 +988,7 @@ function statusTextFromRawRow(rawRowJson: string | null): string | null {
  * to ~95 MB; folding into a Set<unitId> of ~25 k entries drops
  * peak by ~90 MB).
  */
-async function streamRowsByPage<TRow extends { id: string }>(
+export async function streamRowsByPage<TRow extends { id: string }>(
   scopeId: string,
   batchId: string,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- drizzle table types are complex unions
