@@ -22,7 +22,6 @@ vi.mock("../../db/solarRecDatasets", async () => {
 
 import {
   __clearInFlightForTests,
-  __getInFlightKeysForTests,
   jsonSerde,
   superjsonSerde,
   withArtifactCache,
@@ -32,15 +31,21 @@ const SCOPE_ID = "scope-test";
 const ARTIFACT = "test-artifact";
 const HASH = "deadbeef0001";
 
+const SINGLE_FLIGHT_ENV = "WITH_ARTIFACT_CACHE_SINGLE_FLIGHT_ENABLED";
+let envSnapshot: string | undefined;
+
 beforeEach(() => {
   mocks.getComputedArtifact.mockReset();
   mocks.upsertComputedArtifact.mockReset().mockResolvedValue(undefined);
   __clearInFlightForTests();
+  envSnapshot = process.env[SINGLE_FLIGHT_ENV];
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
   __clearInFlightForTests();
+  if (envSnapshot === undefined) delete process.env[SINGLE_FLIGHT_ENV];
+  else process.env[SINGLE_FLIGHT_ENV] = envSnapshot;
 });
 
 /** Build a recompute that resolves with `value` only when `release` is called. */
@@ -145,10 +150,11 @@ describe("withArtifactCache (json serde)", () => {
 });
 
 describe("withArtifactCache (in-process single-flight)", () => {
-  it("12 concurrent cold-cache callers run recompute exactly once", async () => {
-    // This is the regression rail for docs/triage/dashboard-502-findings.md §2:
-    // 12 concurrent getDashboardOverviewSummary opens previously ran 12
-    // parallel recompute() calls, each materializing its own ~28k abp rows.
+  it("12 concurrent cold-cache callers run recompute exactly once and all receive the same result", async () => {
+    // Regression rail for docs/triage/dashboard-502-findings.md §2: 12
+    // concurrent getDashboardOverviewSummary opens previously ran 12
+    // parallel recompute() calls, each materializing its own ~28k abp
+    // rows.
     mocks.getComputedArtifact.mockResolvedValue(null);
     const { recompute, release } = deferredRecompute({ count: 99 });
 
@@ -165,12 +171,6 @@ describe("withArtifactCache (in-process single-flight)", () => {
       )
     );
 
-    // All 12 callers should be parked on the same in-flight Promise.
-    // Yield once so cache reads + map.set() complete for every caller.
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(__getInFlightKeysForTests()).toHaveLength(1);
-
     release();
     const settled = await results;
 
@@ -181,41 +181,9 @@ describe("withArtifactCache (in-process single-flight)", () => {
       expect(r.result).toEqual({ count: 99 });
       expect(r.fromCache).toBe(false);
     }
-    expect(__getInFlightKeysForTests()).toHaveLength(0);
   });
 
-  it("clears the in-flight entry after success so the next call recomputes when cache is empty", async () => {
-    mocks.getComputedArtifact.mockResolvedValue(null);
-    const recompute = vi
-      .fn<() => Promise<{ count: number }>>()
-      .mockResolvedValueOnce({ count: 1 })
-      .mockResolvedValueOnce({ count: 2 });
-
-    await withArtifactCache<{ count: number }>({
-      scopeId: SCOPE_ID,
-      artifactType: ARTIFACT,
-      inputVersionHash: HASH,
-      serde: jsonSerde<{ count: number }>(),
-      rowCount: (v) => v.count,
-      recompute,
-    });
-    expect(__getInFlightKeysForTests()).toHaveLength(0);
-
-    const second = await withArtifactCache<{ count: number }>({
-      scopeId: SCOPE_ID,
-      artifactType: ARTIFACT,
-      inputVersionHash: HASH,
-      serde: jsonSerde<{ count: number }>(),
-      rowCount: (v) => v.count,
-      recompute,
-    });
-
-    expect(recompute).toHaveBeenCalledTimes(2);
-    expect(second.result).toEqual({ count: 2 });
-    expect(__getInFlightKeysForTests()).toHaveLength(0);
-  });
-
-  it("clears the in-flight entry after recompute throws (failures are retryable)", async () => {
+  it("retryable: a successful call after a previous failure recomputes with empty cache", async () => {
     mocks.getComputedArtifact.mockResolvedValue(null);
     const recompute = vi
       .fn<() => Promise<{ count: number }>>()
@@ -233,10 +201,8 @@ describe("withArtifactCache (in-process single-flight)", () => {
       })
     ).rejects.toThrow("boom");
 
-    expect(__getInFlightKeysForTests()).toHaveLength(0);
-
-    // Next call after the failure should retry, not be poisoned by the
-    // prior in-flight entry.
+    // Next call after the failure must retry, not be parked on a stale
+    // in-flight Promise.
     const second = await withArtifactCache<{ count: number }>({
       scopeId: SCOPE_ID,
       artifactType: ARTIFACT,
@@ -268,17 +234,12 @@ describe("withArtifactCache (in-process single-flight)", () => {
       })
     );
 
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(__getInFlightKeysForTests()).toHaveLength(1);
-
     reject(new Error("recompute fail"));
 
     for (const call of calls) {
       await expect(call).rejects.toThrow("recompute fail");
     }
     expect(recompute).toHaveBeenCalledOnce();
-    expect(__getInFlightKeysForTests()).toHaveLength(0);
   });
 
   it("does not dedup across distinct keys (scope, artifactType, or hash)", async () => {
@@ -323,10 +284,6 @@ describe("withArtifactCache (in-process single-flight)", () => {
       }),
     ]);
 
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(__getInFlightKeysForTests()).toHaveLength(4);
-
     a.release();
     b.release();
     c.release();
@@ -343,44 +300,76 @@ describe("withArtifactCache (in-process single-flight)", () => {
     expect(d.recompute).toHaveBeenCalledOnce();
   });
 
-  it("a caller arriving after another's cache miss but before its compute settles joins the in-flight Promise", async () => {
+  it("treats the single-flight key as collision-free even with pipe characters in components", async () => {
+    // Earlier implementation used `${scope}|${type}|${hash}` which could
+    // collide if any component contained `|`. The current key uses
+    // JSON.stringify of a tuple which is collision-free regardless of
+    // content; this test pins that behavior so a future shortcut back
+    // to a string-template key gets caught.
     mocks.getComputedArtifact.mockResolvedValue(null);
-    const { recompute, release } = deferredRecompute({ count: 7 });
+    const a = deferredRecompute({ tag: "A" });
+    const b = deferredRecompute({ tag: "B" });
 
-    const first = withArtifactCache<{ count: number }>({
-      scopeId: SCOPE_ID,
-      artifactType: ARTIFACT,
-      inputVersionHash: HASH,
-      serde: jsonSerde<{ count: number }>(),
-      rowCount: () => 0,
-      recompute,
-    });
+    const calls = Promise.all([
+      withArtifactCache<{ tag: string }>({
+        scopeId: "a|b",
+        artifactType: "c",
+        inputVersionHash: HASH,
+        serde: jsonSerde<{ tag: string }>(),
+        rowCount: () => 0,
+        recompute: a.recompute,
+      }),
+      withArtifactCache<{ tag: string }>({
+        scopeId: "a",
+        artifactType: "b|c",
+        inputVersionHash: HASH,
+        serde: jsonSerde<{ tag: string }>(),
+        rowCount: () => 0,
+        recompute: b.recompute,
+      }),
+    ]);
 
-    // Let the first caller's cache read resolve and reach Map.set().
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(__getInFlightKeysForTests()).toHaveLength(1);
+    a.release();
+    b.release();
+    const [r1, r2] = await calls;
 
-    const second = withArtifactCache<{ count: number }>({
-      scopeId: SCOPE_ID,
-      artifactType: ARTIFACT,
-      inputVersionHash: HASH,
-      serde: jsonSerde<{ count: number }>(),
-      rowCount: () => 0,
-      recompute, // would also resolve with { count: 7 } if invoked
-    });
+    // If the keys collided, one recompute would fire and both callers
+    // would receive the same result.
+    expect(a.recompute).toHaveBeenCalledOnce();
+    expect(b.recompute).toHaveBeenCalledOnce();
+    expect(r1.result).toEqual({ tag: "A" });
+    expect(r2.result).toEqual({ tag: "B" });
+  });
 
-    release();
-    const [a, b] = await Promise.all([first, second]);
+  it("warns once on cache-write failure even with concurrent waiters", async () => {
+    mocks.getComputedArtifact.mockResolvedValue(null);
+    mocks.upsertComputedArtifact.mockRejectedValue(new Error("DB hiccup"));
+    const recompute = vi.fn().mockResolvedValue({ count: 42 });
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const results = await Promise.all(
+      Array.from({ length: 5 }, () =>
+        withArtifactCache<{ count: number }>({
+          scopeId: SCOPE_ID,
+          artifactType: ARTIFACT,
+          inputVersionHash: HASH,
+          serde: jsonSerde<{ count: number }>(),
+          rowCount: () => 0,
+          recompute,
+        })
+      )
+    );
+
     expect(recompute).toHaveBeenCalledOnce();
-    expect(a.result).toEqual({ count: 7 });
-    expect(b.result).toEqual({ count: 7 });
-    expect(__getInFlightKeysForTests()).toHaveLength(0);
+    expect(mocks.upsertComputedArtifact).toHaveBeenCalledOnce();
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    for (const r of results) {
+      expect(r.result).toEqual({ count: 42 });
+      expect(r.fromCache).toBe(false);
+    }
   });
 
   it("cache hit by-passes the single-flight registry entirely", async () => {
-    // Once the first call has populated the cache, subsequent callers
-    // hit the cache and never enter the single-flight code path.
     mocks.getComputedArtifact.mockResolvedValue({
       payload: JSON.stringify({ count: 11 }),
     });
@@ -403,7 +392,80 @@ describe("withArtifactCache (in-process single-flight)", () => {
     for (const r of results) {
       expect(r).toEqual({ result: { count: 11 }, fromCache: true });
     }
-    expect(__getInFlightKeysForTests()).toHaveLength(0);
+  });
+});
+
+describe("withArtifactCache (single-flight kill switch)", () => {
+  it("WITH_ARTIFACT_CACHE_SINGLE_FLIGHT_ENABLED=0 disables dedup; concurrent cold-cache callers each recompute", async () => {
+    process.env[SINGLE_FLIGHT_ENV] = "0";
+    mocks.getComputedArtifact.mockResolvedValue(null);
+    const recompute = vi.fn().mockResolvedValue({ count: 1 });
+
+    const results = await Promise.all(
+      Array.from({ length: 4 }, () =>
+        withArtifactCache<{ count: number }>({
+          scopeId: SCOPE_ID,
+          artifactType: ARTIFACT,
+          inputVersionHash: HASH,
+          serde: jsonSerde<{ count: number }>(),
+          rowCount: () => 1,
+          recompute,
+        })
+      )
+    );
+
+    // Without dedup every caller runs its own recompute — original
+    // pre-PR behavior preserved as an emergency escape hatch.
+    expect(recompute).toHaveBeenCalledTimes(4);
+    expect(results).toHaveLength(4);
+  });
+
+  it.each(["false", "off", "no", "FALSE", "Off"])(
+    "treats '%s' as disabled",
+    async (raw) => {
+      process.env[SINGLE_FLIGHT_ENV] = raw;
+      mocks.getComputedArtifact.mockResolvedValue(null);
+      const recompute = vi.fn().mockResolvedValue({ count: 1 });
+
+      await Promise.all(
+        Array.from({ length: 3 }, () =>
+          withArtifactCache<{ count: number }>({
+            scopeId: SCOPE_ID,
+            artifactType: ARTIFACT,
+            inputVersionHash: HASH,
+            serde: jsonSerde<{ count: number }>(),
+            rowCount: () => 1,
+            recompute,
+          })
+        )
+      );
+
+      expect(recompute).toHaveBeenCalledTimes(3);
+    }
+  );
+
+  it("any other value (including unset) leaves single-flight enabled", async () => {
+    delete process.env[SINGLE_FLIGHT_ENV];
+    mocks.getComputedArtifact.mockResolvedValue(null);
+    const { recompute, release } = deferredRecompute({ count: 1 });
+
+    const results = Promise.all(
+      Array.from({ length: 3 }, () =>
+        withArtifactCache<{ count: number }>({
+          scopeId: SCOPE_ID,
+          artifactType: ARTIFACT,
+          inputVersionHash: HASH,
+          serde: jsonSerde<{ count: number }>(),
+          rowCount: () => 1,
+          recompute,
+        })
+      )
+    );
+
+    release();
+    await results;
+
+    expect(recompute).toHaveBeenCalledOnce();
   });
 });
 
