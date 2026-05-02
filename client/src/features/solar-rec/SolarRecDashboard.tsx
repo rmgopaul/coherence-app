@@ -1833,6 +1833,9 @@ export default function SolarRecDashboard() {
   const isFinancialsTabActive = activeTab === "financials";
   const isDeliveryTrackerTabActive = activeTab === "delivery-tracker";
   const isOfflineMonitoringTabActive = activeTab === "offline-monitoring";
+  const isChangeOwnershipTabActive = activeTab === "change-ownership";
+  const isAlertsTabActive = activeTab === "alerts";
+  const isComparisonsTabActive = activeTab === "comparisons";
   // Removed dead flags whose consumer memos moved out of the parent:
   // isTrendsTabActive, isAlertsTabActive, isComparisonsTabActive,
   // isDataQualityTabActive, isOfflineTabActive,
@@ -1952,6 +1955,11 @@ export default function SolarRecDashboard() {
     const nextTab = (tabFromQuery ?? DEFAULT_DASHBOARD_TAB) as DashboardTabId;
     if (nextTab !== activeTab) {
       setActiveTab(nextTab);
+      // URL-driven tab change counts as a deliberate user
+      // interaction. Without this, back/forward navigation would
+      // never flip the interaction gate and heavy queries on the
+      // destination tab would stay disabled forever.
+      setHasUserInteractedWithDashboard(true);
     }
   }, [activeTab, search]);
 
@@ -2931,10 +2939,12 @@ export default function SolarRecDashboard() {
   const slimSummary = dashboardSummaryQuery.data;
 
   // Heavy offline-monitoring aggregator. Carries per-system maps
-  // (~2-5 MB on prod). Only fetched when a tab that needs that
-  // detail is active — Offline Monitoring, Ownership, Size, or any
-  // tab in the performance-ratio cluster. React-query dedups across
-  // multiple gated queries.
+  // (~2-5 MB on prod, allowlisted). Only fetched when:
+  //   1. The active tab consumes per-system data (Offline Monitoring,
+  //      Ownership, Size, performance-ratio cluster), AND
+  //   2. The user has interacted with the dashboard (deep links to
+  //      heavy tabs do NOT auto-fire the all-row response — the user
+  //      must navigate at least once, which counts as interaction).
   const isOfflineMonitoringHeavyNeeded =
     isOfflineMonitoringTabActive ||
     activeTab === "ownership" ||
@@ -2946,7 +2956,8 @@ export default function SolarRecDashboard() {
       undefined,
       {
         staleTime: 60_000,
-        enabled: isOfflineMonitoringHeavyNeeded,
+        enabled:
+          isOfflineMonitoringHeavyNeeded && hasUserInteractedWithDashboard,
       }
     );
 
@@ -2967,28 +2978,16 @@ export default function SolarRecDashboard() {
     );
   }, [offlineMonitoringQuery.data]);
 
-  // Phase 8.2 of the server-side architecture migration:
-  //
-  // The client no longer runs buildSystems() on the main thread.
-  // SystemRecord[] comes exclusively from the server snapshot
-  // (via useSystemSnapshot hook), which fetches from tRPC and
-  // polls during build. The ~200ms buildSystems compute on the
-  // main thread is eliminated entirely.
-  //
-  // Empty-array states while the server is loading or building
-  // are fine — the rest of the dashboard already handles dataset
-  // hydration loading states the same way.
-  //
-  // The datasets state map still gets populated by cloud-fallback
-  // hydration for keys in `TAB_PRIORITY_DATASETS` because some tabs
-  // still iterate raw CSV rows (FinancialsTab reads
-  // `abpCsgSystemMapping.rows` + `abpIccReport3Rows.rows`;
-  // ScheduleBImport's CSV merge upload handler reads
-  // `deliveryScheduleBase.rows` to dedup against existing rows).
-  // The cloud-fallback pipeline + datasets state map can be deleted
-  // entirely once those last consumers migrate to server queries
-  // (Followup #1 step 2 + #4 in `phase-5e-handoff.md`).
-  const serverSnapshot = useSystemSnapshot();
+  // System snapshot is the legacy ~26 MB allowlisted SystemRecord[]
+  // payload. Default Overview mount does NOT need it — slim summary
+  // covers headline tiles, charts, and value totals. Only enabled
+  // once the user interacts (any tab navigation) so default Overview
+  // first paint never fires it. Tabs that consume the full systems[]
+  // (Alerts, Comparisons, Financials, Forecast, SystemDetailSheet)
+  // see populated `systems` once interaction has flipped the gate.
+  const serverSnapshot = useSystemSnapshot({
+    enabled: hasUserInteractedWithDashboard,
+  });
 
   const systems = useMemo<SystemRecord[]>(
     () => serverSnapshot.systems ?? [],
@@ -3136,26 +3135,73 @@ export default function SolarRecDashboard() {
   }, [part2EligibleSystemsForSizeReporting]);
 
   const sizeBreakdownRows = useMemo(() => {
-    const breakdown = ["<=10 kW AC", ">10 kW AC", "Unknown"] as SizeBucket[];
-    return breakdown.map((bucket) => {
-      const scoped = part2EligibleSystemsForSizeReporting.filter((system) => system.sizeBucket === bucket);
-      const reporting = scoped.filter((system) => system.isReporting).length;
-      const notReporting = scoped.length - reporting;
-      const reportingPercent = toPercentValue(reporting, scoped.length);
-      const contractedValue = scoped.reduce((sum, system) => sum + resolveContractValueAmount(system), 0);
-      const deliveredValue = scoped.reduce((sum, system) => sum + (system.deliveredValue ?? 0), 0);
-      return {
-        bucket,
-        total: scoped.length,
-        reporting,
-        notReporting,
-        reportingPercent,
-        contractedValue,
-        deliveredValue,
-        valueDeliveredPercent: toPercentValue(deliveredValue, contractedValue),
-      };
-    });
-  }, [part2EligibleSystemsForSizeReporting]);
+    // Prefer the heavy-derived rows when offlineMonitoring + systems
+    // are loaded — those include delivered-value fields the
+    // SizeReportingTab uses for its detailed value rollup.
+    if (
+      offlineMonitoringQuery.data &&
+      part2EligibleSystemsForSizeReporting.length > 0
+    ) {
+      const breakdown = ["<=10 kW AC", ">10 kW AC", "Unknown"] as SizeBucket[];
+      return breakdown.map((bucket) => {
+        const scoped = part2EligibleSystemsForSizeReporting.filter(
+          (system) => system.sizeBucket === bucket
+        );
+        const reporting = scoped.filter((system) => system.isReporting).length;
+        const notReporting = scoped.length - reporting;
+        const reportingPercent = toPercentValue(reporting, scoped.length);
+        const contractedValue = scoped.reduce(
+          (sum, system) => sum + resolveContractValueAmount(system),
+          0,
+        );
+        const deliveredValue = scoped.reduce(
+          (sum, system) => sum + (system.deliveredValue ?? 0),
+          0,
+        );
+        return {
+          bucket,
+          total: scoped.length,
+          reporting,
+          notReporting,
+          reportingPercent,
+          contractedValue,
+          deliveredValue,
+          valueDeliveredPercent: toPercentValue(deliveredValue, contractedValue),
+        };
+      });
+    }
+    // Default mount / Overview-only path: take counts +
+    // contractedValue from the slim summary and keep delivered-value
+    // fields at 0. The SizeReportingTab's detailed value display
+    // only renders meaningfully once it activates and the heavy
+    // query loads.
+    if (slimSummary) {
+      return slimSummary.sizeBreakdownRows.map((row) => ({
+        bucket: row.bucket,
+        total: row.total,
+        reporting: row.reporting,
+        notReporting: row.notReporting,
+        reportingPercent: row.reportingPercent,
+        contractedValue: row.contractedValue,
+        deliveredValue: 0,
+        valueDeliveredPercent: null,
+      }));
+    }
+    return ["<=10 kW AC", ">10 kW AC", "Unknown"].map((bucket) => ({
+      bucket: bucket as SizeBucket,
+      total: 0,
+      reporting: 0,
+      notReporting: 0,
+      reportingPercent: null,
+      contractedValue: 0,
+      deliveredValue: 0,
+      valueDeliveredPercent: null,
+    }));
+  }, [
+    offlineMonitoringQuery.data,
+    part2EligibleSystemsForSizeReporting,
+    slimSummary,
+  ]);
 
   // sizeTabNotReportingPart2Rows + sizeSiteList pagination + visibleSizeSiteListRows
   // — moved to SizeReportingTab
@@ -3165,17 +3211,21 @@ export default function SolarRecDashboard() {
 
   // filteredOwnershipRows — moved to @/solar-rec-dashboard/components/OwnershipTab
 
-  // Phase 5e Followup #4 step 4 PR-C3 (2026-04-30) — `changeOwnershipRows`,
-  // `changeOwnershipSummary`, `cooNotTransferredNotReportingCurrentCount`,
-  // and the OverviewTab's `ownershipStackedChartRows` all moved to
-  // a single server aggregator (`getDashboardChangeOwnership`).
-  // The ~140-LOC walk over `part2VerifiedAbpRows × systems` runs
-  // server-side, cached by abpReport batch + system snapshot hash.
+  // Heavy change-ownership aggregator. Carries the full per-project
+  // `rows` array (~19 MB on prod, allowlisted). Slim mount summary
+  // already provides the counts/chart/headline `cooNot...` value
+  // Overview needs on first paint, so this query only fires when:
+  //   1. The Change Ownership tab is active (rows feed the tab's
+  //      detail table + CSV export), AND
+  //   2. The user has interacted (deep link to ?tab=change-ownership
+  //      does NOT auto-fire the all-row response on first paint).
   const changeOwnershipQuery =
     solarRecTrpc.solarRecDashboard.getDashboardChangeOwnership.useQuery(
       undefined,
       {
         staleTime: 60_000,
+        enabled:
+          isChangeOwnershipTabActive && hasUserInteractedWithDashboard,
       }
     );
   type ChangeOwnershipData = NonNullable<typeof changeOwnershipQuery.data>;
@@ -3220,12 +3270,28 @@ export default function SolarRecDashboard() {
     () => changeOwnershipQuery.data ?? EMPTY_CHANGE_OWNERSHIP,
     [changeOwnershipQuery.data, EMPTY_CHANGE_OWNERSHIP]
   );
+  // `rows` is heavy detail (~19 MB on prod) — only present when the
+  // Change Ownership tab has activated and loaded the heavy query.
   const changeOwnershipRows = changeOwnershipData.rows;
-  const changeOwnershipSummary = changeOwnershipData.summary;
-  const cooNotTransferredNotReportingCurrentCount =
-    changeOwnershipData.cooNotTransferredNotReportingCurrentCount;
-  const ownershipStackedChartRows =
-    changeOwnershipData.ownershipStackedChartRows;
+  // Summary / chart / headline fields prefer the heavy aggregator's
+  // values when loaded (project-level fidelity for the Change
+  // Ownership tab) and fall back to the slim mount summary's
+  // system-level values for first paint and any tab that just
+  // displays headline numbers (e.g., Overview). System-level vs
+  // project-level can diverge when one Part-II ABP project maps
+  // to multiple CSG systems — see the Slim builder's fidelity
+  // caveat docstring.
+  const changeOwnershipSummary = changeOwnershipQuery.data
+    ? changeOwnershipQuery.data.summary
+    : (slimSummary?.changeOwnership.summary ?? EMPTY_CHANGE_OWNERSHIP.summary);
+  const cooNotTransferredNotReportingCurrentCount = changeOwnershipQuery.data
+    ? changeOwnershipQuery.data.cooNotTransferredNotReportingCurrentCount
+    : (slimSummary?.changeOwnership.cooNotTransferredNotReportingCurrentCount ??
+      0);
+  const ownershipStackedChartRows = changeOwnershipQuery.data
+    ? changeOwnershipQuery.data.ownershipStackedChartRows
+    : (slimSummary?.changeOwnership.ownershipStackedChartRows ??
+      EMPTY_CHANGE_OWNERSHIP.ownershipStackedChartRows);
 
   // filteredChangeOwnershipRows — moved to @/solar-rec-dashboard/components/ChangeOwnershipTab
 
@@ -3320,12 +3386,37 @@ export default function SolarRecDashboard() {
   // compliantPerformanceRatioRows, compliantPerformanceRatioSummary, compliantReportTotalPages/visible*,
   // downloadPerformanceRatioCsv, downloadCompliantPerformanceRatioCsv
   // — ALL moved to @/solar-rec-dashboard/components/PerformanceRatioTab
-  const downloadOwnershipCountTileCsv = (tile: "reporting" | "notReporting" | "terminated") => {
-    // CSV download needs ownershipRows from the heavy overview
-    // aggregator. Mark the dashboard interactive so the heavy query
-    // is eligible to fetch — caller may need to retry once data
-    // arrives if this is the first interaction.
+  // Heavy ownershipRows is only loaded once the user is on Overview
+  // AND has interacted (gate above). Track whether the export is
+  // ready so the UI can show "Loading…" instead of producing an
+  // empty CSV. The heavy query state itself is the source of truth.
+  const overviewExportReady =
+    overviewSummaryQuery.isSuccess && !overviewSummaryQuery.isFetching;
+  const overviewExportLoading = overviewSummaryQuery.isFetching;
+
+  const downloadOwnershipCountTileCsv = (
+    tile: "reporting" | "notReporting" | "terminated"
+  ) => {
+    // First click in a fresh session: heavy query may not have
+    // started yet because the interaction gate hasn't flipped.
+    // Flip it so the query enables, then ALSO refuse to produce a
+    // CSV until rows are actually loaded — the legacy behavior of
+    // returning a 0-row file on the first click is a bug, not a
+    // graceful degradation.
     setHasUserInteractedWithDashboard(true);
+    if (!overviewExportReady) {
+      // Trigger a refetch in case it wasn't already enabled.
+      void overviewSummaryQuery.refetch();
+      // Surface a toast / alert. Falling back to alert keeps the
+      // dependency surface minimal; real toast plumbing is a
+      // follow-up.
+      if (typeof window !== "undefined") {
+        window.alert(
+          "Loading the Ownership Status export — please click again in a moment."
+        );
+      }
+      return;
+    }
     const tileRows = ownershipCountTileRows[tile]
       .slice()
       .sort((a, b) => a.systemName.localeCompare(b.systemName, undefined, { sensitivity: "base", numeric: true }));
@@ -3381,6 +3472,20 @@ export default function SolarRecDashboard() {
   };
 
   const downloadChangeOwnershipCountTileCsv = (status: ChangeOwnershipStatus) => {
+    // The heavy `changeOwnershipQuery` is only enabled once the user
+    // is on the Change Ownership tab AND has interacted. Refuse to
+    // produce a CSV with empty rows when the export isn't ready —
+    // the previous behavior silently produced a 0-row file.
+    setHasUserInteractedWithDashboard(true);
+    if (!changeOwnershipQuery.isSuccess || changeOwnershipQuery.isFetching) {
+      void changeOwnershipQuery.refetch();
+      if (typeof window !== "undefined") {
+        window.alert(
+          "Loading the Change-of-Ownership export — please click again in a moment."
+        );
+      }
+      return;
+    }
     const rows = changeOwnershipRows
       .filter((system) => system.changeOwnershipStatus === status)
       .slice()
@@ -5172,6 +5277,18 @@ const aiDataContext = useMemo(() => {
                     sizeBreakdownRows={sizeBreakdownRows}
                     ownershipStackedChartRows={ownershipStackedChartRows}
                     systems={systems}
+                    slimPart2Totals={
+                      slimSummary
+                        ? {
+                            totalContractedValuePart2:
+                              slimSummary.totalContractedValue,
+                            cumulativeKwAcPart2:
+                              slimSummary.cumulativeKwAcPart2,
+                            cumulativeKwDcPart2:
+                              slimSummary.cumulativeKwDcPart2,
+                          }
+                        : null
+                    }
                     onDownloadOwnershipTile={downloadOwnershipCountTileCsv}
                     onDownloadChangeOwnershipTile={downloadChangeOwnershipCountTileCsv}
                     onJumpToOfflineMonitoring={() => handleActiveTabChange("offline-monitoring")}
