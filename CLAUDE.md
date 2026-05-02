@@ -1,6 +1,6 @@
 # Productivity Hub
 
-> **Last updated:** 2026-04-29
+> **Last updated:** 2026-05-02
 
 Full-stack personal productivity dashboard integrating Google Calendar, Gmail, Drive, Todoist, ChatGPT, health tracking (Whoop, Samsung Health), and 25+ solar energy monitoring systems.
 
@@ -258,9 +258,9 @@ Anything marked `M` or `??` is active WIP — **ask before touching**.
   `firstDayOfMonth`, `lastDayOfPreviousMonth`, `asDateKey`,
   `parseIsoDate`, `formatIsoDate`, `shiftIsoDate`, `toNullableString`,
   `safeRound`, `sumKwh`, and more. Import — do not redefine.
-- **DB barrel** (`server/db.ts`): 38-line barrel over 26 domain
+- **DB barrel** (`server/db.ts`): 50-line barrel over ~39 domain
   modules in `server/db/`. New queries go in the right domain file.
-- **tRPC index** (`server/routers.ts`): 110-line composition.
+- **tRPC index** (`server/routers.ts`): 129-line composition.
   Procedures live in `server/routers/*.ts` — never add directly
   to `routers.ts`.
 
@@ -418,7 +418,9 @@ the PR that first uses the column, or apply the migration to prod
 │   │   ├── solar-rec-main.tsx     # Solar REC standalone entry (URL: /solar-rec/*)
 │   │   ├── features/              # ~45 route pages, organized by domain
 │   │   │   ├── _shared/           # Cross-feature helpers (insights/, etc.)
-│   │   │   ├── dashboard/         # Home, Dashboard, widgets, AbpInvoiceSettlement, AddressChecker, EarlyPayment, InvoiceMatchDashboard, DinScrapeManager, etc.
+│   │   │   ├── contacts/          # ContactsOverlay.tsx
+│   │   │   ├── dashboard/         # Home, Dashboard, FrontPageDashboard, OneThing, Canvas, CommandDeck, River, widgets (Gmail/Calendar/Todoist/Clockify/ChatGPT)
+│   │   │   ├── feedback/          # FeedbackReviewDashboard.tsx
 │   │   │   ├── habits/            # Habits.tsx + sub-panels (protocol, today, history, insights, sleep)
 │   │   │   ├── health/            # Health.tsx + sub-panels (today, trends, sleep, insights)
 │   │   │   ├── notebook/          # Notebook.tsx
@@ -428,8 +430,11 @@ the PR that first uses the column, or apply the migration to prod
 │   │   ├── workers/               # Web workers (csvParser)
 │   │   ├── solar-rec/             # Solar REC standalone-only components
 │   │   │   ├── SolarRecApp.tsx    # Wouter router for the standalone app
+│   │   │   ├── SolarRecLoginPage.tsx
 │   │   │   ├── solarRecTrpc.ts    # solarRecTrpc client (NOT the main trpc)
-│   │   │   └── pages/             # MonitoringDashboard, MonitoringOverview, SolarRecSettings, ContractScanner, ContractScrapeManager, DeepUpdateSynthesizer, ZendeskTicketMetrics, meter-reads/ (16 per-vendor pages)
+│   │   │   ├── components/        # Solar-rec-only shared components (PermissionGate, WorksetSelector, etc.)
+│   │   │   ├── hooks/             # Solar-rec-only React hooks
+│   │   │   └── pages/             # MonitoringDashboard, MonitoringOverview, SolarRecSettings, ContractScanner, ContractScrapeManager, DeepUpdateSynthesizer, ZendeskTicketMetrics, AbpInvoiceSettlement, AddressChecker, DinScrapeManager, EarlyPayment, InvoiceMatchDashboard, JobsIndex, SystemDetail, meter-reads/ (16 per-vendor pages)
 │   │   ├── solar-rec-dashboard/   # Extracted modules for SolarRecDashboard.tsx
 │   │   ├── components/
 │   │   ├── hooks/
@@ -443,8 +448,14 @@ the PR that first uses the column, or apply the migration to prod
 │   │   │   ├── solarRecRouter.ts  # Standalone solar-rec tRPC router (see warning above)
 │   │   │   ├── solarRecBase.ts    # Shared `t` and `requirePermission` for solar-rec sub-routers
 │   │   │   ├── solarRecDashboardRouter.ts   # Solar REC dashboard sub-router (Task 5.5)
-│   │   │   ├── solarRecContractScanRouter.ts # Solar REC contract-scan sub-router
+│   │   │   ├── solarRecContractScanRouter.ts # Solar REC contract-scan sub-router (Task 5.7)
+│   │   │   ├── solarRecDinScrapeRouter.ts   # Solar REC DIN scrape sub-router (Task 5.8)
+│   │   │   ├── solarRecAbpSettlementRouter.ts # ABP Invoice Settlement sub-router (Task 5.9)
+│   │   │   ├── solarRecCsgPortalRouter.ts   # CSG portal credentials sub-router (Task 5.9)
 │   │   │   ├── solarRecZendeskRouter.ts     # Zendesk ticket metrics sub-router (Task 5.11)
+│   │   │   ├── solarRecJobsRouter.ts        # Jobs index sub-router
+│   │   │   ├── solarRecSystemsRouter.ts     # Systems detail sub-router
+│   │   │   ├── solarRecWorksetsRouter.ts    # ID worksets sub-router
 │   │   │   ├── solarRecAuth.ts    # /solar-rec/api/auth/* endpoints
 │   │   │   ├── vite.ts            # Serves the right HTML for main vs /solar-rec/
 │   │   │   └── ...                # security, pinGate, env, sdk, schedulers, misc infrastructure
@@ -546,10 +557,11 @@ Most API keys (Google, Todoist, OpenAI) are stored per-user in the database via 
   meter-read pages, not a server-side adapter.
 - Tests run in Node env with timezone America/Chicago. Server tests:
   `server/**/*.test.ts`. Shared tests: `shared/**/*.test.ts`. Client
-  pure-function tests: `client/src/solar-rec-dashboard/**/*.test.ts`
-  plus selected feature dirs (`client/src/features/dashboard/**`,
-  `supplements/**`, `habits/**`, `health/**`). See `vitest.config.ts`
-  for the exact include list.
+  pure-function tests: `client/src/solar-rec-dashboard/**/*.test.ts`,
+  `client/src/lib/**/*.test.ts`, plus selected feature dirs
+  (`client/src/features/dashboard/**`, `supplements/**`, `habits/**`,
+  `health/**`, `settings/**`). See `vitest.config.ts` for the exact
+  include list.
 
 ## Testing
 
@@ -559,9 +571,10 @@ Vitest config: `productivity-hub/vitest.config.ts`
 - Shared tests: `shared/**/*.test.ts`
 - Client pure-function tests:
   `client/src/solar-rec-dashboard/**/*.test.ts`,
+  `client/src/lib/**/*.test.ts`,
   `client/src/features/dashboard/*.test.ts` plus the
   `frontpage/`, `river/`, `canvas/`, `command/` subtrees, and
-  `client/src/features/{supplements,habits,health}/**/*.test.ts`
+  `client/src/features/{supplements,habits,health,settings}/**/*.test.ts`
 - TZ=America/Chicago
 
 ## Before shipping any server-side fix

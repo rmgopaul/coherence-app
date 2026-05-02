@@ -3009,6 +3009,37 @@ export const solarRecDashboardRouter = t.router({
   }),
 
   /**
+   * PR #332 follow-up item 8 (2026-05-02) — slim, cache-only KPI
+   * summary for the 4 Overview financial tiles
+   * (totalProfit / totalUtilityCollateral /
+   * totalAdditionalCollateral / totalCcAuth) plus `systemsWithData`
+   * for the subtitle. Wire payload is < 200 bytes.
+   *
+   * NEVER triggers a row materialization. The heavy
+   * `getDashboardFinancials` populates a side cache after it runs;
+   * this proc only READS that side cache. When the side cache is
+   * cold, returns `{ available: false }` and the client renders the
+   * 4 tiles as "N/A" placeholders. Overview mount stops invoking
+   * the row-materializing financial aggregate as a result.
+   */
+  getDashboardFinancialKpiSummary: dashboardProcedure(
+    "solar-rec-dashboard",
+    "read"
+  ).query(async ({ ctx }) => {
+    const {
+      getCachedFinancialsKpiSummary,
+      FINANCIALS_KPI_SUMMARY_RUNNER_VERSION,
+    } = await import("../services/solar/buildFinancialsAggregates");
+
+    const summary = await getCachedFinancialsKpiSummary(ctx.scopeId);
+
+    return {
+      ...summary,
+      _runnerVersion: FINANCIALS_KPI_SUMMARY_RUNNER_VERSION,
+    };
+  }),
+
+  /**
    * Phase 5e Followup #4 step 4 PR-C3 (2026-04-30) — server-side
    * aggregator for the Change of Ownership tab + Overview tab's
    * stacked-chart row. Replaces 3 client memos that walked
@@ -3105,18 +3136,41 @@ export const solarRecDashboardRouter = t.router({
   }),
 
   /**
-   * Server-side CSV export for the Overview ownership-status tile
-   * filters. Replaces the client-side flow that hydrated the heavy
-   * `getDashboardOverviewSummary.ownershipRows[]` (~5–15 MB) into the
-   * browser, filtered, and joined a CSV string. The new flow runs
-   * the same heavy aggregator server-side (cached + single-flighted),
-   * filters by tile, returns the CSV string + filename. The client
-   * never receives the JSON detail rows; it just downloads the CSV.
+   * TRANSITIONAL — server-side CSV export for the Overview
+   * ownership-status tile filters. Replaces the client-side flow
+   * that hydrated the heavy `getDashboardOverviewSummary.ownershipRows[]`
+   * (~5–15 MB) into the browser, filtered, and joined a CSV string.
+   * The new flow runs the same heavy aggregator server-side (cached
+   * + single-flighted), filters by tile, returns the CSV string +
+   * filename. The client never receives the JSON detail rows; it
+   * just downloads the CSV.
+   *
+   * INVARIANT (PR #332 follow-up, 2026-05-02): the client CSV-click
+   * handler must NOT flip `hasUserInteractedWithDashboard`. This
+   * proc is self-contained — it builds the heavy aggregator on the
+   * server and returns only the CSV string. Letting the click seed
+   * the interaction gate would silently enable the heavy mount-tier
+   * queries (`getDashboardOverviewSummary` /
+   * `getDashboardOfflineMonitoring` / `getDashboardChangeOwnership`)
+   * on the next render, dragging multi-MB JSON payloads into the
+   * browser as a side-effect of an export click.
    *
    * The proc IS large by design (the CSV string itself can be MB-
-   * scale on prod) — added to `DASHBOARD_OVERSIZE_ALLOWLIST`. Future
-   * iteration: stream the CSV via Express to bypass tRPC's
-   * single-response shape entirely.
+   * scale on prod) and remains on `DASHBOARD_OVERSIZE_ALLOWLIST`.
+   *
+   * REPLACEMENT PLAN (tracked separately, NOT this PR):
+   *   1. Convert this query to a tRPC mutation that ENQUEUES an
+   *      export job and returns a `{ jobId }`.
+   *   2. Run the CSV build on a worker; stream rows directly to S3
+   *      under `<scope>/exports/<jobId>.csv` via the existing
+   *      `solarRecDashboardStorage` blob path.
+   *   3. Client polls `getDashboardCsvExportJobStatus(jobId)` and
+   *      receives a presigned-URL artifact when ready.
+   *   4. Once the streaming/background path lands, REMOVE this proc
+   *      from `DASHBOARD_OVERSIZE_ALLOWLIST` and delete the
+   *      synchronous CSV string return.
+   * Until that PR ships, the allowlist exception is acknowledged
+   * tech debt — not the target architecture.
    */
   exportOwnershipTileCsv: dashboardProcedure(
     "solar-rec-dashboard",
@@ -3143,9 +3197,12 @@ export const solarRecDashboardRouter = t.router({
     }),
 
   /**
-   * Server-side CSV export for the Change-Ownership status filters.
-   * Mirrors `exportOwnershipTileCsv` against the heavy
-   * `getDashboardChangeOwnership` aggregator's per-project rows.
+   * TRANSITIONAL — server-side CSV export for the Change-Ownership
+   * status filters. Mirrors `exportOwnershipTileCsv` against the
+   * heavy `getDashboardChangeOwnership` aggregator's per-project
+   * rows. Same allowlist exception, same no-side-effect invariant
+   * on the client click handler, same streaming/background
+   * replacement plan documented on `exportOwnershipTileCsv` above.
    */
   exportChangeOwnershipTileCsv: dashboardProcedure(
     "solar-rec-dashboard",

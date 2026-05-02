@@ -3058,25 +3058,68 @@ export default function SolarRecDashboard() {
     []
   );
   // `summary` is the projection used by Overview tile-value
-  // consumers. `summaryDataKind` carries explicit slim-vs-heavy
-  // provenance so consumers that need to discriminate (e.g.
-  // delivered-value tiles, CSV export) can branch instead of reading
-  // a silent zero from the slim projection.
+  // consumers. It is a DISCRIMINATED UNION on `kind` so heavy-only
+  // fields cannot be read as silent zeros on the slim path:
+  //   - `kind: "slim"` carries headline counts + size buckets +
+  //     ownership tile breakdown + `totalContractAmount`-based value
+  //     totals. Delivered-value / gap / per-system ownership rows
+  //     are NOT available — accessing them is a TypeScript error
+  //     unless the consumer has narrowed on `summary.kind === "heavy"`.
+  //   - `kind: "heavy"` is the full overview-summary aggregator
+  //     payload (delivered-value tiles, ownershipRows for legacy
+  //     consumers, etc.).
   //
-  // Heavy-only fields (totalDeliveredValue, totalGap,
-  // deliveredValuePercent, ownershipRows) stay at the EMPTY sentinel
-  // values when slim. The dataKind discriminator is the contract for
-  // whether they're trustworthy. UI code that displays delivered
-  // values must check `summaryDataKind === "heavy"` and render an
-  // explicit "—" placeholder otherwise.
-  const summaryDataKind: "slim" | "heavy" = overviewSummaryQuery.data
-    ? "heavy"
-    : "slim";
-  const summary = useMemo<OverviewSummaryData>(() => {
-    if (overviewSummaryQuery.data) return overviewSummaryQuery.data;
-    if (!slimSummary) return EMPTY_OVERVIEW_SUMMARY;
+  // Pre-slim consumers that show delivered-value tiles MUST narrow
+  // before reading those fields and render an explicit "—" / "N/A"
+  // placeholder when slim. ownershipRows stays unavailable on slim
+  // and must not be used for export — server-side
+  // `exportOwnershipTileCsv` is the canonical path.
+  type HeavyOverviewSummary = OverviewSummaryData & { kind: "heavy" };
+  type SlimOverviewSummary = {
+    kind: "slim";
+    totalSystems: number;
+    reportingSystems: number;
+    reportingPercent: number | null;
+    smallSystems: number;
+    largeSystems: number;
+    unknownSizeSystems: number;
+    ownershipOverview: OverviewSummaryData["ownershipOverview"];
+    withValueDataCount: number;
+    totalContractedValue: number;
+    contractedValueReporting: number;
+    contractedValueNotReporting: number;
+    contractedValueReportingPercent: number | null;
+    fromCache: boolean;
+    _runnerVersion: string;
+  };
+  type DashboardSummaryProjection = HeavyOverviewSummary | SlimOverviewSummary;
+  const EMPTY_SLIM_SUMMARY: SlimOverviewSummary = useMemo(
+    () => ({
+      kind: "slim",
+      totalSystems: 0,
+      reportingSystems: 0,
+      reportingPercent: null,
+      smallSystems: 0,
+      largeSystems: 0,
+      unknownSizeSystems: 0,
+      ownershipOverview: EMPTY_OVERVIEW_SUMMARY.ownershipOverview,
+      withValueDataCount: 0,
+      totalContractedValue: 0,
+      contractedValueReporting: 0,
+      contractedValueNotReporting: 0,
+      contractedValueReportingPercent: null,
+      fromCache: false,
+      _runnerVersion: "client-empty",
+    }),
+    [EMPTY_OVERVIEW_SUMMARY]
+  );
+  const summary = useMemo<DashboardSummaryProjection>(() => {
+    if (overviewSummaryQuery.data) {
+      return { ...overviewSummaryQuery.data, kind: "heavy" };
+    }
+    if (!slimSummary) return EMPTY_SLIM_SUMMARY;
     return {
-      ...EMPTY_OVERVIEW_SUMMARY,
+      kind: "slim",
       totalSystems: slimSummary.totalSystems,
       reportingSystems: slimSummary.reportingSystems,
       reportingPercent: slimSummary.reportingPercent,
@@ -3090,15 +3133,15 @@ export default function SolarRecDashboard() {
       contractedValueNotReporting: slimSummary.contractedValueNotReporting,
       contractedValueReportingPercent:
         slimSummary.contractedValueReportingPercent,
-      // Heavy-only fields stay at EMPTY defaults. summaryDataKind ===
-      // "slim" tells consumers these are placeholders, not real zeros.
-      // Carry the slim's server-emitted runner version forward so log
-      // entries / diagnostics surface the actual provenance.
-      _runnerVersion:
-        (slimSummary as { _runnerVersion?: string })._runnerVersion ??
-        "slim-dashboard-summary",
+      fromCache: false,
+      // tRPC's inferred type for the slim query already includes
+      // `_runnerVersion` (the server returns `{ ...result, fromCache,
+      // _runnerVersion: SLIM_DASHBOARD_SUMMARY_RUNNER_VERSION }`). No
+      // structural cast needed.
+      _runnerVersion: slimSummary._runnerVersion,
     };
-  }, [overviewSummaryQuery.data, slimSummary, EMPTY_OVERVIEW_SUMMARY]);
+  }, [overviewSummaryQuery.data, slimSummary, EMPTY_SLIM_SUMMARY]);
+  const summaryDataKind: "slim" | "heavy" = summary.kind;
 
   const part2EligibleSystemsForSizeReporting = useMemo(() => {
     const data = offlineMonitoringQuery.data;
@@ -3315,22 +3358,13 @@ export default function SolarRecDashboard() {
 
   // filteredChangeOwnershipRows — moved to @/solar-rec-dashboard/components/ChangeOwnershipTab
 
-  const ownershipCountTileRows = useMemo(
-    () => ({
-      reporting: summary.ownershipRows.filter(
-        (row) => row.ownershipStatus === "Not Transferred and Reporting" || row.ownershipStatus === "Transferred and Reporting"
-      ),
-      notReporting: summary.ownershipRows.filter(
-        (row) =>
-          row.ownershipStatus === "Not Transferred and Not Reporting" ||
-          row.ownershipStatus === "Transferred and Not Reporting"
-      ),
-      terminated: summary.ownershipRows.filter(
-        (row) => row.ownershipStatus === "Terminated and Reporting" || row.ownershipStatus === "Terminated and Not Reporting"
-      ),
-    }),
-    [summary.ownershipRows]
-  );
+  // `ownershipCountTileRows` was a client-side per-system filter over
+  // `summary.ownershipRows`. It was never consumed (the tile CSV
+  // export goes through `exportOwnershipTileCsv` server-side, see
+  // `downloadOwnershipCountTileCsv`) and `ownershipRows` is heavy-
+  // only — unavailable on the slim path. Removed to keep the data
+  // boundary explicit; slim consumers do not synthesize a fake
+  // empty-array fallback.
 
   // offlineBaseSystems, offlineSystems, offlineMonitoringOptions, offlinePlatformOptions,
   // offlineInstallerOptions, offlineMonitoringBreakdownRows, offlineInstallerBreakdownRows,
@@ -3411,10 +3445,19 @@ export default function SolarRecDashboard() {
   // JSON; it just downloads the CSV string the server returns. First
   // click is correct (no double-click required, no false-empty
   // file). User feedback via sonner toast — never window.alert.
+  //
+  // CSV-click does NOT flip `hasUserInteractedWithDashboard`. The
+  // export procedure is self-contained — it builds + caches the
+  // overview aggregator on the SERVER, returns only the CSV string,
+  // and never seeds the browser with the heavy detail rows. Flipping
+  // the interaction flag here would silently enable
+  // `getDashboardOverviewSummary` / `getDashboardOfflineMonitoring` /
+  // `getDashboardChangeOwnership` on the next render, dragging
+  // multi-MB JSON payloads into the browser as a side-effect of an
+  // export click. Tab navigation remains the single trigger.
   const downloadOwnershipCountTileCsv = async (
     tile: "reporting" | "notReporting" | "terminated"
   ) => {
-    setHasUserInteractedWithDashboard(true);
     const tileLabel =
       tile === "reporting"
         ? "Reporting"
@@ -3447,10 +3490,11 @@ export default function SolarRecDashboard() {
     }
   };
 
+  // Same no-flip rule as `downloadOwnershipCountTileCsv` above —
+  // the CSV-export click must not seed heavy mount-tier queries.
   const downloadChangeOwnershipCountTileCsv = async (
     status: ChangeOwnershipStatus
   ) => {
-    setHasUserInteractedWithDashboard(true);
     const toastId = toast.loading(`Preparing ${status} export…`);
     try {
       const result =
@@ -4662,14 +4706,20 @@ const part2VerifiedSystemIds = useMemo(() => {
 // part2VerifiedSystems, financialRevenueAtRisk — moved to @/solar-rec-dashboard/components/FinancialsTab
 // ── Financials: Profit & Collateralization ──────────────────────
 // Phase 5e Followup #4 step 4 PR-B (2026-04-30) — `financialCsgIds`
-// + the FinancialsTab debug panel's static fields now come from
-// `getDashboardFinancials`. Gating extended to include the Pipeline
-// tab (which uses csgIds to drive `contractScanResultsQuery`) so
-// the data is available to all 3 consumer tabs.
+// + the FinancialsTab debug panel's static fields come from
+// `getDashboardFinancials`.
+//
+// PR #332 follow-up item 8 (2026-05-02) — REMOVED `isOverviewTabActive`
+// from the enabled predicate. The heavy proc materializes
+// mapping/icc/abp rows BEFORE its cache check; running it on
+// Overview mount drags multi-MB row arrays through the server even
+// when the user only wants 4 KPI tile values. Overview now reads
+// the dedicated cache-only `getDashboardFinancialKpiSummary` proc
+// below, which never triggers a row materialization. The heavy
+// proc fires only when Financials / Pipeline tabs activate.
 const financialsQuery =
   solarRecTrpc.solarRecDashboard.getDashboardFinancials.useQuery(undefined, {
-    enabled:
-      isFinancialsTabActive || isOverviewTabActive || isPipelineTabActive,
+    enabled: isFinancialsTabActive || isPipelineTabActive,
     staleTime: 60_000,
   });
 const financialCsgIds = useMemo<string[]>(
@@ -4677,13 +4727,33 @@ const financialCsgIds = useMemo<string[]>(
   [financialsQuery.data]
 );
 
+// PR #332 follow-up item 8 (2026-05-02) — slim, cache-only Overview
+// KPI summary. Wire payload < 200 bytes; never triggers a
+// row-materializing build. Returns `{ available: false }` when the
+// heavy financials side cache is cold; the Overview tile consumers
+// branch on `kpiDataAvailable` and render "N/A" placeholders rather
+// than silent zeros.
+const financialKpiSummaryQuery =
+  solarRecTrpc.solarRecDashboard.getDashboardFinancialKpiSummary.useQuery(
+    undefined,
+    {
+      enabled: isOverviewTabActive,
+      staleTime: 60_000,
+    }
+  );
+
 // Task 5.7 PR-B (2026-04-26): getContractScanResultsByCsgIds moved
 // from main `abpSettlementRouter` to standalone `contractScan` —
 // dashboard already imports `solarRecTrpc` (PR #110) so this is a
 // straight call-site swap.
+//
+// PR #332 follow-up item 8 (2026-05-02) — dropped `isOverviewTabActive`
+// from the enabled predicate alongside `financialsQuery`. Contract
+// scan join is row-materializing and was only fetched on Overview
+// mount via the (now-removed) Overview financials gate.
 const contractScanResultsQuery = solarRecTrpc.contractScan.getContractScanResultsByCsgIds.useQuery(
   { csgIds: financialCsgIds },
-  { enabled: (isFinancialsTabActive || isPipelineTabActive || isOverviewTabActive) && financialCsgIds.length > 0 }
+  { enabled: (isFinancialsTabActive || isPipelineTabActive) && financialCsgIds.length > 0 }
 );
 // updateContractOverride, rescanSingleContract mutations + editingFinancialRow state
 // — moved to @/solar-rec-dashboard/components/FinancialsTab
@@ -4705,11 +4775,32 @@ const FINANCIAL_PROFIT_EMPTY: FinancialProfitData = {
   totalAdditionalCollateral: 0,
   totalCcAuth: 0,
   systemsWithData: 0,
+  kpiDataAvailable: false,
 };
 
 const financialProfitData = useMemo<FinancialProfitData>(() => {
   const data = financialsQuery.data;
-  if (!data) return FINANCIAL_PROFIT_EMPTY;
+  if (!data) {
+    // Heavy financials NOT loaded. Fall back to the slim KPI summary
+    // (Overview-only, cache-only, no row materialization). When the
+    // side cache is cold, `kpiSummary.available === false` — leave
+    // the KPI fields at their zero defaults BUT mark
+    // `kpiDataAvailable: false` so OverviewTab renders "N/A"
+    // placeholders rather than treating zeros as real values.
+    const kpiSummary = financialKpiSummaryQuery.data;
+    if (kpiSummary && kpiSummary.available) {
+      return {
+        ...FINANCIAL_PROFIT_EMPTY,
+        totalProfit: kpiSummary.kpis.totalProfit,
+        totalUtilityCollateral: kpiSummary.kpis.totalUtilityCollateral,
+        totalAdditionalCollateral: kpiSummary.kpis.totalAdditionalCollateral,
+        totalCcAuth: kpiSummary.kpis.totalCcAuth,
+        systemsWithData: kpiSummary.kpis.systemsWithData,
+        kpiDataAvailable: true,
+      };
+    }
+    return FINANCIAL_PROFIT_EMPTY;
+  }
 
   let rows = data.rows as ProfitRow[];
 
@@ -4780,8 +4871,9 @@ const financialProfitData = useMemo<FinancialProfitData>(() => {
     totalAdditionalCollateral: roundMoney(totalAddlColl),
     totalCcAuth: roundMoney(totalCcAuthColl),
     systemsWithData: rows.length,
+    kpiDataAvailable: true,
   };
-}, [financialsQuery.data, localOverrides]);
+}, [financialsQuery.data, financialKpiSummaryQuery.data, localOverrides]);
 
 // ── Pipeline: Cash Flow by Month (M+1 from Part II verification) ──
 // pipelineCashFlowRows, cashFlowRows3Year, cashFlowRows12Month, cashFlowRows12MonthRef — moved to @/solar-rec-dashboard/components/AppPipelineTab

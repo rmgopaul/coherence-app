@@ -19,7 +19,11 @@ import {
   srDsAbpReport,
 } from "../../../drizzle/schemas/solar";
 import { getLatestScanResultsByCsgIds } from "../../db";
-import { getActiveVersionsForKeys } from "../../db/solarRecDatasets";
+import {
+  getActiveVersionsForKeys,
+  getComputedArtifact,
+  upsertComputedArtifact,
+} from "../../db/solarRecDatasets";
 import {
   clean,
   isPart2VerifiedAbpRow,
@@ -741,10 +745,133 @@ export async function getOrBuildFinancialsAggregates(scopeId: string): Promise<
     },
   });
 
+  // Side cache: write the 4 Overview KPI sums under a slim hash
+  // keyed only by the 3 dataset batch IDs (not scanResults). The
+  // slim Overview-mount endpoint reads this side cache without
+  // loading mapping/icc/abp/scan rows. KPIs may lag manual scan
+  // overrides by one heavy-aggregator cycle — accepted tradeoff
+  // for keeping Overview mount free of row materialization.
+  await writeFinancialsKpiSideCache(scopeId, batchIds, result).catch((error) => {
+    console.warn(
+      `[financialsAggregates] kpi side cache write failed for scope=${scopeId}:`,
+      error instanceof Error ? error.message : error
+    );
+  });
+
   return {
     ...result,
     csgIds: financialCsgIds,
     debug,
     fromCache,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Slim KPI summary (Overview mount-tier read path)
+//
+// Returns ONLY the 4 KPI tile values Overview shows on first paint:
+//   totalProfit, totalUtilityCollateral, totalAdditionalCollateral,
+//   totalCcAuth (+ systemsWithData for the "X systems" subtitle).
+//
+// The endpoint is CACHE-ONLY. It NEVER triggers a row-materializing
+// build — that's the contract for Overview mount per PR #332
+// follow-up item 8. The side cache is populated by the heavy
+// `getOrBuildFinancialsAggregates` after it runs, so KPIs become
+// available the first time any user visits Financials/Pipeline.
+// ---------------------------------------------------------------------------
+
+const FINANCIALS_KPI_SUMMARY_ARTIFACT_TYPE = "financials-kpi-summary";
+
+/**
+ * `_runnerVersion` shipped on the slim KPI summary response. Bump
+ * when the projected shape changes (additional KPI, type widening,
+ * etc.) so cached rows under the old shape are invalidated.
+ */
+export const FINANCIALS_KPI_SUMMARY_RUNNER_VERSION =
+  "kpi-summary-v1" as const;
+
+export type FinancialsKpiSummary = {
+  totalProfit: number;
+  totalUtilityCollateral: number;
+  totalAdditionalCollateral: number;
+  totalCcAuth: number;
+  systemsWithData: number;
+};
+
+function computeFinancialsKpiHash(batchIds: FinancialsBatchIds): string {
+  return createHash("sha256")
+    .update(
+      [
+        `runner:${FINANCIALS_KPI_SUMMARY_RUNNER_VERSION}`,
+        `abpCsgSystemMapping:${batchIds.abpCsgSystemMappingBatchId ?? ""}`,
+        `abpIccReport3Rows:${batchIds.abpIccReport3RowsBatchId ?? ""}`,
+        `abpReport:${batchIds.abpReportBatchId ?? ""}`,
+      ].join("|")
+    )
+    .digest("hex")
+    .slice(0, 16);
+}
+
+async function writeFinancialsKpiSideCache(
+  scopeId: string,
+  batchIds: FinancialsBatchIds,
+  result: FinancialsAggregates
+): Promise<void> {
+  const hash = computeFinancialsKpiHash(batchIds);
+  const summary: FinancialsKpiSummary = {
+    totalProfit: result.totalProfit,
+    totalUtilityCollateral: result.totalUtilityCollateral,
+    totalAdditionalCollateral: result.totalAdditionalCollateral,
+    totalCcAuth: result.totalCcAuth,
+    systemsWithData: result.systemsWithData,
+  };
+  await upsertComputedArtifact({
+    scopeId,
+    artifactType: FINANCIALS_KPI_SUMMARY_ARTIFACT_TYPE,
+    inputVersionHash: hash,
+    payload: JSON.stringify(summary),
+    rowCount: 0,
+  });
+}
+
+export type CachedFinancialsKpiSummaryResult =
+  | { available: true; kpis: FinancialsKpiSummary }
+  | { available: false };
+
+/**
+ * Cache-only KPI summary read. Returns `{ available: false }` when
+ * either:
+ *   - Required dataset batches aren't uploaded (financials can't
+ *     be computed at all).
+ *   - The heavy aggregator hasn't yet populated the side cache for
+ *     the current batch IDs.
+ *
+ * NEVER triggers a row materialization. Overview tile consumers
+ * MUST render an explicit "—" / "N/A" placeholder when
+ * `available: false`, not a silent zero.
+ */
+export async function getCachedFinancialsKpiSummary(
+  scopeId: string
+): Promise<CachedFinancialsKpiSummaryResult> {
+  const batchIds = await resolveFinancialsBatchIds(scopeId);
+  if (
+    !batchIds.abpCsgSystemMappingBatchId ||
+    !batchIds.abpIccReport3RowsBatchId ||
+    !batchIds.abpReportBatchId
+  ) {
+    return { available: false };
+  }
+  const hash = computeFinancialsKpiHash(batchIds);
+  const cached = await getComputedArtifact(
+    scopeId,
+    FINANCIALS_KPI_SUMMARY_ARTIFACT_TYPE,
+    hash
+  );
+  if (!cached) return { available: false };
+  try {
+    const kpis = JSON.parse(cached.payload) as FinancialsKpiSummary;
+    return { available: true, kpis };
+  } catch {
+    return { available: false };
+  }
 }
