@@ -458,6 +458,61 @@ export default memo(function FinancialsTab(props: FinancialsTabProps) {
   );
 
   // -------------------------------------------------------------------------
+  // PR #342 follow-up (2026-05-05) — shared post-mutation refresh
+  // helper. Used by saveOverride, handleBatchRescan, and the inline
+  // single-row rescan handler. Behavior:
+  //   1. contractScanRefetch + financialsRefetch run in parallel via
+  //      Promise.allSettled — they're independent heavy queries.
+  //   2. invalidateFinancialKpiSummary runs ONLY when financialsRefetch
+  //      fulfilled — the heavy refetch is what writes the slim KPI
+  //      side cache, so invalidating before it lands re-caches the
+  //      stale value.
+  //   3. Each step's failure is captured into a string array via
+  //      reasonText so callers can console.warn + toast on the
+  //      caller-specific prefix (e.g. [financials:save-override],
+  //      [financials:batch-rescan]).
+  //   4. financialsRefreshed is true iff financialsRefetch fulfilled,
+  //      regardless of whether invalidate or contractScanRefetch
+  //      succeeded. saveOverride uses this to decide whether to clear
+  //      the optimistic localOverrides entry.
+  //
+  // Note: the SolarRecDashboard parent passes refetch wrappers that
+  // call `refetch({ throwOnError: true })`, so a fulfilled outcome
+  // here genuinely means the underlying TanStack Query refetch
+  // succeeded — without throwOnError, refetch resolves even when the
+  // query errors.
+  const refreshFinancialsAfterMutation = useCallback(async (): Promise<{
+    financialsRefreshed: boolean;
+    failures: string[];
+  }> => {
+    const [scanOutcome, financialsOutcome] = await Promise.allSettled([
+      contractScanRefetch(),
+      financialsRefetch(),
+    ]);
+
+    const failures: string[] = [];
+    if (scanOutcome.status === "rejected") {
+      failures.push(`contractScanRefetch: ${reasonText(scanOutcome.reason)}`);
+    }
+    if (financialsOutcome.status === "rejected") {
+      failures.push(
+        `financialsRefetch: ${reasonText(financialsOutcome.reason)}`
+      );
+    }
+
+    const financialsRefreshed = financialsOutcome.status === "fulfilled";
+    if (financialsRefreshed) {
+      try {
+        await invalidateFinancialKpiSummary();
+      } catch (err) {
+        failures.push(`invalidateFinancialKpiSummary: ${reasonText(err)}`);
+      }
+    }
+
+    return { financialsRefreshed, failures };
+  }, [contractScanRefetch, financialsRefetch, invalidateFinancialKpiSummary]);
+
+  // -------------------------------------------------------------------------
   // Batch rescan: walks the current filtered rows, rescans each,
   // updates per-row status, and refetches the parent query at the end.
   // -------------------------------------------------------------------------
@@ -480,19 +535,19 @@ export default memo(function FinancialsTab(props: FinancialsTabProps) {
         initial.set(row.csgId, { status: "queued" });
       }
       setRescanStatuses(initial);
-  
+
       for (const row of rowsToScan) {
         if (batchRescanCancelledRef.current) break;
-  
+
         setRescanStatuses((prev) => {
           const next = new Map(prev);
           next.set(row.csgId, { status: "active" });
           return next;
         });
-  
+
         try {
           const result = await rescanSingleContract.mutateAsync({ csgId: row.csgId });
-  
+
           const changes: string[] = [];
           const oldVfp = row.vendorFeePercent;
           const newVfp = result.vendorFeePercent ?? 0;
@@ -504,7 +559,7 @@ export default memo(function FinancialsTab(props: FinancialsTabProps) {
           if (newAcp !== oldAcp) {
             changes.push(`Collateral: ${oldAcp}% \u2192 ${newAcp}%`);
           }
-  
+
           setRescanStatuses((prev) => {
             const next = new Map(prev);
             next.set(row.csgId, {
@@ -525,22 +580,26 @@ export default memo(function FinancialsTab(props: FinancialsTabProps) {
         }
       }
 
-      // PR #338 follow-up item 5 + PR #339 follow-up item 1
-      // (2026-05-05) — parallel refetch of the two independent
-      // heavy queries; the slim KPI invalidate must come AFTER
-      // both because the heavy financials refetch is what writes
-      // the side cache. A thrown refetch/invalidate is caught by
-      // the outer try/finally so the Running flag still flips off.
-      await Promise.all([contractScanRefetch(), financialsRefetch()]);
-      await invalidateFinancialKpiSummary();
+      // PR #342 follow-up (2026-05-05) — delegate to the shared
+      // helper so the slim KPI invalidate runs only after the heavy
+      // financials refetch fulfills. A thrown refetch/invalidate is
+      // caught by the outer try/finally so the Running flag still
+      // flips off.
+      const { failures } = await refreshFinancialsAfterMutation();
+      if (failures.length > 0) {
+        console.warn(
+          `[financials:post-mutation-refresh] [financials:batch-rescan] dashboard refresh failed after batch rescan: ${failures.join("; ")}`
+        );
+        toast.error(
+          "Batch rescan completed, but a background data refresh failed. Latest values will load on the next dashboard refresh."
+        );
+      }
     } finally {
       setBatchRescanRunning(false);
     }
   }, [
-    contractScanRefetch,
     filteredFinancialRows,
-    financialsRefetch,
-    invalidateFinancialKpiSummary,
+    refreshFinancialsAfterMutation,
     rescanSingleContract,
   ]);
 
@@ -577,93 +636,41 @@ export default memo(function FinancialsTab(props: FinancialsTabProps) {
         return next;
       });
       setEditingFinancialRow(null);
-      // PR #340 follow-up item 1 (2026-05-05). Background refresh
-      // contract — three real concerns the previous unawaited
-      // `Promise.all([scan, financials, invalidate]).then(clear)`
-      // got wrong:
-      //
-      //   (a) Unhandled rejection. No `.catch` meant any of the
-      //       three throwing silently surfaced as an
-      //       unhandled-promise warning at best — the user saw a
-      //       success toast but the data view never reconciled.
-      //   (b) Ordering invariant. The slim KPI side cache is
-      //       written BY the heavy financials refetch (server-
-      //       side, inside `getOrBuildFinancialsAggregates`). If
-      //       we invalidate the slim React-Query cache in
-      //       parallel with the refetch, the invalidate may land
-      //       BEFORE the side cache row is written and re-cache
-      //       the stale value when the user next opens Overview.
-      //   (c) Optimistic-override leak. Clearing
-      //       `localOverrides[savedCsgId]` only on the all-success
-      //       branch meant a transient refetch failure left the
-      //       phantom optimistic value in the local map forever.
-      //
-      // New shape:
-      //   1. contractScanRefetch + financialsRefetch run in
-      //      parallel via `Promise.allSettled` — they're
-      //      independent and we want both to attempt regardless
-      //      of the other's outcome.
-      //   2. invalidateFinancialKpiSummary runs ONLY AFTER
-      //      financialsRefetch resolves, so the slim cache
-      //      invalidation lands AFTER the side-cache write.
-      //   3. localOverrides[savedCsgId] is cleared ONLY when
-      //      financialsRefetch succeeded — the authoritative DB
-      //      data has the override and the optimistic value is
-      //      now redundant. If financialsRefetch failed, we keep
-      //      the optimistic value so the user's table view
-      //      doesn't snap back to pre-edit numbers.
-      //   4. Any failure surfaces a single toast.error +
-      //      `[financials:save-override]` console.warn so the
-      //      user knows the save itself succeeded but the
-      //      dashboard refresh did not.
+      // PR #342 follow-up (2026-05-05). The save mutation already
+      // succeeded — the optimistic localOverrides entry is in place
+      // and the user's seen the success toast. The background refresh
+      // is fire-and-forget against `refreshFinancialsAfterMutation`,
+      // which:
+      //   1. runs contractScanRefetch + financialsRefetch in parallel
+      //      via Promise.allSettled (parent passes
+      //      `refetch({ throwOnError: true })`, so a fulfilled outcome
+      //      really means the query succeeded);
+      //   2. invalidates the slim KPI side cache ONLY after the heavy
+      //      financials refetch lands (the heavy refetch is what
+      //      writes the side cache; invalidating before it lands
+      //      re-caches the stale value);
+      //   3. reports financialsRefreshed=true iff financialsRefetch
+      //      fulfilled.
+      // We clear the optimistic override only when financialsRefreshed
+      // is true — a transient refetch failure leaves the optimistic
+      // value in place so the user's table doesn't snap back to
+      // pre-edit numbers.
       void (async () => {
-        const [scanOutcome, financialsOutcome] = await Promise.allSettled([
-          contractScanRefetch(),
-          financialsRefetch(),
-        ]);
-
-        let invalidateOutcome:
-          | PromiseSettledResult<unknown>
-          | { status: "skipped" } = { status: "skipped" };
-        if (financialsOutcome.status === "fulfilled") {
-          // Heavy financials refetch wrote the slim KPI side
-          // cache; drop the React-Query cached slim row so the
-          // next Overview mount reads the fresh side cache.
-          invalidateOutcome = await Promise.allSettled([
-            invalidateFinancialKpiSummary(),
-          ]).then((results) => results[0]);
-
-          // The DB now has the override; the optimistic value
-          // is redundant.
+        const { financialsRefreshed, failures } =
+          await refreshFinancialsAfterMutation();
+        if (financialsRefreshed) {
           setLocalOverrides((prev) => {
             const next = new Map(prev);
             next.delete(savedCsgId);
             return next;
           });
         }
-
-        const failures: string[] = [];
-        if (scanOutcome.status === "rejected") {
-          failures.push(`contractScanRefetch: ${reasonText(scanOutcome.reason)}`);
-        }
-        if (financialsOutcome.status === "rejected") {
-          failures.push(
-            `financialsRefetch: ${reasonText(financialsOutcome.reason)}`
-          );
-        }
-        if (
-          invalidateOutcome.status === "rejected"
-        ) {
-          failures.push(
-            `invalidateFinancialKpiSummary: ${reasonText(invalidateOutcome.reason)}`
-          );
-        }
         if (failures.length > 0) {
           console.warn(
-            `[financials:save-override] dashboard refresh failed for csgId=${savedCsgId}: ${failures.join("; ")}`
+            `[financials:post-mutation-refresh] [financials:save-override] dashboard refresh failed for csgId=${savedCsgId}: ${failures.join("; ")}`
           );
           toast.error(
-            "Override saved, but dashboard refresh failed — reload the page to see the latest data."
+            "Override saved, but a background data refresh failed. Latest values will load on the next dashboard refresh."
           );
         }
       })();
@@ -671,10 +678,8 @@ export default memo(function FinancialsTab(props: FinancialsTabProps) {
       toast.error(err instanceof Error ? err.message : "Failed to save override");
     }
   }, [
-    contractScanRefetch,
     editingFinancialRow,
-    financialsRefetch,
-    invalidateFinancialKpiSummary,
+    refreshFinancialsAfterMutation,
     setLocalOverrides,
     updateContractOverride,
   ]);
@@ -1421,6 +1426,13 @@ export default memo(function FinancialsTab(props: FinancialsTabProps) {
                             className="h-6 px-2 text-[10px]"
                             disabled={rescanSingleContract.isPending}
                             onClick={async () => {
+                              // PR #342 follow-up (2026-05-05) — keep the
+                              // mutation try/catch tight so a background
+                              // refresh failure can't fire "Re-scan failed".
+                              // The shared helper captures refetch +
+                              // invalidate outcomes into failures[] without
+                              // throwing.
+                              let scanSucceeded = false;
                               try {
                                 const result = await rescanSingleContract.mutateAsync({
                                   csgId: r.csgId,
@@ -1432,23 +1444,23 @@ export default memo(function FinancialsTab(props: FinancialsTabProps) {
                                     result.additionalCollateralPercent ?? "N/A"
                                   }%`,
                                 );
-                                // PR #337 follow-up item 5 + PR #338
-                                // follow-up item 5 (2026-05-04 / 05-05) —
-                                // parallel refetch of the two independent
-                                // heavy queries; the slim KPI invalidate
-                                // must come AFTER both because the heavy
-                                // financials refetch is what writes the
-                                // side cache. Mirrors the batch-rescan
-                                // pattern.
-                                await Promise.all([
-                                  contractScanRefetch(),
-                                  financialsRefetch(),
-                                ]);
-                                await invalidateFinancialKpiSummary();
+                                scanSucceeded = true;
                               } catch (err) {
                                 toast.error(
                                   err instanceof Error ? err.message : "Re-scan failed",
                                 );
+                              }
+                              if (scanSucceeded) {
+                                const { failures } =
+                                  await refreshFinancialsAfterMutation();
+                                if (failures.length > 0) {
+                                  console.warn(
+                                    `[financials:post-mutation-refresh] [financials:single-row-rescan] dashboard refresh failed for csgId=${r.csgId}: ${failures.join("; ")}`,
+                                  );
+                                  toast.error(
+                                    "Re-scan completed, but a background data refresh failed. Latest values will load on the next dashboard refresh.",
+                                  );
+                                }
                               }
                             }}
                           >
