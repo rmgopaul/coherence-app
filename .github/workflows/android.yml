@@ -1,0 +1,79 @@
+name: Android APK
+
+# Builds an installable Coherence debug APK and uploads it as a
+# workflow artifact. Download from the Actions run page and sideload
+# to the phone — debug APKs are signed with the auto-generated debug
+# keystore, which Android accepts for sideload (you'll get the
+# standard "install from unknown source" prompt the first time).
+#
+# Triggers on push to main (so every merged PR produces a fresh APK)
+# and on workflow_dispatch (so you can rebuild any commit on demand
+# without an empty push).
+#
+# A signed release APK would need a `signingConfigs { release { … } }`
+# block in app/build.gradle.kts plus KEYSTORE_BASE64 / KEY_ALIAS /
+# KEY_PASSWORD repo secrets. Skipped here — add later if/when you
+# want a Play-store-style release build.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "android/healthconnect-companion/**"
+      - ".github/workflows/android.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android/healthconnect-companion
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      # The build script reads `local.properties` for runtime secrets
+      # (Google client ID, Samsung Health sync key, server base URL).
+      # Map them from GitHub Actions secrets here so the produced APK
+      # can actually talk to the productivity-hub server. Missing
+      # secrets fall back to the same sentinels the build script uses
+      # locally — the APK still builds, but those features won't work
+      # at runtime.
+      - name: Write local.properties from secrets
+        env:
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          SAMSUNG_HEALTH_SYNC_KEY: ${{ secrets.SAMSUNG_HEALTH_SYNC_KEY }}
+          SAMSUNG_HEALTH_WEBHOOK_URL: ${{ secrets.SAMSUNG_HEALTH_WEBHOOK_URL }}
+          COHERENCE_BASE_URL: ${{ secrets.COHERENCE_BASE_URL }}
+        run: |
+          {
+            [ -n "$GOOGLE_CLIENT_ID" ] && echo "GOOGLE_CLIENT_ID=$GOOGLE_CLIENT_ID"
+            [ -n "$SAMSUNG_HEALTH_SYNC_KEY" ] && echo "SAMSUNG_HEALTH_SYNC_KEY=$SAMSUNG_HEALTH_SYNC_KEY"
+            [ -n "$SAMSUNG_HEALTH_WEBHOOK_URL" ] && echo "SAMSUNG_HEALTH_WEBHOOK_URL=$SAMSUNG_HEALTH_WEBHOOK_URL"
+            [ -n "$COHERENCE_BASE_URL" ] && echo "COHERENCE_BASE_URL=$COHERENCE_BASE_URL"
+          } > local.properties
+          echo "Wrote local.properties ($(wc -l < local.properties) keys set)"
+
+      - name: Build debug APK
+        run: ./gradlew :app:assembleDebug --no-daemon
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: coherence-debug-apk
+          path: android/healthconnect-companion/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 30
