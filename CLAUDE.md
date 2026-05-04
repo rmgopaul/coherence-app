@@ -701,14 +701,33 @@ background-job pair below.
 | `solarRecDashboard.startDashboardCsvExport` | Mutation, returns `{ jobId, _runnerVersion }` (~200 B). | Enqueues a CSV export job for either the ownership tile or the change-ownership tile. The MB-scale CSV no longer crosses tRPC. |
 | `solarRecDashboard.getDashboardCsvExportJobStatus` | Query, returns a slim status snapshot (`status` ∈ `queued`/`running`/`succeeded`/`failed`/`notFound`, plus `fileName?`/`url?`/`rowCount?`/`error?`/timestamps). ~1 KB. | Client polls until terminal status, then `triggerUrlDownload`s the artifact URL. Cross-scope job IDs read as `notFound`. |
 
-**Background-job transitional debt** (`server/services/solar/dashboardCsvExportJobs.ts`):
+**Phase 6 PR-B (DB-backed registry — DONE).** The
+in-memory `Map` registry that shipped with PR #346 was replaced
+in Phase 6 PR-B by the `dashboardCsvExportJobs` table (Phase 6
+PR-A migration 0058). Implications:
 
-- **In-memory `Map` registry, single-process only.** A multi-instance
-  deploy would route a poll to a process that didn't start the
-  worker and 404 the lookup. Acceptable today (single-instance);
-  next step is either a `dashboardCsvExportJobs` DB table mirroring
-  the `datasetUploadJobs` shape or a dedicated background-job
-  runtime.
+- **Process restarts no longer orphan in-flight jobs.** The DB
+  row survives. PR #352's `notFound is retryable until TTL`
+  client workaround was reverted in Phase 6 PR-B —
+  DB-backed `notFound` genuinely means the row was pruned (TTL)
+  or never existed.
+- **Multi-instance deploys are now safe.** Cross-process claim
+  semantics (`claimedBy = pid-${pid}-host-${hostname}-${suffix}`,
+  set atomically via UPDATE … WHERE status='queued' OR (status='running'
+  AND claimedAt < staleClaimBefore)) ensure exactly one worker
+  executes any given job. A worker that lost its claim (stale
+  sweep marked it failed) cannot overwrite the new owner's
+  state — every completion UPDATE predicates on `claimedBy = ours`.
+- **Stale-claim recovery is automatic.** A periodic sweep (also
+  fired opportunistically on each status read) flips
+  `running` rows whose `claimedAt` is older than 5 min to
+  `failed` with `errorMessage = 'stale claim — worker process
+  did not complete the job'`. The 5-min threshold gives slow
+  cold-cache aggregator runs (30s+) plenty of headroom while
+  bounding worst-case wait for a dead worker.
+
+**Remaining background-job transitional debt:**
+
 - **Worker still builds the entire CSV string in memory** before
   `storagePut`. The improvement vs. the prior synchronous procs is
   scoped: the MB-scale CSV is OFF the tRPC response path, restoring
@@ -976,6 +995,33 @@ expected post-upload state even with no chunked blob present.
    `metric.fail(err)` is the contract. The structured payload
    makes log filtering by `[dashboard:...]` prefix uniform across
    job types and feeds the Phase 1 observability surface.
+
+8. **Dashboard background-job registries must be DB-backed.** Do
+   NOT introduce new in-memory `Map`-based job registries. The
+   reference pattern is `dashboardCsvExportJobs` (Phase 6 PR-B):
+   - DB table with `id` / `scopeId` / `status` / `claimedBy` /
+     `claimedAt` / `runnerVersion` columns + indexes for
+     active-job lookup, TTL prune, and stale-claim sweeps.
+   - Atomic claim via UPDATE … WHERE (`queued` OR (`running`
+     AND `claimedAt < staleClaimBefore`)) — race-safe across
+     processes and instances.
+   - Completion UPDATEs predicate on `claimedBy = ours` so a
+     worker that lost its claim cannot overwrite the new
+     owner's terminal state.
+   - Periodic sweep (opportunistic on every status read) marks
+     stale `running` rows as `failed` and prunes terminal rows
+     past TTL (with best-effort `storageDelete` on artifacts).
+   - The DB helper module (`server/db/dashboardCsvExportJobs.ts`)
+     is the only writer; service layer
+     (`server/services/solar/dashboardCsvExportJobs.ts`) holds
+     the runner orchestration. tRPC procs await both.
+
+   The in-memory `Map` registry shipped with PR #346 was a
+   transitional shortcut whose cost was exactly this kind of
+   load-bearing tech debt: PR #352 had to add a `notFound is
+   retryable` client workaround precisely because the Map
+   couldn't survive process restarts. Phase 6 PR-B retired the
+   workaround AND the Map together.
 
 ### Snapshot Log — transitional state (NOT canonical)
 

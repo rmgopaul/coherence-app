@@ -3735,28 +3735,18 @@ export default function SolarRecDashboard() {
           return;
         }
         if (status.status === "notFound") {
-          // notFound is NOT terminal under the current in-memory
-          // job registry. The server's running-prune-skip rule
-          // means notFound CAN'T come from prune-of-running, but a
-          // process restart (deploy, OOM, future multi-instance
-          // routing) wipes the entire `Map` and orphans every
-          // in-flight jobId — those clients then see notFound for
-          // a job that may be perfectly valid and simply got
-          // unregistered. Until the registry is DB-backed (Phase
-          // 6), retry with the same "interrupted" semantics as a
-          // poll error and let the TTL window be the only terminal
-          // boundary. The "interrupted" toast text reads honestly:
-          // "Still preparing; connection interrupted, retrying
-          // status check…" — same UX whether the server lost the
-          // record or the network blipped.
-          console.warn(
-            `[${params.consoleTag}] status returned notFound (will retry until TTL — registry is in-memory)`
-          );
-          setToastPhase("interrupted");
-          await new Promise((resolve) =>
-            setTimeout(resolve, nextPollDelayMs(Date.now() - startedAt))
-          );
-          continue;
+          // Phase 6 PR-B (DB-backed registry): notFound is
+          // TERMINAL again. The pre-fix code (PR #352) retried
+          // notFound until TTL because the in-memory `Map`
+          // registry was wiped by every process restart, so a
+          // perfectly valid in-flight job could appear notFound
+          // through no fault of its own. With the DB-backed
+          // table, notFound genuinely means the row was pruned
+          // (TTL elapsed) or never existed for this scope —
+          // retrying just delays the user-facing failure.
+          toast.error(params.failureMessage, { id: toastId });
+          console.error(`[${params.consoleTag}] job expired before completion`);
+          return;
         }
         // Still queued/running. Re-anchor the toast to the right
         // phase (initial pre-hint, stillPreparing post-hint). This
