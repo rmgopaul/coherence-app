@@ -3415,12 +3415,25 @@ export default function SolarRecDashboard() {
 
   /**
    * Drive an export job to completion. Starts the job, polls status
-   * up to `CSV_EXPORT_POLL_MAX_MS` (~2 minutes — the heavy aggregator
-   * cold path can take 30s+), and either downloads the artifact via
-   * `triggerUrlDownload`, surfaces a "no rows" toast, or surfaces a
-   * failure toast. The single `toastId` is reused for the loading +
-   * terminal state so the user only ever sees one toast for the
+   * up to `CSV_EXPORT_POLL_MAX_MS` (matches the server's 30-min job
+   * TTL — see `dashboardCsvExportJobs.JOB_TTL_MS`), and either
+   * downloads the artifact via `triggerUrlDownload`, surfaces a "no
+   * rows" toast, or surfaces a failure toast. The single `toastId`
+   * is reused throughout so the user only ever sees one toast per
    * click.
+   *
+   * Polling cadence backs off so a long-running aggregator doesn't
+   * hammer the server (~30 min × 1.5s = 1200 polls is a non-starter):
+   *
+   *   - 0–30s: every 1.5s    (responsive for the typical warm-cache case)
+   *   - 30s–5min: every 5s   (lighter while the heavy aggregator runs)
+   *   - 5min+: every 15s     (background mode)
+   *
+   * After 30s of "running" status the loading toast text changes to
+   * "Still preparing…" so the user knows the export is making
+   * progress (was: silent failure at 120s while the server kept
+   * running, leaving an orphaned artifact and a confused user — see
+   * PR #347 follow-up).
    *
    * `successLabel` is the human-readable subject for the toasts —
    * "Reporting ownership-status tile", "Transferred and Reporting
@@ -3431,6 +3444,7 @@ export default function SolarRecDashboard() {
   const runDashboardCsvExport = useCallback(
     async (params: {
       input: Parameters<typeof startDashboardCsvExport.mutateAsync>[0];
+      preparingMessage: string;
       successLabel: string;
       noun: "system" | "project";
       noRowsMessage: string;
@@ -3438,13 +3452,25 @@ export default function SolarRecDashboard() {
       consoleTag: string;
       toastId: string | number;
     }) => {
-      const CSV_EXPORT_POLL_INTERVAL_MS = 1500;
-      const CSV_EXPORT_POLL_MAX_MS = 120_000;
+      // Aligned to the server's `JOB_TTL_MS` (30 min) in
+      // `dashboardCsvExportJobs.ts`. After this point a job that
+      // hasn't reported terminal status really has fallen out of the
+      // registry and we surface a failure.
+      const CSV_EXPORT_POLL_MAX_MS = 30 * 60 * 1000;
+      const CSV_EXPORT_TOAST_HINT_AT_MS = 30_000;
+
+      function nextPollDelayMs(elapsedMs: number): number {
+        if (elapsedMs < 30_000) return 1500;
+        if (elapsedMs < 5 * 60_000) return 5000;
+        return 15_000;
+      }
+
       try {
         const { jobId } = await startDashboardCsvExport.mutateAsync(
           params.input
         );
         const startedAt = Date.now();
+        let switchedToHintToast = false;
         while (Date.now() - startedAt < CSV_EXPORT_POLL_MAX_MS) {
           const status =
             await solarRecTrpcUtils.solarRecDashboard.getDashboardCsvExportJobStatus.fetch(
@@ -3471,19 +3497,30 @@ export default function SolarRecDashboard() {
             return;
           }
           if (status.status === "notFound") {
-            // TTL pruned the job before we could read it. Surface as a
+            // TTL pruned the job before we could read it. The server
+            // only prunes terminal records (per the running-prune
+            // skip rule in dashboardCsvExportJobs), so this branch
+            // means the artifact actually expired — surface as a
             // failure rather than an infinite poll.
             toast.error(params.failureMessage, { id: params.toastId });
             console.error(`[${params.consoleTag}] job expired before completion`);
             return;
           }
+          // Still queued/running. Update the toast text once we
+          // cross the hint threshold so a long-running aggregator
+          // doesn't look like a stalled UI.
+          const elapsedMs = Date.now() - startedAt;
+          if (!switchedToHintToast && elapsedMs >= CSV_EXPORT_TOAST_HINT_AT_MS) {
+            toast.loading(params.preparingMessage, { id: params.toastId });
+            switchedToHintToast = true;
+          }
           await new Promise((resolve) =>
-            setTimeout(resolve, CSV_EXPORT_POLL_INTERVAL_MS)
+            setTimeout(resolve, nextPollDelayMs(elapsedMs))
           );
         }
         toast.error(params.failureMessage, { id: params.toastId });
         console.error(
-          `[${params.consoleTag}] poll timed out after ${CSV_EXPORT_POLL_MAX_MS}ms`
+          `[${params.consoleTag}] poll timed out after ${CSV_EXPORT_POLL_MAX_MS}ms (server TTL window exhausted)`
         );
       } catch (error) {
         toast.error(params.failureMessage, { id: params.toastId });
@@ -3506,6 +3543,7 @@ export default function SolarRecDashboard() {
       );
       await runDashboardCsvExport({
         input: { exportType: "ownershipTile", tile },
+        preparingMessage: `Still preparing ${tileLabel} ownership-status export — this can take a few minutes.`,
         successLabel: `${tileLabel} ownership-status tile`,
         noun: "system",
         noRowsMessage: `No systems match the ${tileLabel} ownership-status tile.`,
@@ -3522,6 +3560,7 @@ export default function SolarRecDashboard() {
       const toastId = toast.loading(`Preparing ${status} export…`);
       await runDashboardCsvExport({
         input: { exportType: "changeOwnershipTile", status },
+        preparingMessage: `Still preparing ${status} export — this can take a few minutes.`,
         successLabel: `${status} status`,
         noun: "project",
         noRowsMessage: `No projects match the ${status} status.`,

@@ -426,3 +426,56 @@ describe("solarRecDashboardRouter wiring", () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// CLAUDE.md drift rails. The repo's CLAUDE.md is loaded into every
+// model context, so claims that disagree with the code mislead every
+// future PR. Pin the allowlist count + retired-proc disclaimers so a
+// future PR that retires another entry remembers to update the prose.
+// ---------------------------------------------------------------------------
+
+describe("CLAUDE.md drift", () => {
+  const claudeMdPath = resolve(__dirname, "..", "..", "CLAUDE.md");
+  const claudeMd = readFileSync(claudeMdPath, "utf8");
+
+  it("documents the current allowlist count, not a stale one", () => {
+    // The prose just above the allowlisted-procedure table claims
+    // an exact procedure count. Keep it in sync with the Set.
+    const claimedCount = DASHBOARD_OVERSIZE_ALLOWLIST.size;
+    const numberToWord: Record<number, string> = {
+      3: "Three",
+      4: "Four",
+      5: "Five",
+      6: "Six",
+      7: "Seven",
+      8: "Eight",
+    };
+    const expectedWord = numberToWord[claimedCount];
+    expect(expectedWord).toBeDefined();
+    const sentence = new RegExp(
+      `Transitional reality:\\s*(?:${expectedWord}|${claimedCount})\\s+procedures still ship oversized`,
+      "i"
+    );
+    expect(claudeMd).toMatch(sentence);
+  });
+
+  it("does NOT reference the retired CSV export procs as live", () => {
+    // A future PR adding a NEW table row that names these procs as
+    // current would re-confuse readers. The prose may mention them
+    // historically (in the "Retired CSV-export procs" section) but
+    // must not list them as live entries in the allowlist table.
+    // Source signal: no markdown table cell of the form
+    // `\| `solarRecDashboard.exportOwnershipTileCsv` \|`.
+    expect(claudeMd).not.toMatch(
+      /\|\s*`solarRecDashboard\.exportOwnershipTileCsv`\s*\|/
+    );
+    expect(claudeMd).not.toMatch(
+      /\|\s*`solarRecDashboard\.exportChangeOwnershipTileCsv`\s*\|/
+    );
+  });
+
+  it("documents the new background-job procs as the replacement", () => {
+    expect(claudeMd).toMatch(/startDashboardCsvExport/);
+    expect(claudeMd).toMatch(/getDashboardCsvExportJobStatus/);
+  });
+});

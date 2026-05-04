@@ -410,3 +410,87 @@ describe("dashboardCsvExportJobs — runner version marker", () => {
     );
   });
 });
+
+describe("dashboardCsvExportJobs — measurement utility wiring", () => {
+  it("emits a [dashboard:csv-export-jobs] metric line with rowCount + csvBytes on success", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      await startAndRun(SCOPE, {
+        exportType: "ownershipTile",
+        tile: "reporting",
+      });
+      const metricLine = logSpy.mock.calls
+        .map((c) => String(c[0]))
+        .find((line) => line.startsWith("[dashboard:csv-export-jobs] metric "));
+      expect(metricLine).toBeDefined();
+      const payload = JSON.parse(
+        metricLine!.slice(metricLine!.indexOf("{"))
+      ) as Record<string, unknown>;
+      expect(payload).toMatchObject({
+        outcome: "success",
+        exportType: "ownershipTile",
+        rowCount: 1,
+        storageWrite: true,
+      });
+      expect(payload.csvBytes).toBeGreaterThan(0);
+      expect(typeof payload.elapsedMs).toBe("number");
+      expect(typeof payload.heapDeltaBytes).toBe("number");
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it("emits a metric line with storageWrite=false + rowCount=0 when no rows match", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      await startAndRun(SCOPE, {
+        exportType: "ownershipTile",
+        tile: "terminated",
+      });
+      const metricLine = logSpy.mock.calls
+        .map((c) => String(c[0]))
+        .find((line) => line.startsWith("[dashboard:csv-export-jobs] metric "));
+      expect(metricLine).toBeDefined();
+      const payload = JSON.parse(
+        metricLine!.slice(metricLine!.indexOf("{"))
+      ) as Record<string, unknown>;
+      expect(payload).toMatchObject({
+        outcome: "success",
+        rowCount: 0,
+        csvBytes: 0,
+        storageWrite: false,
+      });
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it("emits a failed metric line when the aggregator throws", async () => {
+    const aggregatorMod = await import("./buildOverviewSummaryAggregates");
+    vi.mocked(aggregatorMod.getOrBuildOverviewSummary).mockRejectedValueOnce(
+      new Error("aggregator boom")
+    );
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const jobId = await startAndRun(SCOPE, {
+        exportType: "ownershipTile",
+        tile: "reporting",
+      });
+      expect(getCsvExportJobStatus(SCOPE, jobId)?.status).toBe("failed");
+      const metricLine = errorSpy.mock.calls
+        .map((c) => String(c[0]))
+        .find((line) => line.startsWith("[dashboard:csv-export-jobs] metric "));
+      expect(metricLine).toBeDefined();
+      const payload = JSON.parse(
+        metricLine!.slice(metricLine!.indexOf("{"))
+      ) as Record<string, unknown>;
+      expect(payload).toMatchObject({
+        outcome: "failed",
+        exportType: "ownershipTile",
+        error: "aggregator boom",
+      });
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+});
