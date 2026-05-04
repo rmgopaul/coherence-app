@@ -5,4 +5,5 @@
   <string name="widget_king_description">Coherence King — full-screen dashboard for Galaxy Z Fold</string>
   <string name="widget_king_left_description">Coherence King · Left — KoD + tasks + inbox (pair with King · Right)</string>
   <string name="widget_king_right_description">Coherence King · Right — markets + news + sports (pair with King · Left)</string>
+  <string name="widget_habits_description">Coherence Habits — tap a tile to log today\'s habit</string>
 </resources>
