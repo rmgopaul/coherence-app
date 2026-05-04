@@ -140,7 +140,7 @@ export async function runContractScanJob(
       await bumpScopeContractScanJobVersion(job.scopeId, id).catch(
         (error) => {
           console.warn(
-            `[contractScanJobRunner] scan-job-version bump failed for scope=${job.scopeId} job=${id}:`,
+            `[contract-scan-freshness:bump-failed] kind=job-completed scope=${job.scopeId} job=${id}:`,
             error instanceof Error ? error.message : error
           );
         }
@@ -326,7 +326,7 @@ export async function runContractScanJob(
       await bumpScopeContractScanJobVersion(job.scopeId, id).catch(
         (error) => {
           console.warn(
-            `[contractScanJobRunner] scan-job-version bump failed for scope=${job.scopeId} job=${id}:`,
+            `[contract-scan-freshness:bump-failed] kind=job-completed scope=${job.scopeId} job=${id}:`,
             error instanceof Error ? error.message : error
           );
         }

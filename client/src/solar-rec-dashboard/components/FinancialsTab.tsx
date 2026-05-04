@@ -453,6 +453,13 @@ export default memo(function FinancialsTab(props: FinancialsTabProps) {
     batchRescanCancelledRef.current = false;
     setBatchRescanRunning(true);
 
+    // PR #339 follow-up item 1 (2026-05-05) — wrap the entire
+    // post-`setBatchRescanRunning(true)` body in try/finally so a
+    // thrown refetch / invalidate doesn't strand the UI in
+    // "running" mode. Pre-fix the final block ran outside any
+    // catch boundary; a transient network error during refetch
+    // left the Cancel button stuck visible.
+    try {
     const initial = new Map<string, RescanStatus>();
     for (const row of rowsToScan) {
       initial.set(row.csgId, { status: "queued" });
@@ -503,14 +510,17 @@ export default memo(function FinancialsTab(props: FinancialsTabProps) {
       }
     }
 
-    // PR #338 follow-up item 5 (2026-05-05) — parallel refetch of
-    // the two independent heavy queries; the slim KPI invalidate
-    // must come AFTER both because the heavy financials refetch is
-    // what writes the side cache. Pre-fix this was 3 sequential
-    // awaits; on a 28K-CSG scope each refetch takes seconds.
-    await Promise.all([contractScanRefetch(), financialsRefetch()]);
-    await invalidateFinancialKpiSummary();
-    setBatchRescanRunning(false);
+      // PR #338 follow-up item 5 + PR #339 follow-up item 1
+      // (2026-05-05) — parallel refetch of the two independent
+      // heavy queries; the slim KPI invalidate must come AFTER
+      // both because the heavy financials refetch is what writes
+      // the side cache. A thrown refetch/invalidate is caught by
+      // the outer try/finally so the Running flag still flips off.
+      await Promise.all([contractScanRefetch(), financialsRefetch()]);
+      await invalidateFinancialKpiSummary();
+    } finally {
+      setBatchRescanRunning(false);
+    }
   }, [
     contractScanRefetch,
     filteredFinancialRows,

@@ -118,6 +118,126 @@ describe("solarRecDatasets", () => {
     expect(appliedUpdate?.completedAt).toBeInstanceOf(Date);
   });
 
+  it("bumpScopeContractScanJobVersion uses onDuplicateKeyUpdate inside withDbRetry (no swallow-all try/catch)", async () => {
+    // PR #339 follow-up item 2 (2026-05-05). The bump helper must
+    // upsert via `onDuplicateKeyUpdate` so non-conflict insert
+    // failures (DB outages, schema regressions) are not silently
+    // masked by a fall-through UPDATE on a row the helper never
+    // proved exists. It must also run inside `withDbRetry` to
+    // match the rest of the dataset-write surface.
+    const captured: Record<string, unknown> = {};
+
+    const onDuplicateKeyUpdate = vi.fn(async ({ set }: { set: Record<string, unknown> }) => {
+      captured.upsertSet = set;
+    });
+    const insertChain = {
+      values: vi.fn((values: Record<string, unknown>) => {
+        captured.insertValues = values;
+        return { onDuplicateKeyUpdate };
+      }),
+    };
+    const db = {
+      insert: vi.fn((_table) => insertChain),
+    };
+
+    mocks.getDb.mockResolvedValue(db);
+    let retryOperation: string | null = null;
+    mocks.withDbRetry.mockImplementation(async (operation: string, action: () => Promise<unknown>) => {
+      retryOperation = operation;
+      return action();
+    });
+
+    const { bumpScopeContractScanJobVersion } = await import(
+      "./db/solarRecDatasets"
+    );
+
+    await bumpScopeContractScanJobVersion("scope-1", "job-42");
+
+    expect(retryOperation).toBe("bump contract scan job version");
+    expect(captured.insertValues).toEqual({
+      scopeId: "scope-1",
+      latestCompletedJobId: "job-42",
+    });
+    expect(captured.upsertSet).toEqual({ latestCompletedJobId: "job-42" });
+    expect(onDuplicateKeyUpdate).toHaveBeenCalledTimes(1);
+  });
+
+  it("bumpScopeContractScanJobVersion propagates non-conflict DB errors instead of swallowing them", async () => {
+    const dbError = new Error("connection reset");
+    const db = {
+      insert: vi.fn(() => ({
+        values: vi.fn(() => ({
+          onDuplicateKeyUpdate: vi.fn(async () => {
+            throw dbError;
+          }),
+        })),
+      })),
+    };
+    mocks.getDb.mockResolvedValue(db);
+    mocks.withDbRetry.mockImplementation(async (_op, action) => action());
+
+    const { bumpScopeContractScanJobVersion } = await import(
+      "./db/solarRecDatasets"
+    );
+
+    await expect(
+      bumpScopeContractScanJobVersion("scope-1", "job-42")
+    ).rejects.toBe(dbError);
+  });
+
+  it("bumpScopeContractScanOverrideVersion uses onDuplicateKeyUpdate inside withDbRetry", async () => {
+    const captured: Record<string, unknown> = {};
+    const overrideAt = new Date("2026-05-05T12:00:00.000Z");
+
+    const onDuplicateKeyUpdate = vi.fn(async ({ set }: { set: Record<string, unknown> }) => {
+      captured.upsertSet = set;
+    });
+    const insertChain = {
+      values: vi.fn((values: Record<string, unknown>) => {
+        captured.insertValues = values;
+        return { onDuplicateKeyUpdate };
+      }),
+    };
+    const db = {
+      insert: vi.fn((_table) => insertChain),
+    };
+
+    mocks.getDb.mockResolvedValue(db);
+    let retryOperation: string | null = null;
+    mocks.withDbRetry.mockImplementation(async (operation: string, action: () => Promise<unknown>) => {
+      retryOperation = operation;
+      return action();
+    });
+
+    const { bumpScopeContractScanOverrideVersion } = await import(
+      "./db/solarRecDatasets"
+    );
+
+    await bumpScopeContractScanOverrideVersion("scope-1", overrideAt);
+
+    expect(retryOperation).toBe("bump contract scan override version");
+    expect(captured.insertValues).toEqual({
+      scopeId: "scope-1",
+      latestOverrideAt: overrideAt,
+    });
+    expect(captured.upsertSet).toEqual({ latestOverrideAt: overrideAt });
+  });
+
+  it("bump helpers are no-ops when getDb() returns null (test/dev environments)", async () => {
+    mocks.getDb.mockResolvedValue(null);
+
+    const { bumpScopeContractScanJobVersion, bumpScopeContractScanOverrideVersion } =
+      await import("./db/solarRecDatasets");
+
+    await expect(
+      bumpScopeContractScanJobVersion("scope-1", "job-42")
+    ).resolves.toBeUndefined();
+    await expect(
+      bumpScopeContractScanOverrideVersion("scope-1", new Date())
+    ).resolves.toBeUndefined();
+    expect(mocks.withDbRetry).not.toHaveBeenCalled();
+  });
+
   it("archives old superseded batches after purging their typed dataset rows", async () => {
     const oldCompletedAt = new Date(Date.now() - 15 * 24 * 60 * 60 * 1000);
     const recentCompletedAt = new Date();
