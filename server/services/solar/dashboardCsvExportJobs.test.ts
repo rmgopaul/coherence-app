@@ -493,4 +493,88 @@ describe("dashboardCsvExportJobs — measurement utility wiring", () => {
       errorSpy.mockRestore();
     }
   });
+
+  it("reports csvBytes as the UTF-8 byte count, not the UTF-16 code-unit length", async () => {
+    // Regression: pre-fix the metric used `built.csv.length`, which
+    // is UTF-16 code units. Non-ASCII characters in system names
+    // (accented letters, smart punctuation, emoji) would undercount
+    // the actual artifact byte size that storagePut writes. The
+    // metric is the foothold for the memory/RU plan, so it has to
+    // measure UTF-8 bytes that match the storage write.
+    //
+    // Drive a non-ASCII row through the runner: "é" is 1 UTF-16
+    // code unit but 2 UTF-8 bytes; "🎉" is a 2-unit surrogate pair
+    // but 4 UTF-8 bytes. We construct a row containing both and
+    // assert the metric's csvBytes > the JS string length, which
+    // can only be true when the measurement is UTF-8.
+    const aggregatorMod = await import("./buildOverviewSummaryAggregates");
+    const baselineRow = {
+      systemId: "sys-utf",
+      trackingSystemRefId: "trk-utf",
+      stateApplicationRefId: null,
+      part2ProjectName: "Sunny Acres",
+      part2ApplicationId: null,
+      part2SystemId: null,
+      part2TrackingId: null,
+      source: "abp",
+      ownershipStatus: "Transferred and Reporting" as const,
+      isReporting: true,
+      isTransferred: true,
+      isTerminated: false,
+      contractType: "REC",
+      contractStatusText: "Active",
+      latestReportingDate: new Date("2026-04-01T00:00:00Z"),
+      contractedDate: new Date("2024-01-01T00:00:00Z"),
+      zillowStatus: null,
+      zillowSoldDate: null,
+    };
+    vi.mocked(aggregatorMod.getOrBuildOverviewSummary).mockResolvedValueOnce({
+      result: {
+        ownershipRows: [
+          { ...baselineRow, systemName: "Café Solar 🎉 — Cañada" },
+        ],
+      },
+      fromCache: false,
+    } as unknown as Awaited<
+      ReturnType<typeof aggregatorMod.getOrBuildOverviewSummary>
+    >);
+
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      await startAndRun(SCOPE, {
+        exportType: "ownershipTile",
+        tile: "reporting",
+      });
+      const metricLine = logSpy.mock.calls
+        .map((c) => String(c[0]))
+        .find((line) => line.startsWith("[dashboard:csv-export-jobs] metric "));
+      expect(metricLine).toBeDefined();
+      const payload = JSON.parse(
+        metricLine!.slice(metricLine!.indexOf("{"))
+      ) as Record<string, unknown>;
+      const csvBytes = payload.csvBytes as number;
+      // The non-ASCII string contributes extra bytes beyond its
+      // UTF-16 .length. Specifically: "é" / "ñ" each add 1 byte,
+      // "🎉" adds 2 bytes (4 UTF-8 vs 2 UTF-16 code units), "—"
+      // adds 2 bytes (em dash, U+2014 → 3 UTF-8 bytes vs 1 UTF-16
+      // code unit). So the byte count must exceed the JS string
+      // length by at least 1.
+      expect(typeof csvBytes).toBe("number");
+      // Independent reference: reconstruct what the runner wrote
+      // and assert the metric matches Buffer.byteLength on the
+      // same content. We can read the storagePut argument out of
+      // the mock to keep this a true black-box check.
+      const storageMod = await import("../../storage");
+      const putMock = vi.mocked(storageMod.storagePut);
+      const lastCall = putMock.mock.calls.at(-1);
+      expect(lastCall).toBeDefined();
+      const writtenCsv = lastCall![1] as string;
+      expect(csvBytes).toBe(Buffer.byteLength(writtenCsv, "utf8"));
+      // And the byte count must strictly exceed the UTF-16
+      // .length for this fixture — proves the fix isn't a no-op.
+      expect(csvBytes).toBeGreaterThan(writtenCsv.length);
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
 });

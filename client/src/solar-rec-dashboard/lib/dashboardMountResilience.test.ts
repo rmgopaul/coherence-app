@@ -179,6 +179,36 @@ describe("Solar REC dashboard mount: heavy-query gates", () => {
     );
   });
 
+  it("CSV export status-poll errors are NOT terminal — the loop keeps polling until server terminal status or TTL", () => {
+    // Pre-fix a transient `getDashboardCsvExportJobStatus.fetch(...)`
+    // rejection (network blip, 5xx, rate limit) escaped the unguarded
+    // `await` into the outer catch and surfaced "Failed to export"
+    // while the server job was still running and might still write
+    // the artifact. Same false-failure class as the original 120s
+    // ceiling. The fix wraps the per-poll fetch in its own try/catch
+    // and `continue`s the loop on transient errors.
+    const sharedHelper = sliceFn(code, "runDashboardCsvExport");
+    expect(sharedHelper).not.toBeNull();
+    // The status-poll fetch must live inside its own try/catch.
+    expect(sharedHelper!).toMatch(
+      /try\s*\{[\s\S]{0,400}getDashboardCsvExportJobStatus\.fetch[\s\S]{0,400}\}\s*catch\s*\(\s*pollError/
+    );
+    // The per-poll catch handler must `continue` (keep polling),
+    // never `return` (stop polling).
+    expect(sharedHelper!).toMatch(
+      /catch\s*\(\s*pollError[\s\S]{0,400}continue\s*;/
+    );
+    // The "interrupted" UX must surface so the user knows we're
+    // still trying.
+    expect(sharedHelper!).toMatch(/setToastPhase\s*\(\s*["']interrupted["']\s*\)/);
+    // The start mutation IS terminal — no jobId, nothing to poll.
+    // Make sure the start mutation has its own try/catch separate
+    // from the polling loop.
+    expect(sharedHelper!).toMatch(
+      /startDashboardCsvExport\.mutateAsync[\s\S]{0,400}catch\s*\(\s*error[\s\S]{0,300}return\s*;/
+    );
+  });
+
   it("CSV export poll horizon matches the server's 30-min job TTL (no false-failures at 120s)", () => {
     // Pre-fix the client gave up at 120s while the server's TTL is
     // 30 min, surfacing a "Failed" toast while the worker was still

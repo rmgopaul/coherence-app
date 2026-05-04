@@ -8,7 +8,10 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { startDashboardJobMetric } from "./dashboardJobMetrics";
+import {
+  RESERVED_METRIC_KEYS,
+  startDashboardJobMetric,
+} from "./dashboardJobMetrics";
 
 let logSpy: ReturnType<typeof vi.spyOn>;
 let errorSpy: ReturnType<typeof vi.spyOn>;
@@ -133,5 +136,97 @@ describe("startDashboardJobMetric", () => {
     metric.finish();
     const payload = parseMetricLine(String(logSpy.mock.calls[0][0]));
     expect(payload.elapsedMs).toBeGreaterThanOrEqual(5);
+  });
+});
+
+describe("startDashboardJobMetric — reserved-field protection", () => {
+  it("exports the reserved-key set so callers and tests share one source of truth", () => {
+    // Lock the contract: future Phase 2/4 builders that read this
+    // set know which names they cannot pass through `context` /
+    // `extra` and expect to survive.
+    expect([...RESERVED_METRIC_KEYS].sort()).toEqual(
+      [
+        "jobId",
+        "outcome",
+        "elapsedMs",
+        "heapBeforeBytes",
+        "heapAfterBytes",
+        "heapDeltaBytes",
+        "error",
+      ].sort()
+    );
+  });
+
+  it("does not allow caller `context` to overwrite ANY reserved envelope field", () => {
+    const collidingContext: Record<string, unknown> = {
+      jobId: "context-attacker",
+      outcome: "context-success",
+      elapsedMs: 999_999,
+      heapBeforeBytes: -1,
+      heapAfterBytes: -2,
+      heapDeltaBytes: -3,
+      error: "context-error",
+      // A non-reserved field passes through untouched.
+      legitimateContextField: "preserved",
+    };
+    const metric = startDashboardJobMetric({
+      prefix: "[test]",
+      jobId: "real-job-id",
+      context: collidingContext,
+    });
+    metric.finish();
+    const payload = parseMetricLine(String(logSpy.mock.calls[0][0]));
+    expect(payload.jobId).toBe("real-job-id");
+    expect(payload.outcome).toBe("success");
+    expect(payload.elapsedMs).not.toBe(999_999);
+    expect(payload.heapBeforeBytes).not.toBe(-1);
+    expect(payload.heapAfterBytes).not.toBe(-2);
+    // heapDeltaBytes is computed from the real heap samples; just
+    // confirm the colliding -3 didn't survive.
+    expect(payload.heapDeltaBytes).not.toBe(-3);
+    // Non-reserved context survives.
+    expect(payload.legitimateContextField).toBe("preserved");
+  });
+
+  it("does not allow caller `extra` to overwrite ANY reserved envelope field", () => {
+    // Use sentinel values that real envelope fields can never
+    // produce (negative bytes, "extra-attacker" string outcomes,
+    // very-large-negative elapsed). If any sentinel survives in the
+    // payload, the spread order is wrong and the contract is broken.
+    const collidingExtra: Record<string, unknown> = {
+      jobId: "extra-attacker",
+      outcome: "extra-success",
+      elapsedMs: -999_999,
+      heapBeforeBytes: -1,
+      heapAfterBytes: -2,
+      heapDeltaBytes: -3,
+      // A legitimate extra survives.
+      rowCount: 42,
+      csvBytes: 1024,
+    };
+    const metric = startDashboardJobMetric({
+      prefix: "[test]",
+      jobId: "real-job-id",
+    });
+    metric.finish(collidingExtra);
+    const payload = parseMetricLine(String(logSpy.mock.calls[0][0]));
+    expect(payload.jobId).toBe("real-job-id");
+    expect(payload.outcome).toBe("success");
+    expect(payload.elapsedMs).toBeGreaterThanOrEqual(0);
+    expect(payload.heapBeforeBytes).not.toBe(-1);
+    expect(payload.heapAfterBytes).not.toBe(-2);
+    expect(payload.heapDeltaBytes).not.toBe(-3);
+    expect(payload.rowCount).toBe(42);
+    expect(payload.csvBytes).toBe(1024);
+  });
+
+  it("does not allow caller `extra` to overwrite a fail() error string", () => {
+    const metric = startDashboardJobMetric({
+      prefix: "[test]",
+      jobId: "real-job-id",
+    });
+    metric.fail(new Error("real error"), { error: "extra-attacker" });
+    const payload = parseMetricLine(String(errorSpy.mock.calls[0][0]));
+    expect(payload.error).toBe("real error");
   });
 });
