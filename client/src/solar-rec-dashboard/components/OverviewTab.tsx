@@ -57,16 +57,36 @@ import type {
  * object has more fields but the Overview JSX only reads these.
  * Structural typing means passing the full summary still satisfies
  * this prop.
+ *
+ * `kind` is the discriminator from the parent's `summary` memo
+ * (PR #332 follow-up item 4). The terminated tile renders an
+ * explicit "—" placeholder when `kind === "slim"` because the
+ * foundation-Part-II walk excludes terminated systems by contract
+ * (PR #334 follow-up item 4 option B). `terminatedTotal` is
+ * structurally 0 on the slim path and not a real count.
  */
 export type OverviewSummary = {
+  kind: "slim" | "heavy";
   totalSystems: number;
   reportingSystems: number;
   reportingPercent: number | null;
   smallSystems: number;
   largeSystems: number;
+  /**
+   * Portfolio-wide terminated system count from
+   * `foundation.summaryCounts.terminated`. Available on slim AND
+   * heavy paths. The terminated tile falls back to this when slim
+   * cannot supply a Part-II-scoped count.
+   */
+  terminatedSystems: number;
   ownershipOverview: {
     reportingOwnershipTotal: number;
     notReportingOwnershipTotal: number;
+    /**
+     * Part-II-scoped terminated count. Real on heavy. STRUCTURALLY
+     * 0 on slim per the foundation contract — slim consumers must
+     * branch on `summary.kind === "slim"` and render "—" instead.
+     */
     terminatedTotal: number;
   };
 };
@@ -427,8 +447,26 @@ export default memo(function OverviewTab(props: OverviewTabProps) {
             >
               <p className="text-xs font-semibold text-slate-700">Terminated</p>
               <p className="text-2xl font-semibold text-slate-900">
-                {formatNumber(summary.ownershipOverview.terminatedTotal)}
+                {/* PR #334 follow-up item 4 (option B, 2026-05-02):
+                    Part-II-scoped terminated count is unavailable on
+                    the slim mount path — foundation contract
+                    excludes terminated systems from
+                    `part2EligibleCsgIds`. Render the portfolio
+                    terminated count from
+                    `summary.terminatedSystems` so the tile shows
+                    real data; the heavy aggregator's
+                    Part-II-scoped count overrides on Overview-tab
+                    activation when it loads. */}
+                {summary.kind === "heavy"
+                  ? formatNumber(summary.ownershipOverview.terminatedTotal)
+                  : formatNumber(summary.terminatedSystems)}
               </p>
+              {summary.kind === "slim" ? (
+                <p className="text-[10px] text-slate-500 mt-1">
+                  Portfolio total — Part-II breakdown loads on tab
+                  activation
+                </p>
+              ) : null}
             </button>
           </div>
 

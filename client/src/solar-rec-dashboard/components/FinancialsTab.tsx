@@ -165,6 +165,16 @@ export interface FinancialsTabProps {
   contractScanError: unknown;
   contractScanRefetch: () => Promise<unknown>;
   financialsRefetch: () => Promise<unknown>;
+  /**
+   * PR #334 follow-up item 2 (2026-05-02) — invalidate the slim
+   * Overview KPI summary query when override / rescan flows
+   * mutate scan rows. Without this the slim query can serve a
+   * cached "available: false" (or pre-edit KPI values) on the
+   * next Overview mount until React Query's `staleTime` expires.
+   * Server-side cache freshness is item 1; this is the
+   * defense-in-depth on the client cache.
+   */
+  invalidateFinancialKpiSummary: () => Promise<unknown>;
 
   // CSG IDs feeding the contract scan query (debug panel reports the
   // length so the user can see where data is dropping).
@@ -236,6 +246,7 @@ export default memo(function FinancialsTab(props: FinancialsTabProps) {
     contractScanError,
     contractScanRefetch,
     financialsRefetch,
+    invalidateFinancialKpiSummary,
     financialCsgIds,
     financialsDebug,
     localOverrides,
@@ -494,11 +505,16 @@ export default memo(function FinancialsTab(props: FinancialsTabProps) {
 
     await contractScanRefetch();
     await financialsRefetch();
+    // Slim Overview KPI query may have cached data from before the
+    // batch rescan changed scan rows. Invalidate it so the next
+    // Overview mount fetches the fresh side cache.
+    await invalidateFinancialKpiSummary();
     setBatchRescanRunning(false);
   }, [
     contractScanRefetch,
     filteredFinancialRows,
     financialsRefetch,
+    invalidateFinancialKpiSummary,
     rescanSingleContract,
   ]);
 
@@ -536,8 +552,15 @@ export default memo(function FinancialsTab(props: FinancialsTabProps) {
       });
       setEditingFinancialRow(null);
       // Background refetch to sync authoritative DB data, then clear
-      // local overrides (the DB data now includes them).
-      Promise.all([contractScanRefetch(), financialsRefetch()]).then(() => {
+      // local overrides (the DB data now includes them). Slim
+      // Overview KPI query is invalidated alongside so the next
+      // Overview mount picks up the freshly-recomputed KPIs from
+      // the side cache.
+      Promise.all([
+        contractScanRefetch(),
+        financialsRefetch(),
+        invalidateFinancialKpiSummary(),
+      ]).then(() => {
         setLocalOverrides((prev) => {
           const next = new Map(prev);
           next.delete(savedCsgId);
@@ -551,6 +574,7 @@ export default memo(function FinancialsTab(props: FinancialsTabProps) {
     contractScanRefetch,
     editingFinancialRow,
     financialsRefetch,
+    invalidateFinancialKpiSummary,
     setLocalOverrides,
     updateContractOverride,
   ]);
@@ -1309,6 +1333,11 @@ export default memo(function FinancialsTab(props: FinancialsTabProps) {
                                   }%`,
                                 );
                                 await contractScanRefetch();
+                                // Single-row rescan changed scan rows; the
+                                // heavy financials cache will refetch on the
+                                // next Financials read, but the slim Overview
+                                // KPI query may be cached at a stale value.
+                                await invalidateFinancialKpiSummary();
                               } catch (err) {
                                 toast.error(
                                   err instanceof Error ? err.message : "Re-scan failed",

@@ -97,8 +97,14 @@ function makeFoundation(
     ReturnType<typeof makeCanonicalSystem>
   > = {};
   for (const s of systemRecords) canonicalSystemsByCsgId[s.csgId] = s;
+  // Mirrors the foundation builder's contract
+  // (`buildFoundationArtifact.ts:606`): a terminated system is
+  // NEVER in `part2EligibleCsgIds`, regardless of whether
+  // `isPart2Verified` was set on its canonical record. Test
+  // fixtures that pretend otherwise model a state production
+  // can't reach. PR #334 follow-up item 4 (option B, 2026-05-02).
   const part2 = systemRecords
-    .filter((s) => s.isPart2Verified)
+    .filter((s) => s.isPart2Verified && !s.isTerminated)
     .map((s) => s.csgId);
   const reporting = systemRecords
     .filter((s) => s.isReporting && !s.isTerminated)
@@ -316,12 +322,23 @@ describe("getOrBuildSlimDashboardSummary", () => {
     expect(result.withValueDataCount).toBe(1);
   });
 
-  it("computes ownership tile breakdown over Part-II-eligible systems", async () => {
+  it("computes ownership tile breakdown over Part-II-eligible non-terminated systems; terminated fields stay 0 per slim contract (PR #334 follow-up item 4 option B)", async () => {
+    // The foundation builder excludes terminated systems from
+    // `part2EligibleCsgIds` even when `isPart2Verified` is true.
+    // Slim's ownership-tile walk iterates only the eligible set,
+    // so terminated counts are STRUCTURALLY 0 on the slim path.
+    // Heavy aggregators expose Part-II-scoped terminated counts
+    // separately; the UI must render an explicit "—" placeholder
+    // until heavy loads.
     const systems = [
       makeCanonicalSystem("CSG-1", { isReporting: true, ownershipStatus: "transferred" }),
       makeCanonicalSystem("CSG-2", { isReporting: true, ownershipStatus: "transferred" }),
       makeCanonicalSystem("CSG-3", { isReporting: true, ownershipStatus: "active" }),
       makeCanonicalSystem("CSG-4", { isReporting: false, ownershipStatus: "transferred" }),
+      // CSG-5 / CSG-6 are terminated. Test fixture's makeFoundation
+      // mirrors the production rule: terminated ⇒ excluded from
+      // part2EligibleCsgIds. They count toward the portfolio
+      // `terminatedSystems` field instead.
       makeCanonicalSystem("CSG-5", { isTerminated: true, isReporting: true, ownershipStatus: "terminated" }),
       makeCanonicalSystem("CSG-6", { isTerminated: true, isReporting: false, ownershipStatus: "terminated" }),
       makeCanonicalSystem("CSG-7", { isPart2Verified: false, isReporting: true, ownershipStatus: "active" }),
@@ -339,9 +356,13 @@ describe("getOrBuildSlimDashboardSummary", () => {
     expect(result.ownershipOverview.transferredReporting).toBe(2);
     expect(result.ownershipOverview.notTransferredReporting).toBe(1);
     expect(result.ownershipOverview.transferredNotReporting).toBe(1);
-    expect(result.ownershipOverview.terminatedReporting).toBe(1);
-    expect(result.ownershipOverview.terminatedNotReporting).toBe(1);
-    expect(result.ownershipOverview.terminatedTotal).toBe(2);
+    // Terminated fields STRUCTURALLY 0 on the slim path —
+    // foundation excludes terminated from Part-II eligibility.
+    expect(result.ownershipOverview.terminatedReporting).toBe(0);
+    expect(result.ownershipOverview.terminatedNotReporting).toBe(0);
+    expect(result.ownershipOverview.terminatedTotal).toBe(0);
+    // Portfolio terminated count surfaces here instead.
+    expect(result.terminatedSystems).toBe(2);
   });
 
   it("sums cumulativeKwAcPart2 + cumulativeKwDcPart2 over Part-II-eligible systems", async () => {
@@ -493,7 +514,20 @@ describe("getOrBuildSlimDashboardSummary", () => {
     expect(transferredReporting.count).toBe(1);
   });
 
-  it("collapses terminated systems into the virtual 'Terminated' status", async () => {
+  it("rejects ABP rows whose only matched system is foundation-terminated (PR #334 follow-up item 4 option B)", async () => {
+    // Production foundation excludes terminated systems from
+    // `part2EligibleCsgIds`. An ABP row with a valid Part-II date
+    // mapped only to such a system fails slim's foundation Part-II
+    // gate (`isPart2Verified && part2EligibleSet.has(csgId)`) and
+    // contributes nothing to Change Ownership. The PRE-fix slim
+    // builder modeled an impossible "terminated AND Part-II-eligible"
+    // foundation state and emitted "Terminated" status counts;
+    // option B removes that unreachable branch and verifies the
+    // gate's correct rejection here.
+    //
+    // The CHANGE_OWNERSHIP_STATUS_ORDER 5-status contract still
+    // INCLUDES "Terminated" — heavy aggregators populate it from a
+    // broader system snapshot. On slim, that bucket stays at 0.
     const systems = [
       makeCanonicalSystem("CSG-T-R", {
         isTerminated: true,
@@ -514,12 +548,6 @@ describe("getOrBuildSlimDashboardSummary", () => {
       fromInflight: false,
       inputVersionHash: HASH,
     });
-    setupStreamMock({
-      solarRows: [],
-      abpRows: [abpRowFor("CSG-T-R", "abp-1"), abpRowFor("CSG-T-N", "abp-2")],
-    });
-    // The default abpRowFor() uses `ABP-${csgId}` for applicationId,
-    // but here the systems' abpIds are ABP-1/ABP-2. Re-issue rows.
     setupStreamMock({
       solarRows: [],
       abpRows: [
@@ -544,22 +572,22 @@ describe("getOrBuildSlimDashboardSummary", () => {
 
     const { result } = await getOrBuildSlimDashboardSummary(SCOPE);
 
-    // Virtual "Terminated" — both terminated projects collapse into
-    // one count, regardless of reporting state.
+    // ABP rows accepted by the date-only diagnostic counter.
+    expect(result.part2VerifiedAbpRowsCount).toBe(2);
+    // But foundation Part-II gate rejects both → no Change
+    // Ownership classification.
+    expect(result.changeOwnership.summary.total).toBe(0);
     const terminated = result.changeOwnership.summary.counts.find(
       (c) => c.status === "Terminated"
     )!;
-    expect(terminated.count).toBe(2);
-    // No "Terminated and Reporting" / "Terminated and Not Reporting"
-    // entries — the order has 5 statuses with the virtual Terminated.
+    expect(terminated.count).toBe(0);
+    // Status-order contract preserved (5 statuses, virtual
+    // Terminated bucket present).
     expect(
       result.changeOwnership.summary.counts.map((c) => c.status)
     ).toEqual(CHANGE_OWNERSHIP_STATUS_ORDER);
-    expect(
-      result.changeOwnership.summary.counts.find(
-        (c) => (c.status as string) === "Terminated and Reporting"
-      )
-    ).toBeUndefined();
+    // Portfolio terminated count surfaces correctly.
+    expect(result.terminatedSystems).toBe(2);
   });
 
   it("counts active matched projects in the stacked chart's notTransferred bucket", async () => {
@@ -785,8 +813,101 @@ describe("getOrBuildSlimDashboardSummary", () => {
     expect(foundationMocks.streamRowsByPage).not.toHaveBeenCalled();
   });
 
-  it("uses runner version v4 (post foundation Part-II gate + multi-map + project-reporting + value-coverage fixes)", () => {
-    expect(SLIM_DASHBOARD_SUMMARY_RUNNER_VERSION).toBe("slim-dashboard-summary-v4");
+  it("uses runner version v5 (post Excel-serial Part-II date parity fix)", () => {
+    expect(SLIM_DASHBOARD_SUMMARY_RUNNER_VERSION).toBe("slim-dashboard-summary-v5");
+  });
+
+  it("accepts Excel-serial part2AppVerificationDate (parity with foundation eligibility — PR #334 follow-up item 3)", async () => {
+    // Production CSV ingest sometimes emits Excel serial dates
+    // (5-digit integers in the 20000–80000 range) instead of
+    // calendar-formatted strings. The foundation builder's
+    // `isPart2VerifiedAbpRow` helper accepts them via
+    // `parsePart2VerificationDate`. Slim now does too — otherwise
+    // foundation-eligible projects silently disappear from slim's
+    // Change Ownership counts. Pre-fix slim used `new Date("45292")`
+    // which parses as year 45292 → out of [2009, 2100] → row
+    // dropped → silent count drift.
+    //
+    // 45292 = 2024-01-01 in Excel-serial-1900-mode (epoch
+    // 1899-12-30 + 45292 days).
+    const systems = [
+      makeCanonicalSystem("CSG-EXCEL", {
+        isReporting: true,
+        ownershipStatus: "transferred",
+        abpIds: ["ABP-EXCEL"],
+      }),
+    ];
+    runnerMocks.getOrBuildFoundation.mockResolvedValue({
+      payload: makeFoundation(systems),
+      fromCache: false,
+      fromInflight: false,
+      inputVersionHash: HASH,
+    });
+    setupStreamMock({
+      solarRows: [
+        {
+          id: "1",
+          systemId: "CSG-EXCEL",
+          installedKwAc: 8,
+          installedKwDc: null,
+          totalContractAmount: 5000,
+        },
+      ],
+      abpRows: [
+        {
+          id: "abp-1",
+          applicationId: "ABP-EXCEL",
+          systemId: null,
+          trackingSystemRefId: null,
+          projectName: "Excel-Serial Project",
+          part2AppVerificationDate: "45292",
+        },
+      ],
+    });
+
+    const { result } = await getOrBuildSlimDashboardSummary(SCOPE);
+
+    expect(result.part2VerifiedAbpRowsCount).toBe(1);
+    expect(result.changeOwnership.summary.total).toBe(1);
+    const transferredReporting = result.changeOwnership.summary.counts.find(
+      (c) => c.status === "Transferred and Reporting"
+    )!;
+    expect(transferredReporting.count).toBe(1);
+  });
+
+  it("rejects out-of-range calendar dates (parity with foundation parser)", async () => {
+    // The shared parser keeps the [2009, 2100] window. A row dated
+    // 2008-12-31 must NOT count under either parser.
+    const systems = [
+      makeCanonicalSystem("CSG-OLD", {
+        isReporting: true,
+        ownershipStatus: "transferred",
+        abpIds: ["ABP-OLD"],
+      }),
+    ];
+    runnerMocks.getOrBuildFoundation.mockResolvedValue({
+      payload: makeFoundation(systems),
+      fromCache: false,
+      fromInflight: false,
+      inputVersionHash: HASH,
+    });
+    setupStreamMock({
+      solarRows: [],
+      abpRows: [
+        {
+          id: "abp-old",
+          applicationId: "ABP-OLD",
+          systemId: null,
+          trackingSystemRefId: null,
+          projectName: "Old project",
+          part2AppVerificationDate: "2008-12-31",
+        },
+      ],
+    });
+
+    const { result } = await getOrBuildSlimDashboardSummary(SCOPE);
+    expect(result.part2VerifiedAbpRowsCount).toBe(0);
+    expect(result.changeOwnership.summary.total).toBe(0);
   });
 
   it("ABP row whose matched system has isPart2Verified=false does NOT contribute to Change Ownership", async () => {
@@ -971,16 +1092,24 @@ describe("getOrBuildSlimDashboardSummary", () => {
     expect(xferReporting.count).toBe(0);
   });
 
-  it("preserves reporting state for terminated projects — terminated reporting contributes to summary.reporting + contractedValueReporting", async () => {
-    // A terminated project that is STILL reporting (positive
-    // generation in the anchor window). The status collapse to
-    // "Terminated" must NOT drop it from reporting totals.
+  it("preserves reporting state for non-terminated change-ownership projects (regression rail for project-level reporting tracking)", async () => {
+    // Regression rail. PR #332 follow-up tracked
+    // `projectReportingByDedupe` independently from status text so
+    // a Change-Ownership-NOT-TRANSFERRED-and-Reporting project
+    // increments `summary.reporting`. Pre-fix the slim derived
+    // reporting count by counting status strings ending in
+    // "and Reporting", which would NOT have caught a future status
+    // mapping change. The original test used a terminated-reporting
+    // project to demonstrate the bug, but per PR #334 follow-up
+    // item 4 (option B) terminated systems are excluded from slim
+    // Part-II eligibility — the test now asserts the same behavior
+    // on a non-terminated CoO project, which IS a reachable
+    // production state.
     const systems = [
-      makeCanonicalSystem("CSG-TERM-REPORTING", {
-        isTerminated: true,
+      makeCanonicalSystem("CSG-COO-REPORTING", {
         isReporting: true,
-        ownershipStatus: "terminated",
-        abpIds: ["ABP-TR"],
+        ownershipStatus: "change-of-ownership",
+        abpIds: ["ABP-CR"],
       }),
     ];
     runnerMocks.getOrBuildFoundation.mockResolvedValue({
@@ -993,7 +1122,7 @@ describe("getOrBuildSlimDashboardSummary", () => {
       solarRows: [
         {
           id: "1",
-          systemId: "CSG-TERM-REPORTING",
+          systemId: "CSG-COO-REPORTING",
           installedKwAc: 8,
           installedKwDc: null,
           totalContractAmount: 7500,
@@ -1001,11 +1130,11 @@ describe("getOrBuildSlimDashboardSummary", () => {
       ],
       abpRows: [
         {
-          id: "abp-tr",
-          applicationId: "ABP-TR",
+          id: "abp-cr",
+          applicationId: "ABP-CR",
           systemId: null,
           trackingSystemRefId: null,
-          projectName: "Terminated but Reporting",
+          projectName: "CoO Project Reporting",
           part2AppVerificationDate: "2024-06-15",
         },
       ],
@@ -1013,16 +1142,15 @@ describe("getOrBuildSlimDashboardSummary", () => {
 
     const { result } = await getOrBuildSlimDashboardSummary(SCOPE);
 
-    // Status: Terminated.
-    const terminated = result.changeOwnership.summary.counts.find(
-      (c) => c.status === "Terminated"
+    // Status: Change of Ownership reporting variant.
+    const cooReporting = result.changeOwnership.summary.counts.find(
+      (c) => c.status === "Change of Ownership - Not Transferred and Reporting"
     )!;
-    expect(terminated.count).toBe(1);
-    // BUT reporting state is preserved — the project IS reporting.
+    expect(cooReporting.count).toBe(1);
+    // Reporting state derived from per-project flag, not status text.
     expect(result.changeOwnership.summary.reporting).toBe(1);
     expect(result.changeOwnership.summary.notReporting).toBe(0);
-    // Value totals: reporting bucket carries the amount, NOT the
-    // not-reporting bucket.
+    // Value totals: reporting bucket carries the amount.
     expect(result.changeOwnership.summary.contractedValueTotal).toBe(7500);
     expect(result.changeOwnership.summary.contractedValueReporting).toBe(7500);
     expect(result.changeOwnership.summary.contractedValueNotReporting).toBe(0);

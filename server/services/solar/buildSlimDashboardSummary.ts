@@ -83,7 +83,10 @@ import type {
   FoundationArtifactPayload,
   FoundationCanonicalSystem,
 } from "../../../shared/solarRecFoundation";
-import { toPercentValue } from "./aggregatorHelpers";
+import {
+  parsePart2VerificationDate,
+  toPercentValue,
+} from "./aggregatorHelpers";
 import {
   computeFoundationHash,
   loadInputVersions,
@@ -93,11 +96,26 @@ import { getOrBuildFoundation } from "./foundationRunner";
 import { jsonSerde, withArtifactCache } from "./withArtifactCache";
 
 export const SLIM_DASHBOARD_SUMMARY_RUNNER_VERSION =
-  "slim-dashboard-summary-v4" as const;
-const ARTIFACT_TYPE = "slim-dashboard-summary-v4";
+  "slim-dashboard-summary-v5" as const;
+const ARTIFACT_TYPE = "slim-dashboard-summary-v5";
 
 export type SizeBucket = "<=10 kW AC" | ">10 kW AC" | "Unknown";
 
+/**
+ * Ownership tile breakdown over Part-II-eligible systems. PR #334
+ * follow-up item 4 (option B, 2026-05-02): the foundation contract
+ * (`buildFoundationArtifact.ts:606`) excludes terminated systems
+ * from `part2EligibleCsgIds` — a terminated system never satisfies
+ * `isPart2Verified === true`. So the slim Part-II walk physically
+ * cannot count terminated reporting / not-reporting without leaving
+ * its scope. The terminated fields below are always 0 on the slim
+ * path; consumers that need the portfolio terminated count read
+ * `SlimDashboardSummary.terminatedSystems` (from
+ * `foundation.summaryCounts.terminated`). Heavy aggregators expose
+ * Part-II-scoped terminated counts independently — UI that needs
+ * the breakdown must wait for the heavy/detail path or render an
+ * explicit "—" placeholder.
+ */
 export interface SlimOwnershipOverview {
   reportingOwnershipTotal: number;
   notTransferredReporting: number;
@@ -105,8 +123,11 @@ export interface SlimOwnershipOverview {
   notReportingOwnershipTotal: number;
   notTransferredNotReporting: number;
   transferredNotReporting: number;
+  /** Always 0 on the slim path. See type docstring. */
   terminatedReporting: number;
+  /** Always 0 on the slim path. See type docstring. */
   terminatedNotReporting: number;
+  /** Always 0 on the slim path. See type docstring. */
   terminatedTotal: number;
 }
 
@@ -360,21 +381,31 @@ async function computeSlimDashboardSummary(
   }
 
   // ---- Foundation walk: ownership tile breakdown over Part-II ---------
+  //
+  // Foundation contract (`buildFoundationArtifact.ts:606`):
+  //   `isPart2Verified` is set ONLY on non-terminated systems.
+  //   `part2EligibleCsgIds` is the sorted set of those CSG IDs.
+  // Therefore every system encountered in this walk satisfies
+  // `!sys.isTerminated`. The ownership tile breakdown below is
+  // intentionally Part-II-scoped + non-terminated; the
+  // `terminatedReporting / terminatedNotReporting / terminatedTotal`
+  // fields on the slim payload are ALWAYS 0 on the slim path. The
+  // portfolio-wide terminated count is surfaced separately on
+  // `summary.terminatedSystems` (from `foundation.summaryCounts.
+  // terminated`) — the UI tile that wants the terminated number
+  // must read THAT field, not `ownershipOverview.terminatedTotal`,
+  // until a heavy/detail path provides Part-II-scoped terminated
+  // counts. PR #334 follow-up item 4 (option B, 2026-05-02).
   let notTransferredReporting = 0;
   let transferredReporting = 0;
   let notTransferredNotReporting = 0;
   let transferredNotReporting = 0;
-  let terminatedReporting = 0;
-  let terminatedNotReporting = 0;
 
   for (const csgId of foundation.part2EligibleCsgIds) {
     const sys = foundation.canonicalSystemsByCsgId[csgId];
     if (!sys) continue;
     const reporting = sys.isReporting;
-    if (sys.isTerminated) {
-      if (reporting) terminatedReporting++;
-      else terminatedNotReporting++;
-    } else if (sys.ownershipStatus === "transferred") {
+    if (sys.ownershipStatus === "transferred") {
       if (reporting) transferredReporting++;
       else transferredNotReporting++;
     } else {
@@ -582,7 +613,18 @@ async function computeSlimDashboardSummary(
       },
       (row) => {
         const idx = rowIndex++;
-        if (!isValidPart2VerificationDate(row.part2AppVerificationDate)) return;
+        // PR #334 follow-up item 3 (2026-05-02) — share the
+        // canonical date parser with the foundation builder /
+        // heavy aggregators / client. The pre-fix `new Date(raw)`
+        // path silently rejected Excel serial dates (5-digit
+        // integers) that production CSV ingest sometimes emits;
+        // those rows would have been counted by the foundation's
+        // `isPart2VerifiedAbpRow` helper but skipped by slim,
+        // causing a quiet count drift between slim and foundation
+        // eligibility.
+        if (parsePart2VerificationDate(row.part2AppVerificationDate ?? undefined) === null) {
+          return;
+        }
         part2VerifiedAbpRowsCount++;
 
         const dedupeKey = part2DedupeKey(row, idx);
@@ -701,7 +743,17 @@ async function computeSlimDashboardSummary(
   const reportingOwnershipTotal = notTransferredReporting + transferredReporting;
   const notReportingOwnershipTotal =
     notTransferredNotReporting + transferredNotReporting;
-  const terminatedTotal = terminatedReporting + terminatedNotReporting;
+  // Foundation contract: terminated systems are excluded from the
+  // Part-II-eligible set. Slim cannot count "terminated reporting"
+  // / "terminated not reporting" without scanning systems outside
+  // `part2EligibleCsgIds`, which is the heavy aggregator's job.
+  // Surface as fixed 0s on the slim path; consumers read the
+  // portfolio terminated count from `summary.terminatedSystems`
+  // instead. See `SlimOwnershipOverview` doc + the foundation walk
+  // comment above. PR #334 follow-up item 4 (option B).
+  const terminatedReporting = 0;
+  const terminatedNotReporting = 0;
+  const terminatedTotal = 0;
 
   const totalSystems = foundation.summaryCounts.totalSystems;
   const reportingSystems = foundation.summaryCounts.reporting;
@@ -852,16 +904,6 @@ function buildBreakdownRow(
     reportingPercent: toPercentValue(reporting.count, total),
     contractedValue: reporting.value + notReporting.value,
   };
-}
-
-function isValidPart2VerificationDate(raw: string | null): boolean {
-  if (!raw) return false;
-  const trimmed = raw.trim();
-  if (!trimmed) return false;
-  const parsed = new Date(trimmed);
-  if (Number.isNaN(parsed.getTime())) return false;
-  const year = parsed.getFullYear();
-  return year >= 2009 && year <= 2100;
 }
 
 function part2DedupeKey(
