@@ -16,7 +16,10 @@ export * as schema from "../../drizzle/schema";
 // Module-level singletons
 // ─────────────────────────────────────────────────────────────────────
 
-let _db: ReturnType<typeof drizzle> | null = null;
+type DrizzleDatabase = ReturnType<typeof drizzle>;
+
+let _db: DrizzleDatabase | null = null;
+let _dbInitPromise: Promise<DrizzleDatabase | null> | null = null;
 let _solarRecDashboardTableEnsured = false;
 let _solarRecDatasetSyncStateTableEnsured = false;
 let _userFeedbackTableEnsured = false;
@@ -81,6 +84,14 @@ function buildDbUnavailableError(operation: string, originalError: unknown): Err
   return error;
 }
 
+function parsePositiveIntegerEnv(name: string, fallback: number): number {
+  const raw = process.env[name]?.trim();
+  if (!raw) return fallback;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.floor(parsed);
+}
+
 export async function withDbRetry<T>(
   operation: string,
   action: () => Promise<T>,
@@ -141,10 +152,25 @@ function buildPoolOptions(connectionString: string): PoolOptions {
   return {
     ...parsed,
     waitForConnections: true,
-    connectionLimit: 10,
-    maxIdle: 10,
-    idleTimeout: 60_000,
-    queueLimit: 0,
+    connectionLimit: parsePositiveIntegerEnv(
+      "DATABASE_POOL_CONNECTION_LIMIT",
+      10
+    ),
+    maxIdle: parsePositiveIntegerEnv("DATABASE_POOL_MAX_IDLE", 10),
+    idleTimeout: parsePositiveIntegerEnv(
+      "DATABASE_POOL_IDLE_TIMEOUT_MS",
+      60_000
+    ),
+    // `0` means "unbounded" in mysql2. In production that lets a
+    // post-deploy request burst sit in memory until the proxy gives up
+    // and reports 502. Keep a finite queue so the app fails fast under
+    // pool pressure instead.
+    queueLimit: parsePositiveIntegerEnv("DATABASE_POOL_QUEUE_LIMIT", 50),
+    connectTimeout: parsePositiveIntegerEnv(
+      "DATABASE_CONNECT_TIMEOUT_MS",
+      5_000
+    ),
+    enableKeepAlive: true,
     ...(sslEnabled
       ? {
           ssl: {
@@ -201,17 +227,33 @@ export { ENV };
 
 // Lazily create the drizzle instance so local tooling can run without a DB.
 export async function getDb() {
-  if (!_db && process.env.DATABASE_URL) {
-    try {
-      const pool = createPool(buildPoolOptions(process.env.DATABASE_URL));
-      await pool.promise().query("select 1");
-      _db = drizzle(pool);
-    } catch (error) {
-      console.warn("[Database] Failed to connect:", error);
-      _db = null;
-    }
+  if (_db) return _db;
+  if (!process.env.DATABASE_URL) return null;
+
+  if (!_dbInitPromise) {
+    _dbInitPromise = (async () => {
+      const pool = createPool(buildPoolOptions(process.env.DATABASE_URL!));
+      try {
+        await pool.promise().query("select 1");
+        _db = drizzle(pool);
+        return _db;
+      } catch (error) {
+        console.warn("[Database] Failed to connect:", error);
+        try {
+          pool.end();
+        } catch {
+          // Best-effort cleanup only; the original connection error is the
+          // useful signal.
+        }
+        _db = null;
+        return null;
+      } finally {
+        _dbInitPromise = null;
+      }
+    })();
   }
-  return _db;
+
+  return _dbInitPromise;
 }
 
 // ─────────────────────────────────────────────────────────────────────

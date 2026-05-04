@@ -40,6 +40,19 @@ type GoogleUserInfo = {
   picture?: string;
 };
 
+const AUTH_USER_CACHE_TTL_MS = 5_000;
+
+type AuthUserCacheEntry = {
+  expiresAt: number;
+  user: SolarRecAuthenticatedUser;
+};
+
+const authUserCache = new Map<number, AuthUserCacheEntry>();
+const inFlightAuthUserLoads = new Map<
+  number,
+  Promise<SolarRecAuthenticatedUser | null>
+>();
+
 // ---------------------------------------------------------------------------
 // JWT helpers (reuse same JWT_SECRET as main app, but separate cookie)
 // ---------------------------------------------------------------------------
@@ -184,20 +197,48 @@ export async function authenticateSolarRecRequest(
   const session = await verifySolarRecSession(cookieValue);
   if (!session) return null;
 
-  // Load user from DB to get current role/active status
-  const { getSolarRecUserById } = await import("../db");
-  const user = await getSolarRecUserById(session.solarRecUserId);
-  if (!user || !user.isActive) return null;
+  return loadAuthenticatedSolarRecUser(session.solarRecUserId);
+}
 
-  return {
-    id: user.id,
-    email: user.email,
-    googleOpenId: user.googleOpenId,
-    name: user.name,
-    role: user.role as SolarRecAuthenticatedUser["role"],
-    avatarUrl: user.avatarUrl,
-    isScopeAdmin: user.isScopeAdmin ?? false,
-  };
+async function loadAuthenticatedSolarRecUser(
+  userId: number
+): Promise<SolarRecAuthenticatedUser | null> {
+  const now = Date.now();
+  const cached = authUserCache.get(userId);
+  if (cached && cached.expiresAt > now) {
+    return cached.user;
+  }
+
+  const inFlight = inFlightAuthUserLoads.get(userId);
+  if (inFlight) return inFlight;
+
+  const promise = (async () => {
+    // Load user from DB to get current role/active status.
+    const { getSolarRecUserById } = await import("../db");
+    const user = await getSolarRecUserById(userId);
+    if (!user || !user.isActive) return null;
+
+    const authenticatedUser: SolarRecAuthenticatedUser = {
+      id: user.id,
+      email: user.email,
+      googleOpenId: user.googleOpenId,
+      name: user.name,
+      role: user.role as SolarRecAuthenticatedUser["role"],
+      avatarUrl: user.avatarUrl,
+      isScopeAdmin: user.isScopeAdmin ?? false,
+    };
+
+    authUserCache.set(userId, {
+      expiresAt: Date.now() + AUTH_USER_CACHE_TTL_MS,
+      user: authenticatedUser,
+    });
+    return authenticatedUser;
+  })().finally(() => {
+    inFlightAuthUserLoads.delete(userId);
+  });
+
+  inFlightAuthUserLoads.set(userId, promise);
+  return promise;
 }
 
 // ---------------------------------------------------------------------------
