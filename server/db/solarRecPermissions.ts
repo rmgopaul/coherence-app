@@ -133,6 +133,7 @@ export async function setSolarRecUserScopeAdmin(
       .set({ isScopeAdmin })
       .where(eq(solarRecUsers.id, userId));
   });
+  clearEffectivePermissionCacheForUser(userId);
 }
 
 // ---------------------------------------------------------------------------
@@ -219,6 +220,7 @@ export async function upsertSolarRecUserModulePermission(data: {
         },
       });
   });
+  clearEffectivePermissionCacheForUser(data.userId, data.scopeId);
 }
 
 /**
@@ -257,6 +259,7 @@ export async function replaceSolarRecUserModulePermissions(data: {
       }
     });
   });
+  clearEffectivePermissionCacheForUser(data.userId, data.scopeId);
 }
 
 // ---------------------------------------------------------------------------
@@ -273,6 +276,43 @@ export interface EffectivePermission {
   isBypass: boolean;
 }
 
+const EFFECTIVE_PERMISSION_CACHE_TTL_MS = 5_000;
+
+type EffectivePermissionCacheEntry = {
+  expiresAt: number;
+  value: EffectivePermission;
+};
+
+const effectivePermissionCache = new Map<
+  string,
+  EffectivePermissionCacheEntry
+>();
+const inFlightEffectivePermissionLoads = new Map<
+  string,
+  Promise<EffectivePermission>
+>();
+
+function effectivePermissionCacheKey(
+  userId: number,
+  scopeId: string,
+  moduleKey: ModuleKey
+): string {
+  return `${userId}\u0000${scopeId}\u0000${moduleKey}`;
+}
+
+function clearEffectivePermissionCacheForUser(
+  userId: number,
+  scopeId?: string
+): void {
+  const prefix =
+    scopeId === undefined
+      ? `${userId}\u0000`
+      : `${userId}\u0000${scopeId}\u0000`;
+  for (const key of Array.from(effectivePermissionCache.keys())) {
+    if (key.startsWith(prefix)) effectivePermissionCache.delete(key);
+  }
+}
+
 /**
  * Resolve a user's effective permission for a module. Implements the rules
  * documented in the Task 5.1 plan:
@@ -286,6 +326,55 @@ export interface EffectivePermission {
  * loaded pass them in to skip the extra DB reads.
  */
 export async function resolveEffectivePermission(
+  userId: number,
+  scopeId: string,
+  moduleKey: ModuleKey,
+  opts?: {
+    user?: {
+      id: number;
+      isScopeAdmin: boolean;
+      googleOpenId?: string | null;
+      email?: string | null;
+    } | null;
+    scope?: { id: string; ownerUserId: number } | null;
+  }
+): Promise<EffectivePermission> {
+  // Runtime middleware calls this without an injected scope. Cache only that
+  // path so tests/admin helpers that pass explicit canned scope rows keep
+  // exact call-by-call semantics.
+  if (opts?.scope === undefined) {
+    const key = effectivePermissionCacheKey(userId, scopeId, moduleKey);
+    const cached = effectivePermissionCache.get(key);
+    if (cached && cached.expiresAt > Date.now()) return cached.value;
+
+    const inFlight = inFlightEffectivePermissionLoads.get(key);
+    if (inFlight) return inFlight;
+
+    const promise = resolveEffectivePermissionUncached(
+      userId,
+      scopeId,
+      moduleKey,
+      opts
+    )
+      .then(value => {
+        effectivePermissionCache.set(key, {
+          expiresAt: Date.now() + EFFECTIVE_PERMISSION_CACHE_TTL_MS,
+          value,
+        });
+        return value;
+      })
+      .finally(() => {
+        inFlightEffectivePermissionLoads.delete(key);
+      });
+
+    inFlightEffectivePermissionLoads.set(key, promise);
+    return promise;
+  }
+
+  return resolveEffectivePermissionUncached(userId, scopeId, moduleKey, opts);
+}
+
+async function resolveEffectivePermissionUncached(
   userId: number,
   scopeId: string,
   moduleKey: ModuleKey,
