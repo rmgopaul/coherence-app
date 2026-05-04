@@ -5,6 +5,7 @@ import {
   and,
   asc,
   inArray,
+  like,
   getDb,
   withDbRetry,
   ensureSolarRecDashboardStorageTable,
@@ -126,6 +127,77 @@ export async function getSolarRecDashboardPayload(userId: number, storageKey: st
 // it was built for — was deleted in this same PR. The single-key
 // `getSolarRecDashboardPayload` above remains the canonical dashboard
 // storage reader.
+
+/**
+ * List `solarRecDashboardStorage` rows whose `storageKey` starts
+ * with the given prefix, scoped to the caller's scopeId. Returns
+ * the storageKey + chunkIndex + payload of each row (no `scopeId`
+ * leak in the result shape — caller already specified it).
+ *
+ * Read-only. No deletes. No upserts. Used today by the
+ * snapshot-log recovery proc to find orphaned `_chunk_NNNN` rows
+ * that aren't pointed to by the main key. The bound (`maxRows`)
+ * exists so a misconfigured prefix can't pull a multi-MB result;
+ * default 256 is comfortable for snapshot logs (6 chunks observed
+ * on prod).
+ *
+ * The prefix is escaped so SQL `LIKE` wildcards in the user-
+ * supplied portion (`_` and `%`) are treated literally. Trailing
+ * `%` is appended by the caller's intent ("startsWith").
+ */
+export async function listSolarRecDashboardStorageByPrefix(
+  userId: number,
+  storageKeyPrefix: string,
+  options: { maxRows?: number } = {}
+): Promise<
+  Array<{ storageKey: string; chunkIndex: number; payload: string | null }>
+> {
+  const db = await getDb();
+  if (!db) return [];
+  const ensured = await ensureSolarRecDashboardStorageTable();
+  if (!ensured) return [];
+  const scopeId = await resolveScopeIdFromUserId(userId);
+  const maxRows = options.maxRows ?? 256;
+
+  // Escape SQL LIKE wildcards in the supplied prefix so the caller
+  // gets exact prefix-match semantics. The Drizzle `like` operator
+  // takes a single SQL string; we backslash-escape `_` and `%`,
+  // then append the trailing `%` ourselves.
+  const escaped = storageKeyPrefix
+    .replace(/\\/g, "\\\\")
+    .replace(/%/g, "\\%")
+    .replace(/_/g, "\\_");
+  const likePattern = `${escaped}%`;
+
+  const rows = await withDbRetry(
+    "list solar rec dashboard storage by prefix",
+    async () =>
+      db
+        .select({
+          storageKey: solarRecDashboardStorage.storageKey,
+          chunkIndex: solarRecDashboardStorage.chunkIndex,
+          payload: solarRecDashboardStorage.payload,
+        })
+        .from(solarRecDashboardStorage)
+        .where(
+          and(
+            eq(solarRecDashboardStorage.scopeId, scopeId),
+            like(solarRecDashboardStorage.storageKey, likePattern)
+          )
+        )
+        .orderBy(
+          asc(solarRecDashboardStorage.storageKey),
+          asc(solarRecDashboardStorage.chunkIndex)
+        )
+        .limit(maxRows)
+  );
+
+  return rows.map((row) => ({
+    storageKey: row.storageKey,
+    chunkIndex: row.chunkIndex,
+    payload: row.payload,
+  }));
+}
 
 export async function saveSolarRecDashboardPayload(userId: number, storageKey: string, payload: string): Promise<boolean> {
   const db = await getDb();

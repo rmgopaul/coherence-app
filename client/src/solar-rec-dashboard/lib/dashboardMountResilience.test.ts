@@ -367,6 +367,84 @@ describe("Solar REC dashboard mount: heavy-query gates", () => {
     );
   });
 
+  it("Snapshot Log tab hydrates from server (getSnapshotLogs) — local-only history is no longer canonical", () => {
+    // Production scenario: localStorage holds 1 entry; cloud
+    // (`solarRecDashboardStorage` rows) holds the historical 22-
+    // entry log split between the main key and orphaned chunk
+    // rows. Without server hydration the user sees 1 entry; with
+    // the merge below they see all 22.
+    expect(code).toMatch(
+      /solarRecTrpc\.solarRecDashboard\.getSnapshotLogs\.useQuery/
+    );
+    // Query is gated on the Snapshot Log tab being active so it
+    // doesn't fire on Overview mount (would push the heavy
+    // recovery scan onto every dashboard load).
+    expect(code).toMatch(
+      /getSnapshotLogs\.useQuery\([\s\S]{0,400}enabled\s*:\s*isSnapshotLogTabActive/
+    );
+    // Merge helper exists and is called from the hydration effect.
+    expect(code).toMatch(/function\s+mergeServerSnapshotLogsIntoLocal/);
+    expect(code).toMatch(
+      /setLogEntries\s*\(\s*\(\s*prev\s*\)\s*=>\s*mergeServerSnapshotLogsIntoLocal\s*\(\s*prev/
+    );
+  });
+
+  it("Snapshot Log merge: dedupes by id and sorts newest-first", () => {
+    // Source rail proving the helper has the right shape. The
+    // pure recovery primitives in
+    // `server/services/solar/snapshotLogRecovery.test.ts` cover
+    // the same invariants on the server side.
+    //
+    // We walk the function-body `{...}` rather than regexing the
+    // whole helper because the parameter type signature contains
+    // its own `{ id: string; ... }` inline-object braces that a
+    // naive "first `{` after declaration" slice would capture.
+    const decl = code.indexOf("function mergeServerSnapshotLogsIntoLocal");
+    expect(decl).toBeGreaterThan(-1);
+    // Walk parens from the first `(` after the name to find the
+    // matching `)` of the parameter list, ignoring inline `{ ... }`
+    // type braces inside.
+    const openParenIdx = code.indexOf("(", decl);
+    let parenDepth = 0;
+    let closeParenIdx = -1;
+    for (let i = openParenIdx; i < code.length; i++) {
+      const ch = code[i];
+      if (ch === "(") parenDepth++;
+      else if (ch === ")") {
+        parenDepth--;
+        if (parenDepth === 0) {
+          closeParenIdx = i;
+          break;
+        }
+      }
+    }
+    expect(closeParenIdx).toBeGreaterThan(openParenIdx);
+    // The function-body open brace is the first `{` after the
+    // closing `)` of the parameter list.
+    const bodyOpenIdx = code.indexOf("{", closeParenIdx);
+    let braceDepth = 0;
+    let bodyCloseIdx = -1;
+    for (let i = bodyOpenIdx; i < code.length; i++) {
+      const ch = code[i];
+      if (ch === "{") braceDepth++;
+      else if (ch === "}") {
+        braceDepth--;
+        if (braceDepth === 0) {
+          bodyCloseIdx = i;
+          break;
+        }
+      }
+    }
+    expect(bodyCloseIdx).toBeGreaterThan(bodyOpenIdx);
+    const body = code.slice(bodyOpenIdx, bodyCloseIdx + 1);
+
+    // Dedupe semantics: keyed by id via Map.
+    expect(body).toMatch(/new\s+Map\b/);
+    expect(body).toMatch(/byId\.set\s*\(\s*[a-zA-Z]+\.id/);
+    // Sort newest-first by createdAt.
+    expect(body).toMatch(/\.sort\s*\([\s\S]{0,200}createdAt/);
+  });
+
   it("CSV export click does NOT flip hasUserInteractedWithDashboard (heavy queries stay disabled)", () => {
     // PR #332 follow-up item 7 (2026-05-02). Flipping the
     // interaction flag inside the CSV handlers silently enables the
