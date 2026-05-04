@@ -59,6 +59,9 @@ import {
   type ChangeOwnershipStatus,
 } from "./buildChangeOwnershipAggregates";
 import { getOrBuildOverviewSummary } from "./buildOverviewSummaryAggregates";
+import { startDashboardJobMetric } from "./dashboardJobMetrics";
+
+const METRIC_PREFIX = "[dashboard:csv-export-jobs]";
 
 export const DASHBOARD_CSV_EXPORT_RUNNER_VERSION =
   "dashboard-csv-export-jobs-v1";
@@ -264,6 +267,11 @@ export async function runCsvExportJob(jobId: string): Promise<void> {
   }
   record.status = "running";
   record.startedAt = Date.now();
+  const metric = startDashboardJobMetric({
+    prefix: METRIC_PREFIX,
+    jobId,
+    context: { exportType: record.input.exportType },
+  });
   try {
     const built = await buildExport(record.input, record.scopeId);
     if (built.rowCount === 0) {
@@ -275,6 +283,7 @@ export async function runCsvExportJob(jobId: string): Promise<void> {
       record.rowCount = 0;
       record.url = null;
       record.completedAt = Date.now();
+      metric.finish({ rowCount: 0, csvBytes: 0, storageWrite: false });
       return;
     }
     record.fileName = built.fileName;
@@ -292,13 +301,16 @@ export async function runCsvExportJob(jobId: string): Promise<void> {
     record.rowCount = built.rowCount;
     record.url = url;
     record.completedAt = Date.now();
+    metric.finish({
+      rowCount: built.rowCount,
+      csvBytes: built.csv.length,
+      storageWrite: true,
+    });
   } catch (err) {
     record.status = "failed";
     record.error = err instanceof Error ? err.message : String(err);
     record.completedAt = Date.now();
-    console.error(
-      `[dashboard:csv-export-jobs] failed jobId=${jobId} (${record.input.exportType}): ${record.error}`
-    );
+    metric.fail(err);
   }
 }
 

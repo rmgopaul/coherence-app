@@ -670,7 +670,7 @@ in prod). Bounded responses look like this:
 | `debugDatasetPersistenceRaw` | Raw rows from every layer + verdict | ~2 KB |
 | `getDashboard<TabName>Aggregates` (DeliveryTracker / TrendDeliveryPace / TrendsProduction / ContractVintage / AppPipelineMonthly / AppPipelineCashFlow / PerformanceRatio / Forecast / Financials) | Per-tab aggregate result | ~10–500 KB |
 
-**Transitional reality: 7 procedures still ship oversized
+**Transitional reality: 5 procedures still ship oversized
 responses.** They live in `DASHBOARD_OVERSIZE_ALLOWLIST`
 (`server/_core/dashboardResponseGuard.ts`) and are accepted as
 known regressions in warn mode. None of them fire on Overview
@@ -685,23 +685,50 @@ sketch may stay aspirational indefinitely.
 | Allowlisted procedure | Wire shape today | Sketch of future replacement (unscheduled) |
 |---|---|---|
 | `solarRecDashboard.getSystemSnapshot` | Full pre-computed `SystemRecord[]` (~26 MB on prod) | Paginated `getDashboardSystemsPage` + a derived `solarRecDashboardSystemFacts` table; tab-specific reads would target only the columns they need. |
-| `solarRecDashboard.getDashboardOverviewSummary` | Heavy summary embedding `ownershipRows: OwnershipOverviewExportRow[]` (~5–15 MB) | Slim `getDashboardSummary` (already shipped, default mount) + a paginated `getDashboardOwnershipRowsPage` for the detail table. CSV export already runs server-side via `exportOwnershipTileCsv` (also allowlisted; see below). |
+| `solarRecDashboard.getDashboardOverviewSummary` | Heavy summary embedding `ownershipRows: OwnershipOverviewExportRow[]` (~5–15 MB) | Slim `getDashboardSummary` (already shipped, default mount) + a paginated `getDashboardOwnershipRowsPage` for the detail table. CSV export already moved off this proc — see the retired procs below. |
 | `solarRecDashboard.getDashboardChangeOwnership` | Per-project `rows: ChangeOwnershipExportRow[]` (~19 MB) | Slim Change-Ownership rollup (already in `getDashboardSummary`) + paginated `getDashboardChangeOwnershipRowsPage`. |
 | `solarRecDashboard.getDashboardOfflineMonitoring` | Per-system maps keyed by ~21k systems (`monitoringDetailsBySystemKey` etc.) | Paginated `getDashboardMonitoringDetailsPage` + per-system endpoint for drill-in. |
-| `solarRecDashboard.getDatasetCsv` | Full CSV string built in memory (≤25 MB hard cap) | Streaming HTTP export OR background artifact job — see streaming/background note below. |
-| `solarRecDashboard.exportOwnershipTileCsv` | CSV string from heavy aggregator's row set (MB-scale on prod) | Mutation enqueues an export job → server streams CSV rows directly to S3 under `<scope>/exports/<jobId>.csv` → client polls + downloads via presigned URL. PR #334 added the no-side-effect invariant on the client click handler; the streaming/background pipeline itself is NOT yet implemented. |
-| `solarRecDashboard.exportChangeOwnershipTileCsv` | Same shape as above against `getDashboardChangeOwnership.rows` | Same streaming/background sketch as `exportOwnershipTileCsv`. |
+| `solarRecDashboard.getDatasetCsv` | Full CSV string built in memory (≤25 MB hard cap) | Streaming HTTP export OR background artifact job — same shape as `startDashboardCsvExport` but for raw `srDs*` datasets. |
 
-**These export procs do NOT actually stream or background-export
-today.** They run the heavy aggregator on the server, build the
-CSV string in memory, and return it through the tRPC single-
-response shape. The improvement vs. PR #332 is scoped: the client
-no longer hydrates the multi-MB JSON detail rows into the browser,
-but the server still builds the full CSV string and sends it as a
-single response. Treat the entries as **unscheduled transitional
-debt** — there is no committed PR / issue / phase replacing them.
-Until one is filed, do not describe the streaming/background
-architecture as scheduled or imminent.
+**Retired CSV-export procs** (PR #346, #347, follow-up):
+`exportOwnershipTileCsv` and `exportChangeOwnershipTileCsv` were
+removed from the router and the allowlist. They were synchronous
+queries returning MB-scale CSV through tRPC. Replaced by the
+background-job pair below.
+
+| Replacement proc | Wire shape | Notes |
+|---|---|---|
+| `solarRecDashboard.startDashboardCsvExport` | Mutation, returns `{ jobId, _runnerVersion }` (~200 B). | Enqueues a CSV export job for either the ownership tile or the change-ownership tile. The MB-scale CSV no longer crosses tRPC. |
+| `solarRecDashboard.getDashboardCsvExportJobStatus` | Query, returns a slim status snapshot (`status` ∈ `queued`/`running`/`succeeded`/`failed`/`notFound`, plus `fileName?`/`url?`/`rowCount?`/`error?`/timestamps). ~1 KB. | Client polls until terminal status, then `triggerUrlDownload`s the artifact URL. Cross-scope job IDs read as `notFound`. |
+
+**Background-job transitional debt** (`server/services/solar/dashboardCsvExportJobs.ts`):
+
+- **In-memory `Map` registry, single-process only.** A multi-instance
+  deploy would route a poll to a process that didn't start the
+  worker and 404 the lookup. Acceptable today (single-instance);
+  next step is either a `dashboardCsvExportJobs` DB table mirroring
+  the `datasetUploadJobs` shape or a dedicated background-job
+  runtime.
+- **Worker still builds the entire CSV string in memory** before
+  `storagePut`. The improvement vs. the prior synchronous procs is
+  scoped: the MB-scale CSV is OFF the tRPC response path, restoring
+  the response budget. True row-streaming directly to storage is
+  the next hardening step.
+- **`storageDelete` proxy-mode is a logged no-op.** The Forge proxy
+  does not currently expose a DELETE endpoint in this repo
+  (`v1/storage/upload` and `v1/storage/downloadUrl` are wired;
+  `v1/storage/delete` is not). Local-mode deletes work. Until proxy-
+  mode delete lands, pruned-job artifacts persist in proxy mode
+  until the storage lifecycle policy reclaims them.
+- **Heavy aggregator dependency.** The worker invokes
+  `getOrBuildOverviewSummary` / `getOrBuildChangeOwnership` to get
+  the source rows. On a cold cache that re-scans the raw `srDs*`
+  tables. Phase 2 of the dashboard rebuild (derived fact tables)
+  is what actually decouples export from aggregator scans.
+- **Client polls up to the server's 30-min TTL** with an exponential-
+  ish backoff (1.5s → 5s → 15s) and a "Still preparing…" toast
+  swap at the 30s mark. Pre-fix the client gave up at 120s and
+  surfaced a false failure while the server was still working.
 
 The legacy `getDatasetAssembled` batch procedure (the worst
 default-mount offender, 50–150 MB on prod) was removed in Task
@@ -915,21 +942,37 @@ expected post-upload state even with no chunked blob present.
    is for normal-but-noteworthy events; persistence failures are
    `console.error` and surface to the client response.
 5. **Default Overview mount must not enable any allowlisted heavy
-   procedure** (`getSystemSnapshot`, `getDashboardOverviewSummary`,
+   procedure.** The 5 currently allowlisted procs are
+   `getSystemSnapshot`, `getDashboardOverviewSummary`,
    `getDashboardChangeOwnership`, `getDashboardOfflineMonitoring`,
-   `getDashboardFinancials`, `getDatasetCsv`). All six are gated
-   behind tab-active flags + `hasUserInteractedWithDashboard` (or
-   the Financials/Pipeline tab specifically, in the case of
-   `getDashboardFinancials`). The Overview mount path reads only
-   `getDashboardSummary` + `getDashboardFinancialKpiSummary` (slim,
-   cache-only). Regression rails live in
+   and `getDatasetCsv`. They are gated behind tab-active flags +
+   `hasUserInteractedWithDashboard`. `getDashboardFinancials` is
+   not on the allowlist (its response is bounded), but it's heavy
+   enough that it follows the same gating: enabled only on
+   Financials/Pipeline tab activation. The Overview mount path
+   reads only `getDashboardSummary` + `getDashboardFinancialKpiSummary`
+   (slim, cache-only). Regression rails live in
    `client/src/solar-rec-dashboard/lib/dashboardMountResilience.test.ts`.
 6. **CSV export procs do not flip
    `hasUserInteractedWithDashboard`.** A CSV-tile click is a
-   server-side aggregation; letting it seed the interaction flag
-   would silently enable the heavy mount-tier queries on the next
-   render. The download handlers in `SolarRecDashboard.tsx`
+   server-side background-job kickoff; letting it seed the
+   interaction flag would silently enable the heavy mount-tier
+   queries on the next render. The download handlers in
+   `SolarRecDashboard.tsx`
    (`downloadOwnershipCountTileCsv`,
-   `downloadChangeOwnershipCountTileCsv`) intentionally do NOT
-   call `setHasUserInteractedWithDashboard`. Future export
+   `downloadChangeOwnershipCountTileCsv`, and the shared
+   `runDashboardCsvExport` helper they delegate to) intentionally
+   do NOT call `setHasUserInteractedWithDashboard`. Future export
    handlers must follow the same rule.
+
+7. **Dashboard background jobs (current: CSV exports; future:
+   Phase 2 derived-fact builds) must emit a single structured
+   metric line per terminal state.** Use
+   `startDashboardJobMetric` from
+   `server/services/solar/dashboardJobMetrics.ts` — it captures
+   heap before/after, elapsed ms, and a caller-supplied
+   `context` (e.g. `exportType`). Do NOT roll bespoke metric
+   logging per job; one call to `metric.finish({...})` or
+   `metric.fail(err)` is the contract. The structured payload
+   makes log filtering by `[dashboard:...]` prefix uniform across
+   job types and feeds the Phase 1 observability surface.
