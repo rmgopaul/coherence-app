@@ -357,14 +357,37 @@ describe("Solar REC dashboard: snapshot-readiness gate (PR #337 follow-up item 1
     expect(fnSlice!).toMatch(/return\s*;/);
   });
 
-  it("snapshotReadiness gates on summary.kind === 'heavy' AND change-ownership AND offline-monitoring AND system snapshot", () => {
-    // Each of the four heavy inputs feeds a required field of the
-    // log entry. Missing any of them yields silent zeros — pre-fix.
+  it("snapshotReadiness gates on ALL FIVE heavy inputs (PR #338 follow-up item 2)", () => {
+    // Each heavy input feeds a required field of the log entry.
+    // Pre-fix #337: button always live → silent 0s.
+    // Pre-fix #338: gate covered four — `recPerformanceContracts2025`
+    // was still persisted as `[]` when `performanceSourceRowsQuery`
+    // hadn't run.
     expect(code).toMatch(/snapshotReadiness/);
     expect(code).toMatch(/summary\?\.kind\s*!==\s*["']heavy["']/);
     expect(code).toMatch(/changeOwnershipQuery\.status\s*!==\s*["']success["']/);
     expect(code).toMatch(/offlineMonitoringQuery\.status\s*!==\s*["']success["']/);
     expect(code).toMatch(/!serverSnapshot\.systems/);
+    expect(code).toMatch(/performanceSourceRowsQuery\.status\s*!==\s*["']success["']/);
+  });
+
+  it("snapshotReadiness type CARRIES the narrowed values it gates on (PR #338 follow-up item 3)", () => {
+    // `createLogEntry` reads from `snapshotReadiness.*` instead of
+    // outer variables. A future PR that disables a query without
+    // updating `snapshotReadiness` cannot accidentally
+    // re-introduce silent zeros.
+    expect(code).toMatch(/type\s+SnapshotReadyState\s*=\s*\{/);
+    expect(code).toMatch(
+      /SnapshotReadyState[\s\S]{0,400}summary:\s*HeavyOverviewSummary/
+    );
+    expect(code).toMatch(
+      /SnapshotReadyState[\s\S]{0,500}recPerformanceContracts/
+    );
+    // The belt-and-braces second `summary?.kind !== "heavy"` check
+    // inside createLogEntry is gone — the discriminator narrows.
+    const fnSlice = sliceCreateLogEntryBody();
+    expect(fnSlice).not.toBeNull();
+    expect(fnSlice!).not.toMatch(/Belt-and-braces/);
   });
 
   it("Log Snapshot button is disabled and tooltipped while readiness is false", () => {

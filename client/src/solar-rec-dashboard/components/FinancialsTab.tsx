@@ -503,11 +503,12 @@ export default memo(function FinancialsTab(props: FinancialsTabProps) {
       }
     }
 
-    await contractScanRefetch();
-    await financialsRefetch();
-    // Slim Overview KPI query may have cached data from before the
-    // batch rescan changed scan rows. Invalidate it so the next
-    // Overview mount fetches the fresh side cache.
+    // PR #338 follow-up item 5 (2026-05-05) — parallel refetch of
+    // the two independent heavy queries; the slim KPI invalidate
+    // must come AFTER both because the heavy financials refetch is
+    // what writes the side cache. Pre-fix this was 3 sequential
+    // awaits; on a 28K-CSG scope each refetch takes seconds.
+    await Promise.all([contractScanRefetch(), financialsRefetch()]);
     await invalidateFinancialKpiSummary();
     setBatchRescanRunning(false);
   }, [
@@ -1332,16 +1333,18 @@ export default memo(function FinancialsTab(props: FinancialsTabProps) {
                                     result.additionalCollateralPercent ?? "N/A"
                                   }%`,
                                 );
-                                // PR #337 follow-up item 5 (2026-05-04) —
-                                // mirror the batch-rescan refresh order so
-                                // the heavy row data and the slim KPI side
-                                // cache stay aligned. Pre-fix this only
-                                // refetched contract-scan + invalidated the
-                                // slim KPI cache, leaving the heavy
-                                // `getDashboardFinancials` cache one tick
-                                // stale until React Query's staleTime fired.
-                                await contractScanRefetch();
-                                await financialsRefetch();
+                                // PR #337 follow-up item 5 + PR #338
+                                // follow-up item 5 (2026-05-04 / 05-05) —
+                                // parallel refetch of the two independent
+                                // heavy queries; the slim KPI invalidate
+                                // must come AFTER both because the heavy
+                                // financials refetch is what writes the
+                                // side cache. Mirrors the batch-rescan
+                                // pattern.
+                                await Promise.all([
+                                  contractScanRefetch(),
+                                  financialsRefetch(),
+                                ]);
                                 await invalidateFinancialKpiSummary();
                               } catch (err) {
                                 toast.error(

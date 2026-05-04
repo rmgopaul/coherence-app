@@ -4318,8 +4318,9 @@ export default function SolarRecDashboard() {
   // compliant source localStorage sync + URL.revokeObjectURL cleanup
   // — moved to @/solar-rec-dashboard/components/PerformanceRatioTab
 
-  // PR #337 follow-up item 1 (2026-05-04). The snapshot persists
-  // a `DashboardLogEntry` whose required fields draw on FOUR
+  // PR #337 follow-up item 1 + PR #338 follow-up items 2 & 3
+  // (2026-05-04 / 2026-05-05). The snapshot persists a
+  // `DashboardLogEntry` whose required fields draw on FIVE
   // independent server queries:
   //   - heavy overview-summary (terminated breakdown, system counts)
   //   - heavy change-ownership rows (per-status counts +
@@ -4328,56 +4329,99 @@ export default function SolarRecDashboard() {
   //     Reporting` → `snapshotPart2ValueSummary`)
   //   - system snapshot (back-fills `deliveredValue` per system,
   //     used by `snapshotPart2ValueSummary.totalDeliveredValue`)
+  //   - REC performance source rows (drives
+  //     `recPerformanceSnapshotContracts2025`, the per-contract
+  //     shortfall rollup persisted on the entry)
   //
-  // Pre-fix the snapshot button was always live: clicking it on
-  // Overview cold mount silently persisted 0s for every
-  // heavy-only field (the same silent-zero bug PR #332 retired
-  // from the live tile, just shifted to the log history). Short-
-  // term safe contract: gate the button on all four heavy paths
-  // being loaded. Future work: widen `DashboardLogEntry` to
-  // `number | null` so a partial snapshot is recordable explicitly.
-  const snapshotReadiness: { ready: true } | { ready: false; reason: string } =
-    summary?.kind !== "heavy"
-      ? {
-          ready: false,
-          reason:
-            "Open the Overview tab to load the full summary before snapshotting.",
-        }
-      : changeOwnershipQuery.status !== "success"
-        ? {
-            ready: false,
-            reason:
-              "Open the Change Ownership tab to load project rows before snapshotting.",
-          }
-        : offlineMonitoringQuery.status !== "success"
-          ? {
-              ready: false,
-              reason:
-                "Open Offline Monitoring (or another heavy tab) to load Part-II value data before snapshotting.",
-            }
-          : !serverSnapshot.systems
-            ? {
-                ready: false,
-                reason:
-                  "Open Alerts / Comparisons / Financials / Forecast (or pick a system) so the system snapshot loads before snapshotting.",
-              }
-            : { ready: true };
+  // Pre-fix #337: snapshot button was always live → silent 0s.
+  // Pre-fix #338: gate covered four of the five queries —
+  // `recPerformanceContracts2025: []` was still persisted as
+  // silent absence when the user hadn't opened REC Performance
+  // Eval / Snapshot Log.
+  //
+  // PR #338 follow-up item 3 (2026-05-05): the readiness type now
+  // CARRIES the narrowed values it gates on. `createLogEntry`
+  // reads from `snapshotReadiness.*` instead of outer variables,
+  // eliminating the second runtime kind check + the
+  // belt-and-braces TS narrowing comment.
+  type SnapshotReadyState = {
+    ready: true;
+    summary: HeavyOverviewSummary;
+    changeOwnershipRows: typeof changeOwnershipRows;
+    snapshotPart2ValueSummary: typeof snapshotPart2ValueSummary;
+    recPerformanceContracts: typeof recPerformanceSnapshotContracts2025;
+    changeOwnershipSummary: typeof changeOwnershipSummary;
+  };
+  type SnapshotReadiness =
+    | SnapshotReadyState
+    | { ready: false; reason: string };
+  const snapshotReadiness: SnapshotReadiness = ((): SnapshotReadiness => {
+    if (summary?.kind !== "heavy") {
+      return {
+        ready: false,
+        reason:
+          "Open the Overview tab to load the full summary before snapshotting.",
+      };
+    }
+    if (changeOwnershipQuery.status !== "success") {
+      return {
+        ready: false,
+        reason:
+          "Open the Change Ownership tab to load project rows before snapshotting.",
+      };
+    }
+    if (offlineMonitoringQuery.status !== "success") {
+      return {
+        ready: false,
+        reason:
+          "Open Offline Monitoring (or another heavy tab) to load Part-II value data before snapshotting.",
+      };
+    }
+    if (!serverSnapshot.systems) {
+      return {
+        ready: false,
+        reason:
+          "Open Alerts / Comparisons / Financials / Forecast (or pick a system) so the system snapshot loads before snapshotting.",
+      };
+    }
+    if (performanceSourceRowsQuery.status !== "success") {
+      return {
+        ready: false,
+        reason:
+          "Open REC Performance Eval or Snapshot Log to load REC performance source rows before snapshotting.",
+      };
+    }
+    return {
+      ready: true,
+      summary,
+      changeOwnershipRows,
+      snapshotPart2ValueSummary,
+      recPerformanceContracts: recPerformanceSnapshotContracts2025,
+      changeOwnershipSummary,
+    };
+  })();
 
   const createLogEntry = () => {
     if (!snapshotReadiness.ready) {
       toast.error(snapshotReadiness.reason);
       return;
     }
-    if (summary?.kind !== "heavy") {
-      // Belt-and-braces narrowing — `snapshotReadiness.ready` implies
-      // this, but TS narrowing across object property accesses is
-      // less robust than a direct check.
-      return;
-    }
+    // All required heavy data is bound to `snapshotReadiness` and
+    // narrowed by the discriminator. No outer-variable reads here —
+    // a future PR that disables a query without updating
+    // `snapshotReadiness` cannot accidentally re-introduce the
+    // silent-zero bug.
+    const {
+      summary: heavySummary,
+      changeOwnershipRows: cooRows,
+      snapshotPart2ValueSummary: valueSummary,
+      recPerformanceContracts,
+      changeOwnershipSummary: cooSummary,
+    } = snapshotReadiness;
 
     const statusCount = (status: ChangeOwnershipStatus) =>
-      changeOwnershipRows.filter((system) => system.changeOwnershipStatus === status).length;
-    const snapshotCooStatuses = changeOwnershipRows
+      cooRows.filter((system) => system.changeOwnershipStatus === status).length;
+    const snapshotCooStatuses = cooRows
       .map((system) => {
         if (!system.changeOwnershipStatus) return null;
         return {
@@ -4390,23 +4434,23 @@ export default function SolarRecDashboard() {
     const entry: DashboardLogEntry = {
       id: createLogId(),
       createdAt: new Date(),
-      totalSystems: summary.totalSystems,
-      reportingSystems: summary.reportingSystems,
-      reportingPercent: summary.reportingPercent,
-      changeOwnershipSystems: changeOwnershipSummary.total,
-      changeOwnershipPercent: toPercentValue(changeOwnershipSummary.total, summary.totalSystems),
+      totalSystems: heavySummary.totalSystems,
+      reportingSystems: heavySummary.reportingSystems,
+      reportingPercent: heavySummary.reportingPercent,
+      changeOwnershipSystems: cooSummary.total,
+      changeOwnershipPercent: toPercentValue(cooSummary.total, heavySummary.totalSystems),
       transferredReporting: statusCount("Transferred and Reporting"),
       transferredNotReporting: statusCount("Transferred and Not Reporting"),
-      terminatedReporting: summary.ownershipOverview.terminatedReporting,
-      terminatedNotReporting: summary.ownershipOverview.terminatedNotReporting,
+      terminatedReporting: heavySummary.ownershipOverview.terminatedReporting,
+      terminatedNotReporting: heavySummary.ownershipOverview.terminatedNotReporting,
       changedNotTransferredReporting: statusCount("Change of Ownership - Not Transferred and Reporting"),
       changedNotTransferredNotReporting: statusCount("Change of Ownership - Not Transferred and Not Reporting"),
-      totalContractedValue: snapshotPart2ValueSummary.totalContractedValue,
-      totalDeliveredValue: snapshotPart2ValueSummary.totalDeliveredValue,
-      totalGap: snapshotPart2ValueSummary.totalGap,
-      contractedValueReporting: snapshotPart2ValueSummary.contractedValueReporting,
-      contractedValueNotReporting: snapshotPart2ValueSummary.contractedValueNotReporting,
-      contractedValueReportingPercent: snapshotPart2ValueSummary.contractedValueReportingPercent,
+      totalContractedValue: valueSummary.totalContractedValue,
+      totalDeliveredValue: valueSummary.totalDeliveredValue,
+      totalGap: valueSummary.totalGap,
+      contractedValueReporting: valueSummary.contractedValueReporting,
+      contractedValueNotReporting: valueSummary.contractedValueNotReporting,
+      contractedValueReportingPercent: valueSummary.contractedValueReportingPercent,
       datasets: (Object.keys(DATASET_DEFINITIONS) as DatasetKey[])
         .map((key) => {
           const dataset = datasets[key];
@@ -4421,7 +4465,7 @@ export default function SolarRecDashboard() {
         })
         .filter((dataset): dataset is NonNullable<typeof dataset> => dataset !== null),
       cooStatuses: snapshotCooStatuses,
-      recPerformanceContracts2025: recPerformanceSnapshotContracts2025,
+      recPerformanceContracts2025: recPerformanceContracts,
     };
 
     setLogEntries((previous) => [entry, ...previous].slice(0, 500));

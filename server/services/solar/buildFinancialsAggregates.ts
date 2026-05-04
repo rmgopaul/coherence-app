@@ -658,7 +658,10 @@ export async function getOrBuildFinancialsAggregates(scopeId: string): Promise<
   // batch IDs + canonical financials hash in one pass so the slim
   // KPI write path doesn't re-call `resolveFinancialsBatchIds` /
   // `computeFinancialsHash` later. The captured hash also feeds the
-  // race-safety recheck inside `writeFinancialsKpiSideCache`.
+  // race-mitigation recheck inside `writeFinancialsKpiSideCache`
+  // (PR #338 follow-up item 4 — recheck is mitigation, not full
+  // atomic safety; a sub-second TOCTOU window remains and is
+  // accepted because the next heavy build overwrites).
   const { batchIds, financialsHash: captureKpiHash } =
     await resolveFinancialsBatchIdsAndHash(scopeId);
 
@@ -782,13 +785,21 @@ export async function getOrBuildFinancialsAggregates(scopeId: string): Promise<
   // SAME hash inputs the heavy aggregator's invalidation depends on
   // (now includes `abpReport` after PR #337 follow-up item 3).
   //
-  // Race-safety (PR #337 follow-up item 2, 2026-05-04). The hash is
-  // captured BEFORE the heavy build kicks off (`captureKpiHash`),
-  // and re-checked just before the upsert. If a concurrent override
-  // edit / fresh scan job / dataset re-upload bumped the freshness
-  // signal mid-build, we'd otherwise upsert old totals under the
-  // NEW hash and serve them as fresh from the slim Overview path.
-  // The pre-write recheck skips with a warning instead.
+  // Race MITIGATION (PR #337 follow-up item 2 + PR #338 follow-up
+  // item 4). The hash is captured BEFORE the heavy build kicks off
+  // (`captureKpiHash`) and re-checked just before the upsert. If a
+  // concurrent override edit / fresh scan job / dataset re-upload
+  // bumped the freshness signal mid-build, the recheck observes
+  // the divergence and skips with a warning.
+  //
+  // This is mitigation, not full atomic race safety: a sub-second
+  // TOCTOU window remains between the recheck and
+  // `upsertComputedArtifact`. A concurrent edit landing in that
+  // window would still poison the side cache, but the next heavy
+  // build triggered by that edit will overwrite. A transactional
+  // CAS (conditional upsert keyed by hash) would close the window
+  // — deferred until the repo has a clean conditional-upsert
+  // helper; inventing broad DB infrastructure here is out of scope.
   await writeFinancialsKpiSideCache(scopeId, captureKpiHash, result).catch(
     (error) => {
       console.warn(
@@ -837,12 +848,15 @@ export async function getOrBuildFinancialsAggregates(scopeId: string): Promise<
 // `getCachedFinancialsKpiSummary` returns `available: false` — the
 // Overview tile renders "N/A" instead of stale-true KPIs.
 //
-// Race-safety (PR #337 follow-up item 2). The heavy aggregator
-// captures the hash BEFORE its row build and re-checks it before
-// upserting the side-cache row. If a concurrent edit changed the
-// freshness signal mid-build, the upsert is skipped — otherwise we
-// would write old KPIs under a NEW hash and the slim path would
-// serve them as fresh on the next read.
+// Race MITIGATION (PR #337 follow-up item 2 + PR #338 follow-up
+// item 4). The heavy aggregator captures the hash BEFORE its row
+// build and re-checks it before upserting the side-cache row. If a
+// concurrent edit changed the freshness signal mid-build, the
+// upsert is skipped. A sub-second TOCTOU window remains between
+// the recheck and the upsert — that residual is accepted because
+// the next heavy build (triggered by the same edit) overwrites.
+// A transactional CAS would close the window; deferred until the
+// repo has a clean conditional-upsert helper.
 // ---------------------------------------------------------------------------
 
 const FINANCIALS_KPI_SUMMARY_ARTIFACT_TYPE = "financials-kpi-summary";
@@ -882,7 +896,7 @@ export type FinancialsKpiSummary = {
  * Caller MUST already hold the canonical hash from
  * `computeFinancialsHash` (or via `resolveFinancialsBatchIdsAndHash`).
  * Threading the hash through avoids redundant DB reads on the slim
- * read/write paths and is the substrate for the race-safety
+ * read/write paths and is the substrate for the race-mitigation
  * recheck inside `writeFinancialsKpiSideCache`.
  */
 function deriveFinancialsKpiHash(financialsHash: string): string {
@@ -902,13 +916,25 @@ function deriveFinancialsKpiHash(financialsHash: string): string {
  *
  * `capturedFinancialsHash` is the freshness hash sampled BEFORE the
  * heavy build started. We re-sample the current hash and refuse to
- * upsert if it doesn't match — that's the race guard for a
- * concurrent edit landing during the build (override, fresh scan
- * job, dataset re-upload). On mismatch, the heavy aggregator's
+ * upsert if it doesn't match. On mismatch, the heavy aggregator's
  * own cache is also stale, so the next read of either layer will
  * trigger a recompute against the new freshness signal.
  *
- * PR #337 follow-up item 2 (2026-05-04).
+ * IMPORTANT — this is race MITIGATION, not full atomic race
+ * safety. A sub-second TOCTOU window remains between
+ * `computeFinancialsHash(scopeId)` (the recheck) and
+ * `upsertComputedArtifact(...)` (the write). A concurrent edit
+ * landing in that window can still poison the side cache with
+ * captured-time totals under a freshness signal that has since
+ * advanced. The next heavy build (triggered by the same edit)
+ * overwrites — so the worst-case staleness is one heavy build
+ * cycle. Closing the window cleanly requires a transactional
+ * conditional-upsert helper that the repo doesn't have today;
+ * adding one is out of scope for this fix.
+ *
+ * PR #337 follow-up item 2 (2026-05-04) wired the capture +
+ * recheck. PR #338 follow-up item 4 (2026-05-05) clarified the
+ * docs to match the actual guarantee.
  */
 export async function writeFinancialsKpiSideCache(
   scopeId: string,
