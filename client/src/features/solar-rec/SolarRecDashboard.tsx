@@ -5675,8 +5675,12 @@ const aiDataContext = useMemo(() => {
                     contractScanStatus={contractScanResultsQuery.status}
                     contractScanIsFetching={contractScanResultsQuery.isFetching}
                     contractScanError={contractScanResultsQuery.error}
-                    contractScanRefetch={contractScanResultsQuery.refetch}
-                    financialsRefetch={financialsQuery.refetch}
+                    contractScanRefetch={() =>
+                      contractScanResultsQuery.refetch({ throwOnError: true })
+                    }
+                    financialsRefetch={() =>
+                      financialsQuery.refetch({ throwOnError: true })
+                    }
                     invalidateFinancialKpiSummary={
                       invalidateFinancialKpiSummary
                     }
