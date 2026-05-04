@@ -1198,6 +1198,47 @@ function loadPersistedLogs(): DashboardLogEntry[] {
   return deserializeDashboardLogs(raw);
 }
 
+/**
+ * Merge server-recovered snapshot-log entries with the local
+ * (localStorage) entries, dedupe by id, sort newest-first.
+ *
+ * Production scenario this is built for: localStorage holds 1
+ * recent snapshot, the server's `getSnapshotLogs` returns the 22
+ * unique entries from the main key + orphaned chunk recovery. A
+ * naive overwrite-on-conflict in either direction would shrink the
+ * user's history. The rules:
+ *
+ *   - On id conflict, the SERVER entry wins (server's view of the
+ *     historical snapshot is authoritative; local is a working
+ *     copy).
+ *   - Server entries with createdAt strings round-trip through
+ *     `deserializeDashboardLogs` so they end up with `createdAt:
+ *     Date` to match the local shape.
+ *   - The merged result is sorted newest-first by `createdAt`.
+ *
+ * Pure helper — extracted from the hydration useEffect so it can
+ * be unit-tested without React.
+ */
+function mergeServerSnapshotLogsIntoLocal(
+  local: ReadonlyArray<DashboardLogEntry>,
+  serverEntries: ReadonlyArray<{ id: string; createdAt: string; [k: string]: unknown }>
+): DashboardLogEntry[] {
+  const byId = new Map<string, DashboardLogEntry>();
+  for (const entry of local) byId.set(entry.id, entry);
+  for (const remote of serverEntries) {
+    try {
+      const reviv = deserializeDashboardLogs(JSON.stringify([remote]));
+      if (reviv.length > 0) byId.set(reviv[0].id, reviv[0]);
+    } catch {
+      // Defensive — server payload should always pass the
+      // deserializer; skip on any unexpected shape.
+    }
+  }
+  return Array.from(byId.values()).sort(
+    (a, b) => b.createdAt.getTime() - a.createdAt.getTime()
+  );
+}
+
 // Phase 5c (2026-04-28): `loadLogsFromStorage` / `saveLogsToStorage`
 // stubs deleted. Snapshot-log hydration is handled by
 // `loadPersistedLogs()` (synchronous localStorage read) seeded into
@@ -1827,6 +1868,7 @@ export default function SolarRecDashboard() {
   // removed — the child's mount lifecycle is now the gate.
   const isContractsTabActive = activeTab === "contracts";
   const isAnnualReviewTabActive = activeTab === "annual-review";
+  const isSnapshotLogTabActive = activeTab === "snapshot-log";
   const isPerformanceEvalTabActive = activeTab === "performance-eval" || activeTab === "snapshot-log";
   const isForecastTabActive = activeTab === "forecast";
   const isOverviewTabActive = activeTab === "overview";
@@ -1880,6 +1922,34 @@ export default function SolarRecDashboard() {
   datasetsRef.current = datasets;
   const logEntriesRef = useRef(logEntries);
   logEntriesRef.current = logEntries;
+
+  // Snapshot-log server-side hydration. Until Phase 5c the cloud
+  // path was wired into the dashboard's general remote-state
+  // hydration; that helper got deleted and Snapshot Log started
+  // reading ONLY localStorage. The server-owned recovery path below
+  // closes the regression: when the Snapshot Log tab activates we
+  // call the read-only `getSnapshotLogs` proc, dedupe-merge by id
+  // against localStorage, and prefer whichever side has more
+  // entries on a per-id conflict (server wins on a one-entry-local
+  // vs many-entry-server scenario — the exact prod state on
+  // 2026-05-04). NEVER overwrite the server with localStorage as a
+  // side effect of this hydration; restore/write-back is a
+  // separate, explicitly-approved operation. This proc returns
+  // recovery candidates (including from orphaned chunk rows) but
+  // performs no DB writes.
+  const snapshotLogsServerQuery =
+    solarRecTrpc.solarRecDashboard.getSnapshotLogs.useQuery(
+      { limit: 100 },
+      { enabled: isSnapshotLogTabActive, staleTime: 60_000 }
+    );
+  useEffect(() => {
+    const data = snapshotLogsServerQuery.data;
+    if (!data || data.entries.length === 0) return;
+    setLogEntries((prev) =>
+      mergeServerSnapshotLogsIntoLocal(prev, data.entries)
+    );
+  }, [snapshotLogsServerQuery.data]);
+
   const datasetsHydratedRef = useRef(false);
   const remoteStateHydratedRef = useRef(false);
   const remoteLogsSignatureRef = useRef<string>("0");

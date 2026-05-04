@@ -1,4 +1,4 @@
-import { eq, and, desc, asc, sql, gte, lte, inArray } from "drizzle-orm";
+import { eq, and, desc, asc, sql, gte, lte, inArray, like } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import { createPool, type PoolOptions } from "mysql2";
 
@@ -6,7 +6,7 @@ import { ENV } from "../_core/env";
 
 // Re-export commonly used drizzle helpers so sub-modules can import
 // them from "./_core" without duplicating the import.
-export { eq, and, desc, asc, sql, gte, lte, inArray };
+export { eq, and, desc, asc, sql, gte, lte, inArray, like };
 
 // Re-export the schema so other modules can import everything from
 // a single source if they prefer.
