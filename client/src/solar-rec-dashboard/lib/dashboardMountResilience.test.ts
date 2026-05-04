@@ -382,24 +382,120 @@ describe("Solar REC dashboard mount: heavy-query gates", () => {
     expect(code).toMatch(
       /getSnapshotLogs\.useQuery\([\s\S]{0,400}enabled\s*:\s*isSnapshotLogTabActive/
     );
-    // Merge helper exists and is called from the hydration effect.
-    expect(code).toMatch(/function\s+mergeServerSnapshotLogsIntoLocal/);
+    // Merge helper exists.
+    expect(code).toMatch(/function\s+mergeSnapshotLogEntriesForDisplay/);
+  });
+
+  it("Snapshot Log hydration is READ-ONLY — server entries do NOT enter logEntries (no accidental cloud write-back)", () => {
+    // PR #354 follow-up — Codex P1 fix. Pre-fix the hydration
+    // useEffect called
+    //   setLogEntries((prev) => merge(prev, server))
+    // which silently triggered the cloud-sync useEffect (which
+    // watches `logEntries` and writes any signature change back
+    // to REMOTE_SNAPSHOT_LOGS_KEY). Opening the Snapshot Log tab
+    // therefore mutated production storage — the exact write-back
+    // PR #353 explicitly deferred.
+    //
+    // The fix keeps server-recovered entries in a SEPARATE state
+    // (`recoveredSnapshotLogEntries`) that the cloud-sync effect
+    // does NOT depend on. This rail enforces the contract.
     expect(code).toMatch(
-      /setLogEntries\s*\(\s*\(\s*prev\s*\)\s*=>\s*mergeServerSnapshotLogsIntoLocal\s*\(\s*prev/
+      /\[\s*recoveredSnapshotLogEntries\s*,\s*setRecoveredSnapshotLogEntries\s*\][^;]*useState/
+    );
+    // Hydration effect must call setRecoveredSnapshotLogEntries,
+    // NEVER setLogEntries inside the snapshotLogsServerQuery effect.
+    expect(code).toMatch(
+      /snapshotLogsServerQuery\.data[\s\S]{0,1200}setRecoveredSnapshotLogEntries\s*\(/
+    );
+    // The retired write-back shape must NOT reappear: no
+    // `setLogEntries((prev) => merge...)` anywhere referencing
+    // server-recovered entries.
+    expect(code).not.toMatch(
+      /setLogEntries\s*\(\s*\(\s*prev\s*\)\s*=>\s*mergeServerSnapshotLogsIntoLocal/
+    );
+    expect(code).not.toMatch(
+      /setLogEntries\s*\(\s*\(\s*prev\s*\)\s*=>\s*mergeSnapshotLogEntriesForDisplay/
     );
   });
 
-  it("Snapshot Log merge: dedupes by id and sorts newest-first", () => {
-    // Source rail proving the helper has the right shape. The
-    // pure recovery primitives in
-    // `server/services/solar/snapshotLogRecovery.test.ts` cover
-    // the same invariants on the server side.
-    //
-    // We walk the function-body `{...}` rather than regexing the
-    // whole helper because the parameter type signature contains
-    // its own `{ id: string; ... }` inline-object braces that a
-    // naive "first `{` after declaration" slice would capture.
-    const decl = code.indexOf("function mergeServerSnapshotLogsIntoLocal");
+  it("Snapshot Log tab receives the display-merged list, NOT the raw persisted logEntries", () => {
+    // Display-only union: visibleSnapshotLogEntries = merge(
+    //   logEntries,                  // local persisted state
+    //   recoveredSnapshotLogEntries  // server-recovered (read-only)
+    // )
+    expect(code).toMatch(
+      /const\s+visibleSnapshotLogEntries\s*=\s*useMemo\s*\([\s\S]{0,400}mergeSnapshotLogEntriesForDisplay\s*\(\s*logEntries\s*,\s*recoveredSnapshotLogEntries/
+    );
+    // SnapshotLogTabLazy JSX must receive the display-merged list,
+    // NOT raw `logEntries`. Search for `<SnapshotLogTabLazy` (JSX
+    // open tag) so the import declaration `const SnapshotLogTabLazy
+    // = lazy(...)` doesn't false-positive. We slice only up to
+    // the JSX close (`/>` for self-closing or
+    // `</SnapshotLogTabLazy>`) so a downstream consumer that
+    // legitimately passes `logEntries={logEntries}` (e.g. the
+    // RecPerformanceEvaluation tab) doesn't false-positive.
+    const tabIdx = code.indexOf("<SnapshotLogTabLazy");
+    expect(tabIdx).toBeGreaterThan(-1);
+    // Find the JSX close — first `/>` that isn't preceded by
+    // another `<` open. For our component this is unambiguous.
+    const closeIdx = code.indexOf("/>", tabIdx);
+    expect(closeIdx).toBeGreaterThan(tabIdx);
+    const propsRegion = code.slice(tabIdx, closeIdx);
+    expect(propsRegion).toMatch(
+      /logEntries=\{\s*visibleSnapshotLogEntries\s*\}/
+    );
+    // Belt-and-braces: NOT the raw logEntries (only inside the
+    // SnapshotLogTabLazy props).
+    expect(propsRegion).not.toMatch(/logEntries=\{\s*logEntries\s*\}/);
+  });
+
+  it("deserializeDashboardLogs is per-item safe — one malformed entry can't poison the whole batch (Codex P2)", () => {
+    // Pre-fix the per-entry processing was inside the OUTER
+    // try/catch, so any throw from the per-entry .map (e.g.
+    // `entry.datasets.map(...)` against a non-array slipping past
+    // the nullish-coalescing guard) returned [] for the whole
+    // batch. The fix wraps each entry's body in its own try/catch
+    // and falls back to null (filtered out) for that one entry.
+    const decl = code.indexOf("function deserializeDashboardLogs");
+    expect(decl).toBeGreaterThan(-1);
+    // Slice the whole function body via balanced braces.
+    const openBraceIdx = code.indexOf("{", decl);
+    let depth = 0;
+    let closeIdx = -1;
+    for (let i = openBraceIdx; i < code.length; i++) {
+      const ch = code[i];
+      if (ch === "{") depth++;
+      else if (ch === "}") {
+        depth--;
+        if (depth === 0) {
+          closeIdx = i;
+          break;
+        }
+      }
+    }
+    expect(closeIdx).toBeGreaterThan(openBraceIdx);
+    const body = code.slice(openBraceIdx, closeIdx + 1);
+    // A `.map` callback inside the body must wrap its work in its
+    // own try/catch returning null on failure.
+    expect(body).toMatch(
+      /\.map\s*\(\s*\([^)]*\)\s*(?::\s*[^=]+\s*)?=>\s*\{[\s\S]{0,200}try\s*\{[\s\S]{0,4000}catch\s*\{[\s\S]{0,200}return\s+null/
+    );
+    // Defensive Array.isArray guards on the optional sub-arrays so
+    // a non-array slipping in (e.g. server payload bug) doesn't
+    // hit `.map` on a string and throw.
+    expect(body).toMatch(/Array\.isArray\(\s*entry\.datasets\s*\)/);
+    expect(body).toMatch(/Array\.isArray\(\s*entry\.cooStatuses\s*\)/);
+    expect(body).toMatch(
+      /Array\.isArray\(\s*entry\.recPerformanceContracts2025\s*\)/
+    );
+  });
+
+  it("Snapshot Log display merge: dedupes by id and sorts newest-first", () => {
+    // Source rail proving the helper has the right shape. The pure
+    // recovery primitives in
+    // `server/services/solar/snapshotLogRecovery.test.ts` cover the
+    // same invariants on the server side.
+    const decl = code.indexOf("function mergeSnapshotLogEntriesForDisplay");
     expect(decl).toBeGreaterThan(-1);
     // Walk parens from the first `(` after the name to find the
     // matching `)` of the parameter list, ignoring inline `{ ... }`
@@ -419,8 +515,6 @@ describe("Solar REC dashboard mount: heavy-query gates", () => {
       }
     }
     expect(closeParenIdx).toBeGreaterThan(openParenIdx);
-    // The function-body open brace is the first `{` after the
-    // closing `)` of the parameter list.
     const bodyOpenIdx = code.indexOf("{", closeParenIdx);
     let braceDepth = 0;
     let bodyCloseIdx = -1;
