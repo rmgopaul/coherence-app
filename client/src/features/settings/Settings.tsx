@@ -30,6 +30,7 @@ import {
   Download,
   Trash2,
   ArrowLeft,
+  LogOut,
   Plus,
   Smartphone,
   RefreshCw,
@@ -63,7 +64,7 @@ import {
 import { toLocalDateKey } from "@/lib/helpers";
 
 export default function Settings() {
-  const { user, loading } = useAuth();
+  const { user, loading, logout } = useAuth();
   const { theme, setTheme } = useTheme();
   const [, setLocation] = useLocation();
   const [openaiKey, setOpenaiKey] = useState("");
@@ -1056,10 +1057,30 @@ export default function Settings() {
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 dark:from-slate-950 dark:via-slate-900 dark:to-blue-950">
       <header className="border-b bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm sticky top-0 z-10">
         <div className="container mx-auto px-4 py-4">
-          <Button variant="ghost" onClick={() => setLocation("/dashboard")} className="mb-2">
-            <ArrowLeft className="w-4 h-4 mr-2" />
-            Back to Dashboard
-          </Button>
+          <div className="flex items-center justify-between gap-2 mb-2">
+            <Button variant="ghost" onClick={() => setLocation("/dashboard")}>
+              <ArrowLeft className="w-4 h-4 mr-2" />
+              Back to Dashboard
+            </Button>
+            {user && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={async () => {
+                  // Sign out clears the server-side session cookie via
+                  // `auth.logout` (in tokenRefresh.ts the JWT is rotated;
+                  // clearing the cookie invalidates the browser session)
+                  // and bounces back to the welcome page.
+                  await logout();
+                  setLocation("/");
+                }}
+                title={`Signed in as ${user.name ?? user.email ?? "user"}`}
+              >
+                <LogOut className="w-4 h-4 mr-2" />
+                Sign out
+              </Button>
+            )}
+          </div>
           <h1 className="text-2xl font-bold text-slate-900 dark:text-slate-100">Settings</h1>
           <p className="text-sm text-slate-600 dark:text-slate-300">Manage your integrations and preferences</p>
         </div>
