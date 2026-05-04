@@ -143,6 +143,21 @@ export type FinancialsDebugData = {
   };
 };
 
+/**
+ * Stringify a `Promise.allSettled` rejection reason for the
+ * `[financials:save-override]` console.warn payload. Keeps the
+ * resulting log line single-line + searchable.
+ */
+function reasonText(reason: unknown): string {
+  if (reason instanceof Error) return reason.message;
+  if (typeof reason === "string") return reason;
+  try {
+    return JSON.stringify(reason);
+  } catch {
+    return String(reason);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Props
 // ---------------------------------------------------------------------------
@@ -460,55 +475,55 @@ export default memo(function FinancialsTab(props: FinancialsTabProps) {
     // catch boundary; a transient network error during refetch
     // left the Cancel button stuck visible.
     try {
-    const initial = new Map<string, RescanStatus>();
-    for (const row of rowsToScan) {
-      initial.set(row.csgId, { status: "queued" });
-    }
-    setRescanStatuses(initial);
-
-    for (const row of rowsToScan) {
-      if (batchRescanCancelledRef.current) break;
-
-      setRescanStatuses((prev) => {
-        const next = new Map(prev);
-        next.set(row.csgId, { status: "active" });
-        return next;
-      });
-
-      try {
-        const result = await rescanSingleContract.mutateAsync({ csgId: row.csgId });
-
-        const changes: string[] = [];
-        const oldVfp = row.vendorFeePercent;
-        const newVfp = result.vendorFeePercent ?? 0;
-        if (newVfp !== oldVfp) {
-          changes.push(`Vendor Fee: ${oldVfp}% \u2192 ${newVfp}%`);
-        }
-        const oldAcp = row.additionalCollateralPercent;
-        const newAcp = result.additionalCollateralPercent ?? 0;
-        if (newAcp !== oldAcp) {
-          changes.push(`Collateral: ${oldAcp}% \u2192 ${newAcp}%`);
-        }
-
-        setRescanStatuses((prev) => {
-          const next = new Map(prev);
-          next.set(row.csgId, {
-            status: "completed",
-            changes: changes.length > 0 ? changes.join("; ") : "No changes",
-          });
-          return next;
-        });
-      } catch (err) {
-        setRescanStatuses((prev) => {
-          const next = new Map(prev);
-          next.set(row.csgId, {
-            status: "error",
-            error: err instanceof Error ? err.message : "Failed",
-          });
-          return next;
-        });
+      const initial = new Map<string, RescanStatus>();
+      for (const row of rowsToScan) {
+        initial.set(row.csgId, { status: "queued" });
       }
-    }
+      setRescanStatuses(initial);
+  
+      for (const row of rowsToScan) {
+        if (batchRescanCancelledRef.current) break;
+  
+        setRescanStatuses((prev) => {
+          const next = new Map(prev);
+          next.set(row.csgId, { status: "active" });
+          return next;
+        });
+  
+        try {
+          const result = await rescanSingleContract.mutateAsync({ csgId: row.csgId });
+  
+          const changes: string[] = [];
+          const oldVfp = row.vendorFeePercent;
+          const newVfp = result.vendorFeePercent ?? 0;
+          if (newVfp !== oldVfp) {
+            changes.push(`Vendor Fee: ${oldVfp}% \u2192 ${newVfp}%`);
+          }
+          const oldAcp = row.additionalCollateralPercent;
+          const newAcp = result.additionalCollateralPercent ?? 0;
+          if (newAcp !== oldAcp) {
+            changes.push(`Collateral: ${oldAcp}% \u2192 ${newAcp}%`);
+          }
+  
+          setRescanStatuses((prev) => {
+            const next = new Map(prev);
+            next.set(row.csgId, {
+              status: "completed",
+              changes: changes.length > 0 ? changes.join("; ") : "No changes",
+            });
+            return next;
+          });
+        } catch (err) {
+          setRescanStatuses((prev) => {
+            const next = new Map(prev);
+            next.set(row.csgId, {
+              status: "error",
+              error: err instanceof Error ? err.message : "Failed",
+            });
+            return next;
+          });
+        }
+      }
 
       // PR #338 follow-up item 5 + PR #339 follow-up item 1
       // (2026-05-05) — parallel refetch of the two independent
@@ -562,22 +577,96 @@ export default memo(function FinancialsTab(props: FinancialsTabProps) {
         return next;
       });
       setEditingFinancialRow(null);
-      // Background refetch to sync authoritative DB data, then clear
-      // local overrides (the DB data now includes them). Slim
-      // Overview KPI query is invalidated alongside so the next
-      // Overview mount picks up the freshly-recomputed KPIs from
-      // the side cache.
-      Promise.all([
-        contractScanRefetch(),
-        financialsRefetch(),
-        invalidateFinancialKpiSummary(),
-      ]).then(() => {
-        setLocalOverrides((prev) => {
-          const next = new Map(prev);
-          next.delete(savedCsgId);
-          return next;
-        });
-      });
+      // PR #340 follow-up item 1 (2026-05-05). Background refresh
+      // contract — three real concerns the previous unawaited
+      // `Promise.all([scan, financials, invalidate]).then(clear)`
+      // got wrong:
+      //
+      //   (a) Unhandled rejection. No `.catch` meant any of the
+      //       three throwing silently surfaced as an
+      //       unhandled-promise warning at best — the user saw a
+      //       success toast but the data view never reconciled.
+      //   (b) Ordering invariant. The slim KPI side cache is
+      //       written BY the heavy financials refetch (server-
+      //       side, inside `getOrBuildFinancialsAggregates`). If
+      //       we invalidate the slim React-Query cache in
+      //       parallel with the refetch, the invalidate may land
+      //       BEFORE the side cache row is written and re-cache
+      //       the stale value when the user next opens Overview.
+      //   (c) Optimistic-override leak. Clearing
+      //       `localOverrides[savedCsgId]` only on the all-success
+      //       branch meant a transient refetch failure left the
+      //       phantom optimistic value in the local map forever.
+      //
+      // New shape:
+      //   1. contractScanRefetch + financialsRefetch run in
+      //      parallel via `Promise.allSettled` — they're
+      //      independent and we want both to attempt regardless
+      //      of the other's outcome.
+      //   2. invalidateFinancialKpiSummary runs ONLY AFTER
+      //      financialsRefetch resolves, so the slim cache
+      //      invalidation lands AFTER the side-cache write.
+      //   3. localOverrides[savedCsgId] is cleared ONLY when
+      //      financialsRefetch succeeded — the authoritative DB
+      //      data has the override and the optimistic value is
+      //      now redundant. If financialsRefetch failed, we keep
+      //      the optimistic value so the user's table view
+      //      doesn't snap back to pre-edit numbers.
+      //   4. Any failure surfaces a single toast.error +
+      //      `[financials:save-override]` console.warn so the
+      //      user knows the save itself succeeded but the
+      //      dashboard refresh did not.
+      void (async () => {
+        const [scanOutcome, financialsOutcome] = await Promise.allSettled([
+          contractScanRefetch(),
+          financialsRefetch(),
+        ]);
+
+        let invalidateOutcome:
+          | PromiseSettledResult<unknown>
+          | { status: "skipped" } = { status: "skipped" };
+        if (financialsOutcome.status === "fulfilled") {
+          // Heavy financials refetch wrote the slim KPI side
+          // cache; drop the React-Query cached slim row so the
+          // next Overview mount reads the fresh side cache.
+          invalidateOutcome = await Promise.allSettled([
+            invalidateFinancialKpiSummary(),
+          ]).then((results) => results[0]);
+
+          // The DB now has the override; the optimistic value
+          // is redundant.
+          setLocalOverrides((prev) => {
+            const next = new Map(prev);
+            next.delete(savedCsgId);
+            return next;
+          });
+        }
+
+        const failures: string[] = [];
+        if (scanOutcome.status === "rejected") {
+          failures.push(`contractScanRefetch: ${reasonText(scanOutcome.reason)}`);
+        }
+        if (financialsOutcome.status === "rejected") {
+          failures.push(
+            `financialsRefetch: ${reasonText(financialsOutcome.reason)}`
+          );
+        }
+        if (
+          invalidateOutcome.status === "rejected"
+        ) {
+          failures.push(
+            `invalidateFinancialKpiSummary: ${reasonText(invalidateOutcome.reason)}`
+          );
+        }
+        if (failures.length > 0) {
+          console.warn(
+            `[financials:save-override] dashboard refresh failed for csgId=${savedCsgId}: ${failures.join("; ")}`
+          );
+          toast.error(
+            "Override saved, but dashboard refresh failed — reload the page to see the latest data."
+          );
+        }
+      })();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to save override");
     }
