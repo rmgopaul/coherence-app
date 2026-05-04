@@ -30,6 +30,7 @@ import {
   solarRecActiveDatasetVersions,
   solarRecImportBatches,
   solarRecImportFiles,
+  datasetUploadJobs,
 } from "../../drizzle/schema";
 import { JOB_TTL_MS } from "../constants";
 import {
@@ -3670,6 +3671,15 @@ export const solarRecDashboardRouter = t.router({
         rowCount: number | null;
         completedAt: Date | null;
         createdAt: Date;
+        // Latest v2-upload metadata for the active batch. Null when
+        // the batch was created via the legacy chunked-CSV path (v1)
+        // since that path doesn't write `datasetUploadJobs` rows.
+        // Surfaced so the dashboard can show file name + upload time
+        // in the slot card after a reload — Phase 5e dropped the IDB
+        // local-state hydration that previously held this metadata
+        // on the client, but the server has it for v2 uploads.
+        uploadFileName: string | null;
+        uploadCompletedAt: Date | null;
       };
       const activeVersions = new Map<string, ActiveVersion>();
       if (db) {
@@ -3680,11 +3690,22 @@ export const solarRecDashboardRouter = t.router({
             rowCount: solarRecImportBatches.rowCount,
             completedAt: solarRecImportBatches.completedAt,
             createdAt: solarRecImportBatches.createdAt,
+            // The v2 upload runner sets `datasetUploadJobs.batchId`
+            // after assembly; that value matches
+            // `solarRecActiveDatasetVersions.batchId` 1:1 for v2
+            // uploads. For v1 (legacy chunked-CSV) batches there is
+            // no matching job row, so this LEFT JOIN yields null.
+            uploadFileName: datasetUploadJobs.fileName,
+            uploadCompletedAt: datasetUploadJobs.completedAt,
           })
           .from(solarRecActiveDatasetVersions)
           .leftJoin(
             solarRecImportBatches,
             eq(solarRecActiveDatasetVersions.batchId, solarRecImportBatches.id)
+          )
+          .leftJoin(
+            datasetUploadJobs,
+            eq(solarRecActiveDatasetVersions.batchId, datasetUploadJobs.batchId)
           )
           .where(eq(solarRecActiveDatasetVersions.scopeId, scopeId));
         for (const r of rows) {
@@ -3694,6 +3715,8 @@ export const solarRecDashboardRouter = t.router({
             rowCount: r.rowCount,
             completedAt: r.completedAt,
             createdAt: r.createdAt ?? new Date(),
+            uploadFileName: r.uploadFileName ?? null,
+            uploadCompletedAt: r.uploadCompletedAt ?? null,
           });
         }
       }
@@ -3721,6 +3744,18 @@ export const solarRecDashboardRouter = t.router({
          *                   to persist (chunked-CSV legacy path)
          */
         populationStatus: PopulationStatus;
+        /**
+         * Latest v2-upload metadata for the active batch — used by
+         * the dashboard upload-slot UI so the slot card can show
+         * "Saved in cloud — <fileName> (uploaded <when>)" after a
+         * reload. Phase 5e (PR #275) dropped the IDB local-state
+         * hydration that previously held this on the client; the
+         * server has it for v2 uploads via `datasetUploadJobs`.
+         * Null on legacy-path (v1) batches because the chunked-CSV
+         * path doesn't write `datasetUploadJobs` rows.
+         */
+        lastUploadFileName: string | null;
+        lastUploadCompletedAt: string | null;
       };
 
       const summaries: Summary[] = ALL_DATASET_KEYS.map((datasetKey) => {
@@ -3781,15 +3816,18 @@ export const solarRecDashboardRouter = t.router({
           cloudStatus,
           isRowBacked,
           populationStatus,
+          lastUploadFileName: activeBatch?.uploadFileName ?? null,
+          lastUploadCompletedAt:
+            activeBatch?.uploadCompletedAt?.toISOString() ?? null,
         };
       });
 
       return {
         _checkpoint: "dataset-summaries-all-v1",
-        // Phase 2.6 (2026-05-01): bumped from "task-5.12-pr10" so the
-        // new `populationStatus` field is verifiable via the
-        // CLAUDE.md "_runnerVersion check" deploy recipe.
-        _runnerVersion: "task-5.12-pr10+phase-2.6" as const,
+        // 2026-05-04: surfaces lastUploadFileName + lastUploadCompletedAt
+        // for the upload-slot UI's saved-in-cloud branch (Phase 5e
+        // IDB-removal regression). Bumped from "+phase-2.6".
+        _runnerVersion: "task-5.12-pr10+phase-2.6+last-upload-meta" as const,
         scopeId,
         summaries,
       };
