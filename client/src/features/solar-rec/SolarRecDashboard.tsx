@@ -1082,50 +1082,66 @@ function buildDatasetStorageSignature(datasets: Partial<Record<DatasetKey, CsvDa
 }
 
 function deserializeDashboardLogs(raw: string): DashboardLogEntry[] {
+  // Outer try/catch handles the JSON.parse + non-array shape only.
+  // Per-item parsing has its own try/catch below so a single
+  // malformed entry (e.g. `datasets` is a string instead of an
+  // array) cannot poison the whole batch — Codex P2 fix on
+  // PR #354. Pre-fix the per-item processing was inside this
+  // outer try, so a `.map` call against a non-array threw and the
+  // catch returned `[]` for everything.
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(raw) as Array<{
-      id: string;
-      createdAt: string;
-      totalSystems: number;
-      reportingSystems: number;
-      reportingPercent?: number | null;
-      changeOwnershipSystems: number;
-      changeOwnershipPercent?: number | null;
-      transferredReporting: number;
-      transferredNotReporting: number;
-      terminatedReporting: number;
-      terminatedNotReporting: number;
-      changedNotTransferredReporting: number;
-      changedNotTransferredNotReporting: number;
-      totalContractedValue: number;
-      totalDeliveredValue: number;
-      totalGap: number;
-      contractedValueReporting?: number;
-      contractedValueNotReporting?: number;
-      contractedValueReportingPercent?: number | null;
-      datasets: Array<{ key: DatasetKey; label: string; fileName: string; rows: number; updatedAt: string }>;
-      cooStatuses?: Array<{ key: string; systemName?: string; status: ChangeOwnershipStatus }>;
-      recPerformanceContracts2025?: Array<{
-        contractId: string;
-        deliveryYearLabel?: string;
-        requiredToAvoidShortfallRecs: number;
-        deliveredTowardShortfallRecs: number;
-        deliveredPercentOfRequired?: number | null;
-        unallocatedShortfallRecs: number;
-      }>;
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  type RawEntry = {
+    id: string;
+    createdAt: string;
+    totalSystems: number;
+    reportingSystems: number;
+    reportingPercent?: number | null;
+    changeOwnershipSystems: number;
+    changeOwnershipPercent?: number | null;
+    transferredReporting: number;
+    transferredNotReporting: number;
+    terminatedReporting: number;
+    terminatedNotReporting: number;
+    changedNotTransferredReporting: number;
+    changedNotTransferredNotReporting: number;
+    totalContractedValue: number;
+    totalDeliveredValue: number;
+    totalGap: number;
+    contractedValueReporting?: number;
+    contractedValueNotReporting?: number;
+    contractedValueReportingPercent?: number | null;
+    datasets: Array<{ key: DatasetKey; label: string; fileName: string; rows: number; updatedAt: string }>;
+    cooStatuses?: Array<{ key: string; systemName?: string; status: ChangeOwnershipStatus }>;
+    recPerformanceContracts2025?: Array<{
+      contractId: string;
+      deliveryYearLabel?: string;
+      requiredToAvoidShortfallRecs: number;
+      deliveredTowardShortfallRecs: number;
+      deliveredPercentOfRequired?: number | null;
+      unallocatedShortfallRecs: number;
     }>;
-    return parsed
-      .map((entry) => {
+  };
+  return (parsed as RawEntry[])
+    .map((entry): DashboardLogEntry | null => {
+      try {
         const createdAt = new Date(entry.createdAt);
         if (Number.isNaN(createdAt.getTime())) return null;
-        const datasets = (entry.datasets ?? [])
+        const rawDatasets = Array.isArray(entry.datasets) ? entry.datasets : [];
+        const datasets = rawDatasets
           .map((dataset) => {
             const updatedAt = new Date(dataset.updatedAt);
             if (Number.isNaN(updatedAt.getTime())) return null;
             return { ...dataset, updatedAt };
           })
           .filter((dataset): dataset is NonNullable<typeof dataset> => dataset !== null);
-        const cooStatuses = (entry.cooStatuses ?? [])
+        const rawCooStatuses = Array.isArray(entry.cooStatuses) ? entry.cooStatuses : [];
+        const cooStatuses = rawCooStatuses
           .map((item) => {
             if (!item || typeof item.key !== "string") return null;
             if (typeof item.status !== "string") return null;
@@ -1135,7 +1151,10 @@ function deserializeDashboardLogs(raw: string): DashboardLogEntry[] {
             return systemName ? { key: item.key, status, systemName } : { key: item.key, status };
           })
           .filter((item): item is NonNullable<typeof item> => item !== null);
-        const recPerformanceContracts2025 = (entry.recPerformanceContracts2025 ?? [])
+        const rawContracts = Array.isArray(entry.recPerformanceContracts2025)
+          ? entry.recPerformanceContracts2025
+          : [];
+        const recPerformanceContracts2025 = rawContracts
           .map((item) => {
             if (!item || typeof item.contractId !== "string") return null;
             const requiredToAvoidShortfallRecs = Number(item.requiredToAvoidShortfallRecs ?? 0);
@@ -1180,11 +1199,16 @@ function deserializeDashboardLogs(raw: string): DashboardLogEntry[] {
           cooStatuses,
           recPerformanceContracts2025,
         };
-      })
-      .filter((entry): entry is DashboardLogEntry => entry !== null);
-  } catch {
-    return [];
-  }
+      } catch {
+        // Per-item failure isolation: a single malformed entry (e.g.
+        // a non-array `datasets` that slips past the Array.isArray
+        // guard via prototype shenanigans, or a Date constructor
+        // throwing on weird input) drops only that entry, not the
+        // whole batch.
+        return null;
+      }
+    })
+    .filter((entry): entry is DashboardLogEntry => entry !== null);
 }
 
 function loadPersistedLogs(): DashboardLogEntry[] {
@@ -1199,53 +1223,41 @@ function loadPersistedLogs(): DashboardLogEntry[] {
 }
 
 /**
- * Merge server-recovered snapshot-log entries with the local
- * (localStorage) entries, dedupe by id, sort newest-first.
+ * Merge local (localStorage) snapshot-log entries with
+ * server-recovered ones for DISPLAY ONLY, dedupe by id, sort
+ * newest-first.
  *
- * Production scenario this is built for: localStorage holds 1
- * recent snapshot, the server's `getSnapshotLogs` returns the 22
- * unique entries from the main key + orphaned chunk recovery. A
- * naive overwrite-on-conflict in either direction would shrink the
- * user's history. The rules:
+ * **Read-only contract (PR #353/#354 follow-up — Codex P1).** The
+ * caller MUST NOT put the merged result into the local
+ * `logEntries` state. The cloud-sync useEffect downstream watches
+ * `logEntries` and writes any change back to
+ * `REMOTE_SNAPSHOT_LOGS_KEY` — so feeding server-recovered
+ * entries into `logEntries` would silently restore them to the
+ * cloud, which is the explicit no-write-back violation PR #353
+ * was meant to avoid. Instead the parent keeps two pieces of
+ * state (local + server-recovered) and computes the merged list
+ * via this helper for the Snapshot Log tab's display only. Local
+ * actions (create/delete/clear) keep operating on `logEntries`.
  *
+ * Rules:
  *   - On id conflict, the SERVER entry wins (server's view of the
  *     historical snapshot is authoritative; local is a working
  *     copy).
- *   - Server entries with createdAt strings round-trip through
- *     `deserializeDashboardLogs` so they end up with `createdAt:
- *     Date` to match the local shape.
+ *   - Both inputs are already `DashboardLogEntry[]` with
+ *     `createdAt: Date`. Deserialization happens earlier in the
+ *     hydration effect (see `setRecoveredSnapshotLogEntries`).
  *   - The merged result is sorted newest-first by `createdAt`.
  *
- * Pure helper — extracted from the hydration useEffect so it can
- * be unit-tested without React.
+ * Pure helper — no React, easy to source-rail-test.
  */
-function mergeServerSnapshotLogsIntoLocal(
+function mergeSnapshotLogEntriesForDisplay(
   local: ReadonlyArray<DashboardLogEntry>,
-  serverEntries: ReadonlyArray<{ id: string; createdAt: string; [k: string]: unknown }>
+  recovered: ReadonlyArray<DashboardLogEntry>
 ): DashboardLogEntry[] {
   const byId = new Map<string, DashboardLogEntry>();
   for (const entry of local) byId.set(entry.id, entry);
-
-  // Single-pass JSON round-trip through the existing
-  // `deserializeDashboardLogs` so server entries pick up the
-  // client's `createdAt: Date` shape. The deserializer is
-  // internally defensive (per-item try/catch returning [] on any
-  // shape mismatch), so a single-batch call doesn't lose
-  // partial-recovery semantics. Pre-fix this was a per-entry
-  // stringify+parse loop — same correctness, more allocations.
-  let revivedRemote: DashboardLogEntry[] = [];
-  if (serverEntries.length > 0) {
-    try {
-      revivedRemote = deserializeDashboardLogs(
-        JSON.stringify(Array.from(serverEntries))
-      );
-    } catch {
-      // Defensive — `deserializeDashboardLogs` already returns []
-      // on parse error, but guard the outer JSON.stringify too.
-    }
-  }
-  for (const remote of revivedRemote) byId.set(remote.id, remote);
-
+  // Recovered entries win on id conflict.
+  for (const entry of recovered) byId.set(entry.id, entry);
   return Array.from(byId.values()).sort(
     (a, b) => b.createdAt.getTime() - a.createdAt.getTime()
   );
@@ -1279,6 +1291,13 @@ export default function SolarRecDashboard() {
   // touching every consumer.
   const [datasetsHydrated, setDatasetsHydrated] = useState(true);
   const [logEntries, setLogEntries] = useState<DashboardLogEntry[]>(() => loadPersistedLogs());
+  // Server-recovered snapshot-log entries kept SEPARATE from
+  // `logEntries` so the cloud-sync effect (which watches
+  // `logEntries`) can't accidentally restore them to the cloud.
+  // See the hydration useEffect for the read-only contract
+  // (PR #354 follow-up — Codex P1).
+  const [recoveredSnapshotLogEntries, setRecoveredSnapshotLogEntries] =
+    useState<DashboardLogEntry[]>([]);
   const [uploadErrors, setUploadErrors] = useState<Partial<Record<DatasetKey, string>>>({});
   // Phase 5e step 4 PR-D (2026-04-30) — `hydrationErrors`,
   // `recordHydrationError`, `clearHydrationErrorsForKeys` deleted.
@@ -1935,20 +1954,27 @@ export default function SolarRecDashboard() {
   const logEntriesRef = useRef(logEntries);
   logEntriesRef.current = logEntries;
 
-  // Snapshot-log server-side hydration. Until Phase 5c the cloud
-  // path was wired into the dashboard's general remote-state
-  // hydration; that helper got deleted and Snapshot Log started
-  // reading ONLY localStorage. The server-owned recovery path below
-  // closes the regression: when the Snapshot Log tab activates we
-  // call the read-only `getSnapshotLogs` proc, dedupe-merge by id
-  // against localStorage, and prefer whichever side has more
-  // entries on a per-id conflict (server wins on a one-entry-local
-  // vs many-entry-server scenario — the exact prod state on
-  // 2026-05-04). NEVER overwrite the server with localStorage as a
-  // side effect of this hydration; restore/write-back is a
-  // separate, explicitly-approved operation. This proc returns
-  // recovery candidates (including from orphaned chunk rows) but
-  // performs no DB writes.
+  // Snapshot-log server-side hydration (read-only).
+  //
+  // **PR #354 follow-up (Codex P1).** Pre-fix this effect called
+  // `setLogEntries((prev) => merge(prev, server))`, which
+  // accidentally triggered the cloud-sync useEffect downstream
+  // (it watches `logEntries` and writes any signature change back
+  // to `REMOTE_SNAPSHOT_LOGS_KEY`). That meant simply opening the
+  // Snapshot Log tab silently restored recovered server entries
+  // to the cloud — the exact write-back PR #353 explicitly
+  // deferred to a future approved restore flow.
+  //
+  // The fix: keep server-recovered entries in a SEPARATE state
+  // (`recoveredSnapshotLogEntries`) that the cloud-sync effect
+  // does NOT depend on. The display-only `visibleSnapshotLogEntries`
+  // memo merges (local + recovered) and is what the Snapshot Log
+  // tab renders. Local create/delete/clear actions still operate
+  // on `logEntries` (the persisted local copy) so the cloud-sync
+  // path is unchanged for those.
+  //
+  // Restore/write-back of recovered entries remains a separate
+  // explicitly-approved follow-up, not this PR.
   const snapshotLogsServerQuery =
     solarRecTrpc.solarRecDashboard.getSnapshotLogs.useQuery(
       { limit: 100 },
@@ -1957,10 +1983,33 @@ export default function SolarRecDashboard() {
   useEffect(() => {
     const data = snapshotLogsServerQuery.data;
     if (!data || data.entries.length === 0) return;
-    setLogEntries((prev) =>
-      mergeServerSnapshotLogsIntoLocal(prev, data.entries)
-    );
+    // Deserialize once: server returns string `createdAt`; the
+    // client's DashboardLogEntry shape carries `createdAt: Date`.
+    // Use the existing serde so the conversion stays consistent
+    // with localStorage hydration. Deserializer is now per-item
+    // safe (Codex P2) so a single bad recovered entry can't
+    // poison the whole batch.
+    let revived: DashboardLogEntry[] = [];
+    try {
+      revived = deserializeDashboardLogs(
+        JSON.stringify(Array.from(data.entries))
+      );
+    } catch {
+      // Defensive — outer JSON.stringify shouldn't throw, but if
+      // it does we fall back to "no recovered entries shown."
+    }
+    setRecoveredSnapshotLogEntries(revived);
   }, [snapshotLogsServerQuery.data]);
+
+  // Display-only union of local + server-recovered entries.
+  // SnapshotLogTab receives this list; the underlying `logEntries`
+  // state is the unmutated authoritative local copy that the
+  // cloud-sync effect persists.
+  const visibleSnapshotLogEntries = useMemo(
+    () =>
+      mergeSnapshotLogEntriesForDisplay(logEntries, recoveredSnapshotLogEntries),
+    [logEntries, recoveredSnapshotLogEntries]
+  );
 
   const datasetsHydratedRef = useRef(false);
   const remoteStateHydratedRef = useRef(false);
@@ -5878,7 +5927,16 @@ const aiDataContext = useMemo(() => {
               <TabErrorBoundary tabLabel="Snapshot Log">
                 <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading snapshot log tab...</div>}>
                   <SnapshotLogTabLazy
-                    logEntries={logEntries}
+                    // Display-only union of local + server-recovered
+                    // entries (Codex P1 fix). Server-recovered entries
+                    // are NOT in the underlying `logEntries` state, so
+                    // the cloud-sync useEffect can't accidentally
+                    // restore them to `REMOTE_SNAPSHOT_LOGS_KEY`.
+                    // Local actions (createLogEntry, deleteLogEntry,
+                    // clearLogs) still operate on `logEntries` directly
+                    // — those mutate persisted local state and the
+                    // existing cloud-sync path handles them.
+                    logEntries={visibleSnapshotLogEntries}
                     recPerformanceSnapshotContracts2025={recPerformanceSnapshotContracts2025}
                     cooNotTransferredNotReportingCurrentCount={cooNotTransferredNotReportingCurrentCount}
                     onCreateLogEntry={createLogEntry}

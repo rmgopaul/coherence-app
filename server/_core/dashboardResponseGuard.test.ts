@@ -442,6 +442,39 @@ describe("solarRecDashboardRouter wiring", () => {
       /exportChangeOwnershipTileCsv\s*:\s*dashboardProcedure\s*\(/
     );
   });
+
+  it("listSolarRecDashboardStorageByPrefix uses ESCAPE '!' (sql_mode-independent)", () => {
+    // Codex P3 fix on PR #354. Pre-fix the helper used
+    // `ESCAPE '\\'` (one backslash at the SQL wire). Under the
+    // default MySQL/TiDB sql_mode (no NO_BACKSLASH_ESCAPES) the
+    // parser sees `\` as the string-literal escape character, so
+    // `'\'` (one backslash) reads as an unterminated string —
+    // syntax error. The fix uses `!` which has no special meaning
+    // in any SQL mode.
+    const filePath = resolve(__dirname, "..", "db", "preferences.ts");
+    const source = readFileSync(filePath, "utf8");
+    // Helper exists.
+    expect(source).toMatch(
+      /export\s+async\s+function\s+listSolarRecDashboardStorageByPrefix/
+    );
+    // Every ESCAPE clause emitted via a `sql\`...\`` template
+    // must use `'!'`. We scan only inside template literals
+    // (not JSDoc text) so the historical-context comments above
+    // the helper don't false-positive.
+    const sqlTemplateMatches =
+      source.match(/sql`[^`]*ESCAPE\s+'[^']*'[^`]*`/g) ?? [];
+    expect(sqlTemplateMatches.length).toBeGreaterThan(0);
+    for (const m of sqlTemplateMatches) {
+      expect(m).toMatch(/ESCAPE\s+'!'/);
+    }
+    // Escapes the bang character in the user-supplied prefix
+    // (`!` → `!!`). Without this, a prefix containing a literal
+    // `!` would be interpreted as the escape character.
+    expect(source).toMatch(/\.replace\(\s*\/!\/g\s*,\s*['"]!!['"]/);
+    // Escapes `%` and `_` via `!`.
+    expect(source).toMatch(/\.replace\(\s*\/%\/g\s*,\s*['"]!%['"]/);
+    expect(source).toMatch(/\.replace\(\s*\/_\/g\s*,\s*['"]!_['"]/);
+  });
 });
 
 // ---------------------------------------------------------------------------
