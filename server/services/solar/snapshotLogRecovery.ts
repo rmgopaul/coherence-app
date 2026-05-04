@@ -53,10 +53,23 @@ export type SnapshotLogSource =
 
 export interface SnapshotLogRecoveryResult {
   source: SnapshotLogSource;
+  /**
+   * Unique snapshot-log entries, deduped by id, sorted newest-first
+   * by createdAt. `entries.length` is the canonical "how many
+   * unique entries did we recover" count — use it directly. The
+   * separate `rawEntryCount` field below is for diagnostics
+   * (how many raw entries we saw before dedupe).
+   */
   entries: SnapshotLogEntryLike[];
-  totalEntries: number;
-  uniqueEntries: number;
-  duplicateEntries: number;
+  /**
+   * Pre-dedupe count of raw entries observed across the main
+   * payload + orphan-chunk reassembly. May exceed
+   * `entries.length` when entries collide by id; the difference
+   * is reported as `duplicateCount`.
+   */
+  rawEntryCount: number;
+  /** Number of entries dropped during dedupe-by-id. */
+  duplicateCount: number;
   newestCreatedAt: string | null;
   oldestCreatedAt: string | null;
   mainPayloadEntries: number | null;
@@ -117,10 +130,15 @@ export function parseSnapshotLogPayload(
 /**
  * Reassemble orphaned chunk rows. The snapshot-log chunked-storage
  * format uses storageKeys of the form
- * `snapshot_logs_v1_chunk_NNNN` (4-digit zero-padded). Each row
- * contains a fragment of the JSON-encoded array. We sort by
- * storageKey lexicographic (which equals numeric for zero-padded
- * suffixes), then concatenate `payload` fragments in that order.
+ * `snapshot_logs_v1_chunk_NNNN` — today the writer zero-pads to 4
+ * digits, but the regex below accepts any digit width (1+) so a
+ * future writer that drops or widens padding still works as long
+ * as the suffix is purely numeric. Order is by parsed integer, not
+ * lexicographic, so "_chunk_2" sorts before "_chunk_10" correctly.
+ *
+ * Each row contains a fragment of the JSON-encoded array. We sort
+ * by chunk-suffix integer, then concatenate `payload` fragments in
+ * that order.
  *
  * Rows with non-conforming storageKeys are dropped with a warning
  * — this preserves the read-only, defensive contract.
@@ -132,7 +150,7 @@ export function reassembleOrphanChunks(
   if (rows.length === 0) {
     return { payload: null, warnings, chunkCount: 0 };
   }
-  const chunkPattern = /_chunk_(\d{4,})$/;
+  const chunkPattern = /_chunk_(\d+)$/;
   const valid: { storageKey: string; payload: string }[] = [];
   let dropped = 0;
   for (const row of rows) {
@@ -200,18 +218,24 @@ export function sortNewestFirst(
 
 /**
  * Compose the recovery result from raw main payload + raw orphan
- * chunk rows. Implements the conservative heuristic for choosing
- * between the main key and the orphan-recovered candidate:
+ * chunk rows. The discriminator for whether to surface orphans is
+ * **id-set semantics**, not raw entry count:
  *
- *   - If the orphan candidate parses to MORE entries than the main,
- *     prefer the union (`main-plus-orphaned-chunks`).
+ *   - If the orphan candidate contributes at least one id NOT
+ *     present in main, the union is surfaced
+ *     (`main-plus-orphaned-chunks`). Pre-fix this was a
+ *     "more entries than main" comparison, which dropped legitimate
+ *     orphan content whenever the counts happened to match — e.g.
+ *     main `[{id: a}]` + orphan `[{id: b}]` gave 1 entry only.
  *   - If only orphans are present, use them (`orphaned-chunks`).
  *   - Otherwise prefer main (`main` or `none`).
  *
- * The "more entries" threshold is strictly greater than: a
- * zero-extra orphan candidate is treated as redundant. This guards
- * against cases where the orphan rows happen to encode the same
- * single entry as the main key.
+ * The id-set discriminator preserves the safety property — orphans
+ * whose ids are a subset of main contribute nothing, so a
+ * legitimately-cleared user history won't be silently un-cleared
+ * by stale orphan rows that just hold the same single entry — and
+ * also doesn't drop NEW orphan content based on accidental count
+ * collisions.
  *
  * Never writes anything. Never throws.
  */
@@ -249,15 +273,19 @@ export function composeSnapshotLogRecovery(input: {
   } else if (mainEntries.length === 0) {
     combined = orphanEntries;
     source = "orphaned-chunks";
-  } else if (orphanEntries.length > mainEntries.length) {
-    // The orphan candidate has more material than main — surface the
-    // union and tag the result so consumers know the recovery
-    // candidate participated.
-    combined = [...mainEntries, ...orphanEntries];
-    source = "main-plus-orphaned-chunks";
   } else {
-    combined = mainEntries;
-    source = "main";
+    // id-set discriminator: do orphans contribute any new ids?
+    const mainIds = new Set(mainEntries.map((entry) => entry.id));
+    const orphansContributeNewIds = orphanEntries.some(
+      (entry) => !mainIds.has(entry.id)
+    );
+    if (orphansContributeNewIds) {
+      combined = [...mainEntries, ...orphanEntries];
+      source = "main-plus-orphaned-chunks";
+    } else {
+      combined = mainEntries;
+      source = "main";
+    }
   }
 
   const { unique, duplicates } = dedupeById(combined);
@@ -268,9 +296,8 @@ export function composeSnapshotLogRecovery(input: {
   return {
     source,
     entries: sorted,
-    totalEntries: combined.length,
-    uniqueEntries: sorted.length,
-    duplicateEntries: duplicates,
+    rawEntryCount: combined.length,
+    duplicateCount: duplicates,
     newestCreatedAt: newest,
     oldestCreatedAt: oldest,
     mainPayloadEntries,
@@ -294,6 +321,14 @@ export function paginateSnapshotLogRecovery(
   nextCursorCreatedAt: string | null;
 } {
   const { limit, cursorCreatedAt } = options;
+  // Defensive guard: a non-positive limit collapses to "empty page,
+  // no next cursor." Without this, the `page.length === limit`
+  // check below would be `0 === 0 → true` and the cursor lookup
+  // would dereference `page[-1].createdAt`. The Zod schema on the
+  // proc's `.input(...)` constrains limit to 1..100 so the guard
+  // never fires from the live API path, but the helper is exported
+  // and a future caller could pass 0.
+  if (limit <= 0) return { entries: [], nextCursorCreatedAt: null };
   const filtered = cursorCreatedAt
     ? result.entries.filter((entry) => entry.createdAt < cursorCreatedAt)
     : result.entries;

@@ -1225,15 +1225,27 @@ function mergeServerSnapshotLogsIntoLocal(
 ): DashboardLogEntry[] {
   const byId = new Map<string, DashboardLogEntry>();
   for (const entry of local) byId.set(entry.id, entry);
-  for (const remote of serverEntries) {
+
+  // Single-pass JSON round-trip through the existing
+  // `deserializeDashboardLogs` so server entries pick up the
+  // client's `createdAt: Date` shape. The deserializer is
+  // internally defensive (per-item try/catch returning [] on any
+  // shape mismatch), so a single-batch call doesn't lose
+  // partial-recovery semantics. Pre-fix this was a per-entry
+  // stringify+parse loop — same correctness, more allocations.
+  let revivedRemote: DashboardLogEntry[] = [];
+  if (serverEntries.length > 0) {
     try {
-      const reviv = deserializeDashboardLogs(JSON.stringify([remote]));
-      if (reviv.length > 0) byId.set(reviv[0].id, reviv[0]);
+      revivedRemote = deserializeDashboardLogs(
+        JSON.stringify(Array.from(serverEntries))
+      );
     } catch {
-      // Defensive — server payload should always pass the
-      // deserializer; skip on any unexpected shape.
+      // Defensive — `deserializeDashboardLogs` already returns []
+      // on parse error, but guard the outer JSON.stringify too.
     }
   }
+  for (const remote of revivedRemote) byId.set(remote.id, remote);
+
   return Array.from(byId.values()).sort(
     (a, b) => b.createdAt.getTime() - a.createdAt.getTime()
   );

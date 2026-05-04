@@ -139,6 +139,21 @@ describe("reassembleOrphanChunks", () => {
     ]);
     expect(result.payload).toBe("A" + "AA" + "B");
   });
+
+  it("handles 1-3 digit chunk suffixes (no zero-pad assumption)", () => {
+    // The regex previously required 4+ digits so a writer that
+    // dropped padding would silently lose all chunks. The widened
+    // regex accepts any digit width and sorts by parsed integer
+    // (so "_chunk_2" comes before "_chunk_10" — proves we're not
+    // sorting lexicographically anymore).
+    const result = reassembleOrphanChunks([
+      { storageKey: "k_chunk_10", payload: "C" }, // last numerically
+      { storageKey: "k_chunk_2", payload: "B" },
+      { storageKey: "k_chunk_1", payload: "A" }, // first numerically
+    ]);
+    expect(result.payload).toBe("ABC");
+    expect(result.chunkCount).toBe(3);
+  });
 });
 
 describe("dedupeById", () => {
@@ -176,7 +191,7 @@ describe("composeSnapshotLogRecovery", () => {
     });
     expect(result.source).toBe("none");
     expect(result.entries).toEqual([]);
-    expect(result.uniqueEntries).toBe(0);
+    expect(result.entries.length).toBe(0);
   });
 
   it("returns source=main when main has entries and orphans add nothing", () => {
@@ -189,7 +204,7 @@ describe("composeSnapshotLogRecovery", () => {
       orphanRows: [],
     });
     expect(result.source).toBe("main");
-    expect(result.uniqueEntries).toBe(2);
+    expect(result.entries.length).toBe(2);
     expect(result.mainPayloadEntries).toBe(2);
     expect(result.orphanedChunkEntries).toBeNull();
   });
@@ -204,7 +219,7 @@ describe("composeSnapshotLogRecovery", () => {
       orphanRows: [{ storageKey: "k_chunk_0000", payload: orphan }],
     });
     expect(result.source).toBe("orphaned-chunks");
-    expect(result.uniqueEntries).toBe(2);
+    expect(result.entries.length).toBe(2);
     expect(result.mainPayloadEntries).toBeNull();
     expect(result.orphanedChunkEntries).toBe(2);
   });
@@ -228,28 +243,50 @@ describe("composeSnapshotLogRecovery", () => {
       ],
     });
     expect(result.source).toBe("main-plus-orphaned-chunks");
-    expect(result.uniqueEntries).toBe(22); // 1 main + 21 historical
+    expect(result.entries.length).toBe(22); // 1 main + 21 historical
     expect(result.entries[0].id).toBe("most-recent"); // newest-first
     expect(result.mainPayloadEntries).toBe(1);
     expect(result.orphanedChunkEntries).toBe(21);
   });
 
-  it("does NOT prefer orphans when their entry count <= main's (guards against legitimate clears)", () => {
-    // If a future write legitimately cleared the snapshot history
-    // down to a single entry, the orphans must NOT silently
-    // un-clear that. The "more entries" threshold is strictly
-    // greater than.
+  it("does NOT surface orphans whose ids are a subset of main (guards against legitimate clears)", () => {
+    // Safety property: if a future write legitimately cleared the
+    // snapshot history, the orphans must NOT silently un-clear it.
+    // The id-set heuristic enforces this by surfacing orphans only
+    // when they contribute at least one NEW id beyond main.
     const main = JSON.stringify([
       entry("a", "2026-04-01T00:00:00Z"),
       entry("b", "2026-04-02T00:00:00Z"),
     ]);
-    const orphan = JSON.stringify([entry("c", "2026-04-03T00:00:00Z")]);
+    // Orphan contains only ids that already exist in main → no
+    // contribution → main wins.
+    const orphan = JSON.stringify([
+      entry("a", "2026-04-01T00:00:00Z"),
+      entry("b", "2026-04-02T00:00:00Z"),
+    ]);
     const result = composeSnapshotLogRecovery({
       mainPayload: main,
       orphanRows: [{ storageKey: "k_chunk_0000", payload: orphan }],
     });
     expect(result.source).toBe("main");
-    expect(result.uniqueEntries).toBe(2);
+    expect(result.entries.length).toBe(2);
+    expect(result.entries.map((e) => e.id).sort()).toEqual(["a", "b"]);
+  });
+
+  it("DOES surface orphans whose ids are different from main even when counts match (the count-collision bug fix)", () => {
+    // Pre-fix the heuristic compared `orphanEntries.length >
+    // mainEntries.length`. With main = [a] (1) and orphan = [b]
+    // (1, different id), 1 > 1 was false → orphan dropped → user
+    // lost a recoverable entry. The id-set heuristic correctly
+    // sees that `b` is a new id and surfaces the union.
+    const main = JSON.stringify([entry("a", "2026-04-01T00:00:00Z")]);
+    const orphan = JSON.stringify([entry("b", "2026-04-02T00:00:00Z")]);
+    const result = composeSnapshotLogRecovery({
+      mainPayload: main,
+      orphanRows: [{ storageKey: "k_chunk_0000", payload: orphan }],
+    });
+    expect(result.source).toBe("main-plus-orphaned-chunks");
+    expect(result.entries.length).toBe(2);
     expect(result.entries.map((e) => e.id).sort()).toEqual(["a", "b"]);
   });
 
@@ -267,8 +304,9 @@ describe("composeSnapshotLogRecovery", () => {
       orphanRows: [{ storageKey: "k_chunk_0000", payload: orphan }],
     });
     expect(result.source).toBe("main-plus-orphaned-chunks");
-    expect(result.uniqueEntries).toBe(3);
-    expect(result.duplicateEntries).toBe(1);
+    expect(result.entries.length).toBe(3);
+    expect(result.duplicateCount).toBe(1);
+    expect(result.rawEntryCount).toBe(4); // 1 main + 3 orphan (incl 1 dup)
   });
 
   it("collects warnings without crashing when orphan payloads are corrupt", () => {
@@ -280,7 +318,7 @@ describe("composeSnapshotLogRecovery", () => {
       ],
     });
     expect(result.source).toBe("main");
-    expect(result.uniqueEntries).toBe(1);
+    expect(result.entries.length).toBe(1);
     expect(result.warnings.some((w) => /JSON\.parse failed/.test(w))).toBe(true);
   });
 
@@ -322,6 +360,21 @@ describe("paginateSnapshotLogRecovery", () => {
     const page = paginateSnapshotLogRecovery(r, { limit: 3 });
     expect(page.entries).toHaveLength(3);
     expect(page.nextCursorCreatedAt).toBe(page.entries[2].createdAt);
+  });
+
+  it("returns an empty page (no crash) when limit <= 0", () => {
+    // Defensive guard: pre-fix the helper would compute
+    // `page.length === limit` (`0 === 0` true) and read
+    // `page[-1].createdAt` to build the cursor → crash.
+    const r = buildResult(7);
+    expect(paginateSnapshotLogRecovery(r, { limit: 0 })).toEqual({
+      entries: [],
+      nextCursorCreatedAt: null,
+    });
+    expect(paginateSnapshotLogRecovery(r, { limit: -5 })).toEqual({
+      entries: [],
+      nextCursorCreatedAt: null,
+    });
   });
 
   it("returns entries strictly older than the cursor", () => {
