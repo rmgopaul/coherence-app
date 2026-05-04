@@ -8,7 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { trpc } from "@/lib/trpc";
-import { CheckSquare, Loader2, Plus, RefreshCw } from "lucide-react";
+import { CheckSquare, Loader2, Pin, Plus, RefreshCw } from "lucide-react";
 import { WidgetPageSkeleton } from "@/components/WidgetPageSkeleton";
 import { useLocation } from "wouter";
 import { toast } from "sonner";
@@ -79,6 +79,34 @@ export default function TodoistWidget() {
       toast.error(`Failed to complete task: ${error.message}`);
     },
   });
+
+  const utils = trpc.useUtils();
+  const [pinningTaskId, setPinningTaskId] = useState<string | null>(null);
+  const pinToDock = trpc.dock.add.useMutation({
+    onSuccess: (row) => {
+      toast.success(
+        row.deduplicated ? "Already in DropDock" : "Pinned to DropDock",
+      );
+      void utils.dock.list.invalidate();
+    },
+    onError: (error) => {
+      toast.error(`Failed to pin: ${error.message}`);
+    },
+    onSettled: () => {
+      setPinningTaskId(null);
+    },
+  });
+
+  const handlePinToDock = (task: TodoistTask) => {
+    if (pinToDock.isPending) return;
+    setPinningTaskId(task.id);
+    pinToDock.mutate({
+      source: "todoist",
+      url: `https://todoist.com/app/task/${task.id}`,
+      title: task.content,
+      meta: { taskId: String(task.id) },
+    });
+  };
 
   const createTask = trpc.todoist.createTask.useMutation({
     onSuccess: (createdTask) => {
@@ -427,6 +455,21 @@ export default function TodoistWidget() {
                           </span>
                         </div>
                       </div>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => handlePinToDock(task)}
+                        disabled={pinToDock.isPending && pinningTaskId === task.id}
+                        title="Pin to DropDock"
+                        aria-label="Pin task to DropDock"
+                        className="shrink-0"
+                      >
+                        {pinToDock.isPending && pinningTaskId === task.id ? (
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                        ) : (
+                          <Pin className="w-4 h-4" />
+                        )}
+                      </Button>
                     </div>
                   </CardHeader>
                 </Card>
