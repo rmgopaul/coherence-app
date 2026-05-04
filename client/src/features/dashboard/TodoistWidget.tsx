@@ -63,6 +63,7 @@ export default function TodoistWidget() {
   const [newTaskContent, setNewTaskContent] = useState("");
   const [newTaskDescription, setNewTaskDescription] = useState("");
   const [newTaskPriority, setNewTaskPriority] = useState<number>(1);
+  const [quickAddInput, setQuickAddInput] = useState("");
   const [localTasks, setLocalTasks] = useState<TodoistTask[]>([]);
   const [taskSearch, setTaskSearch] = useState("");
   const [priorityFilter, setPriorityFilter] = useState<string>("all");
@@ -86,6 +87,7 @@ export default function TodoistWidget() {
       setNewTaskContent("");
       setNewTaskDescription("");
       setNewTaskPriority(1);
+      setQuickAddInput("");
       setLocalTasks((previous) => [createdTask, ...previous]);
       setTaskPage(1);
     },
@@ -104,6 +106,12 @@ export default function TodoistWidget() {
       description: newTaskDescription || undefined,
       priority: newTaskPriority,
     });
+  };
+
+  const handleQuickAdd = () => {
+    const content = quickAddInput.trim();
+    if (!content || createTask.isPending) return;
+    createTask.mutate({ content });
   };
 
   useEffect(() => {
@@ -272,6 +280,39 @@ export default function TodoistWidget() {
             </Dialog>
           </div>
         </div>
+
+        {/* Quick add */}
+        <Card className="mb-4">
+          <CardContent className="pt-4">
+            <div className="flex items-center gap-2">
+              <Plus className="w-4 h-4 text-muted-foreground shrink-0" />
+              <Input
+                value={quickAddInput}
+                onChange={(event) => setQuickAddInput(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !event.shiftKey) {
+                    event.preventDefault();
+                    handleQuickAdd();
+                  }
+                }}
+                placeholder="Quick add a task..."
+                disabled={createTask.isPending}
+                aria-label="Quick add a Todoist task"
+                className="flex-1"
+              />
+              <Button
+                onClick={handleQuickAdd}
+                disabled={createTask.isPending || !quickAddInput.trim()}
+              >
+                {createTask.isPending ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  "Add"
+                )}
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
 
         {/* View filter + search controls */}
         <Card className="mb-4">
