@@ -3314,9 +3314,12 @@ export const solarRecDashboardRouter = t.router({
         source: recovery.source,
         entries: page.entries,
         nextCursorCreatedAt: page.nextCursorCreatedAt,
-        totalEntries: recovery.totalEntries,
-        uniqueEntries: recovery.uniqueEntries,
-        duplicateEntries: recovery.duplicateEntries,
+        // `entries.length` is the canonical "how many unique
+        // entries did we recover" — clients should read it
+        // directly. `rawEntryCount` and `duplicateCount` are
+        // diagnostics for the recovery audit.
+        rawEntryCount: recovery.rawEntryCount,
+        duplicateCount: recovery.duplicateCount,
         newestCreatedAt: recovery.newestCreatedAt,
         oldestCreatedAt: recovery.oldestCreatedAt,
         mainPayloadEntries: recovery.mainPayloadEntries,

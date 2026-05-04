@@ -5,7 +5,7 @@ import {
   and,
   asc,
   inArray,
-  like,
+  sql,
   getDb,
   withDbRetry,
   ensureSolarRecDashboardStorageTable,
@@ -141,9 +141,14 @@ export async function getSolarRecDashboardPayload(userId: number, storageKey: st
  * default 256 is comfortable for snapshot logs (6 chunks observed
  * on prod).
  *
- * The prefix is escaped so SQL `LIKE` wildcards in the user-
- * supplied portion (`_` and `%`) are treated literally. Trailing
- * `%` is appended by the caller's intent ("startsWith").
+ * The supplied prefix may contain SQL `LIKE` metacharacters (`_`
+ * and `%`) that we want treated literally — e.g. the snapshot-log
+ * prefix `snapshot_logs_v1_chunk_` contains underscores that
+ * should match literal `_`, not "any single character." We
+ * backslash-escape those metacharacters AND emit an explicit
+ * `ESCAPE '\\'` clause so the semantics are independent of the
+ * connection's `sql_mode` (a `NO_BACKSLASH_ESCAPES` mode would
+ * otherwise treat `\_` as a literal two-character sequence).
  */
 export async function listSolarRecDashboardStorageByPrefix(
   userId: number,
@@ -159,10 +164,10 @@ export async function listSolarRecDashboardStorageByPrefix(
   const scopeId = await resolveScopeIdFromUserId(userId);
   const maxRows = options.maxRows ?? 256;
 
-  // Escape SQL LIKE wildcards in the supplied prefix so the caller
-  // gets exact prefix-match semantics. The Drizzle `like` operator
-  // takes a single SQL string; we backslash-escape `_` and `%`,
-  // then append the trailing `%` ourselves.
+  // Escape `_`, `%`, and the escape character itself so the
+  // user-supplied prefix matches as a literal startsWith. Append
+  // the `%` wildcard ourselves and emit an explicit `ESCAPE '\\'`
+  // clause — see JSDoc above for the sql_mode rationale.
   const escaped = storageKeyPrefix
     .replace(/\\/g, "\\\\")
     .replace(/%/g, "\\%")
@@ -182,7 +187,7 @@ export async function listSolarRecDashboardStorageByPrefix(
         .where(
           and(
             eq(solarRecDashboardStorage.scopeId, scopeId),
-            like(solarRecDashboardStorage.storageKey, likePattern)
+            sql`${solarRecDashboardStorage.storageKey} LIKE ${likePattern} ESCAPE '\\'`
           )
         )
         .orderBy(
