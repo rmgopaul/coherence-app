@@ -258,6 +258,64 @@ describe("Solar REC dashboard mount: heavy-query gates", () => {
     expect(changeOwnershipHandler!).toMatch(/preparingMessage\s*:/);
   });
 
+  it("CSV export helper accepts initialMessage and per-tile callers pass it", () => {
+    // PR #350 added the initialMessage prop so the helper can own
+    // the initial loading toast (which it needs to be able to
+    // revert to "initial" text on connection recovery before the
+    // 30s hint threshold). Pin both the signature and the per-tile
+    // wiring so a future refactor can't silently drop it.
+    const sharedHelper = sliceFn(code, "runDashboardCsvExport");
+    expect(sharedHelper).not.toBeNull();
+    expect(sharedHelper!).toMatch(/initialMessage\s*:\s*string/);
+    const ownershipHandler = sliceFn(code, "downloadOwnershipCountTileCsv");
+    expect(ownershipHandler).not.toBeNull();
+    expect(ownershipHandler!).toMatch(/initialMessage\s*:/);
+    const changeOwnershipHandler = sliceFn(
+      code,
+      "downloadChangeOwnershipCountTileCsv"
+    );
+    expect(changeOwnershipHandler).not.toBeNull();
+    expect(changeOwnershipHandler!).toMatch(/initialMessage\s*:/);
+  });
+
+  it("CSV export helper OWNS the initial toast.loading call (per-tile handlers do not create toastId)", () => {
+    // Pre-fix the per-tile handlers called `toast.loading(...)`
+    // outside the helper and passed the resulting toastId in. The
+    // helper had no way to revert to the initial text on
+    // recovery — a poll error at 10s + recovery at 20s left the
+    // user staring at "interrupted" until the 30s hint flipped it.
+    // The fix moved toast.loading INTO the helper. Lock that:
+    const sharedHelper = sliceFn(code, "runDashboardCsvExport");
+    expect(sharedHelper).not.toBeNull();
+    expect(sharedHelper!).toMatch(
+      /const\s+toastId\s*=\s*toast\.loading\s*\(\s*params\.initialMessage/
+    );
+    // Per-tile handlers must NOT call toast.loading directly
+    // anymore (they used to pre-create the toastId).
+    const ownershipHandler = sliceFn(code, "downloadOwnershipCountTileCsv");
+    expect(ownershipHandler).not.toBeNull();
+    expect(ownershipHandler!).not.toMatch(/toast\.loading\s*\(/);
+    const changeOwnershipHandler = sliceFn(
+      code,
+      "downloadChangeOwnershipCountTileCsv"
+    );
+    expect(changeOwnershipHandler).not.toBeNull();
+    expect(changeOwnershipHandler!).not.toMatch(/toast\.loading\s*\(/);
+  });
+
+  it("CSV export recovery from interrupted re-anchors to initial when elapsed < 30s", () => {
+    // PR #350 added the recovery branch that lets the toast revert
+    // from "interrupted" to the original "Preparing X…" text after
+    // a poll succeeds before the hint threshold. The fix is the
+    // `setToastPhase("initial")` arm at the bottom of the loop.
+    // Lock that the helper has both arms.
+    const sharedHelper = sliceFn(code, "runDashboardCsvExport");
+    expect(sharedHelper).not.toBeNull();
+    expect(sharedHelper!).toMatch(
+      /setToastPhase\s*\([\s\S]{0,120}["']stillPreparing["'][\s\S]{0,120}["']initial["']/
+    );
+  });
+
   it("CSV export click does NOT flip hasUserInteractedWithDashboard (heavy queries stay disabled)", () => {
     // PR #332 follow-up item 7 (2026-05-02). Flipping the
     // interaction flag inside the CSV handlers silently enables the
