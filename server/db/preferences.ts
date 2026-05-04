@@ -5,6 +5,7 @@ import {
   and,
   asc,
   inArray,
+  sql,
   getDb,
   withDbRetry,
   ensureSolarRecDashboardStorageTable,
@@ -126,6 +127,89 @@ export async function getSolarRecDashboardPayload(userId: number, storageKey: st
 // it was built for — was deleted in this same PR. The single-key
 // `getSolarRecDashboardPayload` above remains the canonical dashboard
 // storage reader.
+
+/**
+ * List `solarRecDashboardStorage` rows whose `storageKey` starts
+ * with the given prefix, scoped to the caller's scopeId. Returns
+ * the storageKey + chunkIndex + payload of each row (no `scopeId`
+ * leak in the result shape — caller already specified it).
+ *
+ * Read-only. No deletes. No upserts. Used today by the
+ * snapshot-log recovery proc to find orphaned `_chunk_NNNN` rows
+ * that aren't pointed to by the main key. The bound (`maxRows`)
+ * exists so a misconfigured prefix can't pull a multi-MB result;
+ * default 256 is comfortable for snapshot logs (6 chunks observed
+ * on prod).
+ *
+ * The supplied prefix may contain SQL `LIKE` metacharacters (`_`
+ * and `%`) that must be treated literally — e.g. the snapshot-log
+ * prefix `snapshot_logs_v1_chunk_` contains underscores that
+ * should match literal `_`, not "any single character."
+ *
+ * **PR #354 follow-up (Codex P3):** the escape character is `!`,
+ * not `\`. Pre-fix the helper used `ESCAPE '\\'` — in JavaScript
+ * that's `ESCAPE '\'` at the SQL wire (one backslash inside
+ * single quotes), which under MySQL/TiDB default `sql_mode`
+ * (`\` is the string-literal escape character) reads as an
+ * unterminated string literal: the `\` escapes the closing
+ * quote. Switching to `!` removes the dependency on `sql_mode`
+ * because `!` has no special meaning in any SQL string-literal
+ * grammar. We escape `!`, `%`, and `_` in the user-supplied
+ * prefix; the resulting LIKE pattern gets `ESCAPE '!'`.
+ */
+export async function listSolarRecDashboardStorageByPrefix(
+  userId: number,
+  storageKeyPrefix: string,
+  options: { maxRows?: number } = {}
+): Promise<
+  Array<{ storageKey: string; chunkIndex: number; payload: string | null }>
+> {
+  const db = await getDb();
+  if (!db) return [];
+  const ensured = await ensureSolarRecDashboardStorageTable();
+  if (!ensured) return [];
+  const scopeId = await resolveScopeIdFromUserId(userId);
+  const maxRows = options.maxRows ?? 256;
+
+  // Escape `!` (the escape char itself) FIRST so we don't
+  // double-escape on the next two passes, then `%` and `_`. Append
+  // the `%` wildcard ourselves and emit an explicit `ESCAPE '!'`
+  // clause — see JSDoc above for the sql_mode rationale.
+  const escaped = storageKeyPrefix
+    .replace(/!/g, "!!")
+    .replace(/%/g, "!%")
+    .replace(/_/g, "!_");
+  const likePattern = `${escaped}%`;
+
+  const rows = await withDbRetry(
+    "list solar rec dashboard storage by prefix",
+    async () =>
+      db
+        .select({
+          storageKey: solarRecDashboardStorage.storageKey,
+          chunkIndex: solarRecDashboardStorage.chunkIndex,
+          payload: solarRecDashboardStorage.payload,
+        })
+        .from(solarRecDashboardStorage)
+        .where(
+          and(
+            eq(solarRecDashboardStorage.scopeId, scopeId),
+            sql`${solarRecDashboardStorage.storageKey} LIKE ${likePattern} ESCAPE '!'`
+          )
+        )
+        .orderBy(
+          asc(solarRecDashboardStorage.storageKey),
+          asc(solarRecDashboardStorage.chunkIndex)
+        )
+        .limit(maxRows)
+  );
+
+  return rows.map((row) => ({
+    storageKey: row.storageKey,
+    chunkIndex: row.chunkIndex,
+    payload: row.payload,
+  }));
+}
 
 export async function saveSolarRecDashboardPayload(userId: number, storageKey: string, payload: string): Promise<boolean> {
   const db = await getDb();

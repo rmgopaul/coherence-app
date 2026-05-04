@@ -34,20 +34,34 @@
  *     which restores the response budget for these two endpoints.
  *   - TTL pruning runs opportunistically on each `getStatus` poll.
  *     A long-idle process accumulates terminal records up to TTL,
- *     bounded by `JOB_TTL_MS`.
+ *     bounded by `JOB_TTL_MS`. Pruning skips `running` records so a
+ *     mid-flight aggregator load can never have its registry row
+ *     deleted out from under it.
+ *   - Pruned terminal records also trigger a best-effort
+ *     `storageDelete` of their artifact. Local-mode deletes work
+ *     directly; proxy-mode deletes are not yet wired and the
+ *     artifact persists until the storage lifecycle policy
+ *     reclaims it (logged once per attempted delete).
  *   - Job IDs are 16 random bytes hex-encoded. Cross-scope safety is
  *     enforced on the status read by comparing the stored
  *     `record.scopeId` to the caller's `ctx.scopeId`.
  */
 
 import { randomBytes } from "node:crypto";
-import { storageGet, storagePut } from "../../storage";
+import { storageDelete, storageGet, storagePut } from "../../storage";
 import {
   buildChangeOwnershipTileCsv,
   buildOwnershipTileCsv,
   type OwnershipTileKey,
 } from "./buildDashboardCsvExport";
-import type { ChangeOwnershipStatus } from "./buildChangeOwnershipAggregates";
+import {
+  getOrBuildChangeOwnership,
+  type ChangeOwnershipStatus,
+} from "./buildChangeOwnershipAggregates";
+import { getOrBuildOverviewSummary } from "./buildOverviewSummaryAggregates";
+import { startDashboardJobMetric } from "./dashboardJobMetrics";
+
+const METRIC_PREFIX = "[dashboard:csv-export-jobs]";
 
 export const DASHBOARD_CSV_EXPORT_RUNNER_VERSION =
   "dashboard-csv-export-jobs-v1";
@@ -99,8 +113,16 @@ function pruneExpired(now: number = Date.now()): void {
   // the cross-target-safe equivalent the rest of the codebase uses.
   const entries = Array.from(jobs.entries());
   for (const [jobId, record] of entries) {
+    // Never prune a `running` record. The worker's closure still
+    // holds a `record` reference and will mutate fields on the
+    // succeeded/failed branch — if we delete the Map entry now,
+    // those mutations land on an orphaned object and the next
+    // status poll reads `notFound` even though the job actually
+    // finished. Heavy aggregator cold paths can take >30s; not
+    // worth the eviction race.
+    if (record.status === "running") continue;
     if (record.completedAt && now - record.completedAt > JOB_TTL_MS) {
-      jobs.delete(jobId);
+      deleteRecord(jobId, record);
       continue;
     }
     // Defensive: a record that never reached a terminal state but is
@@ -108,9 +130,37 @@ function pruneExpired(now: number = Date.now()): void {
     // sets `completedAt`, but a thrown-during-spawn scenario could
     // leave the record in `queued` forever otherwise.
     if (!record.completedAt && now - record.createdAt > JOB_TTL_MS) {
-      jobs.delete(jobId);
+      deleteRecord(jobId, record);
     }
   }
+}
+
+/**
+ * Drop a record from the in-memory registry and best-effort delete
+ * its storage artifact. Fires storageDelete asynchronously so the
+ * prune sweep can return without awaiting network IO.
+ */
+function deleteRecord(jobId: string, record: JobRecord): void {
+  jobs.delete(jobId);
+  if (!record.url) return;
+  // Reconstruct the storage key from the URL pattern that the
+  // runner wrote. We could store the key alongside the URL on the
+  // record, but reconstruction keeps the snapshot shape narrow and
+  // the runner's `key` derivation is the single source of truth.
+  const key = storageKeyForJob(jobId, record);
+  if (!key) return;
+  storageDelete(key).catch((err) => {
+    console.warn(
+      `[dashboard:csv-export-jobs] cleanup storageDelete failed for jobId=${jobId}: ${
+        err instanceof Error ? err.message : String(err)
+      }`
+    );
+  });
+}
+
+function storageKeyForJob(jobId: string, record: JobRecord): string | null {
+  if (!record.fileName) return null;
+  return `solar-rec-dashboard/${record.scopeId}/exports/${jobId}-${record.fileName}`;
 }
 
 function snapshot(record: JobRecord): DashboardCsvExportStatusSnapshot {
@@ -129,13 +179,6 @@ function snapshot(record: JobRecord): DashboardCsvExportStatusSnapshot {
 
 function newJobId(): string {
   return randomBytes(16).toString("hex");
-}
-
-function fileNameForInput(input: DashboardCsvExportInput): string {
-  if (input.exportType === "ownershipTile") {
-    return `ownership-tile-${input.tile}`;
-  }
-  return `change-ownership-${input.status}`;
 }
 
 /**
@@ -224,6 +267,11 @@ export async function runCsvExportJob(jobId: string): Promise<void> {
   }
   record.status = "running";
   record.startedAt = Date.now();
+  const metric = startDashboardJobMetric({
+    prefix: METRIC_PREFIX,
+    jobId,
+    context: { exportType: record.input.exportType },
+  });
   try {
     const built = await buildExport(record.input, record.scopeId);
     if (built.rowCount === 0) {
@@ -235,23 +283,41 @@ export async function runCsvExportJob(jobId: string): Promise<void> {
       record.rowCount = 0;
       record.url = null;
       record.completedAt = Date.now();
+      metric.finish({ rowCount: 0, csvBytes: 0, storageWrite: false });
       return;
     }
-    const key = `solar-rec-dashboard/${record.scopeId}/exports/${jobId}-${built.fileName}`;
+    record.fileName = built.fileName;
+    const key = storageKeyForJob(jobId, record);
+    if (!key) {
+      // storageKeyForJob only returns null when fileName is missing,
+      // and we just set it. This branch is here for the type
+      // checker — a future refactor of storageKeyForJob's contract
+      // shouldn't silently swallow the storage write.
+      throw new Error("storageKeyForJob returned null after fileName was set");
+    }
     await storagePut(key, built.csv, "text/csv; charset=utf-8");
     const { url } = await storageGet(key);
     record.status = "succeeded";
-    record.fileName = built.fileName;
     record.rowCount = built.rowCount;
     record.url = url;
     record.completedAt = Date.now();
+    // `String.length` returns UTF-16 code units, NOT UTF-8 bytes.
+    // Non-ASCII characters in system names / installer names /
+    // copied smart punctuation undercount the actual artifact byte
+    // size (e.g. "é" is 1 code unit but 2 UTF-8 bytes; "🎉" is a
+    // 2-unit surrogate pair but 4 UTF-8 bytes). storagePut writes
+    // the UTF-8 form so the metric must measure UTF-8 to match the
+    // memory + RU plan's accounting.
+    metric.finish({
+      rowCount: built.rowCount,
+      csvBytes: Buffer.byteLength(built.csv, "utf8"),
+      storageWrite: true,
+    });
   } catch (err) {
     record.status = "failed";
     record.error = err instanceof Error ? err.message : String(err);
     record.completedAt = Date.now();
-    console.error(
-      `[dashboard:csv-export-jobs] failed jobId=${jobId} (${fileNameForInput(record.input)}): ${record.error}`
-    );
+    metric.fail(err);
   }
 }
 
@@ -266,15 +332,9 @@ async function buildExport(
   scopeId: string
 ): Promise<BuiltCsvArtifact> {
   if (input.exportType === "ownershipTile") {
-    const { getOrBuildOverviewSummary } = await import(
-      "./buildOverviewSummaryAggregates"
-    );
     const { result } = await getOrBuildOverviewSummary(scopeId);
     return buildOwnershipTileCsv(result.ownershipRows, input.tile);
   }
-  const { getOrBuildChangeOwnership } = await import(
-    "./buildChangeOwnershipAggregates"
-  );
   const { result } = await getOrBuildChangeOwnership(scopeId);
   return buildChangeOwnershipTileCsv(result.rows, input.status);
 }
@@ -290,6 +350,5 @@ export const __TEST_ONLY__ = {
   },
   size: (): number => jobs.size,
   pruneExpired,
-  fileNameForInput,
   JOB_TTL_MS,
 };

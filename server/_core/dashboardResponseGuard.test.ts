@@ -411,6 +411,23 @@ describe("solarRecDashboardRouter wiring", () => {
     );
   });
 
+  it("registers getSnapshotLogs as a dashboardProcedure (read-only recovery surface)", () => {
+    const filePath = resolve(__dirname, "solarRecDashboardRouter.ts");
+    const source = readFileSync(filePath, "utf8");
+    expect(source).toMatch(
+      /getSnapshotLogs\s*:\s*dashboardProcedure\s*\(/
+    );
+    // Read-only contract: the proc body must be `.query(...)`,
+    // never `.mutation(...)`. Catches a future PR that
+    // accidentally adds a write-back/restore on the same name.
+    const procBlock =
+      /getSnapshotLogs\s*:\s*dashboardProcedure\s*\([\s\S]{0,300}?\.input\s*\([\s\S]{0,400}?\)\s*\.\s*(query|mutation)\s*\(/.exec(
+        source
+      );
+    expect(procBlock).not.toBeNull();
+    expect(procBlock![1]).toBe("query");
+  });
+
   it("does NOT re-register the retired synchronous CSV export procs", () => {
     const filePath = resolve(__dirname, "solarRecDashboardRouter.ts");
     const source = readFileSync(filePath, "utf8");
@@ -424,5 +441,91 @@ describe("solarRecDashboardRouter wiring", () => {
     expect(source).not.toMatch(
       /exportChangeOwnershipTileCsv\s*:\s*dashboardProcedure\s*\(/
     );
+  });
+
+  it("listSolarRecDashboardStorageByPrefix uses ESCAPE '!' (sql_mode-independent)", () => {
+    // Codex P3 fix on PR #354. Pre-fix the helper used
+    // `ESCAPE '\\'` (one backslash at the SQL wire). Under the
+    // default MySQL/TiDB sql_mode (no NO_BACKSLASH_ESCAPES) the
+    // parser sees `\` as the string-literal escape character, so
+    // `'\'` (one backslash) reads as an unterminated string —
+    // syntax error. The fix uses `!` which has no special meaning
+    // in any SQL mode.
+    const filePath = resolve(__dirname, "..", "db", "preferences.ts");
+    const source = readFileSync(filePath, "utf8");
+    // Helper exists.
+    expect(source).toMatch(
+      /export\s+async\s+function\s+listSolarRecDashboardStorageByPrefix/
+    );
+    // Every ESCAPE clause emitted via a `sql\`...\`` template
+    // must use `'!'`. We scan only inside template literals
+    // (not JSDoc text) so the historical-context comments above
+    // the helper don't false-positive.
+    const sqlTemplateMatches =
+      source.match(/sql`[^`]*ESCAPE\s+'[^']*'[^`]*`/g) ?? [];
+    expect(sqlTemplateMatches.length).toBeGreaterThan(0);
+    for (const m of sqlTemplateMatches) {
+      expect(m).toMatch(/ESCAPE\s+'!'/);
+    }
+    // Escapes the bang character in the user-supplied prefix
+    // (`!` → `!!`). Without this, a prefix containing a literal
+    // `!` would be interpreted as the escape character.
+    expect(source).toMatch(/\.replace\(\s*\/!\/g\s*,\s*['"]!!['"]/);
+    // Escapes `%` and `_` via `!`.
+    expect(source).toMatch(/\.replace\(\s*\/%\/g\s*,\s*['"]!%['"]/);
+    expect(source).toMatch(/\.replace\(\s*\/_\/g\s*,\s*['"]!_['"]/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CLAUDE.md drift rails. The repo's CLAUDE.md is loaded into every
+// model context, so claims that disagree with the code mislead every
+// future PR. Pin the allowlist count + retired-proc disclaimers so a
+// future PR that retires another entry remembers to update the prose.
+// ---------------------------------------------------------------------------
+
+describe("CLAUDE.md drift", () => {
+  const claudeMdPath = resolve(__dirname, "..", "..", "CLAUDE.md");
+  const claudeMd = readFileSync(claudeMdPath, "utf8");
+
+  it("documents the current allowlist count, not a stale one", () => {
+    // The prose just above the allowlisted-procedure table claims
+    // an exact procedure count. Keep it in sync with the Set.
+    const claimedCount = DASHBOARD_OVERSIZE_ALLOWLIST.size;
+    const numberToWord: Record<number, string> = {
+      3: "Three",
+      4: "Four",
+      5: "Five",
+      6: "Six",
+      7: "Seven",
+      8: "Eight",
+    };
+    const expectedWord = numberToWord[claimedCount];
+    expect(expectedWord).toBeDefined();
+    const sentence = new RegExp(
+      `Transitional reality:\\s*(?:${expectedWord}|${claimedCount})\\s+procedures still ship oversized`,
+      "i"
+    );
+    expect(claudeMd).toMatch(sentence);
+  });
+
+  it("does NOT reference the retired CSV export procs as live", () => {
+    // A future PR adding a NEW table row that names these procs as
+    // current would re-confuse readers. The prose may mention them
+    // historically (in the "Retired CSV-export procs" section) but
+    // must not list them as live entries in the allowlist table.
+    // Source signal: no markdown table cell of the form
+    // `\| `solarRecDashboard.exportOwnershipTileCsv` \|`.
+    expect(claudeMd).not.toMatch(
+      /\|\s*`solarRecDashboard\.exportOwnershipTileCsv`\s*\|/
+    );
+    expect(claudeMd).not.toMatch(
+      /\|\s*`solarRecDashboard\.exportChangeOwnershipTileCsv`\s*\|/
+    );
+  });
+
+  it("documents the new background-job procs as the replacement", () => {
+    expect(claudeMd).toMatch(/startDashboardCsvExport/);
+    expect(claudeMd).toMatch(/getDashboardCsvExportJobStatus/);
   });
 });

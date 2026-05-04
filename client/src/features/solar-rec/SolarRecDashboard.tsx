@@ -1082,50 +1082,66 @@ function buildDatasetStorageSignature(datasets: Partial<Record<DatasetKey, CsvDa
 }
 
 function deserializeDashboardLogs(raw: string): DashboardLogEntry[] {
+  // Outer try/catch handles the JSON.parse + non-array shape only.
+  // Per-item parsing has its own try/catch below so a single
+  // malformed entry (e.g. `datasets` is a string instead of an
+  // array) cannot poison the whole batch — Codex P2 fix on
+  // PR #354. Pre-fix the per-item processing was inside this
+  // outer try, so a `.map` call against a non-array threw and the
+  // catch returned `[]` for everything.
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(raw) as Array<{
-      id: string;
-      createdAt: string;
-      totalSystems: number;
-      reportingSystems: number;
-      reportingPercent?: number | null;
-      changeOwnershipSystems: number;
-      changeOwnershipPercent?: number | null;
-      transferredReporting: number;
-      transferredNotReporting: number;
-      terminatedReporting: number;
-      terminatedNotReporting: number;
-      changedNotTransferredReporting: number;
-      changedNotTransferredNotReporting: number;
-      totalContractedValue: number;
-      totalDeliveredValue: number;
-      totalGap: number;
-      contractedValueReporting?: number;
-      contractedValueNotReporting?: number;
-      contractedValueReportingPercent?: number | null;
-      datasets: Array<{ key: DatasetKey; label: string; fileName: string; rows: number; updatedAt: string }>;
-      cooStatuses?: Array<{ key: string; systemName?: string; status: ChangeOwnershipStatus }>;
-      recPerformanceContracts2025?: Array<{
-        contractId: string;
-        deliveryYearLabel?: string;
-        requiredToAvoidShortfallRecs: number;
-        deliveredTowardShortfallRecs: number;
-        deliveredPercentOfRequired?: number | null;
-        unallocatedShortfallRecs: number;
-      }>;
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  type RawEntry = {
+    id: string;
+    createdAt: string;
+    totalSystems: number;
+    reportingSystems: number;
+    reportingPercent?: number | null;
+    changeOwnershipSystems: number;
+    changeOwnershipPercent?: number | null;
+    transferredReporting: number;
+    transferredNotReporting: number;
+    terminatedReporting: number;
+    terminatedNotReporting: number;
+    changedNotTransferredReporting: number;
+    changedNotTransferredNotReporting: number;
+    totalContractedValue: number;
+    totalDeliveredValue: number;
+    totalGap: number;
+    contractedValueReporting?: number;
+    contractedValueNotReporting?: number;
+    contractedValueReportingPercent?: number | null;
+    datasets: Array<{ key: DatasetKey; label: string; fileName: string; rows: number; updatedAt: string }>;
+    cooStatuses?: Array<{ key: string; systemName?: string; status: ChangeOwnershipStatus }>;
+    recPerformanceContracts2025?: Array<{
+      contractId: string;
+      deliveryYearLabel?: string;
+      requiredToAvoidShortfallRecs: number;
+      deliveredTowardShortfallRecs: number;
+      deliveredPercentOfRequired?: number | null;
+      unallocatedShortfallRecs: number;
     }>;
-    return parsed
-      .map((entry) => {
+  };
+  return (parsed as RawEntry[])
+    .map((entry): DashboardLogEntry | null => {
+      try {
         const createdAt = new Date(entry.createdAt);
         if (Number.isNaN(createdAt.getTime())) return null;
-        const datasets = (entry.datasets ?? [])
+        const rawDatasets = Array.isArray(entry.datasets) ? entry.datasets : [];
+        const datasets = rawDatasets
           .map((dataset) => {
             const updatedAt = new Date(dataset.updatedAt);
             if (Number.isNaN(updatedAt.getTime())) return null;
             return { ...dataset, updatedAt };
           })
           .filter((dataset): dataset is NonNullable<typeof dataset> => dataset !== null);
-        const cooStatuses = (entry.cooStatuses ?? [])
+        const rawCooStatuses = Array.isArray(entry.cooStatuses) ? entry.cooStatuses : [];
+        const cooStatuses = rawCooStatuses
           .map((item) => {
             if (!item || typeof item.key !== "string") return null;
             if (typeof item.status !== "string") return null;
@@ -1135,7 +1151,10 @@ function deserializeDashboardLogs(raw: string): DashboardLogEntry[] {
             return systemName ? { key: item.key, status, systemName } : { key: item.key, status };
           })
           .filter((item): item is NonNullable<typeof item> => item !== null);
-        const recPerformanceContracts2025 = (entry.recPerformanceContracts2025 ?? [])
+        const rawContracts = Array.isArray(entry.recPerformanceContracts2025)
+          ? entry.recPerformanceContracts2025
+          : [];
+        const recPerformanceContracts2025 = rawContracts
           .map((item) => {
             if (!item || typeof item.contractId !== "string") return null;
             const requiredToAvoidShortfallRecs = Number(item.requiredToAvoidShortfallRecs ?? 0);
@@ -1180,11 +1199,16 @@ function deserializeDashboardLogs(raw: string): DashboardLogEntry[] {
           cooStatuses,
           recPerformanceContracts2025,
         };
-      })
-      .filter((entry): entry is DashboardLogEntry => entry !== null);
-  } catch {
-    return [];
-  }
+      } catch {
+        // Per-item failure isolation: a single malformed entry (e.g.
+        // a non-array `datasets` that slips past the Array.isArray
+        // guard via prototype shenanigans, or a Date constructor
+        // throwing on weird input) drops only that entry, not the
+        // whole batch.
+        return null;
+      }
+    })
+    .filter((entry): entry is DashboardLogEntry => entry !== null);
 }
 
 function loadPersistedLogs(): DashboardLogEntry[] {
@@ -1196,6 +1220,47 @@ function loadPersistedLogs(): DashboardLogEntry[] {
     return [];
   }
   return deserializeDashboardLogs(raw);
+}
+
+/**
+ * Merge local (localStorage) snapshot-log entries with
+ * server-recovered ones for DISPLAY ONLY, dedupe by id, sort
+ * newest-first.
+ *
+ * **Read-only contract (PR #353/#354 follow-up — Codex P1).** The
+ * caller MUST NOT put the merged result into the local
+ * `logEntries` state. The cloud-sync useEffect downstream watches
+ * `logEntries` and writes any change back to
+ * `REMOTE_SNAPSHOT_LOGS_KEY` — so feeding server-recovered
+ * entries into `logEntries` would silently restore them to the
+ * cloud, which is the explicit no-write-back violation PR #353
+ * was meant to avoid. Instead the parent keeps two pieces of
+ * state (local + server-recovered) and computes the merged list
+ * via this helper for the Snapshot Log tab's display only. Local
+ * actions (create/delete/clear) keep operating on `logEntries`.
+ *
+ * Rules:
+ *   - On id conflict, the SERVER entry wins (server's view of the
+ *     historical snapshot is authoritative; local is a working
+ *     copy).
+ *   - Both inputs are already `DashboardLogEntry[]` with
+ *     `createdAt: Date`. Deserialization happens earlier in the
+ *     hydration effect (see `setRecoveredSnapshotLogEntries`).
+ *   - The merged result is sorted newest-first by `createdAt`.
+ *
+ * Pure helper — no React, easy to source-rail-test.
+ */
+function mergeSnapshotLogEntriesForDisplay(
+  local: ReadonlyArray<DashboardLogEntry>,
+  recovered: ReadonlyArray<DashboardLogEntry>
+): DashboardLogEntry[] {
+  const byId = new Map<string, DashboardLogEntry>();
+  for (const entry of local) byId.set(entry.id, entry);
+  // Recovered entries win on id conflict.
+  for (const entry of recovered) byId.set(entry.id, entry);
+  return Array.from(byId.values()).sort(
+    (a, b) => b.createdAt.getTime() - a.createdAt.getTime()
+  );
 }
 
 // Phase 5c (2026-04-28): `loadLogsFromStorage` / `saveLogsToStorage`
@@ -1226,6 +1291,13 @@ export default function SolarRecDashboard() {
   // touching every consumer.
   const [datasetsHydrated, setDatasetsHydrated] = useState(true);
   const [logEntries, setLogEntries] = useState<DashboardLogEntry[]>(() => loadPersistedLogs());
+  // Server-recovered snapshot-log entries kept SEPARATE from
+  // `logEntries` so the cloud-sync effect (which watches
+  // `logEntries`) can't accidentally restore them to the cloud.
+  // See the hydration useEffect for the read-only contract
+  // (PR #354 follow-up — Codex P1).
+  const [recoveredSnapshotLogEntries, setRecoveredSnapshotLogEntries] =
+    useState<DashboardLogEntry[]>([]);
   const [uploadErrors, setUploadErrors] = useState<Partial<Record<DatasetKey, string>>>({});
   // Phase 5e step 4 PR-D (2026-04-30) — `hydrationErrors`,
   // `recordHydrationError`, `clearHydrationErrorsForKeys` deleted.
@@ -1827,6 +1899,7 @@ export default function SolarRecDashboard() {
   // removed — the child's mount lifecycle is now the gate.
   const isContractsTabActive = activeTab === "contracts";
   const isAnnualReviewTabActive = activeTab === "annual-review";
+  const isSnapshotLogTabActive = activeTab === "snapshot-log";
   const isPerformanceEvalTabActive = activeTab === "performance-eval" || activeTab === "snapshot-log";
   const isForecastTabActive = activeTab === "forecast";
   const isOverviewTabActive = activeTab === "overview";
@@ -1880,6 +1953,64 @@ export default function SolarRecDashboard() {
   datasetsRef.current = datasets;
   const logEntriesRef = useRef(logEntries);
   logEntriesRef.current = logEntries;
+
+  // Snapshot-log server-side hydration (read-only).
+  //
+  // **PR #354 follow-up (Codex P1).** Pre-fix this effect called
+  // `setLogEntries((prev) => merge(prev, server))`, which
+  // accidentally triggered the cloud-sync useEffect downstream
+  // (it watches `logEntries` and writes any signature change back
+  // to `REMOTE_SNAPSHOT_LOGS_KEY`). That meant simply opening the
+  // Snapshot Log tab silently restored recovered server entries
+  // to the cloud — the exact write-back PR #353 explicitly
+  // deferred to a future approved restore flow.
+  //
+  // The fix: keep server-recovered entries in a SEPARATE state
+  // (`recoveredSnapshotLogEntries`) that the cloud-sync effect
+  // does NOT depend on. The display-only `visibleSnapshotLogEntries`
+  // memo merges (local + recovered) and is what the Snapshot Log
+  // tab renders. Local create/delete/clear actions still operate
+  // on `logEntries` (the persisted local copy) so the cloud-sync
+  // path is unchanged for those.
+  //
+  // Restore/write-back of recovered entries remains a separate
+  // explicitly-approved follow-up, not this PR.
+  const snapshotLogsServerQuery =
+    solarRecTrpc.solarRecDashboard.getSnapshotLogs.useQuery(
+      { limit: 100 },
+      { enabled: isSnapshotLogTabActive, staleTime: 60_000 }
+    );
+  useEffect(() => {
+    const data = snapshotLogsServerQuery.data;
+    if (!data || data.entries.length === 0) return;
+    // Deserialize once: server returns string `createdAt`; the
+    // client's DashboardLogEntry shape carries `createdAt: Date`.
+    // Use the existing serde so the conversion stays consistent
+    // with localStorage hydration. Deserializer is now per-item
+    // safe (Codex P2) so a single bad recovered entry can't
+    // poison the whole batch.
+    let revived: DashboardLogEntry[] = [];
+    try {
+      revived = deserializeDashboardLogs(
+        JSON.stringify(Array.from(data.entries))
+      );
+    } catch {
+      // Defensive — outer JSON.stringify shouldn't throw, but if
+      // it does we fall back to "no recovered entries shown."
+    }
+    setRecoveredSnapshotLogEntries(revived);
+  }, [snapshotLogsServerQuery.data]);
+
+  // Display-only union of local + server-recovered entries.
+  // SnapshotLogTab receives this list; the underlying `logEntries`
+  // state is the unmutated authoritative local copy that the
+  // cloud-sync effect persists.
+  const visibleSnapshotLogEntries = useMemo(
+    () =>
+      mergeSnapshotLogEntriesForDisplay(logEntries, recoveredSnapshotLogEntries),
+    [logEntries, recoveredSnapshotLogEntries]
+  );
+
   const datasetsHydratedRef = useRef(false);
   const remoteStateHydratedRef = useRef(false);
   const remoteLogsSignatureRef = useRef<string>("0");
@@ -3415,104 +3546,277 @@ export default function SolarRecDashboard() {
 
   /**
    * Drive an export job to completion. Starts the job, polls status
-   * up to `CSV_EXPORT_POLL_MAX_MS` (~2 minutes — the heavy aggregator
-   * cold path can take 30s+), and either downloads the artifact via
-   * `triggerUrlDownload`, surfaces a "no rows" toast, or surfaces a
-   * failure toast. The single `toastId` is reused for the loading +
-   * terminal state so the user only ever sees one toast for the
+   * up to `CSV_EXPORT_POLL_MAX_MS` (matches the server's 30-min job
+   * TTL — see `dashboardCsvExportJobs.JOB_TTL_MS`), and either
+   * downloads the artifact via `triggerUrlDownload`, surfaces a "no
+   * rows" toast, or surfaces a failure toast. The single `toastId`
+   * is reused throughout so the user only ever sees one toast per
    * click.
+   *
+   * Polling cadence backs off so a long-running aggregator doesn't
+   * hammer the server (~30 min × 1.5s = 1200 polls is a non-starter):
+   *
+   *   - 0–30s: every 1.5s    (responsive for the typical warm-cache case)
+   *   - 30s–5min: every 5s   (lighter while the heavy aggregator runs)
+   *   - 5min+: every 15s     (background mode)
+   *
+   * After 30s of "running" status the loading toast text changes to
+   * "Still preparing…" so the user knows the export is making
+   * progress (was: silent failure at 120s while the server kept
+   * running, leaving an orphaned artifact and a confused user — see
+   * PR #347 follow-up).
+   *
+   * **Status-poll errors and `notFound` are NOT terminal.** Two
+   * sources of transient lookup failure:
+   *   1. `getDashboardCsvExportJobStatus.fetch(...)` rejection
+   *      (network blip, 5xx, rate limit).
+   *   2. Server returns `status: "notFound"` because the in-memory
+   *      job registry was wiped by a process restart / deploy /
+   *      OOM. The server's running-prune-skip rule means a
+   *      not-yet-terminal job CAN'T be pruned mid-flight, but a
+   *      restart wipes the entire `Map` and orphans every
+   *      in-flight jobId. Until Phase 6 ships a DB-backed
+   *      registry, treat notFound as transient and let the TTL
+   *      window be the only terminal boundary.
+   * Both paths surface the same "Still preparing; connection
+   * interrupted, retrying status check…" toast and keep polling.
+   *
+   * The ONLY terminal client-side outcomes are:
+   *   - server returns `succeeded` (download or no-rows toast)
+   *   - server returns `failed` (real server-side failure)
+   *   - the start mutation itself fails (no jobId to poll)
+   *   - the 30-min TTL window elapses with no terminal server status
+   *
+   * **Toast state machine.** The helper owns the loading toast
+   * lifecycle (it calls `toast.loading(initialMessage)` itself
+   * rather than expecting the caller to pre-create the toast
+   * outside). Three phases:
+   *   - `initial` — the per-tile caller's "Preparing X export…"
+   *     copy. Set on mount and revertible if the user recovers
+   *     from a connection blip before the 30s hint threshold.
+   *   - `stillPreparing` — the per-tile caller's
+   *     "Still preparing X — this can take a few minutes." copy.
+   *     Set when elapsed crosses `CSV_EXPORT_TOAST_HINT_AT_MS`.
+   *   - `interrupted` — fixed "Still preparing; connection
+   *     interrupted, retrying status check…" copy. Set when a
+   *     status poll throws. Recovery (next successful poll)
+   *     re-anchors to `initial` or `stillPreparing` based on
+   *     elapsed time.
+   * `setToastPhase` short-circuits redundant transitions so an
+   * intermittent connection doesn't replay the same text on every
+   * iteration.
+   *
+   * **Per-prop semantics:**
+   *   - `initialMessage`: first/recovery loading toast.
+   *   - `preparingMessage`: post-30s loading toast.
+   *   - `successLabel`: human-readable subject baked into the
+   *     success toast ("Exported N systems (X)").
+   *   - `noRowsMessage`: full empty-result toast sentence —
+   *     callers spell out the wording so we don't fragment
+   *     translation/strings into composable bits.
+   *   - `failureMessage`: shown on terminal failure (server
+   *     `failed`, start-mutation throw, TTL exhaustion).
+   *   - `consoleTag`: short string included in `console.error` /
+   *     `console.warn` logs for log-filter pinning.
    */
-  const runDashboardCsvExport = async (params: {
-    input: Parameters<typeof startDashboardCsvExport.mutateAsync>[0];
-    label: string;
-    noun: "system" | "project";
-    failureMessage: string;
-    consoleTag: string;
-    toastId: string | number;
-  }) => {
-    const CSV_EXPORT_POLL_INTERVAL_MS = 1500;
-    const CSV_EXPORT_POLL_MAX_MS = 120_000;
-    try {
-      const { jobId } = await startDashboardCsvExport.mutateAsync(params.input);
+  const runDashboardCsvExport = useCallback(
+    async (params: {
+      input: Parameters<typeof startDashboardCsvExport.mutateAsync>[0];
+      initialMessage: string;
+      preparingMessage: string;
+      successLabel: string;
+      noun: "system" | "project";
+      noRowsMessage: string;
+      failureMessage: string;
+      consoleTag: string;
+    }) => {
+      // Aligned to the server's `JOB_TTL_MS` (30 min) in
+      // `dashboardCsvExportJobs.ts`. After this point a job that
+      // hasn't reported terminal status really has fallen out of the
+      // registry and we surface a failure.
+      const CSV_EXPORT_POLL_MAX_MS = 30 * 60 * 1000;
+      const CSV_EXPORT_TOAST_HINT_AT_MS = 30_000;
+      const INTERRUPTED_TOAST_MESSAGE =
+        "Still preparing; connection interrupted, retrying status check…";
+
+      function nextPollDelayMs(elapsedMs: number): number {
+        if (elapsedMs < 30_000) return 1500;
+        if (elapsedMs < 5 * 60_000) return 5000;
+        return 15_000;
+      }
+
+      // Helper owns the loading toast so it can recover to "initial"
+      // text after an "interrupted" phase if elapsed is still
+      // pre-hint. Pre-fix the per-tile handler set the initial
+      // toast.loading() outside the helper, so the helper had no
+      // way to revert to the initial text — a poll error at 10s
+      // followed by recovery at 20s left the user staring at
+      // "interrupted" until the 30s hint flipped it.
+      const toastId = toast.loading(params.initialMessage);
+
+      // Start failure IS terminal — there's no jobId to poll.
+      let jobId: string;
+      try {
+        const startResult = await startDashboardCsvExport.mutateAsync(
+          params.input
+        );
+        jobId = startResult.jobId;
+      } catch (error) {
+        toast.error(params.failureMessage, { id: toastId });
+        console.error(`[${params.consoleTag}] start mutation failed:`, error);
+        return;
+      }
+
+      // Toast-text transitions across the loop. We track the last
+      // intended state and only call `toast.loading` on transitions
+      // so an intermittently failing connection doesn't replay the
+      // same text on every iteration. Recovery from "interrupted"
+      // re-anchors to "initial" (pre-hint) or "stillPreparing"
+      // (post-hint) based on elapsed time.
+      type ToastPhase = "initial" | "stillPreparing" | "interrupted";
+      let toastPhase: ToastPhase = "initial";
+      function setToastPhase(next: ToastPhase): void {
+        if (toastPhase === next) return;
+        toastPhase = next;
+        if (next === "initial") {
+          toast.loading(params.initialMessage, { id: toastId });
+        } else if (next === "stillPreparing") {
+          toast.loading(params.preparingMessage, { id: toastId });
+        } else if (next === "interrupted") {
+          toast.loading(INTERRUPTED_TOAST_MESSAGE, { id: toastId });
+        }
+      }
+
       const startedAt = Date.now();
       while (Date.now() - startedAt < CSV_EXPORT_POLL_MAX_MS) {
-        const status =
-          await solarRecTrpcUtils.solarRecDashboard.getDashboardCsvExportJobStatus.fetch(
-            { jobId }
+        let status: Awaited<
+          ReturnType<
+            typeof solarRecTrpcUtils.solarRecDashboard.getDashboardCsvExportJobStatus.fetch
+          >
+        >;
+        try {
+          status =
+            await solarRecTrpcUtils.solarRecDashboard.getDashboardCsvExportJobStatus.fetch(
+              { jobId }
+            );
+        } catch (pollError) {
+          // Per-poll failure is transient — the server job is
+          // independent of this fetch. Log + show a "connection
+          // interrupted" hint and keep polling.
+          console.warn(
+            `[${params.consoleTag}] status poll failed (will retry):`,
+            pollError
           );
+          setToastPhase("interrupted");
+          await new Promise((resolve) =>
+            setTimeout(resolve, nextPollDelayMs(Date.now() - startedAt))
+          );
+          continue;
+        }
+
         if (status.status === "succeeded") {
           if ((status.rowCount ?? 0) === 0 || !status.url) {
-            toast.error(`No ${params.noun}s match ${params.label}.`, {
-              id: params.toastId,
-            });
+            toast.error(params.noRowsMessage, { id: toastId });
             return;
           }
-          triggerUrlDownload(status.fileName ?? `${params.label}.csv`, status.url);
+          triggerUrlDownload(
+            status.fileName ?? `${params.successLabel}.csv`,
+            status.url
+          );
           toast.success(
-            `Exported ${status.rowCount} ${params.noun}${status.rowCount === 1 ? "" : "s"} (${params.label}).`,
-            { id: params.toastId }
+            `Exported ${status.rowCount} ${params.noun}${status.rowCount === 1 ? "" : "s"} (${params.successLabel}).`,
+            { id: toastId }
           );
           return;
         }
         if (status.status === "failed") {
-          toast.error(params.failureMessage, { id: params.toastId });
+          toast.error(params.failureMessage, { id: toastId });
           console.error(`[${params.consoleTag}]`, status.error ?? "unknown");
           return;
         }
         if (status.status === "notFound") {
-          // TTL pruned the job before we could read it. Surface as a
-          // failure rather than an infinite poll.
-          toast.error(params.failureMessage, { id: params.toastId });
-          console.error(`[${params.consoleTag}] job expired before completion`);
-          return;
+          // notFound is NOT terminal under the current in-memory
+          // job registry. The server's running-prune-skip rule
+          // means notFound CAN'T come from prune-of-running, but a
+          // process restart (deploy, OOM, future multi-instance
+          // routing) wipes the entire `Map` and orphans every
+          // in-flight jobId — those clients then see notFound for
+          // a job that may be perfectly valid and simply got
+          // unregistered. Until the registry is DB-backed (Phase
+          // 6), retry with the same "interrupted" semantics as a
+          // poll error and let the TTL window be the only terminal
+          // boundary. The "interrupted" toast text reads honestly:
+          // "Still preparing; connection interrupted, retrying
+          // status check…" — same UX whether the server lost the
+          // record or the network blipped.
+          console.warn(
+            `[${params.consoleTag}] status returned notFound (will retry until TTL — registry is in-memory)`
+          );
+          setToastPhase("interrupted");
+          await new Promise((resolve) =>
+            setTimeout(resolve, nextPollDelayMs(Date.now() - startedAt))
+          );
+          continue;
         }
+        // Still queued/running. Re-anchor the toast to the right
+        // phase (initial pre-hint, stillPreparing post-hint). This
+        // covers BOTH the natural progression (initial → stillPreparing
+        // at 30s) AND recovery from a prior "interrupted" phase.
+        const elapsedMs = Date.now() - startedAt;
+        setToastPhase(
+          elapsedMs >= CSV_EXPORT_TOAST_HINT_AT_MS
+            ? "stillPreparing"
+            : "initial"
+        );
         await new Promise((resolve) =>
-          setTimeout(resolve, CSV_EXPORT_POLL_INTERVAL_MS)
+          setTimeout(resolve, nextPollDelayMs(Date.now() - startedAt))
         );
       }
-      toast.error(params.failureMessage, { id: params.toastId });
-      console.error(`[${params.consoleTag}] poll timed out after ${CSV_EXPORT_POLL_MAX_MS}ms`);
-    } catch (error) {
-      toast.error(params.failureMessage, { id: params.toastId });
-      console.error(`[${params.consoleTag}]`, error);
-    }
-  };
+      toast.error(params.failureMessage, { id: toastId });
+      console.error(
+        `[${params.consoleTag}] poll timed out after ${CSV_EXPORT_POLL_MAX_MS}ms (server TTL window exhausted)`
+      );
+    },
+    [startDashboardCsvExport, solarRecTrpcUtils]
+  );
 
-  const downloadOwnershipCountTileCsv = async (
-    tile: "reporting" | "notReporting" | "terminated"
-  ) => {
-    const tileLabel =
-      tile === "reporting"
-        ? "Reporting"
-        : tile === "notReporting"
-          ? "Not Reporting"
-          : "Terminated";
-    const toastId = toast.loading(
-      `Preparing ${tileLabel} ownership-status export…`
-    );
-    await runDashboardCsvExport({
-      input: { exportType: "ownershipTile", tile },
-      label: `${tileLabel} ownership-status`,
-      noun: "system",
-      failureMessage: "Failed to export ownership-status CSV.",
-      consoleTag: "ownership-csv-export",
-      toastId,
-    });
-  };
+  const downloadOwnershipCountTileCsv = useCallback(
+    async (tile: "reporting" | "notReporting" | "terminated") => {
+      const tileLabel =
+        tile === "reporting"
+          ? "Reporting"
+          : tile === "notReporting"
+            ? "Not Reporting"
+            : "Terminated";
+      await runDashboardCsvExport({
+        input: { exportType: "ownershipTile", tile },
+        initialMessage: `Preparing ${tileLabel} ownership-status export…`,
+        preparingMessage: `Still preparing ${tileLabel} ownership-status export — this can take a few minutes.`,
+        successLabel: `${tileLabel} ownership-status tile`,
+        noun: "system",
+        noRowsMessage: `No systems match the ${tileLabel} ownership-status tile.`,
+        failureMessage: "Failed to export ownership-status CSV.",
+        consoleTag: "ownership-csv-export",
+      });
+    },
+    [runDashboardCsvExport]
+  );
 
-  const downloadChangeOwnershipCountTileCsv = async (
-    status: ChangeOwnershipStatus
-  ) => {
-    const toastId = toast.loading(`Preparing ${status} export…`);
-    await runDashboardCsvExport({
-      input: { exportType: "changeOwnershipTile", status },
-      label: status,
-      noun: "project",
-      failureMessage: "Failed to export Change-of-Ownership CSV.",
-      consoleTag: "change-ownership-csv-export",
-      toastId,
-    });
-  };
+  const downloadChangeOwnershipCountTileCsv = useCallback(
+    async (status: ChangeOwnershipStatus) => {
+      await runDashboardCsvExport({
+        input: { exportType: "changeOwnershipTile", status },
+        initialMessage: `Preparing ${status} export…`,
+        preparingMessage: `Still preparing ${status} export — this can take a few minutes.`,
+        successLabel: `${status} status`,
+        noun: "project",
+        noRowsMessage: `No projects match the ${status} status.`,
+        failureMessage: "Failed to export Change-of-Ownership CSV.",
+        consoleTag: "change-ownership-csv-export",
+      });
+    },
+    [runDashboardCsvExport]
+  );
 
   // downloadChangeOwnershipDetailFilteredCsv — moved to @/solar-rec-dashboard/components/ChangeOwnershipTab
 
@@ -5623,7 +5927,16 @@ const aiDataContext = useMemo(() => {
               <TabErrorBoundary tabLabel="Snapshot Log">
                 <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading snapshot log tab...</div>}>
                   <SnapshotLogTabLazy
-                    logEntries={logEntries}
+                    // Display-only union of local + server-recovered
+                    // entries (Codex P1 fix). Server-recovered entries
+                    // are NOT in the underlying `logEntries` state, so
+                    // the cloud-sync useEffect can't accidentally
+                    // restore them to `REMOTE_SNAPSHOT_LOGS_KEY`.
+                    // Local actions (createLogEntry, deleteLogEntry,
+                    // clearLogs) still operate on `logEntries` directly
+                    // — those mutate persisted local state and the
+                    // existing cloud-sync path handles them.
+                    logEntries={visibleSnapshotLogEntries}
                     recPerformanceSnapshotContracts2025={recPerformanceSnapshotContracts2025}
                     cooNotTransferredNotReportingCurrentCount={cooNotTransferredNotReportingCurrentCount}
                     onCreateLogEntry={createLogEntry}

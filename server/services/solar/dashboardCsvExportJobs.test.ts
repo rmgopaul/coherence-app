@@ -19,6 +19,7 @@ vi.mock("../../storage", () => ({
     key,
     url: `/_local_uploads/${key}`,
   })),
+  storageDelete: vi.fn(async () => ({ deleted: true, mode: "local" as const })),
 }));
 
 vi.mock("./buildOverviewSummaryAggregates", () => ({
@@ -273,22 +274,13 @@ describe("dashboardCsvExportJobs — TTL pruning", () => {
     expect(__TEST_ONLY__.size()).toBe(1);
 
     const now = Date.now();
-    // Force the record's completedAt back so the next prune evicts it.
-    const stale = (
-      getCsvExportJobStatus(SCOPE, jobId) as unknown as { completedAt: number }
-    );
-    expect(stale.completedAt).toBeDefined();
-    // Fast-forward by mutating the clock the prune helper consults.
-    const realDate = Date;
+    const dateNowSpy = vi
+      .spyOn(Date, "now")
+      .mockReturnValue(now + __TEST_ONLY__.JOB_TTL_MS + 1000);
     try {
-      // Mock Date.now in pruneExpired's view: shift forward past TTL.
-      vi.spyOn(Date, "now").mockReturnValue(
-        now + __TEST_ONLY__.JOB_TTL_MS + 1000
-      );
       __TEST_ONLY__.pruneExpired();
     } finally {
-      vi.spyOn(Date, "now").mockRestore();
-      expect(global.Date).toBe(realDate);
+      dateNowSpy.mockRestore();
     }
     expect(__TEST_ONLY__.size()).toBe(0);
     expect(getCsvExportJobStatus(SCOPE, jobId)).toBeNull();
@@ -303,6 +295,112 @@ describe("dashboardCsvExportJobs — TTL pruning", () => {
     expect(__TEST_ONLY__.size()).toBe(1);
     expect(getCsvExportJobStatus(SCOPE, jobId)?.status).toBe("succeeded");
   });
+
+  it("calls storageDelete on the artifact key when pruning a succeeded record", async () => {
+    const storageMod = await import("../../storage");
+    const deleteMock = vi.mocked(storageMod.storageDelete);
+    deleteMock.mockClear();
+
+    const jobId = await startAndRun(SCOPE, {
+      exportType: "ownershipTile",
+      tile: "reporting",
+    });
+    const dateNowSpy = vi
+      .spyOn(Date, "now")
+      .mockReturnValue(Date.now() + __TEST_ONLY__.JOB_TTL_MS + 1000);
+    try {
+      __TEST_ONLY__.pruneExpired();
+    } finally {
+      dateNowSpy.mockRestore();
+    }
+    // pruneExpired fires storageDelete asynchronously (catch-only);
+    // give the microtask queue a tick to settle.
+    await Promise.resolve();
+    expect(deleteMock).toHaveBeenCalledTimes(1);
+    expect(deleteMock).toHaveBeenCalledWith(
+      expect.stringMatching(
+        new RegExp(
+          `^solar-rec-dashboard/${SCOPE}/exports/${jobId}-ownership-status-reporting-`
+        )
+      )
+    );
+  });
+
+  it("does NOT call storageDelete when pruning a record with no artifact (rowCount=0)", async () => {
+    const storageMod = await import("../../storage");
+    const deleteMock = vi.mocked(storageMod.storageDelete);
+    deleteMock.mockClear();
+
+    await startAndRun(SCOPE, {
+      exportType: "ownershipTile",
+      tile: "terminated", // empty result → no storage write, no url
+    });
+    const dateNowSpy = vi
+      .spyOn(Date, "now")
+      .mockReturnValue(Date.now() + __TEST_ONLY__.JOB_TTL_MS + 1000);
+    try {
+      __TEST_ONLY__.pruneExpired();
+    } finally {
+      dateNowSpy.mockRestore();
+    }
+    await Promise.resolve();
+    expect(deleteMock).not.toHaveBeenCalled();
+  });
+
+  it("does NOT prune a `running` record even when it's older than TTL", async () => {
+    // Race scenario the v1 pruner regressed on: a heavy aggregator
+    // load lasts longer than TTL. The runner's closure holds the
+    // JobRecord reference and mutates it on the succeeded branch —
+    // if prune deletes the Map entry mid-flight, those mutations
+    // land on an orphaned object and the next poll reads `notFound`.
+    // Pruning must therefore skip `running` records.
+    const aggregatorMod = await import("./buildOverviewSummaryAggregates");
+    let releaseStall: (() => void) | null = null;
+    const stallPromise = new Promise<void>((resolve) => {
+      releaseStall = resolve;
+    });
+    vi.mocked(aggregatorMod.getOrBuildOverviewSummary).mockImplementationOnce(
+      async () => {
+        await stallPromise;
+        return {
+          result: { ownershipRows: [] },
+          fromCache: false,
+        } as unknown as Awaited<
+          ReturnType<typeof aggregatorMod.getOrBuildOverviewSummary>
+        >;
+      }
+    );
+
+    // Schedule the runner synchronously (no setImmediate) so we can
+    // observe the running state without a flaky await chain.
+    const { jobId } = startCsvExportJob(
+      SCOPE,
+      { exportType: "ownershipTile", tile: "reporting" },
+      runCsvExportJob,
+      (cb) => cb()
+    );
+    // Yield twice so the runner reaches the awaited stallPromise.
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(getCsvExportJobStatus(SCOPE, jobId)?.status).toBe("running");
+
+    const baseline = Date.now();
+    const dateNowSpy = vi
+      .spyOn(Date, "now")
+      .mockReturnValue(baseline + __TEST_ONLY__.JOB_TTL_MS + 1000);
+    try {
+      __TEST_ONLY__.pruneExpired();
+      expect(__TEST_ONLY__.size()).toBe(1);
+      expect(getCsvExportJobStatus(SCOPE, jobId)?.status).toBe("running");
+    } finally {
+      dateNowSpy.mockRestore();
+    }
+
+    // Release the stalled aggregator so the runner finishes and
+    // doesn't leak the unresolved promise into the next test.
+    releaseStall!();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
 });
 
 describe("dashboardCsvExportJobs — runner version marker", () => {
@@ -310,5 +408,173 @@ describe("dashboardCsvExportJobs — runner version marker", () => {
     expect(DASHBOARD_CSV_EXPORT_RUNNER_VERSION).toBe(
       "dashboard-csv-export-jobs-v1"
     );
+  });
+});
+
+describe("dashboardCsvExportJobs — measurement utility wiring", () => {
+  it("emits a [dashboard:csv-export-jobs] metric line with rowCount + csvBytes on success", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      await startAndRun(SCOPE, {
+        exportType: "ownershipTile",
+        tile: "reporting",
+      });
+      const metricLine = logSpy.mock.calls
+        .map((c) => String(c[0]))
+        .find((line) => line.startsWith("[dashboard:csv-export-jobs] metric "));
+      expect(metricLine).toBeDefined();
+      const payload = JSON.parse(
+        metricLine!.slice(metricLine!.indexOf("{"))
+      ) as Record<string, unknown>;
+      expect(payload).toMatchObject({
+        outcome: "success",
+        exportType: "ownershipTile",
+        rowCount: 1,
+        storageWrite: true,
+      });
+      expect(payload.csvBytes).toBeGreaterThan(0);
+      expect(typeof payload.elapsedMs).toBe("number");
+      expect(typeof payload.heapDeltaBytes).toBe("number");
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it("emits a metric line with storageWrite=false + rowCount=0 when no rows match", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      await startAndRun(SCOPE, {
+        exportType: "ownershipTile",
+        tile: "terminated",
+      });
+      const metricLine = logSpy.mock.calls
+        .map((c) => String(c[0]))
+        .find((line) => line.startsWith("[dashboard:csv-export-jobs] metric "));
+      expect(metricLine).toBeDefined();
+      const payload = JSON.parse(
+        metricLine!.slice(metricLine!.indexOf("{"))
+      ) as Record<string, unknown>;
+      expect(payload).toMatchObject({
+        outcome: "success",
+        rowCount: 0,
+        csvBytes: 0,
+        storageWrite: false,
+      });
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it("emits a failed metric line when the aggregator throws", async () => {
+    const aggregatorMod = await import("./buildOverviewSummaryAggregates");
+    vi.mocked(aggregatorMod.getOrBuildOverviewSummary).mockRejectedValueOnce(
+      new Error("aggregator boom")
+    );
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const jobId = await startAndRun(SCOPE, {
+        exportType: "ownershipTile",
+        tile: "reporting",
+      });
+      expect(getCsvExportJobStatus(SCOPE, jobId)?.status).toBe("failed");
+      const metricLine = errorSpy.mock.calls
+        .map((c) => String(c[0]))
+        .find((line) => line.startsWith("[dashboard:csv-export-jobs] metric "));
+      expect(metricLine).toBeDefined();
+      const payload = JSON.parse(
+        metricLine!.slice(metricLine!.indexOf("{"))
+      ) as Record<string, unknown>;
+      expect(payload).toMatchObject({
+        outcome: "failed",
+        exportType: "ownershipTile",
+        error: "aggregator boom",
+      });
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("reports csvBytes as the UTF-8 byte count, not the UTF-16 code-unit length", async () => {
+    // Regression: pre-fix the metric used `built.csv.length`, which
+    // is UTF-16 code units. Non-ASCII characters in system names
+    // (accented letters, smart punctuation, emoji) would undercount
+    // the actual artifact byte size that storagePut writes. The
+    // metric is the foothold for the memory/RU plan, so it has to
+    // measure UTF-8 bytes that match the storage write.
+    //
+    // Drive a non-ASCII row through the runner: "é" is 1 UTF-16
+    // code unit but 2 UTF-8 bytes; "🎉" is a 2-unit surrogate pair
+    // but 4 UTF-8 bytes. We construct a row containing both and
+    // assert the metric's csvBytes > the JS string length, which
+    // can only be true when the measurement is UTF-8.
+    const aggregatorMod = await import("./buildOverviewSummaryAggregates");
+    const baselineRow = {
+      systemId: "sys-utf",
+      trackingSystemRefId: "trk-utf",
+      stateApplicationRefId: null,
+      part2ProjectName: "Sunny Acres",
+      part2ApplicationId: null,
+      part2SystemId: null,
+      part2TrackingId: null,
+      source: "abp",
+      ownershipStatus: "Transferred and Reporting" as const,
+      isReporting: true,
+      isTransferred: true,
+      isTerminated: false,
+      contractType: "REC",
+      contractStatusText: "Active",
+      latestReportingDate: new Date("2026-04-01T00:00:00Z"),
+      contractedDate: new Date("2024-01-01T00:00:00Z"),
+      zillowStatus: null,
+      zillowSoldDate: null,
+    };
+    vi.mocked(aggregatorMod.getOrBuildOverviewSummary).mockResolvedValueOnce({
+      result: {
+        ownershipRows: [
+          { ...baselineRow, systemName: "Café Solar 🎉 — Cañada" },
+        ],
+      },
+      fromCache: false,
+    } as unknown as Awaited<
+      ReturnType<typeof aggregatorMod.getOrBuildOverviewSummary>
+    >);
+
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      await startAndRun(SCOPE, {
+        exportType: "ownershipTile",
+        tile: "reporting",
+      });
+      const metricLine = logSpy.mock.calls
+        .map((c) => String(c[0]))
+        .find((line) => line.startsWith("[dashboard:csv-export-jobs] metric "));
+      expect(metricLine).toBeDefined();
+      const payload = JSON.parse(
+        metricLine!.slice(metricLine!.indexOf("{"))
+      ) as Record<string, unknown>;
+      const csvBytes = payload.csvBytes as number;
+      // The non-ASCII string contributes extra bytes beyond its
+      // UTF-16 .length. Specifically: "é" / "ñ" each add 1 byte,
+      // "🎉" adds 2 bytes (4 UTF-8 vs 2 UTF-16 code units), "—"
+      // adds 2 bytes (em dash, U+2014 → 3 UTF-8 bytes vs 1 UTF-16
+      // code unit). So the byte count must exceed the JS string
+      // length by at least 1.
+      expect(typeof csvBytes).toBe("number");
+      // Independent reference: reconstruct what the runner wrote
+      // and assert the metric matches Buffer.byteLength on the
+      // same content. We can read the storagePut argument out of
+      // the mock to keep this a true black-box check.
+      const storageMod = await import("../../storage");
+      const putMock = vi.mocked(storageMod.storagePut);
+      const lastCall = putMock.mock.calls.at(-1);
+      expect(lastCall).toBeDefined();
+      const writtenCsv = lastCall![1] as string;
+      expect(csvBytes).toBe(Buffer.byteLength(writtenCsv, "utf8"));
+      // And the byte count must strictly exceed the UTF-16
+      // .length for this fixture — proves the fix isn't a no-op.
+      expect(csvBytes).toBeGreaterThan(writtenCsv.length);
+    } finally {
+      logSpy.mockRestore();
+    }
   });
 });
