@@ -3074,100 +3074,27 @@ export default function SolarRecDashboard() {
   // placeholder when slim. ownershipRows stays unavailable on slim
   // and must not be used for export — server-side
   // `exportOwnershipTileCsv` is the canonical path.
-  type HeavyOverviewSummary = OverviewSummaryData & {
-    kind: "heavy";
-    /**
-     * Portfolio-wide terminated count from the slim summary, kept
-     * alongside the heavy payload so OverviewTab can render a
-     * single tile expression that doesn't have to discriminate
-     * between data sources for the fallback. PR #334 follow-up
-     * item 4 (option B, 2026-05-02).
-     */
-    terminatedSystems: number;
-  };
-  type SlimOverviewSummary = {
-    kind: "slim";
-    totalSystems: number;
-    reportingSystems: number;
-    reportingPercent: number | null;
-    /**
-     * Portfolio-wide terminated count surfaced from the slim
-     * summary's `summaryCounts.terminated`. Used by Overview's
-     * Terminated tile when the heavy aggregator hasn't loaded —
-     * the Part-II-scoped breakdown isn't available on slim per
-     * the foundation contract (PR #334 follow-up item 4 option B).
-     */
-    terminatedSystems: number;
-    smallSystems: number;
-    largeSystems: number;
-    unknownSizeSystems: number;
-    ownershipOverview: OverviewSummaryData["ownershipOverview"];
-    withValueDataCount: number;
-    totalContractedValue: number;
-    contractedValueReporting: number;
-    contractedValueNotReporting: number;
-    contractedValueReportingPercent: number | null;
-    fromCache: boolean;
-    _runnerVersion: string;
-  };
+  // PR #337 follow-up item 6 (2026-05-04). Slim variant is now an
+  // inferred tRPC type (NonNullable<typeof dashboardSummaryQuery.data>)
+  // so a server-side change to `SlimDashboardSummary` propagates to
+  // the client without a hand-rolled mirror. The discriminator stays
+  // on `summary.kind`. Heavy variant no longer carries
+  // `terminatedSystems` — it was unused (`OverviewTab` reads
+  // `summary.ownershipOverview.terminatedTotal` on the heavy branch
+  // and `summary.terminatedSystems` only on the slim branch).
+  type SlimSummaryData = NonNullable<typeof dashboardSummaryQuery.data>;
+  type HeavyOverviewSummary = OverviewSummaryData & { kind: "heavy" };
+  type SlimOverviewSummary = SlimSummaryData & { kind: "slim" };
   type DashboardSummaryProjection = HeavyOverviewSummary | SlimOverviewSummary;
-  const EMPTY_SLIM_SUMMARY: SlimOverviewSummary = useMemo(
-    () => ({
-      kind: "slim",
-      totalSystems: 0,
-      reportingSystems: 0,
-      reportingPercent: null,
-      terminatedSystems: 0,
-      smallSystems: 0,
-      largeSystems: 0,
-      unknownSizeSystems: 0,
-      ownershipOverview: EMPTY_OVERVIEW_SUMMARY.ownershipOverview,
-      withValueDataCount: 0,
-      totalContractedValue: 0,
-      contractedValueReporting: 0,
-      contractedValueNotReporting: 0,
-      contractedValueReportingPercent: null,
-      fromCache: false,
-      _runnerVersion: "client-empty",
-    }),
-    [EMPTY_OVERVIEW_SUMMARY]
-  );
-  const summary = useMemo<DashboardSummaryProjection>(() => {
+  const summary = useMemo<DashboardSummaryProjection | null>(() => {
     if (overviewSummaryQuery.data) {
-      return {
-        ...overviewSummaryQuery.data,
-        kind: "heavy",
-        // Heavy aggregator doesn't carry portfolio terminated; pull
-        // from slim if available, fall back to 0.
-        terminatedSystems: slimSummary?.terminatedSystems ?? 0,
-      };
+      return { ...overviewSummaryQuery.data, kind: "heavy" };
     }
-    if (!slimSummary) return EMPTY_SLIM_SUMMARY;
-    return {
-      kind: "slim",
-      totalSystems: slimSummary.totalSystems,
-      reportingSystems: slimSummary.reportingSystems,
-      reportingPercent: slimSummary.reportingPercent,
-      terminatedSystems: slimSummary.terminatedSystems,
-      smallSystems: slimSummary.smallSystems,
-      largeSystems: slimSummary.largeSystems,
-      unknownSizeSystems: slimSummary.unknownSizeSystems,
-      ownershipOverview: slimSummary.ownershipOverview,
-      withValueDataCount: slimSummary.withValueDataCount,
-      totalContractedValue: slimSummary.totalContractedValue,
-      contractedValueReporting: slimSummary.contractedValueReporting,
-      contractedValueNotReporting: slimSummary.contractedValueNotReporting,
-      contractedValueReportingPercent:
-        slimSummary.contractedValueReportingPercent,
-      fromCache: false,
-      // tRPC's inferred type for the slim query already includes
-      // `_runnerVersion` (the server returns `{ ...result, fromCache,
-      // _runnerVersion: SLIM_DASHBOARD_SUMMARY_RUNNER_VERSION }`). No
-      // structural cast needed.
-      _runnerVersion: slimSummary._runnerVersion,
-    };
-  }, [overviewSummaryQuery.data, slimSummary, EMPTY_SLIM_SUMMARY]);
-  const summaryDataKind: "slim" | "heavy" = summary.kind;
+    if (slimSummary) return { ...slimSummary, kind: "slim" };
+    return null;
+  }, [overviewSummaryQuery.data, slimSummary]);
+  const summaryDataKind: "slim" | "heavy" | "loading" =
+    summary?.kind ?? "loading";
 
   const part2EligibleSystemsForSizeReporting = useMemo(() => {
     const data = offlineMonitoringQuery.data;
@@ -4391,7 +4318,63 @@ export default function SolarRecDashboard() {
   // compliant source localStorage sync + URL.revokeObjectURL cleanup
   // — moved to @/solar-rec-dashboard/components/PerformanceRatioTab
 
+  // PR #337 follow-up item 1 (2026-05-04). The snapshot persists
+  // a `DashboardLogEntry` whose required fields draw on FOUR
+  // independent server queries:
+  //   - heavy overview-summary (terminated breakdown, system counts)
+  //   - heavy change-ownership rows (per-status counts +
+  //     `cooStatuses` map)
+  //   - heavy offline-monitoring (drives `part2EligibleSystemsForSize
+  //     Reporting` → `snapshotPart2ValueSummary`)
+  //   - system snapshot (back-fills `deliveredValue` per system,
+  //     used by `snapshotPart2ValueSummary.totalDeliveredValue`)
+  //
+  // Pre-fix the snapshot button was always live: clicking it on
+  // Overview cold mount silently persisted 0s for every
+  // heavy-only field (the same silent-zero bug PR #332 retired
+  // from the live tile, just shifted to the log history). Short-
+  // term safe contract: gate the button on all four heavy paths
+  // being loaded. Future work: widen `DashboardLogEntry` to
+  // `number | null` so a partial snapshot is recordable explicitly.
+  const snapshotReadiness: { ready: true } | { ready: false; reason: string } =
+    summary?.kind !== "heavy"
+      ? {
+          ready: false,
+          reason:
+            "Open the Overview tab to load the full summary before snapshotting.",
+        }
+      : changeOwnershipQuery.status !== "success"
+        ? {
+            ready: false,
+            reason:
+              "Open the Change Ownership tab to load project rows before snapshotting.",
+          }
+        : offlineMonitoringQuery.status !== "success"
+          ? {
+              ready: false,
+              reason:
+                "Open Offline Monitoring (or another heavy tab) to load Part-II value data before snapshotting.",
+            }
+          : !serverSnapshot.systems
+            ? {
+                ready: false,
+                reason:
+                  "Open Alerts / Comparisons / Financials / Forecast (or pick a system) so the system snapshot loads before snapshotting.",
+              }
+            : { ready: true };
+
   const createLogEntry = () => {
+    if (!snapshotReadiness.ready) {
+      toast.error(snapshotReadiness.reason);
+      return;
+    }
+    if (summary?.kind !== "heavy") {
+      // Belt-and-braces narrowing — `snapshotReadiness.ready` implies
+      // this, but TS narrowing across object property accesses is
+      // less robust than a direct check.
+      return;
+    }
+
     const statusCount = (status: ChangeOwnershipStatus) =>
       changeOwnershipRows.filter((system) => system.changeOwnershipStatus === status).length;
     const snapshotCooStatuses = changeOwnershipRows
@@ -4787,14 +4770,13 @@ const invalidateFinancialKpiSummary = useCallback(
 // the side cache was just rewritten by the server. Invalidate the
 // slim query so the cached "stale-true" or pre-edit values are
 // dropped before the next Overview activation reads them.
-const lastHeavyFinancialsDataUpdatedAt = financialsQuery.dataUpdatedAt;
 useEffect(() => {
-  if (lastHeavyFinancialsDataUpdatedAt > 0) {
+  if (financialsQuery.dataUpdatedAt > 0) {
     void invalidateFinancialKpiSummary();
   }
 }, [
   invalidateFinancialKpiSummary,
-  lastHeavyFinancialsDataUpdatedAt,
+  financialsQuery.dataUpdatedAt,
 ]);
 
 // Task 5.7 PR-B (2026-04-26): getContractScanResultsByCsgIds moved
@@ -5047,7 +5029,16 @@ const aiDataContext = useMemo(() => {
               <ArrowLeft className="h-4 w-4 mr-2" />
               Back to Dashboard
             </Button>
-            <Button variant="outline" onClick={createLogEntry}>
+            <Button
+              variant="outline"
+              onClick={createLogEntry}
+              disabled={!snapshotReadiness.ready}
+              title={
+                snapshotReadiness.ready
+                  ? "Persist the current dashboard state to the snapshot log."
+                  : snapshotReadiness.reason
+              }
+            >
               Log Snapshot
             </Button>
             <Button variant="outline" onClick={() => setUploadsExpanded((current) => !current)}>
@@ -5363,6 +5354,11 @@ const aiDataContext = useMemo(() => {
             <div style={{ display: activeTab === "overview" ? "contents" : "none" }}>
               <TabErrorBoundary tabLabel="Overview">
                 <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading overview tab...</div>}>
+                  {summary === null ? (
+                    <div className="mt-4 text-sm text-slate-500">
+                      Loading dashboard summary…
+                    </div>
+                  ) : (
                   <OverviewTabLazy
                     summary={summary}
                     financialProfitData={financialProfitData}
@@ -5387,6 +5383,7 @@ const aiDataContext = useMemo(() => {
                     onDownloadChangeOwnershipTile={downloadChangeOwnershipCountTileCsv}
                     onJumpToOfflineMonitoring={() => handleActiveTabChange("offline-monitoring")}
                   />
+                  )}
                 </Suspense>
               </TabErrorBoundary>
             </div>

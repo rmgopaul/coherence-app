@@ -53,43 +53,45 @@ import type {
 // ---------------------------------------------------------------------------
 
 /**
- * Minimal structural shape of the parent `summary` memo. The full
- * object has more fields but the Overview JSX only reads these.
- * Structural typing means passing the full summary still satisfies
- * this prop.
+ * Minimal structural shape of the parent `summary` memo, as a
+ * discriminated union on `kind`. The slim variant carries
+ * `terminatedSystems` (portfolio total from
+ * `foundation.summaryCounts.terminated`); the heavy variant
+ * carries `ownershipOverview.terminatedTotal` (Part-II-scoped
+ * count from the heavy aggregator). Each tile reads exactly one
+ * field per branch — the type forces consumers to narrow on
+ * `summary.kind` first, so a future caller can't accidentally
+ * read the wrong source.
  *
- * `kind` is the discriminator from the parent's `summary` memo
- * (PR #332 follow-up item 4). The terminated tile renders an
- * explicit "—" placeholder when `kind === "slim"` because the
- * foundation-Part-II walk excludes terminated systems by contract
- * (PR #334 follow-up item 4 option B). `terminatedTotal` is
- * structurally 0 on the slim path and not a real count.
+ * PR #337 follow-up item 6 (2026-05-04): the prior version had
+ * `terminatedSystems` on both branches and an always-0
+ * `ownershipOverview.terminatedTotal` on slim. Tightening the
+ * union eliminates both silent-zero traps at compile time.
  */
-export type OverviewSummary = {
-  kind: "slim" | "heavy";
+type OverviewSummaryCommon = {
   totalSystems: number;
   reportingSystems: number;
   reportingPercent: number | null;
   smallSystems: number;
   largeSystems: number;
-  /**
-   * Portfolio-wide terminated system count from
-   * `foundation.summaryCounts.terminated`. Available on slim AND
-   * heavy paths. The terminated tile falls back to this when slim
-   * cannot supply a Part-II-scoped count.
-   */
-  terminatedSystems: number;
   ownershipOverview: {
     reportingOwnershipTotal: number;
     notReportingOwnershipTotal: number;
-    /**
-     * Part-II-scoped terminated count. Real on heavy. STRUCTURALLY
-     * 0 on slim per the foundation contract — slim consumers must
-     * branch on `summary.kind === "slim"` and render "—" instead.
-     */
-    terminatedTotal: number;
   };
 };
+export type OverviewSummary =
+  | (OverviewSummaryCommon & {
+      kind: "slim";
+      /** Portfolio-wide terminated count. Slim has no Part-II scope. */
+      terminatedSystems: number;
+    })
+  | (OverviewSummaryCommon & {
+      kind: "heavy";
+      ownershipOverview: OverviewSummaryCommon["ownershipOverview"] & {
+        /** Part-II-scoped terminated count from the heavy aggregator. */
+        terminatedTotal: number;
+      };
+    });
 
 /** One row in the parent's `sizeBreakdownRows` memo. Structural only. */
 export type OverviewSizeBreakdownRow = {
