@@ -3435,17 +3435,24 @@ export default function SolarRecDashboard() {
    * running, leaving an orphaned artifact and a confused user — see
    * PR #347 follow-up).
    *
-   * **Status-poll errors are NOT terminal.** A transient
-   * `getDashboardCsvExportJobStatus.fetch(...)` rejection (network
-   * blip, transient 5xx, rate limit) used to throw into the outer
-   * catch and surface "Failed to export" while the server job kept
-   * running and possibly wrote the artifact afterwards. Since the
-   * server job is independent of the poll connection, we now
-   * swallow per-poll errors, swap the toast to "connection
-   * interrupted, retrying status check…", and keep polling until
-   * either a terminal server status arrives or the TTL window
-   * exhausts. The only terminal client-side outcomes are:
-   *   - server returns `succeeded` / `failed` / `notFound`
+   * **Status-poll errors and `notFound` are NOT terminal.** Two
+   * sources of transient lookup failure:
+   *   1. `getDashboardCsvExportJobStatus.fetch(...)` rejection
+   *      (network blip, 5xx, rate limit).
+   *   2. Server returns `status: "notFound"` because the in-memory
+   *      job registry was wiped by a process restart / deploy /
+   *      OOM. The server's running-prune-skip rule means a
+   *      not-yet-terminal job CAN'T be pruned mid-flight, but a
+   *      restart wipes the entire `Map` and orphans every
+   *      in-flight jobId. Until Phase 6 ships a DB-backed
+   *      registry, treat notFound as transient and let the TTL
+   *      window be the only terminal boundary.
+   * Both paths surface the same "Still preparing; connection
+   * interrupted, retrying status check…" toast and keep polling.
+   *
+   * The ONLY terminal client-side outcomes are:
+   *   - server returns `succeeded` (download or no-rows toast)
+   *   - server returns `failed` (real server-side failure)
    *   - the start mutation itself fails (no jobId to poll)
    *   - the 30-min TTL window elapses with no terminal server status
    *
@@ -3597,14 +3604,28 @@ export default function SolarRecDashboard() {
           return;
         }
         if (status.status === "notFound") {
-          // TTL pruned the job before we could read it. The server
-          // only prunes terminal records (per the running-prune
-          // skip rule in dashboardCsvExportJobs), so this branch
-          // means the artifact actually expired — surface as a
-          // failure rather than an infinite poll.
-          toast.error(params.failureMessage, { id: toastId });
-          console.error(`[${params.consoleTag}] job expired before completion`);
-          return;
+          // notFound is NOT terminal under the current in-memory
+          // job registry. The server's running-prune-skip rule
+          // means notFound CAN'T come from prune-of-running, but a
+          // process restart (deploy, OOM, future multi-instance
+          // routing) wipes the entire `Map` and orphans every
+          // in-flight jobId — those clients then see notFound for
+          // a job that may be perfectly valid and simply got
+          // unregistered. Until the registry is DB-backed (Phase
+          // 6), retry with the same "interrupted" semantics as a
+          // poll error and let the TTL window be the only terminal
+          // boundary. The "interrupted" toast text reads honestly:
+          // "Still preparing; connection interrupted, retrying
+          // status check…" — same UX whether the server lost the
+          // record or the network blipped.
+          console.warn(
+            `[${params.consoleTag}] status returned notFound (will retry until TTL — registry is in-memory)`
+          );
+          setToastPhase("interrupted");
+          await new Promise((resolve) =>
+            setTimeout(resolve, nextPollDelayMs(Date.now() - startedAt))
+          );
+          continue;
         }
         // Still queued/running. Re-anchor the toast to the right
         // phase (initial pre-hint, stillPreparing post-hint). This
