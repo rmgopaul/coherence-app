@@ -332,6 +332,9 @@ export const solarRecContractScanRouter = t.router({
     )
     .mutation(async ({ ctx, input }) => {
       const { updateContractScanResultOverrides } = await import("../db");
+      const { bumpScopeContractScanOverrideVersion } = await import(
+        "../db/solarRecDatasets"
+      );
       const result = await updateContractScanResultOverrides(
         ctx.scopeId,
         input.csgId,
@@ -347,6 +350,24 @@ export const solarRecContractScanRouter = t.router({
           message: `No contract scan result found for CSG ID ${input.csgId}`,
         });
       }
+      // PR #338 follow-up item 1 (2026-05-04). Bump the scope's
+      // override-version row so the canonical financials hash
+      // (`computeFinancialsHash`) advances. Without this, slim KPI
+      // side-cache reads would keep returning pre-edit totals on the
+      // next Overview mount until something else mutates the scope's
+      // dataset versions. The bump is fire-and-forget — a failure to
+      // record the version doesn't roll back the override (the user
+      // already saw the success toast); we log + move on so the
+      // override itself stays committed.
+      await bumpScopeContractScanOverrideVersion(
+        ctx.scopeId,
+        result.overriddenAt
+      ).catch((error) => {
+        console.warn(
+          `[solarRecContractScanRouter.updateContractOverride] override-version bump failed for scope=${ctx.scopeId}:`,
+          error instanceof Error ? error.message : error
+        );
+      });
       return result;
     }),
 
@@ -462,6 +483,31 @@ export const solarRecContractScanRouter = t.router({
         overrideAdditionalCollateralPercent: null,
         overrideNotes: null,
         overriddenAt: null,
+      });
+
+      // PR #338 follow-up item 1 (2026-05-04). A successful single-
+      // row rescan changed the latest scan-result row for this CSG.
+      // The heavy financials aggregator's `scanResultsHash` will
+      // change next read (its hash is a SHA over scan rows), but
+      // the canonical `computeFinancialsHash` for slim invalidation
+      // is bound to `latestCompletedJobId` / `latestOverrideAt`. A
+      // single-row rescan doesn't bump either by default — bump
+      // the override-version timestamp so the slim KPI side cache
+      // invalidates too. Using overrideVersion (not jobVersion)
+      // because re-using the same `latestJob.id` would be a no-op
+      // for `bumpScopeContractScanJobVersion` (the value matches
+      // what's already in the version row).
+      const { bumpScopeContractScanOverrideVersion } = await import(
+        "../db/solarRecDatasets"
+      );
+      await bumpScopeContractScanOverrideVersion(
+        ctx.scopeId,
+        new Date()
+      ).catch((error) => {
+        console.warn(
+          `[solarRecContractScanRouter.rescanSingleContract] scan-version bump failed for scope=${ctx.scopeId}:`,
+          error instanceof Error ? error.message : error
+        );
       });
 
       return {

@@ -32,6 +32,9 @@ export async function runContractScanJob(
     getCompletedCsgIdsForJob,
     getIntegrationByProvider,
   } = await import("../../db");
+  const { bumpScopeContractScanJobVersion } = await import(
+    "../../db/solarRecDatasets"
+  );
 
   const job = await getContractScanJob(id);
   if (!job) return;
@@ -126,6 +129,22 @@ export async function runContractScanJob(
         completedAt: new Date(),
         currentCsgId: null,
       });
+      // PR #338 follow-up item 1 (2026-05-04). Job reached
+      // `completed` (in this branch: every queued CSG already had
+      // a result row from a prior run, so no actual scan work ran
+      // — but the result set is stable + unchanged, which is the
+      // contract). Bump the scope's scan-job-version row so
+      // downstream caches keyed on `computeFinancialsHash`
+      // invalidate. Best-effort: a bump failure does not roll back
+      // the job's terminal state.
+      await bumpScopeContractScanJobVersion(job.scopeId, id).catch(
+        (error) => {
+          console.warn(
+            `[contractScanJobRunner] scan-job-version bump failed for scope=${job.scopeId} job=${id}:`,
+            error instanceof Error ? error.message : error
+          );
+        }
+      );
       return;
     }
 
@@ -291,12 +310,27 @@ export async function runContractScanJob(
         stoppedAt: new Date(),
         currentCsgId: null,
       });
+      // No version bump on `stopped` — partial result sets are
+      // not a stable freshness anchor (per item 1 acceptance
+      // criterion). The next completed run will bump.
     } else {
       await updateContractScanJob(id, {
         status: "completed",
         completedAt: new Date(),
         currentCsgId: null,
       });
+      // PR #338 follow-up item 1 (2026-05-04). Job reached
+      // `completed` after writing fresh result rows. Bump so
+      // downstream slim KPI / financials hash invalidates. Best-
+      // effort: bump failure does not roll back terminal status.
+      await bumpScopeContractScanJobVersion(job.scopeId, id).catch(
+        (error) => {
+          console.warn(
+            `[contractScanJobRunner] scan-job-version bump failed for scope=${job.scopeId} job=${id}:`,
+            error instanceof Error ? error.message : error
+          );
+        }
+      );
     }
   } catch (error) {
     try {
