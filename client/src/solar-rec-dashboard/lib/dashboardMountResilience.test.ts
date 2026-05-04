@@ -179,6 +179,55 @@ describe("Solar REC dashboard mount: heavy-query gates", () => {
     );
   });
 
+  it("CSV export poll horizon matches the server's 30-min job TTL (no false-failures at 120s)", () => {
+    // Pre-fix the client gave up at 120s while the server's TTL is
+    // 30 min, surfacing a "Failed" toast while the worker was still
+    // running and leaving an orphaned artifact the user couldn't
+    // download. The poll horizon must match the server's
+    // dashboardCsvExportJobs.JOB_TTL_MS (30 min).
+    const sharedHelper = sliceFn(code, "runDashboardCsvExport");
+    expect(sharedHelper).not.toBeNull();
+    expect(sharedHelper!).toMatch(
+      /CSV_EXPORT_POLL_MAX_MS\s*=\s*30\s*\*\s*60\s*\*\s*1000/
+    );
+    // The retired 120_000 ceiling must not reappear.
+    expect(sharedHelper!).not.toMatch(/120_000|120000\b/);
+  });
+
+  it("CSV export poll backs off so a 30-min poll horizon doesn't hammer the server", () => {
+    // The flat 1.5s loop would be 1200 polls over 30 min. The
+    // backoff helper must transition fast → medium → slow.
+    const sharedHelper = sliceFn(code, "runDashboardCsvExport");
+    expect(sharedHelper).not.toBeNull();
+    expect(sharedHelper!).toMatch(/function\s+nextPollDelayMs/);
+    // Sanity-check the three steps without pinning specific values
+    // beyond the documented ladder.
+    expect(sharedHelper!).toMatch(/return\s+1500\b/);
+    expect(sharedHelper!).toMatch(/return\s+5000\b/);
+    expect(sharedHelper!).toMatch(/return\s+15_000\b/);
+  });
+
+  it("CSV export updates the toast text after the hint threshold so a long-running export doesn't look stalled", () => {
+    const sharedHelper = sliceFn(code, "runDashboardCsvExport");
+    expect(sharedHelper).not.toBeNull();
+    expect(sharedHelper!).toMatch(
+      /CSV_EXPORT_TOAST_HINT_AT_MS\s*=\s*30_000/
+    );
+    expect(sharedHelper!).toMatch(
+      /toast\.loading\s*\(\s*params\.preparingMessage/
+    );
+    // Per-tile handlers must pass the hint message in.
+    const ownershipHandler = sliceFn(code, "downloadOwnershipCountTileCsv");
+    expect(ownershipHandler).not.toBeNull();
+    expect(ownershipHandler!).toMatch(/preparingMessage\s*:/);
+    const changeOwnershipHandler = sliceFn(
+      code,
+      "downloadChangeOwnershipCountTileCsv"
+    );
+    expect(changeOwnershipHandler).not.toBeNull();
+    expect(changeOwnershipHandler!).toMatch(/preparingMessage\s*:/);
+  });
+
   it("CSV export click does NOT flip hasUserInteractedWithDashboard (heavy queries stay disabled)", () => {
     // PR #332 follow-up item 7 (2026-05-02). Flipping the
     // interaction flag inside the CSV handlers silently enables the
