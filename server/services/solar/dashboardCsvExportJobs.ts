@@ -64,13 +64,14 @@ import {
   getDashboardCsvExportJob,
   insertDashboardCsvExportJob,
   pruneTerminalDashboardCsvExportJobs,
+  refreshDashboardCsvExportJobClaim,
 } from "../../db/dashboardCsvExportJobs";
 import type { DashboardCsvExportJob } from "../../../drizzle/schema";
 
 const METRIC_PREFIX = "[dashboard:csv-export-jobs]";
 
 export const DASHBOARD_CSV_EXPORT_RUNNER_VERSION =
-  "dashboard-csv-export-jobs-v2-db-backed";
+  "dashboard-csv-export-jobs-v3-heartbeat";
 
 /**
  * TTL for terminal rows. After `completedAt + JOB_TTL_MS`, the
@@ -85,9 +86,22 @@ const JOB_TTL_MS = 30 * 60 * 1000; // 30 minutes
  * died / restarted between claim and completion). The next
  * sweep reclassifies it as `failed`. Set generously so a slow
  * but healthy aggregator run never appears stale: cold-cache
- * builds can take 30s+; we give 5 min headroom.
+ * builds can take 30s+; we give 5 min headroom — but legitimate
+ * long-running exports refresh `claimedAt` via heartbeat
+ * (`HEARTBEAT_INTERVAL_MS`) so they never cross this threshold
+ * while alive.
  */
 const STALE_CLAIM_MS = 5 * 60 * 1000; // 5 minutes
+
+/**
+ * Heartbeat interval. Codex P1 follow-up (2026-05-04): a healthy
+ * long-running worker MUST refresh `claimedAt` faster than
+ * `STALE_CLAIM_MS` or the sweeper will flip it to `failed`. 30s
+ * gives 10× the safety margin and keeps DB write pressure
+ * trivial (one tiny UPDATE per 30s per active export — typically
+ * one or two at a time).
+ */
+const HEARTBEAT_INTERVAL_MS = 30 * 1000; // 30 seconds
 
 export type DashboardCsvExportInput =
   | { exportType: "ownershipTile"; tile: OwnershipTileKey }
@@ -224,6 +238,19 @@ export async function startCsvExportJob(
  * read. Both helpers no-op cheaply when there's nothing to
  * sweep, and TiDB latency is low enough that the cost is
  * negligible compared to a missed sweep tick.
+ *
+ * Codex P1 follow-up (2026-05-04): if the row is `queued`, also
+ * schedule the runner here. Pre-fix the runner was scheduled
+ * only at insert time via `setImmediate`; if the inserting
+ * process restarted before the runner fired (or before it
+ * managed to claim), the row sat queued forever — the sweeper
+ * only handles `running` and terminal rows. Now any client poll
+ * for a queued row will trigger a runner. The claim semantics
+ * inside `runCsvExportJob` ensure exactly one of the racing
+ * processes (insert-time scheduler vs. status-poll re-scheduler)
+ * actually claims and runs; the others see `claimed === false`
+ * and noop. Multi-instance safe because the claim UPDATE is
+ * race-safe across processes.
  */
 export async function getCsvExportJobStatus(
   scopeId: string,
@@ -232,6 +259,21 @@ export async function getCsvExportJobStatus(
   await sweepStaleAndPruned();
   const row = await getDashboardCsvExportJob(scopeId, jobId);
   if (!row) return null;
+  if (row.status === "queued") {
+    // Idempotent: claim semantics ensure only one runner actually
+    // executes per row. Use setImmediate so this status read
+    // returns promptly without waiting for the worker.
+    setImmediate(() => {
+      runCsvExportJob(jobId).catch((err) => {
+        console.error(
+          `${METRIC_PREFIX} resume-from-status runner threw for ` +
+            `jobId=${jobId}: ${
+              err instanceof Error ? err.message : String(err)
+            }`
+        );
+      });
+    });
+  }
   return buildSnapshot(row);
 }
 
@@ -297,6 +339,43 @@ export async function runCsvExportJob(jobId: string): Promise<void> {
     jobId,
     context: { exportType: input.exportType },
   });
+
+  // Codex P1 follow-up (2026-05-04): heartbeat keeps healthy
+  // long-running exports from being reaped by the stale-claim
+  // sweeper. Refreshes `claimedAt` every HEARTBEAT_INTERVAL_MS
+  // while we still own the claim. If a refresh comes back false,
+  // we lost the claim — the heartbeat clears itself; the worker
+  // continues but its eventual `complete*` UPDATE will no-op.
+  let claimLost = false;
+  const heartbeat = setInterval(() => {
+    void (async () => {
+      try {
+        const stillOwn = await refreshDashboardCsvExportJobClaim(
+          row.scopeId,
+          jobId,
+          claimId
+        );
+        if (!stillOwn) {
+          claimLost = true;
+          clearInterval(heartbeat);
+        }
+      } catch (err) {
+        // Heartbeat refresh is best-effort — a single failed
+        // refresh shouldn't kill the worker. The next tick may
+        // succeed; if not, the sweeper handles it.
+        console.warn(
+          `${METRIC_PREFIX} heartbeat refresh failed for jobId=${jobId}: ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        );
+      }
+    })();
+  }, HEARTBEAT_INTERVAL_MS);
+  // Make heartbeat unref'd: a Node process should be allowed to
+  // exit even if a heartbeat is still ticking (the worker itself
+  // is also fire-and-forget).
+  if (typeof heartbeat.unref === "function") heartbeat.unref();
+
   try {
     const built = await buildExport(input, row.scopeId);
     if (built.rowCount === 0) {
@@ -315,8 +394,9 @@ export async function runCsvExportJob(jobId: string): Promise<void> {
         }
       );
       if (!ok) {
-        // Lost our claim mid-flight (sweeper flipped us stale).
-        // Nothing more to do; the row is already terminal.
+        // Lost our claim mid-flight (sweeper flipped us stale, or
+        // heartbeat noticed in advance). No artifact was written
+        // so there's nothing to clean up.
         metric.fail(
           new Error("lost claim before completion (rowCount=0 path)")
         );
@@ -346,10 +426,25 @@ export async function runCsvExportJob(jobId: string): Promise<void> {
       }
     );
     if (!ok) {
-      // Lost claim mid-flight. Storage write succeeded — orphan
-      // artifact will be cleaned up at TTL. Don't surface as
-      // success because the row's authoritative state is failed
-      // (whichever worker re-claimed will re-do or fail-out).
+      // Codex P2 follow-up (2026-05-04): lost claim AFTER
+      // storagePut. The completion UPDATE didn't record fileName /
+      // artifactUrl on the row, so the TTL prune sweep can't
+      // reconstruct the storage key (`storageKeyForJob` returns
+      // null for fileName=null). Without immediate cleanup the
+      // artifact is genuinely orphaned. Best-effort delete here;
+      // log + swallow if it fails.
+      try {
+        await storageDelete(key);
+      } catch (deleteErr) {
+        console.warn(
+          `${METRIC_PREFIX} cleanup storageDelete failed for orphaned ` +
+            `lost-claim artifact jobId=${jobId} key=${key}: ${
+              deleteErr instanceof Error
+                ? deleteErr.message
+                : String(deleteErr)
+            }`
+        );
+      }
       metric.fail(new Error("lost claim before completion (success path)"));
       return;
     }
@@ -360,13 +455,17 @@ export async function runCsvExportJob(jobId: string): Promise<void> {
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    await completeDashboardCsvExportJobFailure(
-      row.scopeId,
-      jobId,
-      claimId,
-      message
-    );
+    if (!claimLost) {
+      await completeDashboardCsvExportJobFailure(
+        row.scopeId,
+        jobId,
+        claimId,
+        message
+      );
+    }
     metric.fail(err);
+  } finally {
+    clearInterval(heartbeat);
   }
 }
 
@@ -522,4 +621,5 @@ export const __TEST_ONLY__ = {
   storageKeyForJob,
   JOB_TTL_MS,
   STALE_CLAIM_MS,
+  HEARTBEAT_INTERVAL_MS,
 };

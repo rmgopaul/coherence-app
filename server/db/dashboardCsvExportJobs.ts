@@ -27,15 +27,73 @@ import {
 /**
  * Insert a freshly-queued export job. Caller provides `id` and the
  * runtime metadata; status defaults to "queued".
+ *
+ * **Throws** if the DB is unavailable. The Phase 6 PR-B contract
+ * makes this registry mandatory — silently returning would let
+ * `startCsvExportJob` hand the client a `jobId` for a row that
+ * doesn't exist, and a subsequent poll would surface `notFound`
+ * (which is terminal in the new contract). The user-visible
+ * symptom would be a generic "failed" toast detached from the
+ * actual cause. Throwing surfaces the real cause through the
+ * mutation rejection path.
  */
 export async function insertDashboardCsvExportJob(
   entry: InsertDashboardCsvExportJob
 ): Promise<void> {
   const db = await getDb();
-  if (!db) return;
+  if (!db) {
+    throw new Error(
+      "dashboardCsvExportJobs: database unavailable — cannot insert export job"
+    );
+  }
   await withDbRetry("insert dashboard csv export job", async () => {
     await db.insert(dashboardCsvExportJobs).values(entry);
   });
+}
+
+/**
+ * Heartbeat refresh: bump `claimedAt` to now while the worker is
+ * still alive and running. Codex P1 finding (Phase 6 PR-B
+ * follow-up): without a heartbeat, a healthy long export that
+ * exceeds the stale-claim window (5 min) would be flipped to
+ * `failed` by the sweeper while still running. Cold-cache
+ * aggregator runs on the change-of-ownership tile can legitimately
+ * exceed 5 min on a busy multi-tenant scope.
+ *
+ * Returns `true` iff this caller still owns the claim AND the row
+ * is still `running`. Worker should treat `false` as "abort
+ * gracefully — another owner is responsible for this row now"
+ * and STOP issuing further DB writes (storage put may have
+ * already happened; the calling site handles that artifact
+ * separately).
+ */
+export async function refreshDashboardCsvExportJobClaim(
+  scopeId: string,
+  id: string,
+  claimedBy: string
+): Promise<boolean> {
+  const db = await getDb();
+  if (!db) return false;
+  const now = new Date();
+  const result = await withDbRetry(
+    "refresh dashboard csv export job claim",
+    async () =>
+      db
+        .update(dashboardCsvExportJobs)
+        .set({
+          claimedAt: now,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(dashboardCsvExportJobs.scopeId, scopeId),
+            eq(dashboardCsvExportJobs.id, id),
+            eq(dashboardCsvExportJobs.claimedBy, claimedBy),
+            eq(dashboardCsvExportJobs.status, "running")
+          )
+        )
+  );
+  return getAffectedRows(result) === 1;
 }
 
 /**

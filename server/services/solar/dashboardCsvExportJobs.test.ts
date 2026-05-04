@@ -184,6 +184,22 @@ vi.mock("../../db/dashboardCsvExportJobs", () => ({
       return n;
     }
   ),
+  refreshDashboardCsvExportJobClaim: vi.fn(
+    async (
+      scopeId: string,
+      id: string,
+      claimedBy: string
+    ): Promise<boolean> => {
+      const row = fakeFind(scopeId, id);
+      if (!row) return false;
+      if (row.claimedBy !== claimedBy) return false;
+      if (row.status !== "running") return false;
+      const now = new Date();
+      row.claimedAt = now;
+      row.updatedAt = now;
+      return true;
+    }
+  ),
 }));
 
 // Storage + aggregator mocks (unchanged from the in-memory test).
@@ -594,9 +610,9 @@ describe("dashboardCsvExportJobs — sweepStaleAndPruned", () => {
 });
 
 describe("dashboardCsvExportJobs — runner version + claim id", () => {
-  it("exports a v2-db-backed runner version (revs from v1)", () => {
+  it("exports the v3-heartbeat runner version (revs from v2)", () => {
     expect(DASHBOARD_CSV_EXPORT_RUNNER_VERSION).toBe(
-      "dashboard-csv-export-jobs-v2-db-backed"
+      "dashboard-csv-export-jobs-v3-heartbeat"
     );
   });
 
@@ -639,5 +655,272 @@ describe("dashboardCsvExportJobs — input JSON parsing", () => {
         tile: "invalid",
       })
     ).toBeNull();
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────
+// Codex P1/P2 follow-up rails (Phase 6 PR-B follow-up)
+// ────────────────────────────────────────────────────────────────────
+
+describe("dashboardCsvExportJobs — Codex P1: queued-job resume on status read", () => {
+  // Pre-fix: startCsvExportJob inserts then schedules via
+  // setImmediate. If the inserting process restarts before the
+  // runner fires, the row sits queued forever — sweepStaleAndPruned
+  // only handles `running` and terminal rows. Post-fix:
+  // getCsvExportJobStatus opportunistically schedules the runner
+  // when it sees a queued row. Claim semantics ensure exactly one
+  // runner actually executes.
+  it("kicks off the runner when status is read for a queued row that nobody scheduled", async () => {
+    const id = "qjob-1";
+    // Simulate a process restart: insert a queued row WITHOUT
+    // calling startCsvExportJob (so no scheduler fires).
+    const dbHelpers = await import("../../db/dashboardCsvExportJobs");
+    await dbHelpers.insertDashboardCsvExportJob({
+      id,
+      scopeId: SCOPE,
+      input: { exportType: "ownershipTile", tile: "reporting" },
+      status: "queued",
+      runnerVersion: DASHBOARD_CSV_EXPORT_RUNNER_VERSION,
+    });
+    expect(fakeFindById(id)?.status).toBe("queued");
+
+    // First status read fires the runner via setImmediate.
+    const snap = await getCsvExportJobStatus(SCOPE, id);
+    expect(snap).not.toBeNull();
+    // Status read returns the pre-resume snapshot (still queued).
+    expect(snap!.status).toBe("queued");
+
+    // Wait for setImmediate + runner work to flush.
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    // A microtask plus an event-loop turn is enough to drain the
+    // chained awaits inside runCsvExportJob in the test
+    // environment (no real DB latency).
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(fakeFindById(id)?.status).toBe("succeeded");
+  });
+
+  it("does not schedule a runner when the row is already running", async () => {
+    const dbHelpers = await import("../../db/dashboardCsvExportJobs");
+    await dbHelpers.insertDashboardCsvExportJob({
+      id: "running-job",
+      scopeId: SCOPE,
+      input: { exportType: "ownershipTile", tile: "reporting" },
+      status: "queued",
+      runnerVersion: DASHBOARD_CSV_EXPORT_RUNNER_VERSION,
+    });
+    // Manually flip to running so the resume branch must NOT fire.
+    const row = fakeFindById("running-job")!;
+    row.status = "running";
+    row.claimedBy = "pid-other-host-x-aaaaaaaa";
+    row.claimedAt = new Date();
+
+    const snap = await getCsvExportJobStatus(SCOPE, "running-job");
+    expect(snap!.status).toBe("running");
+
+    await new Promise((r) => setImmediate(r));
+    // Still running — the resume branch must NOT have re-claimed
+    // (the claimedBy is foreign and not stale).
+    expect(fakeFindById("running-job")?.status).toBe("running");
+    expect(fakeFindById("running-job")?.claimedBy).toBe(
+      "pid-other-host-x-aaaaaaaa"
+    );
+  });
+
+  it("two simulated workers racing to claim a queued row produce exactly one success", async () => {
+    const id = "race-job";
+    const dbHelpers = await import("../../db/dashboardCsvExportJobs");
+    await dbHelpers.insertDashboardCsvExportJob({
+      id,
+      scopeId: SCOPE,
+      input: { exportType: "ownershipTile", tile: "reporting" },
+      status: "queued",
+      runnerVersion: DASHBOARD_CSV_EXPORT_RUNNER_VERSION,
+    });
+    const staleClaimBefore = new Date(
+      Date.now() - __TEST_ONLY__.STALE_CLAIM_MS
+    );
+    const [a, b] = await Promise.all([
+      dbHelpers.claimDashboardCsvExportJob(
+        SCOPE,
+        id,
+        "pid-A-host-x-aaaaaaaa",
+        staleClaimBefore
+      ),
+      dbHelpers.claimDashboardCsvExportJob(
+        SCOPE,
+        id,
+        "pid-B-host-y-bbbbbbbb",
+        staleClaimBefore
+      ),
+    ]);
+    expect([a, b].filter((r) => r === true)).toHaveLength(1);
+  });
+});
+
+describe("dashboardCsvExportJobs — Codex P1: heartbeat keeps healthy long jobs alive", () => {
+  it("refreshes claimedAt for an active running row", async () => {
+    const dbHelpers = await import("../../db/dashboardCsvExportJobs");
+    await dbHelpers.insertDashboardCsvExportJob({
+      id: "long-job",
+      scopeId: SCOPE,
+      input: { exportType: "ownershipTile", tile: "reporting" },
+      status: "queued",
+      runnerVersion: DASHBOARD_CSV_EXPORT_RUNNER_VERSION,
+    });
+    const claimId = "pid-W-host-z-cccccccc";
+    const staleClaimBefore = new Date(
+      Date.now() - __TEST_ONLY__.STALE_CLAIM_MS
+    );
+    await dbHelpers.claimDashboardCsvExportJob(
+      SCOPE,
+      "long-job",
+      claimId,
+      staleClaimBefore
+    );
+    const initialClaimedAt = fakeFindById("long-job")!.claimedAt!.getTime();
+
+    // Simulate worker still running 3 seconds later — heartbeat
+    // would have fired by now in production.
+    await new Promise((r) => setTimeout(r, 5));
+    const refreshed = await dbHelpers.refreshDashboardCsvExportJobClaim(
+      SCOPE,
+      "long-job",
+      claimId
+    );
+    expect(refreshed).toBe(true);
+    const newClaimedAt = fakeFindById("long-job")!.claimedAt!.getTime();
+    expect(newClaimedAt).toBeGreaterThan(initialClaimedAt);
+  });
+
+  it("stale-claim sweep does NOT fail a row whose heartbeat just refreshed", async () => {
+    const dbHelpers = await import("../../db/dashboardCsvExportJobs");
+    await dbHelpers.insertDashboardCsvExportJob({
+      id: "fresh-heartbeat",
+      scopeId: SCOPE,
+      input: { exportType: "ownershipTile", tile: "reporting" },
+      status: "queued",
+      runnerVersion: DASHBOARD_CSV_EXPORT_RUNNER_VERSION,
+    });
+    const claimId = "pid-W-host-z-cccccccc";
+    // Old initial claim (would be stale)…
+    const row = fakeFindById("fresh-heartbeat")!;
+    row.status = "running";
+    row.claimedBy = claimId;
+    row.claimedAt = new Date(
+      Date.now() - __TEST_ONLY__.STALE_CLAIM_MS - 1000
+    );
+
+    // …but a heartbeat refresh fires before the sweeper runs.
+    const refreshed = await dbHelpers.refreshDashboardCsvExportJobClaim(
+      SCOPE,
+      "fresh-heartbeat",
+      claimId
+    );
+    expect(refreshed).toBe(true);
+
+    // Now sweep — the row should NOT be marked failed.
+    await __TEST_ONLY__.sweepStaleAndPruned();
+    expect(fakeFindById("fresh-heartbeat")?.status).toBe("running");
+  });
+
+  it("refresh returns false when the caller's claim was already lost", async () => {
+    const dbHelpers = await import("../../db/dashboardCsvExportJobs");
+    await dbHelpers.insertDashboardCsvExportJob({
+      id: "lost-claim",
+      scopeId: SCOPE,
+      input: { exportType: "ownershipTile", tile: "reporting" },
+      status: "queued",
+      runnerVersion: DASHBOARD_CSV_EXPORT_RUNNER_VERSION,
+    });
+    const row = fakeFindById("lost-claim")!;
+    row.status = "running";
+    row.claimedBy = "pid-other-host-x-dddddddd"; // foreign owner
+    row.claimedAt = new Date();
+    const refreshed = await dbHelpers.refreshDashboardCsvExportJobClaim(
+      SCOPE,
+      "lost-claim",
+      "pid-W-host-z-cccccccc"
+    );
+    expect(refreshed).toBe(false);
+  });
+});
+
+describe("dashboardCsvExportJobs — Codex P2: lost-claim success path cleans storage", () => {
+  it("calls storageDelete when completeSuccess returns false post-storagePut", async () => {
+    const storageMod = await import("../../storage");
+    const storageDelete = storageMod.storageDelete as unknown as ReturnType<
+      typeof vi.fn
+    >;
+    storageDelete.mockClear();
+    const dbHelpers = await import("../../db/dashboardCsvExportJobs");
+    const completeSuccess =
+      dbHelpers.completeDashboardCsvExportJobSuccess as unknown as ReturnType<
+        typeof vi.fn
+      >;
+
+    // Insert + schedule a job, but force completeSuccess to
+    // return false so we land in the lost-claim cleanup branch.
+    await dbHelpers.insertDashboardCsvExportJob({
+      id: "lost-after-put",
+      scopeId: SCOPE,
+      input: { exportType: "ownershipTile", tile: "reporting" },
+      status: "queued",
+      runnerVersion: DASHBOARD_CSV_EXPORT_RUNNER_VERSION,
+    });
+    completeSuccess.mockImplementationOnce(async () => false);
+
+    await runCsvExportJob("lost-after-put");
+
+    // The runner should have called storageDelete with the
+    // reconstructed key. Look for any call whose key includes
+    // the jobId.
+    const calls = storageDelete.mock.calls;
+    expect(
+      calls.some((args) =>
+        typeof args[0] === "string" && args[0].includes("lost-after-put")
+      )
+    ).toBe(true);
+  });
+});
+
+describe("dashboardCsvExportJobs — Codex P2: start fails fast when DB is unavailable", () => {
+  // We can't easily simulate DB-unavailable through the fake
+  // mock, but the helper's contract says it throws. This test
+  // overrides the mock once to throw, mirroring what the real
+  // helper does when getDb() returns null.
+  it("startCsvExportJob rejects when insert throws and does NOT schedule a runner", async () => {
+    const dbHelpers = await import("../../db/dashboardCsvExportJobs");
+    const insert = dbHelpers.insertDashboardCsvExportJob as unknown as ReturnType<
+      typeof vi.fn
+    >;
+    insert.mockImplementationOnce(async () => {
+      throw new Error(
+        "dashboardCsvExportJobs: database unavailable — cannot insert export job"
+      );
+    });
+
+    let runnerCalls = 0;
+    let schedulerCalls = 0;
+    const fakeRunner = async () => {
+      runnerCalls += 1;
+    };
+    const fakeScheduler = (cb: () => void) => {
+      schedulerCalls += 1;
+      cb();
+    };
+
+    await expect(
+      startCsvExportJob(
+        SCOPE,
+        { exportType: "ownershipTile", tile: "reporting" },
+        fakeRunner,
+        fakeScheduler
+      )
+    ).rejects.toThrow(/database unavailable/i);
+
+    expect(runnerCalls).toBe(0);
+    expect(schedulerCalls).toBe(0);
   });
 });
