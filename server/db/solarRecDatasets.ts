@@ -747,6 +747,19 @@ export async function getScopeContractScanVersion(scopeId: string) {
   return rows[0] ?? null;
 }
 
+/**
+ * Bump the scope's `latestCompletedJobId` freshness signal.
+ *
+ * PR #339 follow-up item 2 (2026-05-05) — replaced the previous
+ * `try { insert } catch { update }` pattern with a real MySQL
+ * upsert (`onDuplicateKeyUpdate`) wrapped in `withDbRetry`. The
+ * old shape would catch every insert failure (network errors,
+ * schema regressions, transient outages — not just unique-key
+ * conflicts) and silently fall through to the UPDATE, masking
+ * real DB faults that should propagate. The new shape lets non-
+ * conflict errors surface so callers can choose whether bump
+ * failure is best-effort.
+ */
 export async function bumpScopeContractScanJobVersion(
   scopeId: string,
   completedJobId: string
@@ -755,19 +768,23 @@ export async function bumpScopeContractScanJobVersion(
   if (!db) return;
 
   const { solarRecScopeContractScanVersion } = await import("../../drizzle/schema");
-  try {
-    await db.insert(solarRecScopeContractScanVersion).values({
-      scopeId,
-      latestCompletedJobId: completedJobId,
-    });
-  } catch {
-    await db
-      .update(solarRecScopeContractScanVersion)
-      .set({ latestCompletedJobId: completedJobId })
-      .where(eq(solarRecScopeContractScanVersion.scopeId, scopeId));
-  }
+  await withDbRetry("bump contract scan job version", () =>
+    db
+      .insert(solarRecScopeContractScanVersion)
+      .values({ scopeId, latestCompletedJobId: completedJobId })
+      .onDuplicateKeyUpdate({
+        set: { latestCompletedJobId: completedJobId },
+      })
+  );
 }
 
+/**
+ * Bump the scope's `latestOverrideAt` freshness signal.
+ *
+ * PR #339 follow-up item 2 (2026-05-05) — see the docstring on
+ * `bumpScopeContractScanJobVersion` above for the upsert+retry
+ * rationale.
+ */
 export async function bumpScopeContractScanOverrideVersion(
   scopeId: string,
   overrideAt: Date
@@ -776,17 +793,14 @@ export async function bumpScopeContractScanOverrideVersion(
   if (!db) return;
 
   const { solarRecScopeContractScanVersion } = await import("../../drizzle/schema");
-  try {
-    await db.insert(solarRecScopeContractScanVersion).values({
-      scopeId,
-      latestOverrideAt: overrideAt,
-    });
-  } catch {
-    await db
-      .update(solarRecScopeContractScanVersion)
-      .set({ latestOverrideAt: overrideAt })
-      .where(eq(solarRecScopeContractScanVersion.scopeId, scopeId));
-  }
+  await withDbRetry("bump contract scan override version", () =>
+    db
+      .insert(solarRecScopeContractScanVersion)
+      .values({ scopeId, latestOverrideAt: overrideAt })
+      .onDuplicateKeyUpdate({
+        set: { latestOverrideAt: overrideAt },
+      })
+  );
 }
 
 export async function failComputeRun(

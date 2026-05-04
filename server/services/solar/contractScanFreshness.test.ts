@@ -86,9 +86,11 @@ describe("contract-scan freshness bumps — router (PR #338 follow-up item 1)", 
     expect(slice).not.toBeNull();
     // Single-row rescan changed the latest scan-result row — bump
     // override-version with a fresh `new Date()` so the canonical
-    // financials hash advances. (Re-using `latestJob.id` for a
-    // job-version bump would be a no-op since it matches the row
-    // value already stored.)
+    // financials hash advances. Re-using `latestJob.id` for a
+    // job-version bump WOULD NOT change the financials hash
+    // because `computeFinancialsHash` reads `latestCompletedJobId`,
+    // not any per-row updatedAt column; the stored job-id value
+    // already equals `latestJob.id`.
     expect(slice!).toMatch(/bumpScopeContractScanOverrideVersion/);
     // Order: the bump must come AFTER `insertContractScanResult` so
     // a thrown insert never triggers a freshness advance.
@@ -137,20 +139,18 @@ describe("contract-scan freshness bumps — job runner (PR #338 follow-up item 1
     expect(bumpAfterCompletedCount).toBe(2);
   });
 
-  it("does NOT bump on `stopped` (cancelled job) — partial results are not a stable freshness anchor", () => {
-    // Walk the source: every `status: "stopped"` write must NOT be
-    // followed by a bump within a small window.
-    const stoppedIdx = code.indexOf('status: "stopped"');
-    expect(stoppedIdx).toBeGreaterThan(-1);
-    const trailingWindow = code.slice(stoppedIdx, stoppedIdx + 300);
-    expect(trailingWindow).not.toMatch(/bumpScopeContractScanJobVersion/);
+  it("does NOT bump after ANY `stopped` write (cancelled job) — partial results are not a stable freshness anchor", () => {
+    // PR #339 follow-up item 4 — pre-fix the test only checked
+    // the FIRST `status: "stopped"` occurrence; a future PR
+    // adding a bump after a second stopped-write would slip past.
+    assertNoBumpAfterEachStatus(code, "stopped", 300);
   });
 
-  it("does NOT bump on `failed` (error catch branch) — failures didn't update the result set", () => {
-    const failedIdx = code.indexOf('status: "failed"');
-    expect(failedIdx).toBeGreaterThan(-1);
-    const trailingWindow = code.slice(failedIdx, failedIdx + 400);
-    expect(trailingWindow).not.toMatch(/bumpScopeContractScanJobVersion/);
+  it("does NOT bump after ANY `failed` write — failures didn't update the result set", () => {
+    // The runner has multiple `failed` writes (missing
+    // credentials, DB unavailable, error catch branch). All of
+    // them must remain bump-free.
+    assertNoBumpAfterEachStatus(code, "failed", 400);
   });
 
   it("the bump call is best-effort (.catch with a console.warn) — runner does not throw out of completion", () => {
@@ -162,3 +162,33 @@ describe("contract-scan freshness bumps — job runner (PR #338 follow-up item 1
     expect(matches!.length).toBeGreaterThanOrEqual(2);
   });
 });
+
+/**
+ * PR #339 follow-up item 4 (2026-05-05). Walk every occurrence of
+ * `status: "<status>"` in the runner source and assert no
+ * `bumpScopeContractScanJobVersion` appears within `windowChars`
+ * after each. Iterating every occurrence catches a future PR that
+ * adds a bump after a second/third terminal-status write — the
+ * previous single-`indexOf` pattern only checked the first.
+ */
+function assertNoBumpAfterEachStatus(
+  source: string,
+  status: "failed" | "stopped",
+  windowChars: number
+): void {
+  const needle = `status: "${status}"`;
+  let from = 0;
+  let occurrences = 0;
+  while (true) {
+    const idx = source.indexOf(needle, from);
+    if (idx === -1) break;
+    occurrences++;
+    const window = source.slice(idx, idx + windowChars);
+    expect(window).not.toMatch(/bumpScopeContractScanJobVersion/);
+    from = idx + needle.length;
+  }
+  // Sanity: the runner must contain at least one write of this
+  // status — otherwise the assertion above is vacuously true and
+  // would silently pass under a refactor that renamed the literal.
+  expect(occurrences).toBeGreaterThan(0);
+}

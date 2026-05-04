@@ -350,21 +350,28 @@ export const solarRecContractScanRouter = t.router({
           message: `No contract scan result found for CSG ID ${input.csgId}`,
         });
       }
-      // PR #338 follow-up item 1 (2026-05-04). Bump the scope's
-      // override-version row so the canonical financials hash
+      // PR #338 follow-up item 1 + PR #339 follow-up item 3
+      // (2026-05-04 / 05-05). Bump the scope's override-version
+      // row so the canonical financials hash
       // (`computeFinancialsHash`) advances. Without this, slim KPI
-      // side-cache reads would keep returning pre-edit totals on the
-      // next Overview mount until something else mutates the scope's
-      // dataset versions. The bump is fire-and-forget — a failure to
-      // record the version doesn't roll back the override (the user
-      // already saw the success toast); we log + move on so the
-      // override itself stays committed.
+      // side-cache reads would keep returning pre-edit totals on
+      // the next Overview mount until something else mutates the
+      // scope's dataset versions.
+      //
+      // The bump is BEST-EFFORT, but we still `await` it:
+      //   - Awaiting ensures any immediate follow-up read in this
+      //     proc's response cycle (or a refetch fired right after
+      //     the mutation resolves) sees the new freshness signal.
+      //   - On failure, the `.catch(...)` logs and swallows so the
+      //     override itself stays committed — rolling back a
+      //     successful override on a freshness-bump fault would
+      //     surprise the user more than serving one stale read.
       await bumpScopeContractScanOverrideVersion(
         ctx.scopeId,
         result.overriddenAt
       ).catch((error) => {
         console.warn(
-          `[solarRecContractScanRouter.updateContractOverride] override-version bump failed for scope=${ctx.scopeId}:`,
+          `[contract-scan-freshness:bump-failed] kind=override scope=${ctx.scopeId}:`,
           error instanceof Error ? error.message : error
         );
       });
@@ -485,18 +492,29 @@ export const solarRecContractScanRouter = t.router({
         overriddenAt: null,
       });
 
-      // PR #338 follow-up item 1 (2026-05-04). A successful single-
-      // row rescan changed the latest scan-result row for this CSG.
-      // The heavy financials aggregator's `scanResultsHash` will
-      // change next read (its hash is a SHA over scan rows), but
-      // the canonical `computeFinancialsHash` for slim invalidation
-      // is bound to `latestCompletedJobId` / `latestOverrideAt`. A
-      // single-row rescan doesn't bump either by default — bump
-      // the override-version timestamp so the slim KPI side cache
-      // invalidates too. Using overrideVersion (not jobVersion)
-      // because re-using the same `latestJob.id` would be a no-op
-      // for `bumpScopeContractScanJobVersion` (the value matches
-      // what's already in the version row).
+      // PR #338 follow-up item 1 + PR #339 follow-up item 3
+      // (2026-05-04 / 05-05). A successful single-row rescan
+      // wrote a fresh `srSolarRecContractScanResults` row for
+      // this CSG, but it does NOT create a new completed job ID
+      // (the row hangs off `latestJob.id`, which is unchanged).
+      //
+      // Why override-version, not job-version:
+      //   `computeFinancialsHash` reads `latestCompletedJobId` —
+      //   not the scan-result rows themselves and not any
+      //   updated-at column. Calling
+      //   `bumpScopeContractScanJobVersion(scopeId, latestJob.id)`
+      //   would not change the financials hash because the
+      //   stored value already matches `latestJob.id`. The only
+      //   monotonic freshness timestamp the scope row currently
+      //   exposes is `latestOverrideAt`, so we reuse it. A single
+      //   rescan IS conceptually a manual data revision per
+      //   scope — same semantic class as a user override edit.
+      //
+      // Long-term: a clearer field like `latestManualRescanAt`
+      // or `latestScanResultRevisionAt` would carry the right
+      // intent without overloading the override timestamp. That
+      // requires a schema migration and is deliberately out of
+      // scope for this fix.
       const { bumpScopeContractScanOverrideVersion } = await import(
         "../db/solarRecDatasets"
       );
@@ -505,7 +523,7 @@ export const solarRecContractScanRouter = t.router({
         new Date()
       ).catch((error) => {
         console.warn(
-          `[solarRecContractScanRouter.rescanSingleContract] scan-version bump failed for scope=${ctx.scopeId}:`,
+          `[contract-scan-freshness:bump-failed] kind=rescan scope=${ctx.scopeId}:`,
           error instanceof Error ? error.message : error
         );
       });
