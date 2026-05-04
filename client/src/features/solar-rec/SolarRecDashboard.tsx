@@ -149,6 +149,7 @@ import {
   timestampForCsvFileName,
   toCsvFileSlug,
   triggerCsvDownload,
+  triggerUrlDownload,
 } from "@/solar-rec-dashboard/lib/csvIo";
 import { base64ToBytes, bytesToBase64 } from "@/solar-rec-dashboard/lib/binaryEncoding";
 // Phase 5e (2026-04-29): `lazyDataset` infrastructure deleted —
@@ -3393,21 +3394,90 @@ export default function SolarRecDashboard() {
   // compliantPerformanceRatioRows, compliantPerformanceRatioSummary, compliantReportTotalPages/visible*,
   // downloadPerformanceRatioCsv, downloadCompliantPerformanceRatioCsv
   // — ALL moved to @/solar-rec-dashboard/components/PerformanceRatioTab
-  // Server-side CSV export: ownership-tile filter runs entirely
-  // server-side. The browser never holds the heavy ownershipRows[]
-  // JSON; it just downloads the CSV string the server returns. First
-  // click is correct (no double-click required, no false-empty
-  // file). User feedback via sonner toast — never window.alert.
+  // Background CSV export — the export work runs server-side as a
+  // job: client → `startDashboardCsvExport` (mutation, returns
+  // `{ jobId }`) → poll `getDashboardCsvExportJobStatus` until
+  // `succeeded`/`failed` → navigate `<a download>` to the artifact
+  // URL. The MB-scale CSV no longer passes through the tRPC
+  // response; the browser never holds the heavy aggregator's row
+  // arrays in JS heap.
   //
   // CSV-click does NOT flip `hasUserInteractedWithDashboard`. The
-  // export procedure is self-contained — it builds + caches the
-  // overview aggregator on the SERVER, returns only the CSV string,
-  // and never seeds the browser with the heavy detail rows. Flipping
-  // the interaction flag here would silently enable
-  // `getDashboardOverviewSummary` / `getDashboardOfflineMonitoring` /
-  // `getDashboardChangeOwnership` on the next render, dragging
-  // multi-MB JSON payloads into the browser as a side-effect of an
-  // export click. Tab navigation remains the single trigger.
+  // export job is fully server-side and the start/status responses
+  // are bounded; flipping the interaction flag here would silently
+  // enable `getDashboardOverviewSummary` /
+  // `getDashboardOfflineMonitoring` / `getDashboardChangeOwnership`
+  // on the next render, dragging multi-MB JSON payloads into the
+  // browser as a side-effect of an export click. Tab navigation
+  // remains the single trigger.
+  const startDashboardCsvExport =
+    solarRecTrpc.solarRecDashboard.startDashboardCsvExport.useMutation();
+
+  /**
+   * Drive an export job to completion. Starts the job, polls status
+   * up to `CSV_EXPORT_POLL_MAX_MS` (~2 minutes — the heavy aggregator
+   * cold path can take 30s+), and either downloads the artifact via
+   * `triggerUrlDownload`, surfaces a "no rows" toast, or surfaces a
+   * failure toast. The single `toastId` is reused for the loading +
+   * terminal state so the user only ever sees one toast for the
+   * click.
+   */
+  const runDashboardCsvExport = async (params: {
+    input: Parameters<typeof startDashboardCsvExport.mutateAsync>[0];
+    label: string;
+    noun: "system" | "project";
+    failureMessage: string;
+    consoleTag: string;
+    toastId: string | number;
+  }) => {
+    const CSV_EXPORT_POLL_INTERVAL_MS = 1500;
+    const CSV_EXPORT_POLL_MAX_MS = 120_000;
+    try {
+      const { jobId } = await startDashboardCsvExport.mutateAsync(params.input);
+      const startedAt = Date.now();
+      while (Date.now() - startedAt < CSV_EXPORT_POLL_MAX_MS) {
+        const status =
+          await solarRecTrpcUtils.solarRecDashboard.getDashboardCsvExportJobStatus.fetch(
+            { jobId }
+          );
+        if (status.status === "succeeded") {
+          if ((status.rowCount ?? 0) === 0 || !status.url) {
+            toast.error(`No ${params.noun}s match ${params.label}.`, {
+              id: params.toastId,
+            });
+            return;
+          }
+          triggerUrlDownload(status.fileName ?? `${params.label}.csv`, status.url);
+          toast.success(
+            `Exported ${status.rowCount} ${params.noun}${status.rowCount === 1 ? "" : "s"} (${params.label}).`,
+            { id: params.toastId }
+          );
+          return;
+        }
+        if (status.status === "failed") {
+          toast.error(params.failureMessage, { id: params.toastId });
+          console.error(`[${params.consoleTag}]`, status.error ?? "unknown");
+          return;
+        }
+        if (status.status === "notFound") {
+          // TTL pruned the job before we could read it. Surface as a
+          // failure rather than an infinite poll.
+          toast.error(params.failureMessage, { id: params.toastId });
+          console.error(`[${params.consoleTag}] job expired before completion`);
+          return;
+        }
+        await new Promise((resolve) =>
+          setTimeout(resolve, CSV_EXPORT_POLL_INTERVAL_MS)
+        );
+      }
+      toast.error(params.failureMessage, { id: params.toastId });
+      console.error(`[${params.consoleTag}] poll timed out after ${CSV_EXPORT_POLL_MAX_MS}ms`);
+    } catch (error) {
+      toast.error(params.failureMessage, { id: params.toastId });
+      console.error(`[${params.consoleTag}]`, error);
+    }
+  };
+
   const downloadOwnershipCountTileCsv = async (
     tile: "reporting" | "notReporting" | "terminated"
   ) => {
@@ -3420,57 +3490,28 @@ export default function SolarRecDashboard() {
     const toastId = toast.loading(
       `Preparing ${tileLabel} ownership-status export…`
     );
-    try {
-      const result =
-        await solarRecTrpcUtils.solarRecDashboard.exportOwnershipTileCsv.fetch({
-          tile,
-        });
-      if (result.rowCount === 0) {
-        toast.error(
-          `No systems match the ${tileLabel} ownership-status tile.`,
-          { id: toastId }
-        );
-        return;
-      }
-      triggerCsvDownload(result.fileName, result.csv);
-      toast.success(
-        `Exported ${result.rowCount} system${result.rowCount === 1 ? "" : "s"} (${tileLabel}).`,
-        { id: toastId }
-      );
-    } catch (error) {
-      toast.error("Failed to export ownership-status CSV.", { id: toastId });
-      console.error("[ownership-csv-export]", error);
-    }
+    await runDashboardCsvExport({
+      input: { exportType: "ownershipTile", tile },
+      label: `${tileLabel} ownership-status`,
+      noun: "system",
+      failureMessage: "Failed to export ownership-status CSV.",
+      consoleTag: "ownership-csv-export",
+      toastId,
+    });
   };
 
-  // Same no-flip rule as `downloadOwnershipCountTileCsv` above —
-  // the CSV-export click must not seed heavy mount-tier queries.
   const downloadChangeOwnershipCountTileCsv = async (
     status: ChangeOwnershipStatus
   ) => {
     const toastId = toast.loading(`Preparing ${status} export…`);
-    try {
-      const result =
-        await solarRecTrpcUtils.solarRecDashboard.exportChangeOwnershipTileCsv.fetch(
-          { status }
-        );
-      if (result.rowCount === 0) {
-        toast.error(`No projects match the ${status} status.`, {
-          id: toastId,
-        });
-        return;
-      }
-      triggerCsvDownload(result.fileName, result.csv);
-      toast.success(
-        `Exported ${result.rowCount} project${result.rowCount === 1 ? "" : "s"} (${status}).`,
-        { id: toastId }
-      );
-    } catch (error) {
-      toast.error("Failed to export Change-of-Ownership CSV.", {
-        id: toastId,
-      });
-      console.error("[change-ownership-csv-export]", error);
-    }
+    await runDashboardCsvExport({
+      input: { exportType: "changeOwnershipTile", status },
+      label: status,
+      noun: "project",
+      failureMessage: "Failed to export Change-of-Ownership CSV.",
+      consoleTag: "change-ownership-csv-export",
+      toastId,
+    });
   };
 
   // downloadChangeOwnershipDetailFilteredCsv — moved to @/solar-rec-dashboard/components/ChangeOwnershipTab
