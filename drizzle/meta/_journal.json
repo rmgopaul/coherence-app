@@ -379,6 +379,13 @@
       "when": 1777419130396,
       "tag": "0057_add_dataset_upload_jobs",
       "breakpoints": true
+    },
+    {
+      "idx": 58,
+      "version": "5",
+      "when": 1777930836980,
+      "tag": "0058_add_dashboard_csv_export_jobs",
+      "breakpoints": true
     }
   ]
 }

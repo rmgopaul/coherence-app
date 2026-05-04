@@ -10,6 +10,7 @@ import {
   index,
   double,
   boolean,
+  json,
 } from "drizzle-orm/mysql-core";
 
 export const productionReadings = mysqlTable(
@@ -1657,3 +1658,126 @@ export type DatasetUploadJobError =
   typeof datasetUploadJobErrors.$inferSelect;
 export type InsertDatasetUploadJobError =
   typeof datasetUploadJobErrors.$inferInsert;
+
+// ────────────────────────────────────────────────────────────────────
+// Dashboard CSV export jobs — Phase 6 PR-A.
+//
+// Replaces the in-memory `Map` registry in
+// `server/services/solar/dashboardCsvExportJobs.ts` (originally
+// shipped in PR #346 as transitional). The in-memory shape:
+//   - dies on every process restart (deploy / OOM), orphaning any
+//     in-flight jobs and forcing PR #352's "notFound is retryable"
+//     workaround;
+//   - has no story for multi-instance deploys (a poll routed to a
+//     different process than the worker that started the job
+//     reads `notFound`).
+//
+// This DB-backed table closes both gaps. Mirrors the
+// `datasetUploadJobs` shape (atomic counter columns, status enum
+// stored as varchar, indexed by `(scopeId, status)` for
+// active-job lookup). Adds **claim fields** for cross-process
+// safety: a runner only operates on a row whose `claimedBy ===
+// own process id` AND whose `claimedAt` is recent enough to be
+// considered live. Stale claims (a process restarted mid-job) are
+// re-claimable by the next runner once `claimedAt` exceeds the
+// heartbeat threshold.
+//
+// Status state machine:
+//   queued    — row created, no worker has claimed it yet
+//   running   — claimedBy + claimedAt set; worker is mid-flight
+//   succeeded — completedAt stamped; fileName + artifactUrl
+//               populated when rowCount > 0, both null on
+//               empty-result jobs
+//   failed    — completedAt stamped; errorMessage set
+//
+// Discriminated input is stored as JSON. Validated by the Zod
+// schema on `startDashboardCsvExport.input(...)` at insert time;
+// the runner re-validates on read so a future schema change
+// doesn't crash the worker on stale rows.
+//
+// **Phase 6 PR-A is schema-only.** PR-B will swap the in-memory
+// `Map` for this table. PR #352's `notFound` retry workaround
+// reverts to terminal semantics in PR-B because notFound from a
+// DB-backed registry genuinely means the job was pruned, never
+// "process restarted."
+// ────────────────────────────────────────────────────────────────────
+
+export const dashboardCsvExportJobs = mysqlTable(
+  "dashboardCsvExportJobs",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    scopeId: varchar("scopeId", { length: 64 }).notNull(),
+    // Discriminated input: see DashboardCsvExportInput in
+    // `server/services/solar/dashboardCsvExportJobs.ts`. Today's
+    // shape is one of:
+    //   { exportType: "ownershipTile", tile: "reporting" | "notReporting" | "terminated" }
+    //   { exportType: "changeOwnershipTile", status: ChangeOwnershipStatus }
+    // Stored as JSON so future export types don't require a
+    // schema migration; the worker re-validates the shape on
+    // read.
+    input: json("input").notNull(),
+    // Status state machine values: "queued" | "running" |
+    // "succeeded" | "failed". Stored as varchar (not mysqlEnum)
+    // so adding a state in a code-only PR doesn't require a
+    // schema migration; matches the `datasetUploadJobs` choice.
+    status: varchar("status", { length: 32 }).default("queued").notNull(),
+    // Lifecycle timestamps.
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    startedAt: timestamp("startedAt"),
+    completedAt: timestamp("completedAt"),
+    // Result fields (populated on success). Both fileName +
+    // artifactUrl are null on empty-result (rowCount=0) jobs:
+    // there's nothing for the client to download, only a "no rows
+    // match" toast.
+    fileName: varchar("fileName", { length: 500 }),
+    artifactUrl: text("artifactUrl"),
+    rowCount: int("rowCount"),
+    csvBytes: int("csvBytes"),
+    // Failure field (populated on failed). Mirrors the existing
+    // `errorMessage` convention from `datasetUploadJobs`.
+    errorMessage: text("errorMessage"),
+    // Cross-process claim fields. PR-B's runner sets `claimedBy`
+    // to a stable process identifier (e.g. `pid-${pid}-host-${hostname}`)
+    // before transitioning queued → running, and refreshes
+    // `claimedAt` periodically as a liveness heartbeat. A
+    // separate sweeper (or the next-claimer's start path) treats
+    // a stale `claimedAt` as evidence the prior process died and
+    // re-claims the row. PR-A reserves the columns but does not
+    // wire any runner logic.
+    claimedBy: varchar("claimedBy", { length: 128 }),
+    claimedAt: timestamp("claimedAt"),
+    // Runner version marker — every status snapshot includes the
+    // version that wrote the row, mirroring `_runnerVersion` on
+    // every dashboard tRPC response. Lets a deploy recognize
+    // stale-shape rows (e.g. `input` JSON written by a prior
+    // runner version that the new code can't decode).
+    runnerVersion: varchar("runnerVersion", { length: 64 }).notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    // Active-job lookup: "what's queued or running for this scope?"
+    // — bounds the worker's claim search.
+    scopeStatusCreatedIdx: index(
+      "dashboard_csv_export_jobs_scope_status_created_idx"
+    ).on(table.scopeId, table.status, table.createdAt),
+    // TTL prune: "what's terminal AND older than X?" — supports
+    // the periodic cleanup sweep that retires the in-memory
+    // `pruneExpired` helper.
+    completedAtIdx: index(
+      "dashboard_csv_export_jobs_completed_at_idx"
+    ).on(table.completedAt),
+    // Stale-claim detection: "what's running with a claim older
+    // than the heartbeat threshold?" — supports the cross-process
+    // re-claim path. Status comes first so the index can satisfy
+    // a `WHERE status = 'running' AND claimedAt < ?` predicate
+    // efficiently.
+    statusClaimedAtIdx: index(
+      "dashboard_csv_export_jobs_status_claimed_at_idx"
+    ).on(table.status, table.claimedAt),
+  })
+);
+
+export type DashboardCsvExportJob =
+  typeof dashboardCsvExportJobs.$inferSelect;
+export type InsertDashboardCsvExportJob =
+  typeof dashboardCsvExportJobs.$inferInsert;
