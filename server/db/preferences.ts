@@ -142,13 +142,20 @@ export async function getSolarRecDashboardPayload(userId: number, storageKey: st
  * on prod).
  *
  * The supplied prefix may contain SQL `LIKE` metacharacters (`_`
- * and `%`) that we want treated literally — e.g. the snapshot-log
+ * and `%`) that must be treated literally — e.g. the snapshot-log
  * prefix `snapshot_logs_v1_chunk_` contains underscores that
- * should match literal `_`, not "any single character." We
- * backslash-escape those metacharacters AND emit an explicit
- * `ESCAPE '\\'` clause so the semantics are independent of the
- * connection's `sql_mode` (a `NO_BACKSLASH_ESCAPES` mode would
- * otherwise treat `\_` as a literal two-character sequence).
+ * should match literal `_`, not "any single character."
+ *
+ * **PR #354 follow-up (Codex P3):** the escape character is `!`,
+ * not `\`. Pre-fix the helper used `ESCAPE '\\'` — in JavaScript
+ * that's `ESCAPE '\'` at the SQL wire (one backslash inside
+ * single quotes), which under MySQL/TiDB default `sql_mode`
+ * (`\` is the string-literal escape character) reads as an
+ * unterminated string literal: the `\` escapes the closing
+ * quote. Switching to `!` removes the dependency on `sql_mode`
+ * because `!` has no special meaning in any SQL string-literal
+ * grammar. We escape `!`, `%`, and `_` in the user-supplied
+ * prefix; the resulting LIKE pattern gets `ESCAPE '!'`.
  */
 export async function listSolarRecDashboardStorageByPrefix(
   userId: number,
@@ -164,14 +171,14 @@ export async function listSolarRecDashboardStorageByPrefix(
   const scopeId = await resolveScopeIdFromUserId(userId);
   const maxRows = options.maxRows ?? 256;
 
-  // Escape `_`, `%`, and the escape character itself so the
-  // user-supplied prefix matches as a literal startsWith. Append
-  // the `%` wildcard ourselves and emit an explicit `ESCAPE '\\'`
+  // Escape `!` (the escape char itself) FIRST so we don't
+  // double-escape on the next two passes, then `%` and `_`. Append
+  // the `%` wildcard ourselves and emit an explicit `ESCAPE '!'`
   // clause — see JSDoc above for the sql_mode rationale.
   const escaped = storageKeyPrefix
-    .replace(/\\/g, "\\\\")
-    .replace(/%/g, "\\%")
-    .replace(/_/g, "\\_");
+    .replace(/!/g, "!!")
+    .replace(/%/g, "!%")
+    .replace(/_/g, "!_");
   const likePattern = `${escaped}%`;
 
   const rows = await withDbRetry(
@@ -187,7 +194,7 @@ export async function listSolarRecDashboardStorageByPrefix(
         .where(
           and(
             eq(solarRecDashboardStorage.scopeId, scopeId),
-            sql`${solarRecDashboardStorage.storageKey} LIKE ${likePattern} ESCAPE '\\'`
+            sql`${solarRecDashboardStorage.storageKey} LIKE ${likePattern} ESCAPE '!'`
           )
         )
         .orderBy(
