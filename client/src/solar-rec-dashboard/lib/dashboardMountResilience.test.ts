@@ -299,6 +299,23 @@ describe("Solar REC dashboard mount: financials gating (PR #332 follow-up item 8
     expect(code).toMatch(/kpiDataAvailable\s*:\s*true/);
     expect(code).toMatch(/kpiDataAvailable\s*:\s*false/);
   });
+
+  it("invalidates the slim KPI query whenever heavy financials data updates (PR #334 follow-up item 2)", () => {
+    // The 60s staleTime on `getDashboardFinancialKpiSummary` will
+    // otherwise keep returning a stale snapshot across a single
+    // Overview ↔ Financials navigation cycle. The fix: a useEffect
+    // gated on `financialsQuery.dataUpdatedAt` that calls the
+    // utils' `.invalidate()` for the slim KPI proc. Pinning the
+    // textual presence here so a future refactor doesn't quietly
+    // drop the invalidation.
+    expect(code).toMatch(
+      /invalidateFinancialKpiSummary\s*=\s*useCallback/
+    );
+    expect(code).toMatch(
+      /getDashboardFinancialKpiSummary\.invalidate\s*\(/
+    );
+    expect(code).toMatch(/financialsQuery\.dataUpdatedAt/);
+  });
 });
 
 describe("Solar REC dashboard mount: slim summary discriminator (PR #332 follow-up item 4)", () => {

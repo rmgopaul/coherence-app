@@ -3074,12 +3074,30 @@ export default function SolarRecDashboard() {
   // placeholder when slim. ownershipRows stays unavailable on slim
   // and must not be used for export — server-side
   // `exportOwnershipTileCsv` is the canonical path.
-  type HeavyOverviewSummary = OverviewSummaryData & { kind: "heavy" };
+  type HeavyOverviewSummary = OverviewSummaryData & {
+    kind: "heavy";
+    /**
+     * Portfolio-wide terminated count from the slim summary, kept
+     * alongside the heavy payload so OverviewTab can render a
+     * single tile expression that doesn't have to discriminate
+     * between data sources for the fallback. PR #334 follow-up
+     * item 4 (option B, 2026-05-02).
+     */
+    terminatedSystems: number;
+  };
   type SlimOverviewSummary = {
     kind: "slim";
     totalSystems: number;
     reportingSystems: number;
     reportingPercent: number | null;
+    /**
+     * Portfolio-wide terminated count surfaced from the slim
+     * summary's `summaryCounts.terminated`. Used by Overview's
+     * Terminated tile when the heavy aggregator hasn't loaded —
+     * the Part-II-scoped breakdown isn't available on slim per
+     * the foundation contract (PR #334 follow-up item 4 option B).
+     */
+    terminatedSystems: number;
     smallSystems: number;
     largeSystems: number;
     unknownSizeSystems: number;
@@ -3099,6 +3117,7 @@ export default function SolarRecDashboard() {
       totalSystems: 0,
       reportingSystems: 0,
       reportingPercent: null,
+      terminatedSystems: 0,
       smallSystems: 0,
       largeSystems: 0,
       unknownSizeSystems: 0,
@@ -3115,7 +3134,13 @@ export default function SolarRecDashboard() {
   );
   const summary = useMemo<DashboardSummaryProjection>(() => {
     if (overviewSummaryQuery.data) {
-      return { ...overviewSummaryQuery.data, kind: "heavy" };
+      return {
+        ...overviewSummaryQuery.data,
+        kind: "heavy",
+        // Heavy aggregator doesn't carry portfolio terminated; pull
+        // from slim if available, fall back to 0.
+        terminatedSystems: slimSummary?.terminatedSystems ?? 0,
+      };
     }
     if (!slimSummary) return EMPTY_SLIM_SUMMARY;
     return {
@@ -3123,6 +3148,7 @@ export default function SolarRecDashboard() {
       totalSystems: slimSummary.totalSystems,
       reportingSystems: slimSummary.reportingSystems,
       reportingPercent: slimSummary.reportingPercent,
+      terminatedSystems: slimSummary.terminatedSystems,
       smallSystems: slimSummary.smallSystems,
       largeSystems: slimSummary.largeSystems,
       unknownSizeSystems: slimSummary.unknownSizeSystems,
@@ -4742,6 +4768,35 @@ const financialKpiSummaryQuery =
     }
   );
 
+// PR #334 follow-up item 2 (2026-05-02) — drop the cached slim
+// KPI query so the next Overview mount refetches against the
+// freshly-rewritten side cache. Wired into FinancialsTab's
+// saveOverride / single-row rescan / batch rescan flows AND
+// auto-fired whenever the heavy `getDashboardFinancials` query
+// returns new data (Financials/Pipeline tabs trigger it).
+// Server-side cache freshness is item 1; this is the
+// defense-in-depth on the client cache (which has a 60s
+// staleTime that would otherwise keep returning a stale result
+// across a single tab navigation cycle).
+const invalidateFinancialKpiSummary = useCallback(
+  () =>
+    solarRecTrpcUtils.solarRecDashboard.getDashboardFinancialKpiSummary.invalidate(),
+  [solarRecTrpcUtils],
+);
+// Heavy financials refetched (manual or react-query background) →
+// the side cache was just rewritten by the server. Invalidate the
+// slim query so the cached "stale-true" or pre-edit values are
+// dropped before the next Overview activation reads them.
+const lastHeavyFinancialsDataUpdatedAt = financialsQuery.dataUpdatedAt;
+useEffect(() => {
+  if (lastHeavyFinancialsDataUpdatedAt > 0) {
+    void invalidateFinancialKpiSummary();
+  }
+}, [
+  invalidateFinancialKpiSummary,
+  lastHeavyFinancialsDataUpdatedAt,
+]);
+
 // Task 5.7 PR-B (2026-04-26): getContractScanResultsByCsgIds moved
 // from main `abpSettlementRouter` to standalone `contractScan` —
 // dashboard already imports `solarRecTrpc` (PR #110) so this is a
@@ -5581,6 +5636,9 @@ const aiDataContext = useMemo(() => {
                     contractScanError={contractScanResultsQuery.error}
                     contractScanRefetch={contractScanResultsQuery.refetch}
                     financialsRefetch={financialsQuery.refetch}
+                    invalidateFinancialKpiSummary={
+                      invalidateFinancialKpiSummary
+                    }
                     financialCsgIds={financialCsgIds}
                     financialsDebug={financialsQuery.data?.debug ?? null}
                     localOverrides={localOverrides}

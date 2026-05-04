@@ -650,25 +650,59 @@ The 18 dataset keys (`DatasetKey` union in
 
 Each maps 1:1 to a `srDs*` table in `drizzle/schemas/solar.ts`.
 
-### Wire payload contracts (max sizes the server will ship)
+### Wire payload contracts (target architecture vs. transitional reality)
+
+**Target architecture: every dashboard tRPC response stays under 1
+MB uncompressed.** The default-mount fan-out is enforced by
+`server/_core/dashboardResponseGuard.ts`'s
+`dashboardProcedure(...)` middleware (1 MB budget,
+`DASHBOARD_RESPONSE_LIMIT_BYTES`-tunable, throw in dev/test, warn
+in prod). Bounded responses look like this:
 
 | Endpoint | Returns | Max size |
 |---|---|---|
-| `getSystemSnapshot` | Pre-computed system records | ~200 KB |
+| `getDashboardSummary` (slim mount summary) | Foundation counts + size buckets + ownership tile + change-ownership rollup | ~5 KB |
+| `getDashboardFinancialKpiSummary` (slim, cache-only) | 4 Overview financial-tile sums + `available` flag | <200 B |
 | `getDatasetSummariesAll` | Counts + metadata for all 18 datasets | ~5 KB |
 | `getDatasetRowsPage` | One page of `srDs*` rows | ~30-300 KB |
-| `getDatasetCsv` | Server-built CSV from paginated reads | ≤25 MB |
 | `getDataset` (per-key chunk-pointer reader) | One chunk of a chunked-CSV blob | ≤250 KB per call |
 | `getDatasetCloudStatuses` | Recoverability per dataset | ~10 KB |
 | `debugDatasetPersistenceRaw` | Raw rows from every layer + verdict | ~2 KB |
 | `getDashboard<TabName>Aggregates` (DeliveryTracker / TrendDeliveryPace / TrendsProduction / ContractVintage / AppPipelineMonthly / AppPipelineCashFlow / PerformanceRatio / Forecast / Financials) | Per-tab aggregate result | ~10–500 KB |
 
-**No tRPC response in the dashboard data path exceeds 1 MB
-uncompressed.** The 50–150 MB responses that caused the 2026-04-26
-Chrome tab OOM are eliminated. The legacy `getDatasetAssembled`
-batch procedure (the only codepath that could exceed the cap) was
-removed in Task 5.14 PR-6 (#175); cold-cache hydration now always
-takes the per-key `getDataset` route, capped at 250 KB per chunk.
+**Transitional reality: 7 procedures still ship oversized
+responses.** They live in `DASHBOARD_OVERSIZE_ALLOWLIST`
+(`server/_core/dashboardResponseGuard.ts`) and are accepted as
+known regressions in warn mode. None of them fire on Overview
+default mount — they're scoped behind tab-active gates +
+`hasUserInteractedWithDashboard`. Each entry is a debt item with a
+named replacement plan:
+
+| Allowlisted procedure | Wire shape today | Replacement |
+|---|---|---|
+| `solarRecDashboard.getSystemSnapshot` | Full pre-computed `SystemRecord[]` (~26 MB on prod) | Paginated `getDashboardSystemsPage` + a derived `solarRecDashboardSystemFacts` table; tab-specific reads target only the columns they need. |
+| `solarRecDashboard.getDashboardOverviewSummary` | Heavy summary embedding `ownershipRows: OwnershipOverviewExportRow[]` (~5–15 MB) | Slim `getDashboardSummary` (already shipped, default mount) + a paginated `getDashboardOwnershipRowsPage` for the detail table. CSV export already runs server-side via `exportOwnershipTileCsv` (also allowlisted; see below). |
+| `solarRecDashboard.getDashboardChangeOwnership` | Per-project `rows: ChangeOwnershipExportRow[]` (~19 MB) | Slim Change-Ownership rollup (already in `getDashboardSummary`) + paginated `getDashboardChangeOwnershipRowsPage`. |
+| `solarRecDashboard.getDashboardOfflineMonitoring` | Per-system maps keyed by ~21k systems (`monitoringDetailsBySystemKey` etc.) | Paginated `getDashboardMonitoringDetailsPage` + per-system endpoint for drill-in. |
+| `solarRecDashboard.getDatasetCsv` | Full CSV string built in memory (≤25 MB hard cap) | Streaming HTTP export OR background artifact job — see streaming/background note below. |
+| `solarRecDashboard.exportOwnershipTileCsv` | CSV string from heavy aggregator's row set (MB-scale on prod) | Mutation enqueues an export job → server streams CSV rows directly to S3 under `<scope>/exports/<jobId>.csv` → client polls + downloads via presigned URL. PR #334 added the no-side-effect invariant on the client click handler; the streaming/background pipeline itself is NOT yet implemented. |
+| `solarRecDashboard.exportChangeOwnershipTileCsv` | Same shape as above against `getDashboardChangeOwnership.rows` | Same streaming/background plan as `exportOwnershipTileCsv`. |
+
+**These export procs do NOT actually stream or background-export
+today.** They run the heavy aggregator on the server, build the
+CSV string in memory, and return it through the tRPC single-
+response shape. The improvement vs. PR #332 is scoped: the client
+no longer hydrates the multi-MB JSON detail rows into the browser,
+but the server still builds the full CSV string and sends it as a
+single response. Treat the entries as transitional debt — a future
+PR replaces them with the mutation-enqueued / S3-streamed /
+artifact-URL path described above. The plan lives inline on the
+proc docstrings (`server/_core/solarRecDashboardRouter.ts`).
+
+The legacy `getDatasetAssembled` batch procedure (the worst
+default-mount offender, 50–150 MB on prod) was removed in Task
+5.14 PR-6 (#175). Cold-cache hydration now always takes the
+per-key `getDataset` route capped at 250 KB per chunk.
 
 ### Tabs migration — DONE
 
@@ -853,14 +887,15 @@ expected post-upload state even with no chunked blob present.
 
 ### Hard rules
 
-1. **No tRPC procedure is allowed to materialize a full `CsvRow[]`
-   greater than 5,000 rows in memory** for wire-payload purposes.
-   Use `loadDatasetRowsPage` for pagination or `loadDatasetRows`
-   only when the result is consumed in-process by an aggregator
-   that itself returns a small result. The grandfather clause for
-   `getDatasetAssembled` is gone — the procedure was removed in
-   Task 5.14 PR-6 (#175). Cold-cache hydration now reads chunks via
-   the per-key `getDataset` route (250 KB cap per call).
+1. **No NEW tRPC procedure is allowed to materialize a full
+   `CsvRow[]` greater than 5,000 rows in memory** for wire-payload
+   purposes. Use `loadDatasetRowsPage` for pagination or
+   `loadDatasetRows` only when the result is consumed in-process
+   by an aggregator that itself returns a small result. Existing
+   row-materializing procs are listed in
+   `DASHBOARD_OVERSIZE_ALLOWLIST` and tracked for migration; do
+   not extend the allowlist without an inline replacement plan
+   that names the streaming/paginated/backgrounded successor.
 2. **No client tab is allowed to read `datasets[key].rows` or
    `datasets[key].rows.length` for ANY of the 18 dataset keys.** Use
    `getDatasetSummariesAll` for counts, `getDatasetRowsPage` /
@@ -875,3 +910,22 @@ expected post-upload state even with no chunked blob present.
 4. **No silent error swallowing in persistence paths.** `console.warn`
    is for normal-but-noteworthy events; persistence failures are
    `console.error` and surface to the client response.
+5. **Default Overview mount must not enable any allowlisted heavy
+   procedure** (`getSystemSnapshot`, `getDashboardOverviewSummary`,
+   `getDashboardChangeOwnership`, `getDashboardOfflineMonitoring`,
+   `getDashboardFinancials`, `getDatasetCsv`). All six are gated
+   behind tab-active flags + `hasUserInteractedWithDashboard` (or
+   the Financials/Pipeline tab specifically, in the case of
+   `getDashboardFinancials`). The Overview mount path reads only
+   `getDashboardSummary` + `getDashboardFinancialKpiSummary` (slim,
+   cache-only). Regression rails live in
+   `client/src/solar-rec-dashboard/lib/dashboardMountResilience.test.ts`.
+6. **CSV export procs do not flip
+   `hasUserInteractedWithDashboard`.** A CSV-tile click is a
+   server-side aggregation; letting it seed the interaction flag
+   would silently enable the heavy mount-tier queries on the next
+   render. The download handlers in `SolarRecDashboard.tsx`
+   (`downloadOwnershipCountTileCsv`,
+   `downloadChangeOwnershipCountTileCsv`) intentionally do NOT
+   call `setHasUserInteractedWithDashboard`. Future export
+   handlers must follow the same rule.
