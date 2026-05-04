@@ -184,6 +184,10 @@ describe("startDashboardJobMetric — reserved-field protection", () => {
     // heapDeltaBytes is computed from the real heap samples; just
     // confirm the colliding -3 didn't survive.
     expect(payload.heapDeltaBytes).not.toBe(-3);
+    // `error` is reserved on success too — context.error must not
+    // survive into the success metric envelope (would otherwise
+    // confuse log filters that key on `error` presence).
+    expect(payload.error).toBeUndefined();
     // Non-reserved context survives.
     expect(payload.legitimateContextField).toBe("preserved");
   });
@@ -228,5 +232,37 @@ describe("startDashboardJobMetric — reserved-field protection", () => {
     metric.fail(new Error("real error"), { error: "extra-attacker" });
     const payload = parseMetricLine(String(errorSpy.mock.calls[0][0]));
     expect(payload.error).toBe("real error");
+  });
+
+  it("strips a context.error field from finish() payloads (error is always reserved)", () => {
+    // Pre-fix the runtime only wrote `payload.error` when the
+    // runtime had an error to write. On finish() that branch is
+    // skipped, so a caller-supplied `context.error` would survive
+    // unchanged into the success metric. RESERVED_METRIC_KEYS
+    // includes "error" and the contract is "always reserved" — on
+    // success, the field must be ABSENT, never carry caller noise
+    // that downstream filters might mistake for a failure signal.
+    const metric = startDashboardJobMetric({
+      prefix: "[test]",
+      jobId: "real-job-id",
+      context: { error: "context-attacker" },
+    });
+    metric.finish();
+    const payload = parseMetricLine(String(logSpy.mock.calls[0][0]));
+    expect(payload.error).toBeUndefined();
+    expect("error" in payload).toBe(false);
+  });
+
+  it("strips an extra.error field from finish() payloads (error is always reserved)", () => {
+    const metric = startDashboardJobMetric({
+      prefix: "[test]",
+      jobId: "real-job-id",
+    });
+    metric.finish({ error: "extra-attacker", rowCount: 42 });
+    const payload = parseMetricLine(String(logSpy.mock.calls[0][0]));
+    expect(payload.error).toBeUndefined();
+    expect("error" in payload).toBe(false);
+    // Non-reserved extras still survive.
+    expect(payload.rowCount).toBe(42);
   });
 });
