@@ -1437,7 +1437,15 @@ export default function SolarRecDashboard() {
       refetchOnReconnect: true,
     });
   const datasetSummariesByKey = useMemo(() => {
-    const map: Partial<Record<string, { rowCount: number | null; byteCount: number | null; cloudStatus: "synced" | "failed" | "missing"; lastUpdated: string | null; isRowBacked: boolean }>> = {};
+    const map: Partial<Record<string, {
+      rowCount: number | null;
+      byteCount: number | null;
+      cloudStatus: "synced" | "failed" | "missing";
+      lastUpdated: string | null;
+      isRowBacked: boolean;
+      lastUploadFileName: string | null;
+      lastUploadCompletedAt: string | null;
+    }>> = {};
     if (datasetSummariesQuery.data?.summaries) {
       for (const s of datasetSummariesQuery.data.summaries) {
         map[s.datasetKey] = {
@@ -1446,6 +1454,8 @@ export default function SolarRecDashboard() {
           cloudStatus: s.cloudStatus,
           lastUpdated: s.lastUpdated,
           isRowBacked: s.isRowBacked,
+          lastUploadFileName: s.lastUploadFileName,
+          lastUploadCompletedAt: s.lastUploadCompletedAt,
         };
       }
     }
@@ -6372,6 +6382,38 @@ const aiDataContext = useMemo(() => {
                             Saved in cloud
                           </Badge>
                         </div>
+                        {/* Phase 5e (PR #275) removed the IDB hydration
+                            chain that previously held fileName + upload
+                            time on the client across reloads. PR-B
+                            (2026-05-04) added them to
+                            getDatasetSummariesAll's response so the
+                            slot card can resurface them after a reload
+                            for v2-uploaded datasets. Legacy (v1)
+                            uploads have no datasetUploadJobs row and
+                            stay at the generic "Tabs read..." copy. */}
+                        {datasetSummariesByKey[key]?.lastUploadFileName ? (
+                          <>
+                            <p className="truncate text-xs text-slate-600">
+                              {datasetSummariesByKey[key]!.lastUploadFileName}
+                            </p>
+                            {datasetSummariesByKey[key]?.lastUploadCompletedAt ? (
+                              <p className="text-xs text-slate-500">
+                                Last updated{" "}
+                                {new Date(
+                                  datasetSummariesByKey[key]!
+                                    .lastUploadCompletedAt as string
+                                ).toLocaleString()}
+                              </p>
+                            ) : null}
+                          </>
+                        ) : datasetSummariesByKey[key]?.lastUpdated ? (
+                          <p className="text-xs text-slate-500">
+                            Last updated{" "}
+                            {new Date(
+                              datasetSummariesByKey[key]!.lastUpdated as string
+                            ).toLocaleString()}
+                          </p>
+                        ) : null}
                         <p className="text-xs text-slate-500">
                           Tabs read this dataset directly from the
                           server. Re-upload to refresh.
