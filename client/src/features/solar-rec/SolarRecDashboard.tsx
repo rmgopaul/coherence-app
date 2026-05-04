@@ -3449,11 +3449,37 @@ export default function SolarRecDashboard() {
    *   - the start mutation itself fails (no jobId to poll)
    *   - the 30-min TTL window elapses with no terminal server status
    *
-   * `successLabel` is the human-readable subject for the toasts —
-   * "Reporting ownership-status tile", "Transferred and Reporting
-   * status", etc. `noRowsMessage` is the full empty-result toast
-   * sentence so callers can match the original (pre-PR) wording
-   * exactly without parameterizing string fragments.
+   * **Toast state machine.** The helper owns the loading toast
+   * lifecycle (it calls `toast.loading(initialMessage)` itself
+   * rather than expecting the caller to pre-create the toast
+   * outside). Three phases:
+   *   - `initial` — the per-tile caller's "Preparing X export…"
+   *     copy. Set on mount and revertible if the user recovers
+   *     from a connection blip before the 30s hint threshold.
+   *   - `stillPreparing` — the per-tile caller's
+   *     "Still preparing X — this can take a few minutes." copy.
+   *     Set when elapsed crosses `CSV_EXPORT_TOAST_HINT_AT_MS`.
+   *   - `interrupted` — fixed "Still preparing; connection
+   *     interrupted, retrying status check…" copy. Set when a
+   *     status poll throws. Recovery (next successful poll)
+   *     re-anchors to `initial` or `stillPreparing` based on
+   *     elapsed time.
+   * `setToastPhase` short-circuits redundant transitions so an
+   * intermittent connection doesn't replay the same text on every
+   * iteration.
+   *
+   * **Per-prop semantics:**
+   *   - `initialMessage`: first/recovery loading toast.
+   *   - `preparingMessage`: post-30s loading toast.
+   *   - `successLabel`: human-readable subject baked into the
+   *     success toast ("Exported N systems (X)").
+   *   - `noRowsMessage`: full empty-result toast sentence —
+   *     callers spell out the wording so we don't fragment
+   *     translation/strings into composable bits.
+   *   - `failureMessage`: shown on terminal failure (server
+   *     `failed`, start-mutation throw, TTL exhaustion).
+   *   - `consoleTag`: short string included in `console.error` /
+   *     `console.warn` logs for log-filter pinning.
    */
   const runDashboardCsvExport = useCallback(
     async (params: {
