@@ -2,7 +2,7 @@
 // 1) Forge proxy when BUILT_IN_FORGE_API_URL + BUILT_IN_FORGE_API_KEY are present.
 // 2) Local filesystem fallback when Forge credentials are missing.
 
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { getBandwidthLogThresholdBytes } from "./_core/bandwidthDiagnostics";
 import { ENV } from "./_core/env";
@@ -239,6 +239,53 @@ export async function storageExists(relKey: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/**
+ * Best-effort delete of a stored artifact.
+ *
+ * Local mode: removes the file under `getLocalStorageRoot()`. A
+ * missing file is treated as success (the caller's intent — "this
+ * key should not exist" — is satisfied either way).
+ *
+ * Proxy mode: the Forge proxy does not currently expose a DELETE
+ * endpoint in this codebase (only `v1/storage/upload` and
+ * `v1/storage/downloadUrl` are wired up). Returns
+ * `{ deleted: false, mode: "proxy" }` and logs once at warn level
+ * so the caller can surface the limitation. Proxy-side cleanup is
+ * tracked as the next hardening step.
+ *
+ * Never throws — caller-side cleanup loops should never fail because
+ * a single artifact couldn't be removed.
+ */
+export async function storageDelete(
+  relKey: string
+): Promise<{ deleted: boolean; mode: "local" | "proxy" }> {
+  const key = normalizeKey(relKey);
+
+  if (!isStorageProxyConfigured()) {
+    const absolutePath = path.join(getLocalStorageRoot(), key);
+    try {
+      await unlink(absolutePath);
+      return { deleted: true, mode: "local" };
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") return { deleted: true, mode: "local" };
+      console.warn(
+        `[storage:delete] local unlink failed for key=${key}: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
+      return { deleted: false, mode: "local" };
+    }
+  }
+
+  // Forge proxy delete is not implemented; log + return without
+  // touching the artifact so callers can keep operating.
+  console.warn(
+    `[storage:delete] proxy-mode delete not implemented for key=${key} (artifact will persist until lifecycle policy expires it)`
+  );
+  return { deleted: false, mode: "proxy" };
 }
 
 export async function storageReadBytes(relKey: string): Promise<Uint8Array> {

@@ -3421,98 +3421,117 @@ export default function SolarRecDashboard() {
    * failure toast. The single `toastId` is reused for the loading +
    * terminal state so the user only ever sees one toast for the
    * click.
+   *
+   * `successLabel` is the human-readable subject for the toasts —
+   * "Reporting ownership-status tile", "Transferred and Reporting
+   * status", etc. `noRowsMessage` is the full empty-result toast
+   * sentence so callers can match the original (pre-PR) wording
+   * exactly without parameterizing string fragments.
    */
-  const runDashboardCsvExport = async (params: {
-    input: Parameters<typeof startDashboardCsvExport.mutateAsync>[0];
-    label: string;
-    noun: "system" | "project";
-    failureMessage: string;
-    consoleTag: string;
-    toastId: string | number;
-  }) => {
-    const CSV_EXPORT_POLL_INTERVAL_MS = 1500;
-    const CSV_EXPORT_POLL_MAX_MS = 120_000;
-    try {
-      const { jobId } = await startDashboardCsvExport.mutateAsync(params.input);
-      const startedAt = Date.now();
-      while (Date.now() - startedAt < CSV_EXPORT_POLL_MAX_MS) {
-        const status =
-          await solarRecTrpcUtils.solarRecDashboard.getDashboardCsvExportJobStatus.fetch(
-            { jobId }
-          );
-        if (status.status === "succeeded") {
-          if ((status.rowCount ?? 0) === 0 || !status.url) {
-            toast.error(`No ${params.noun}s match ${params.label}.`, {
-              id: params.toastId,
-            });
+  const runDashboardCsvExport = useCallback(
+    async (params: {
+      input: Parameters<typeof startDashboardCsvExport.mutateAsync>[0];
+      successLabel: string;
+      noun: "system" | "project";
+      noRowsMessage: string;
+      failureMessage: string;
+      consoleTag: string;
+      toastId: string | number;
+    }) => {
+      const CSV_EXPORT_POLL_INTERVAL_MS = 1500;
+      const CSV_EXPORT_POLL_MAX_MS = 120_000;
+      try {
+        const { jobId } = await startDashboardCsvExport.mutateAsync(
+          params.input
+        );
+        const startedAt = Date.now();
+        while (Date.now() - startedAt < CSV_EXPORT_POLL_MAX_MS) {
+          const status =
+            await solarRecTrpcUtils.solarRecDashboard.getDashboardCsvExportJobStatus.fetch(
+              { jobId }
+            );
+          if (status.status === "succeeded") {
+            if ((status.rowCount ?? 0) === 0 || !status.url) {
+              toast.error(params.noRowsMessage, { id: params.toastId });
+              return;
+            }
+            triggerUrlDownload(
+              status.fileName ?? `${params.successLabel}.csv`,
+              status.url
+            );
+            toast.success(
+              `Exported ${status.rowCount} ${params.noun}${status.rowCount === 1 ? "" : "s"} (${params.successLabel}).`,
+              { id: params.toastId }
+            );
             return;
           }
-          triggerUrlDownload(status.fileName ?? `${params.label}.csv`, status.url);
-          toast.success(
-            `Exported ${status.rowCount} ${params.noun}${status.rowCount === 1 ? "" : "s"} (${params.label}).`,
-            { id: params.toastId }
+          if (status.status === "failed") {
+            toast.error(params.failureMessage, { id: params.toastId });
+            console.error(`[${params.consoleTag}]`, status.error ?? "unknown");
+            return;
+          }
+          if (status.status === "notFound") {
+            // TTL pruned the job before we could read it. Surface as a
+            // failure rather than an infinite poll.
+            toast.error(params.failureMessage, { id: params.toastId });
+            console.error(`[${params.consoleTag}] job expired before completion`);
+            return;
+          }
+          await new Promise((resolve) =>
+            setTimeout(resolve, CSV_EXPORT_POLL_INTERVAL_MS)
           );
-          return;
         }
-        if (status.status === "failed") {
-          toast.error(params.failureMessage, { id: params.toastId });
-          console.error(`[${params.consoleTag}]`, status.error ?? "unknown");
-          return;
-        }
-        if (status.status === "notFound") {
-          // TTL pruned the job before we could read it. Surface as a
-          // failure rather than an infinite poll.
-          toast.error(params.failureMessage, { id: params.toastId });
-          console.error(`[${params.consoleTag}] job expired before completion`);
-          return;
-        }
-        await new Promise((resolve) =>
-          setTimeout(resolve, CSV_EXPORT_POLL_INTERVAL_MS)
+        toast.error(params.failureMessage, { id: params.toastId });
+        console.error(
+          `[${params.consoleTag}] poll timed out after ${CSV_EXPORT_POLL_MAX_MS}ms`
         );
+      } catch (error) {
+        toast.error(params.failureMessage, { id: params.toastId });
+        console.error(`[${params.consoleTag}]`, error);
       }
-      toast.error(params.failureMessage, { id: params.toastId });
-      console.error(`[${params.consoleTag}] poll timed out after ${CSV_EXPORT_POLL_MAX_MS}ms`);
-    } catch (error) {
-      toast.error(params.failureMessage, { id: params.toastId });
-      console.error(`[${params.consoleTag}]`, error);
-    }
-  };
+    },
+    [startDashboardCsvExport, solarRecTrpcUtils]
+  );
 
-  const downloadOwnershipCountTileCsv = async (
-    tile: "reporting" | "notReporting" | "terminated"
-  ) => {
-    const tileLabel =
-      tile === "reporting"
-        ? "Reporting"
-        : tile === "notReporting"
-          ? "Not Reporting"
-          : "Terminated";
-    const toastId = toast.loading(
-      `Preparing ${tileLabel} ownership-status export…`
-    );
-    await runDashboardCsvExport({
-      input: { exportType: "ownershipTile", tile },
-      label: `${tileLabel} ownership-status`,
-      noun: "system",
-      failureMessage: "Failed to export ownership-status CSV.",
-      consoleTag: "ownership-csv-export",
-      toastId,
-    });
-  };
+  const downloadOwnershipCountTileCsv = useCallback(
+    async (tile: "reporting" | "notReporting" | "terminated") => {
+      const tileLabel =
+        tile === "reporting"
+          ? "Reporting"
+          : tile === "notReporting"
+            ? "Not Reporting"
+            : "Terminated";
+      const toastId = toast.loading(
+        `Preparing ${tileLabel} ownership-status export…`
+      );
+      await runDashboardCsvExport({
+        input: { exportType: "ownershipTile", tile },
+        successLabel: `${tileLabel} ownership-status tile`,
+        noun: "system",
+        noRowsMessage: `No systems match the ${tileLabel} ownership-status tile.`,
+        failureMessage: "Failed to export ownership-status CSV.",
+        consoleTag: "ownership-csv-export",
+        toastId,
+      });
+    },
+    [runDashboardCsvExport]
+  );
 
-  const downloadChangeOwnershipCountTileCsv = async (
-    status: ChangeOwnershipStatus
-  ) => {
-    const toastId = toast.loading(`Preparing ${status} export…`);
-    await runDashboardCsvExport({
-      input: { exportType: "changeOwnershipTile", status },
-      label: status,
-      noun: "project",
-      failureMessage: "Failed to export Change-of-Ownership CSV.",
-      consoleTag: "change-ownership-csv-export",
-      toastId,
-    });
-  };
+  const downloadChangeOwnershipCountTileCsv = useCallback(
+    async (status: ChangeOwnershipStatus) => {
+      const toastId = toast.loading(`Preparing ${status} export…`);
+      await runDashboardCsvExport({
+        input: { exportType: "changeOwnershipTile", status },
+        successLabel: `${status} status`,
+        noun: "project",
+        noRowsMessage: `No projects match the ${status} status.`,
+        failureMessage: "Failed to export Change-of-Ownership CSV.",
+        consoleTag: "change-ownership-csv-export",
+        toastId,
+      });
+    },
+    [runDashboardCsvExport]
+  );
 
   // downloadChangeOwnershipDetailFilteredCsv — moved to @/solar-rec-dashboard/components/ChangeOwnershipTab
 

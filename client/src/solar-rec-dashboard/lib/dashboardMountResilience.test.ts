@@ -163,6 +163,22 @@ describe("Solar REC dashboard mount: heavy-query gates", () => {
     );
   });
 
+  it("CSV export handlers are wrapped in useCallback so memo()-ed OverviewTab doesn't churn every parent render", () => {
+    // Inline arrow functions in props create a fresh ref every
+    // render, defeating memo() on the consumer (`OverviewTab` here).
+    // The shared helper + per-tile handlers must all be useCallback
+    // so the prop refs stay stable.
+    expect(code).toMatch(
+      /const\s+runDashboardCsvExport\s*=\s*useCallback\s*\(/
+    );
+    expect(code).toMatch(
+      /const\s+downloadOwnershipCountTileCsv\s*=\s*useCallback\s*\(/
+    );
+    expect(code).toMatch(
+      /const\s+downloadChangeOwnershipCountTileCsv\s*=\s*useCallback\s*\(/
+    );
+  });
+
   it("CSV export click does NOT flip hasUserInteractedWithDashboard (heavy queries stay disabled)", () => {
     // PR #332 follow-up item 7 (2026-05-02). Flipping the
     // interaction flag inside the CSV handlers silently enables the
@@ -188,12 +204,14 @@ describe("Solar REC dashboard mount: heavy-query gates", () => {
 /**
  * Pull a function/arrow-function body out of the source as a string,
  * so a regex assertion only inspects that handler's body — not the
- * whole 6000-line file. Matches `const NAME = ... =>` then walks
- * matching braces.
+ * whole 6000-line file. Matches both `const NAME = async (...) => {`
+ * and `const NAME = useCallback(\n  async (...) => {` shapes by
+ * anchoring on the declaration name and walking forward to the
+ * first `=>` arrow.
  */
 function sliceFn(source: string, name: string): string | null {
   const declRegex = new RegExp(
-    `const\\s+${name.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\$&")}\\s*=\\s*async`
+    `const\\s+${name.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\$&")}\\s*=\\s*(?:async|useCallback\\s*\\()`
   );
   const declMatch = declRegex.exec(source);
   if (!declMatch) return null;
