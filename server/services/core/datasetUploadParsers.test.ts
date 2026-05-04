@@ -49,6 +49,78 @@ describe("pickField", () => {
   it("returns null on empty alias list", () => {
     expect(pickField({ id: "abc" }, [])).toBeNull();
   });
+
+  // ── Separator normalization (post 2026-05-04 prod regression) ──
+  //
+  // Real-world prod CSVs from CSG, GATS, and ABP use snake_case
+  // headers like `Part_2_App_Verification_Date` and
+  // `Inverter_Size_kW_AC`. Pre-fix, every parser had to enumerate
+  // the underscore form explicitly in its alias chain, and the
+  // v2 upload pipeline shipped with chains that listed only the
+  // space-separated form ("Part 2 App Verification Date"). 28k+
+  // ABP rows landed with `part2AppVerificationDate=null` because
+  // the underscore form silently failed to match. Foundation reads
+  // the typed column, not rawRow, so every downstream tile
+  // collapsed to zero. Normalizing separators (`_`, ` `, `-`) at
+  // the lookup site makes the alias list a list of *concepts*
+  // rather than every possible CSV spelling.
+  describe("header separator normalization", () => {
+    it("matches snake_case CSV header against space-separated alias", () => {
+      expect(
+        pickField(
+          { Part_2_App_Verification_Date: "2024-12-01" },
+          ["Part 2 App Verification Date"]
+        )
+      ).toBe("2024-12-01");
+    });
+
+    it("matches Title_Case_Underscore CSV against camelCase alias", () => {
+      expect(
+        pickField({ Inverter_Size_kW_AC: "7.5" }, ["inverterSizeKwAc"])
+      ).toBe("7.5");
+    });
+
+    it("matches snake_case CSV against snake_case alias (degenerate stays passing)", () => {
+      expect(
+        pickField(
+          { state_certification_number: "X123" },
+          ["state_certification_number"]
+        )
+      ).toBe("X123");
+    });
+
+    it("matches space-separated CSV header against snake_case alias", () => {
+      expect(pickField({ "Project Name": "Acme" }, ["project_name"])).toBe(
+        "Acme"
+      );
+    });
+
+    it("matches hyphenated CSV header against snake_case alias", () => {
+      expect(
+        pickField({ "contracted-date": "2026-04-01" }, ["contracted_date"])
+      ).toBe("2026-04-01");
+    });
+
+    it("regression: ABP Report Part_2 column resolves with space-form alias", () => {
+      // The actual prod row that was silently failing pre-fix.
+      const row = {
+        Application_ID: "128875",
+        Project_Name: "Daniel Berry",
+        Part_2_App_Verification_Date: "2024-12-01 17:32:11.566",
+        Inverter_Size_kW_AC: "7.5",
+      };
+      expect(
+        pickField(row, [
+          "part2AppVerificationDate",
+          "Part 2 App Verification Date",
+          "Part 2 Verification Date",
+        ])
+      ).toBe("2024-12-01 17:32:11.566");
+      expect(
+        pickField(row, ["inverterSizeKwAc", "Inverter Size kW AC"])
+      ).toBe("7.5");
+    });
+  });
 });
 
 describe("CONTRACTED_DATE_PARSER", () => {

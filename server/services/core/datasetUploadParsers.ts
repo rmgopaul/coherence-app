@@ -85,9 +85,31 @@ export type DatasetUploadParser<TInsert> = {
 // ── Header-alias resolution ────────────────────────────────────────
 
 /**
- * Look up `aliases[i]` in `row` (case-insensitive on the keys),
- * returning the first non-empty trimmed value found. Returns null
- * when no alias matches or every match is empty.
+ * Strip all separators (underscores, spaces, hyphens) and lowercase
+ * for header comparison. Treats `Part_2_App_Verification_Date`,
+ * `Part 2 App Verification Date`, `part-2-app-verification-date`,
+ * and `part2AppVerificationDate` as the same key.
+ *
+ * Why: production CSVs from CSG, GATS, ABP, and Zillow use a mix of
+ * snake_case_with_underscores (Solar Applications, ABP Report) and
+ * "Title Case With Spaces" (Generation Entry, Transfer History).
+ * Per-parser alias chains have repeatedly missed one form or the
+ * other and silently dropped data into rawRow without populating
+ * typed columns. Normalizing once at the lookup site makes the
+ * alias chain a list of *concepts* rather than a list of every
+ * possible CSV header spelling.
+ */
+function normalizeHeaderKey(s: string): string {
+  return s.toLowerCase().replace(/[_\s\-]+/g, "");
+}
+
+/**
+ * Look up `aliases[i]` in `row`, returning the first non-empty
+ * trimmed value found. Comparison is case-insensitive AND
+ * separator-insensitive — `_`, space, and `-` are all stripped, so
+ * `Part_2_App_Verification_Date` matches alias
+ * `"Part 2 App Verification Date"`. Returns null when no alias
+ * matches or every match is empty.
  */
 export function pickField(
   row: Record<string, string>,
@@ -99,9 +121,9 @@ export function pickField(
       const trimmed = String(direct).trim();
       if (trimmed.length > 0) return trimmed;
     }
-    const lower = alias.toLowerCase();
+    const normalizedAlias = normalizeHeaderKey(alias);
     for (const key of Object.keys(row)) {
-      if (key.toLowerCase() !== lower) continue;
+      if (normalizeHeaderKey(key) !== normalizedAlias) continue;
       const trimmed = String(row[key] ?? "").trim();
       if (trimmed.length > 0) return trimmed;
     }
