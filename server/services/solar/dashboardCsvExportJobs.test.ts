@@ -19,6 +19,7 @@ vi.mock("../../storage", () => ({
     key,
     url: `/_local_uploads/${key}`,
   })),
+  storageDelete: vi.fn(async () => ({ deleted: true, mode: "local" as const })),
 }));
 
 vi.mock("./buildOverviewSummaryAggregates", () => ({
@@ -273,22 +274,13 @@ describe("dashboardCsvExportJobs — TTL pruning", () => {
     expect(__TEST_ONLY__.size()).toBe(1);
 
     const now = Date.now();
-    // Force the record's completedAt back so the next prune evicts it.
-    const stale = (
-      getCsvExportJobStatus(SCOPE, jobId) as unknown as { completedAt: number }
-    );
-    expect(stale.completedAt).toBeDefined();
-    // Fast-forward by mutating the clock the prune helper consults.
-    const realDate = Date;
+    const dateNowSpy = vi
+      .spyOn(Date, "now")
+      .mockReturnValue(now + __TEST_ONLY__.JOB_TTL_MS + 1000);
     try {
-      // Mock Date.now in pruneExpired's view: shift forward past TTL.
-      vi.spyOn(Date, "now").mockReturnValue(
-        now + __TEST_ONLY__.JOB_TTL_MS + 1000
-      );
       __TEST_ONLY__.pruneExpired();
     } finally {
-      vi.spyOn(Date, "now").mockRestore();
-      expect(global.Date).toBe(realDate);
+      dateNowSpy.mockRestore();
     }
     expect(__TEST_ONLY__.size()).toBe(0);
     expect(getCsvExportJobStatus(SCOPE, jobId)).toBeNull();
@@ -302,6 +294,112 @@ describe("dashboardCsvExportJobs — TTL pruning", () => {
     __TEST_ONLY__.pruneExpired();
     expect(__TEST_ONLY__.size()).toBe(1);
     expect(getCsvExportJobStatus(SCOPE, jobId)?.status).toBe("succeeded");
+  });
+
+  it("calls storageDelete on the artifact key when pruning a succeeded record", async () => {
+    const storageMod = await import("../../storage");
+    const deleteMock = vi.mocked(storageMod.storageDelete);
+    deleteMock.mockClear();
+
+    const jobId = await startAndRun(SCOPE, {
+      exportType: "ownershipTile",
+      tile: "reporting",
+    });
+    const dateNowSpy = vi
+      .spyOn(Date, "now")
+      .mockReturnValue(Date.now() + __TEST_ONLY__.JOB_TTL_MS + 1000);
+    try {
+      __TEST_ONLY__.pruneExpired();
+    } finally {
+      dateNowSpy.mockRestore();
+    }
+    // pruneExpired fires storageDelete asynchronously (catch-only);
+    // give the microtask queue a tick to settle.
+    await Promise.resolve();
+    expect(deleteMock).toHaveBeenCalledTimes(1);
+    expect(deleteMock).toHaveBeenCalledWith(
+      expect.stringMatching(
+        new RegExp(
+          `^solar-rec-dashboard/${SCOPE}/exports/${jobId}-ownership-status-reporting-`
+        )
+      )
+    );
+  });
+
+  it("does NOT call storageDelete when pruning a record with no artifact (rowCount=0)", async () => {
+    const storageMod = await import("../../storage");
+    const deleteMock = vi.mocked(storageMod.storageDelete);
+    deleteMock.mockClear();
+
+    await startAndRun(SCOPE, {
+      exportType: "ownershipTile",
+      tile: "terminated", // empty result → no storage write, no url
+    });
+    const dateNowSpy = vi
+      .spyOn(Date, "now")
+      .mockReturnValue(Date.now() + __TEST_ONLY__.JOB_TTL_MS + 1000);
+    try {
+      __TEST_ONLY__.pruneExpired();
+    } finally {
+      dateNowSpy.mockRestore();
+    }
+    await Promise.resolve();
+    expect(deleteMock).not.toHaveBeenCalled();
+  });
+
+  it("does NOT prune a `running` record even when it's older than TTL", async () => {
+    // Race scenario the v1 pruner regressed on: a heavy aggregator
+    // load lasts longer than TTL. The runner's closure holds the
+    // JobRecord reference and mutates it on the succeeded branch —
+    // if prune deletes the Map entry mid-flight, those mutations
+    // land on an orphaned object and the next poll reads `notFound`.
+    // Pruning must therefore skip `running` records.
+    const aggregatorMod = await import("./buildOverviewSummaryAggregates");
+    let releaseStall: (() => void) | null = null;
+    const stallPromise = new Promise<void>((resolve) => {
+      releaseStall = resolve;
+    });
+    vi.mocked(aggregatorMod.getOrBuildOverviewSummary).mockImplementationOnce(
+      async () => {
+        await stallPromise;
+        return {
+          result: { ownershipRows: [] },
+          fromCache: false,
+        } as unknown as Awaited<
+          ReturnType<typeof aggregatorMod.getOrBuildOverviewSummary>
+        >;
+      }
+    );
+
+    // Schedule the runner synchronously (no setImmediate) so we can
+    // observe the running state without a flaky await chain.
+    const { jobId } = startCsvExportJob(
+      SCOPE,
+      { exportType: "ownershipTile", tile: "reporting" },
+      runCsvExportJob,
+      (cb) => cb()
+    );
+    // Yield twice so the runner reaches the awaited stallPromise.
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(getCsvExportJobStatus(SCOPE, jobId)?.status).toBe("running");
+
+    const baseline = Date.now();
+    const dateNowSpy = vi
+      .spyOn(Date, "now")
+      .mockReturnValue(baseline + __TEST_ONLY__.JOB_TTL_MS + 1000);
+    try {
+      __TEST_ONLY__.pruneExpired();
+      expect(__TEST_ONLY__.size()).toBe(1);
+      expect(getCsvExportJobStatus(SCOPE, jobId)?.status).toBe("running");
+    } finally {
+      dateNowSpy.mockRestore();
+    }
+
+    // Release the stalled aggregator so the runner finishes and
+    // doesn't leak the unresolved promise into the next test.
+    releaseStall!();
+    await new Promise((resolve) => setTimeout(resolve, 0));
   });
 });
 
