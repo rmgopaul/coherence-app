@@ -151,6 +151,27 @@ export function triggerCsvDownload(fileName: string, csvText: string): void {
 }
 
 /**
+ * Trigger a browser download of an artifact already hosted at a URL.
+ * Used by the dashboard CSV background-export flow — the worker
+ * writes the CSV to storage and the client navigates an anchor with
+ * the `download` attribute. For same-origin artifacts (the local
+ * `/_local_uploads/...` route) the `download` attribute pins the
+ * filename. For cross-origin storage URLs the browser respects any
+ * `Content-Disposition: attachment` header from the storage
+ * provider; if the header is absent, the file may open inline —
+ * this is acceptable v1 behavior.
+ */
+export function triggerUrlDownload(fileName: string, url: string): void {
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  link.rel = "noopener";
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+}
+
+/**
  * Case-insensitive check whether every expected header is present in
  * the given header list (after `clean()` normalization).
  */

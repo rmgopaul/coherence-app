@@ -43,6 +43,15 @@ export const DASHBOARD_RESPONSE_LIMIT_BYTES_DEFAULT = 1024 * 1024;
  * data. Each entry is the fully-qualified tRPC path (router key dot
  * procedure name). Add an entry only with a pointer to the migration
  * that will retire it.
+ *
+ * Retired entries (kept here as searchable history):
+ *   - `solarRecDashboard.exportOwnershipTileCsv` — replaced by the
+ *     `startDashboardCsvExport` + `getDashboardCsvExportJobStatus`
+ *     background-job flow. The MB-scale CSV no longer passes
+ *     through tRPC; the worker writes to storage and the client
+ *     polls a slim status endpoint.
+ *   - `solarRecDashboard.exportChangeOwnershipTileCsv` — same
+ *     replacement, same flow.
  */
 export const DASHBOARD_OVERSIZE_ALLOWLIST: ReadonlySet<string> = new Set([
   // Returns the full pre-computed system record set; rebuild plan replaces
@@ -62,12 +71,6 @@ export const DASHBOARD_OVERSIZE_ALLOWLIST: ReadonlySet<string> = new Set([
   // Paginates DB reads but joins the full CSV in memory before returning.
   // Rebuild plan replaces with a streaming background export job.
   "solarRecDashboard.getDatasetCsv",
-  // Ownership-tile CSV export — CSV string can be MB-scale on prod.
-  // The client never receives ownershipRows JSON; it just downloads
-  // this CSV. Streaming via Express is the next iteration.
-  "solarRecDashboard.exportOwnershipTileCsv",
-  // Change-Ownership status CSV export — same shape as above.
-  "solarRecDashboard.exportChangeOwnershipTileCsv",
 ]);
 
 export type DashboardResponseEnforcement = "warn" | "throw" | "off";

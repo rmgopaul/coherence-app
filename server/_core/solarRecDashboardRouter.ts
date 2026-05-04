@@ -3136,109 +3136,114 @@ export const solarRecDashboardRouter = t.router({
   }),
 
   /**
-   * TRANSITIONAL — server-side CSV export for the Overview
-   * ownership-status tile filters. Replaces the client-side flow
-   * that hydrated the heavy `getDashboardOverviewSummary.ownershipRows[]`
-   * (~5–15 MB) into the browser, filtered, and joined a CSV string.
-   * The new flow runs the same heavy aggregator server-side (cached
-   * + single-flighted), filters by tile, returns the CSV string +
-   * filename. The client never receives the JSON detail rows; it
-   * just downloads the CSV.
+   * Background CSV export — start. Replaces the synchronous
+   * `exportOwnershipTileCsv` / `exportChangeOwnershipTileCsv` queries
+   * that returned MB-scale CSV strings inline through tRPC (and were
+   * allowlisted on `DASHBOARD_OVERSIZE_ALLOWLIST`).
    *
-   * INVARIANT (PR #332 follow-up, 2026-05-02): the client CSV-click
-   * handler must NOT flip `hasUserInteractedWithDashboard`. This
-   * proc is self-contained — it builds the heavy aggregator on the
-   * server and returns only the CSV string. Letting the click seed
-   * the interaction gate would silently enable the heavy mount-tier
-   * queries (`getDashboardOverviewSummary` /
-   * `getDashboardOfflineMonitoring` / `getDashboardChangeOwnership`)
-   * on the next render, dragging multi-MB JSON payloads into the
-   * browser as a side-effect of an export click.
+   * The mutation enqueues a job and returns immediately with
+   * `{ jobId }` — the response is bounded (< 200 bytes). The worker
+   * loads the heavy aggregator artifact, builds the CSV, writes it
+   * to storage via `storagePut`, and surfaces a download URL on the
+   * job record. The client polls
+   * `getDashboardCsvExportJobStatus({ jobId })` to a terminal status
+   * and downloads the artifact directly from the URL.
    *
-   * The proc IS large by design (the CSV string itself can be MB-
-   * scale on prod) and remains on `DASHBOARD_OVERSIZE_ALLOWLIST`.
+   * INVARIANT (PR #332 follow-up, 2026-05-02 — preserved): the
+   * client CSV-click handler must NOT flip
+   * `hasUserInteractedWithDashboard`. The export work is fully
+   * server-side; letting the click seed the interaction gate would
+   * silently enable the heavy mount-tier queries
+   * (`getDashboardOverviewSummary` / `getDashboardOfflineMonitoring`
+   * / `getDashboardChangeOwnership`) on the next render, dragging
+   * multi-MB JSON payloads into the browser as a side-effect of an
+   * export click.
    *
-   * REPLACEMENT PLAN (tracked separately, NOT this PR):
-   *   1. Convert this query to a tRPC mutation that ENQUEUES an
-   *      export job and returns a `{ jobId }`.
-   *   2. Run the CSV build on a worker; stream rows directly to S3
-   *      under `<scope>/exports/<jobId>.csv` via the existing
-   *      `solarRecDashboardStorage` blob path.
-   *   3. Client polls `getDashboardCsvExportJobStatus(jobId)` and
-   *      receives a presigned-URL artifact when ready.
-   *   4. Once the streaming/background path lands, REMOVE this proc
-   *      from `DASHBOARD_OVERSIZE_ALLOWLIST` and delete the
-   *      synchronous CSV string return.
-   * Until that PR ships, the allowlist exception is acknowledged
-   * tech debt — not the target architecture.
+   * TRANSITIONAL — the v1 worker still builds the CSV string in
+   * memory before the storage write. True row-streaming directly to
+   * storage is the next hardening step. The improvement vs. the
+   * prior synchronous procs is scoped: the MB-scale CSV no longer
+   * passes through the tRPC response path, which restores the
+   * dashboard response budget for these endpoints. See
+   * `services/solar/dashboardCsvExportJobs.ts` for the registry
+   * + scope-isolation + TTL details.
    */
-  exportOwnershipTileCsv: dashboardProcedure(
+  startDashboardCsvExport: dashboardProcedure(
     "solar-rec-dashboard",
     "read"
   )
     .input(
-      z.object({
-        tile: z.enum(["reporting", "notReporting", "terminated"]),
-      })
+      z.discriminatedUnion("exportType", [
+        z.object({
+          exportType: z.literal("ownershipTile"),
+          tile: z.enum(["reporting", "notReporting", "terminated"]),
+        }),
+        z.object({
+          exportType: z.literal("changeOwnershipTile"),
+          // Accept the wider client-side `ChangeOwnershipStatus`
+          // union (7 values incl. legacy split-Terminated) so the
+          // client handler doesn't need to narrow at the call site.
+          // The heavy aggregator's rows only carry the 5 canonical
+          // values; a legacy split-Terminated input resolves to
+          // rowCount=0 on the worker and surfaces to the user as
+          // "no projects match."
+          status: z.enum([
+            "Transferred and Reporting",
+            "Transferred and Not Reporting",
+            "Terminated",
+            "Terminated and Reporting",
+            "Terminated and Not Reporting",
+            "Change of Ownership - Not Transferred and Reporting",
+            "Change of Ownership - Not Transferred and Not Reporting",
+          ]),
+        }),
+      ])
     )
-    .query(async ({ ctx, input }) => {
-      const { getOrBuildOverviewSummary } = await import(
-        "../services/solar/buildOverviewSummaryAggregates"
-      );
-      const { buildOwnershipTileCsv } = await import(
-        "../services/solar/buildDashboardCsvExport"
-      );
-      const { result } = await getOrBuildOverviewSummary(ctx.scopeId);
-      const csv = buildOwnershipTileCsv(result.ownershipRows, input.tile);
+    .mutation(async ({ ctx, input }) => {
+      const { startCsvExportJob, DASHBOARD_CSV_EXPORT_RUNNER_VERSION } =
+        await import("../services/solar/dashboardCsvExportJobs");
+      const { jobId } = startCsvExportJob(ctx.scopeId, input);
       return {
-        ...csv,
-        _runnerVersion: "ownership-tile-csv-export-v1",
+        jobId,
+        _runnerVersion: DASHBOARD_CSV_EXPORT_RUNNER_VERSION,
       };
     }),
 
   /**
-   * TRANSITIONAL — server-side CSV export for the Change-Ownership
-   * status filters. Mirrors `exportOwnershipTileCsv` against the
-   * heavy `getDashboardChangeOwnership` aggregator's per-project
-   * rows. Same allowlist exception, same no-side-effect invariant
-   * on the client click handler, same streaming/background
-   * replacement plan documented on `exportOwnershipTileCsv` above.
+   * Background CSV export — status poll. Slim response (< 1 KB)
+   * regardless of artifact size. Returns the registry snapshot for
+   * the supplied jobId, scoped to the caller's scopeId — a
+   * cross-scope jobId reads as "not found" (`status: "notFound"`)
+   * rather than a permission error so cross-scope job IDs can't be
+   * probed.
+   *
+   * Terminal states the client polls for:
+   *   - `succeeded` with `url` + `fileName` + `rowCount > 0` —
+   *     navigate the browser to `url` to download.
+   *   - `succeeded` with `rowCount === 0` and `url === null` — show
+   *     a "no rows match" toast; no download.
+   *   - `failed` with `error` — surface the error to the user.
+   *   - `notFound` — the job expired (TTL) or never existed for
+   *     this scope.
    */
-  exportChangeOwnershipTileCsv: dashboardProcedure(
+  getDashboardCsvExportJobStatus: dashboardProcedure(
     "solar-rec-dashboard",
     "read"
   )
-    .input(
-      z.object({
-        // Accept the wider client-side `ChangeOwnershipStatus` union
-        // (7 values incl. legacy split-Terminated) so the client
-        // handler doesn't need to narrow at the call site. The heavy
-        // aggregator's rows only carry the 5 canonical values, so a
-        // legacy split-Terminated input will return rowCount=0 and
-        // surface to the user as "no projects match."
-        status: z.enum([
-          "Transferred and Reporting",
-          "Transferred and Not Reporting",
-          "Terminated",
-          "Terminated and Reporting",
-          "Terminated and Not Reporting",
-          "Change of Ownership - Not Transferred and Reporting",
-          "Change of Ownership - Not Transferred and Not Reporting",
-        ]),
-      })
-    )
+    .input(z.object({ jobId: z.string().min(1).max(64) }))
     .query(async ({ ctx, input }) => {
-      const { getOrBuildChangeOwnership } = await import(
-        "../services/solar/buildChangeOwnershipAggregates"
-      );
-      const { buildChangeOwnershipTileCsv } = await import(
-        "../services/solar/buildDashboardCsvExport"
-      );
-      const { result } = await getOrBuildChangeOwnership(ctx.scopeId);
-      const csv = buildChangeOwnershipTileCsv(result.rows, input.status);
+      const { getCsvExportJobStatus, DASHBOARD_CSV_EXPORT_RUNNER_VERSION } =
+        await import("../services/solar/dashboardCsvExportJobs");
+      const snapshot = getCsvExportJobStatus(ctx.scopeId, input.jobId);
+      if (!snapshot) {
+        return {
+          status: "notFound" as const,
+          _runnerVersion: DASHBOARD_CSV_EXPORT_RUNNER_VERSION,
+        };
+      }
       return {
-        ...csv,
-        _runnerVersion: "change-ownership-tile-csv-export-v1",
+        ...snapshot,
+        _runnerVersion: DASHBOARD_CSV_EXPORT_RUNNER_VERSION,
       };
     }),
 

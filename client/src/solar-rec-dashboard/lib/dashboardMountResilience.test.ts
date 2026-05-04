@@ -113,27 +113,53 @@ describe("Solar REC dashboard mount: heavy-query gates", () => {
     expect(block!).not.toMatch(/enabled\s*:/);
   });
 
-  it("ownership CSV download flows through the server-side export proc, not client-side row hydration", () => {
-    // Both download handlers must call the server-side export
-    // procs. Client-side filtering of the heavy aggregator's rows is
-    // the bug this PR retires — it required the user to click twice
-    // and held megabytes of detail rows in browser heap.
-    expect(code).toMatch(
-      /downloadOwnershipCountTileCsv[\s\S]*?solarRecTrpcUtils\.solarRecDashboard\.exportOwnershipTileCsv\.fetch/
+  it("CSV export uses the background-job flow (start + poll), not an inline tRPC CSV fetch", () => {
+    // Both handlers must drive the background-job flow:
+    //   startDashboardCsvExport (mutation) → poll
+    //   getDashboardCsvExportJobStatus → triggerUrlDownload(url).
+    // Inline `.fetch` of the old synchronous CSV procs is the bug
+    // this PR retires — it returned MB-scale CSV strings through
+    // tRPC and held the whole CSV in browser heap during the
+    // response.
+    const sharedHelper = sliceFn(code, "runDashboardCsvExport");
+    expect(sharedHelper).not.toBeNull();
+    expect(sharedHelper!).toMatch(/startDashboardCsvExport\.mutateAsync/);
+    expect(sharedHelper!).toMatch(
+      /getDashboardCsvExportJobStatus\.fetch/
     );
-    expect(code).toMatch(
-      /downloadChangeOwnershipCountTileCsv[\s\S]*?solarRecTrpcUtils\.solarRecDashboard\.exportChangeOwnershipTileCsv\.fetch/
+    expect(sharedHelper!).toMatch(/triggerUrlDownload\s*\(/);
+
+    // Both per-tile click handlers must dispatch through the shared
+    // helper rather than open-coding the start/poll loop.
+    const ownershipHandler = sliceFn(code, "downloadOwnershipCountTileCsv");
+    expect(ownershipHandler).not.toBeNull();
+    expect(ownershipHandler!).toMatch(/runDashboardCsvExport\s*\(/);
+    const changeOwnershipHandler = sliceFn(
+      code,
+      "downloadChangeOwnershipCountTileCsv"
     );
+    expect(changeOwnershipHandler).not.toBeNull();
+    expect(changeOwnershipHandler!).toMatch(/runDashboardCsvExport\s*\(/);
+
+    // The retired inline-CSV fetch shape must NOT reappear on either
+    // handler.
+    expect(code).not.toMatch(
+      /exportOwnershipTileCsv\.fetch/
+    );
+    expect(code).not.toMatch(
+      /exportChangeOwnershipTileCsv\.fetch/
+    );
+
     // No window.alert in the export path — toasts only.
     expect(code).not.toMatch(/downloadOwnershipCountTileCsv[\s\S]{0,2000}window\.alert/);
     expect(code).not.toMatch(
       /downloadChangeOwnershipCountTileCsv[\s\S]{0,2000}window\.alert/
     );
-    // No empty-result fallback to a 0-row CSV — the handler explicitly
-    // surfaces "no rows" via toast.error instead of triggering a
-    // download.
-    expect(code).toMatch(
-      /downloadOwnershipCountTileCsv[\s\S]{0,2000}rowCount\s*===\s*0[\s\S]{0,200}toast\.error/
+
+    // Empty-result path: the shared helper surfaces "no rows" via
+    // toast.error rather than triggering a 0-row download.
+    expect(sharedHelper!).toMatch(
+      /rowCount[\s\S]{0,200}toast\.error/
     );
   });
 
@@ -143,20 +169,19 @@ describe("Solar REC dashboard mount: heavy-query gates", () => {
     // mount-tier heavy queries (overview-summary / offlineMonitoring
     // / change-ownership) on the next render, dragging multi-MB JSON
     // into the browser as a side-effect of an export click. The
-    // handler bodies must NOT call setHasUserInteractedWithDashboard(true).
-    const ownershipCsvHandler = sliceFn(code, "downloadOwnershipCountTileCsv");
-    expect(ownershipCsvHandler).not.toBeNull();
-    expect(ownershipCsvHandler!).not.toMatch(
-      /setHasUserInteractedWithDashboard\s*\(\s*true\s*\)/
-    );
-    const changeOwnershipCsvHandler = sliceFn(
-      code,
-      "downloadChangeOwnershipCountTileCsv"
-    );
-    expect(changeOwnershipCsvHandler).not.toBeNull();
-    expect(changeOwnershipCsvHandler!).not.toMatch(
-      /setHasUserInteractedWithDashboard\s*\(\s*true\s*\)/
-    );
+    // handler bodies (and the shared poll helper they call) must
+    // NOT call setHasUserInteractedWithDashboard(true).
+    for (const name of [
+      "downloadOwnershipCountTileCsv",
+      "downloadChangeOwnershipCountTileCsv",
+      "runDashboardCsvExport",
+    ]) {
+      const handler = sliceFn(code, name);
+      expect(handler).not.toBeNull();
+      expect(handler!).not.toMatch(
+        /setHasUserInteractedWithDashboard\s*\(\s*true\s*\)/
+      );
+    }
   });
 });
 

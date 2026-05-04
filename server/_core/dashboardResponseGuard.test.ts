@@ -123,8 +123,6 @@ describe("DASHBOARD_OVERSIZE_ALLOWLIST", () => {
         "solarRecDashboard.getDashboardOverviewSummary",
         "solarRecDashboard.getDatasetCsv",
         "solarRecDashboard.getSystemSnapshot",
-        "solarRecDashboard.exportOwnershipTileCsv",
-        "solarRecDashboard.exportChangeOwnershipTileCsv",
       ].sort()
     );
   });
@@ -133,6 +131,19 @@ describe("DASHBOARD_OVERSIZE_ALLOWLIST", () => {
     for (const entry of DASHBOARD_OVERSIZE_ALLOWLIST) {
       expect(entry).toMatch(/^solarRecDashboard\.[A-Za-z]+$/);
     }
+  });
+
+  it("does NOT include the retired CSV-export procs (replaced by the background-job flow)", () => {
+    // The `startDashboardCsvExport` + `getDashboardCsvExportJobStatus`
+    // pair shipped under the response budget — both responses are
+    // bounded. The old `exportOwnershipTileCsv` /
+    // `exportChangeOwnershipTileCsv` synchronous procs are gone.
+    expect(DASHBOARD_OVERSIZE_ALLOWLIST.has(
+      "solarRecDashboard.exportOwnershipTileCsv"
+    )).toBe(false);
+    expect(DASHBOARD_OVERSIZE_ALLOWLIST.has(
+      "solarRecDashboard.exportChangeOwnershipTileCsv"
+    )).toBe(false);
   });
 });
 
@@ -383,32 +394,35 @@ describe("solarRecDashboardRouter wiring", () => {
     );
   });
 
-  it("registers exportOwnershipTileCsv + exportChangeOwnershipTileCsv as dashboardProcedure", () => {
+  it("registers startDashboardCsvExport + getDashboardCsvExportJobStatus as dashboardProcedure", () => {
     const filePath = resolve(__dirname, "solarRecDashboardRouter.ts");
     const source = readFileSync(filePath, "utf8");
-    // Server-side CSV export procs are the resilient pattern for
-    // ownership/change-ownership exports — the client never receives
-    // the heavy aggregator's row arrays. Pinning their registration
-    // so a future PR can't accidentally remove them and silently
-    // regress export-on-first-click.
+    // The background-job flow replaces the synchronous
+    // `exportOwnershipTileCsv` / `exportChangeOwnershipTileCsv`
+    // procs. Both new procs are bounded responses (start: < 200 B
+    // jobId; status: < 1 KB snapshot), so neither needs allowlist
+    // exemption — pin the registration so a future PR can't
+    // accidentally regress to inline CSV downloads.
     expect(source).toMatch(
-      /exportOwnershipTileCsv\s*:\s*dashboardProcedure\s*\(/
+      /startDashboardCsvExport\s*:\s*dashboardProcedure\s*\(/
     );
     expect(source).toMatch(
-      /exportChangeOwnershipTileCsv\s*:\s*dashboardProcedure\s*\(/
+      /getDashboardCsvExportJobStatus\s*:\s*dashboardProcedure\s*\(/
     );
   });
 
-  it("allowlists the CSV export procs (response payloads can be MB-scale)", () => {
-    const guardSource = readFileSync(
-      resolve(__dirname, "dashboardResponseGuard.ts"),
-      "utf8"
+  it("does NOT re-register the retired synchronous CSV export procs", () => {
+    const filePath = resolve(__dirname, "solarRecDashboardRouter.ts");
+    const source = readFileSync(filePath, "utf8");
+    // The old query-shape procs returned MB-scale CSV strings
+    // through tRPC and were on the oversize allowlist. The
+    // background-job flow supersedes them; a future PR must NOT
+    // reintroduce a synchronous shape under either name.
+    expect(source).not.toMatch(
+      /exportOwnershipTileCsv\s*:\s*dashboardProcedure\s*\(/
     );
-    expect(guardSource).toContain(
-      '"solarRecDashboard.exportOwnershipTileCsv"'
-    );
-    expect(guardSource).toContain(
-      '"solarRecDashboard.exportChangeOwnershipTileCsv"'
+    expect(source).not.toMatch(
+      /exportChangeOwnershipTileCsv\s*:\s*dashboardProcedure\s*\(/
     );
   });
 });
