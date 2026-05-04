@@ -341,3 +341,60 @@ describe("Solar REC dashboard mount: slim summary discriminator (PR #332 follow-
     expect(code).not.toMatch(/summary\.ownershipRows\.filter/);
   });
 });
+
+describe("Solar REC dashboard: snapshot-readiness gate (PR #337 follow-up item 1)", () => {
+  const code = codeOnly();
+
+  it("createLogEntry refuses to persist when heavy data is missing — no silent-zero log entries", () => {
+    // The function must early-return on the !ready path and call
+    // `toast.error(<reason>)` so the user understands why the
+    // snapshot didn't take.
+    const fnSlice = sliceCreateLogEntryBody();
+    expect(fnSlice).not.toBeNull();
+    expect(fnSlice!).toMatch(/snapshotReadiness/);
+    expect(fnSlice!).toMatch(/!\s*snapshotReadiness\.ready/);
+    expect(fnSlice!).toMatch(/toast\.error\s*\(/);
+    expect(fnSlice!).toMatch(/return\s*;/);
+  });
+
+  it("snapshotReadiness gates on summary.kind === 'heavy' AND change-ownership AND offline-monitoring AND system snapshot", () => {
+    // Each of the four heavy inputs feeds a required field of the
+    // log entry. Missing any of them yields silent zeros — pre-fix.
+    expect(code).toMatch(/snapshotReadiness/);
+    expect(code).toMatch(/summary\?\.kind\s*!==\s*["']heavy["']/);
+    expect(code).toMatch(/changeOwnershipQuery\.status\s*!==\s*["']success["']/);
+    expect(code).toMatch(/offlineMonitoringQuery\.status\s*!==\s*["']success["']/);
+    expect(code).toMatch(/!serverSnapshot\.systems/);
+  });
+
+  it("Log Snapshot button is disabled and tooltipped while readiness is false", () => {
+    expect(code).toMatch(
+      /disabled\s*=\s*\{\s*!snapshotReadiness\.ready\s*\}[\s\S]{0,400}Log Snapshot/
+    );
+    expect(code).toMatch(
+      /title\s*=\s*\{[\s\S]{0,200}snapshotReadiness\.ready[\s\S]{0,200}snapshotReadiness\.reason[\s\S]{0,400}Log Snapshot/
+    );
+  });
+});
+
+/**
+ * Pull the body of `createLogEntry` out of the source so a regex can
+ * inspect just that function. The function uses `=> {` so we walk
+ * matching braces from the first `{` after the arrow.
+ */
+function sliceCreateLogEntryBody(): string | null {
+  const decl = SOURCE.match(/const\s+createLogEntry\s*=\s*\(\s*\)\s*=>\s*\{/);
+  if (!decl || decl.index === undefined) return null;
+  const start = SOURCE.indexOf("{", decl.index);
+  if (start === -1) return null;
+  let depth = 0;
+  for (let i = start; i < SOURCE.length; i++) {
+    const ch = SOURCE[i];
+    if (ch === "{") depth++;
+    else if (ch === "}") {
+      depth--;
+      if (depth === 0) return SOURCE.slice(decl.index, i + 1);
+    }
+  }
+  return null;
+}

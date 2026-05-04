@@ -675,18 +675,22 @@ responses.** They live in `DASHBOARD_OVERSIZE_ALLOWLIST`
 (`server/_core/dashboardResponseGuard.ts`) and are accepted as
 known regressions in warn mode. None of them fire on Overview
 default mount — they're scoped behind tab-active gates +
-`hasUserInteractedWithDashboard`. Each entry is a debt item with a
-named replacement plan:
+`hasUserInteractedWithDashboard`. Each entry is **unscheduled
+transitional debt** — a sketch of the replacement shape, NOT a
+committed delivery plan. None has a tracking issue or a target
+sprint as of 2026-05-04. Mark a row with the issue / phase / PR
+number when work actually gets scheduled; until then assume the
+sketch may stay aspirational indefinitely.
 
-| Allowlisted procedure | Wire shape today | Replacement |
+| Allowlisted procedure | Wire shape today | Sketch of future replacement (unscheduled) |
 |---|---|---|
-| `solarRecDashboard.getSystemSnapshot` | Full pre-computed `SystemRecord[]` (~26 MB on prod) | Paginated `getDashboardSystemsPage` + a derived `solarRecDashboardSystemFacts` table; tab-specific reads target only the columns they need. |
+| `solarRecDashboard.getSystemSnapshot` | Full pre-computed `SystemRecord[]` (~26 MB on prod) | Paginated `getDashboardSystemsPage` + a derived `solarRecDashboardSystemFacts` table; tab-specific reads would target only the columns they need. |
 | `solarRecDashboard.getDashboardOverviewSummary` | Heavy summary embedding `ownershipRows: OwnershipOverviewExportRow[]` (~5–15 MB) | Slim `getDashboardSummary` (already shipped, default mount) + a paginated `getDashboardOwnershipRowsPage` for the detail table. CSV export already runs server-side via `exportOwnershipTileCsv` (also allowlisted; see below). |
 | `solarRecDashboard.getDashboardChangeOwnership` | Per-project `rows: ChangeOwnershipExportRow[]` (~19 MB) | Slim Change-Ownership rollup (already in `getDashboardSummary`) + paginated `getDashboardChangeOwnershipRowsPage`. |
 | `solarRecDashboard.getDashboardOfflineMonitoring` | Per-system maps keyed by ~21k systems (`monitoringDetailsBySystemKey` etc.) | Paginated `getDashboardMonitoringDetailsPage` + per-system endpoint for drill-in. |
 | `solarRecDashboard.getDatasetCsv` | Full CSV string built in memory (≤25 MB hard cap) | Streaming HTTP export OR background artifact job — see streaming/background note below. |
 | `solarRecDashboard.exportOwnershipTileCsv` | CSV string from heavy aggregator's row set (MB-scale on prod) | Mutation enqueues an export job → server streams CSV rows directly to S3 under `<scope>/exports/<jobId>.csv` → client polls + downloads via presigned URL. PR #334 added the no-side-effect invariant on the client click handler; the streaming/background pipeline itself is NOT yet implemented. |
-| `solarRecDashboard.exportChangeOwnershipTileCsv` | Same shape as above against `getDashboardChangeOwnership.rows` | Same streaming/background plan as `exportOwnershipTileCsv`. |
+| `solarRecDashboard.exportChangeOwnershipTileCsv` | Same shape as above against `getDashboardChangeOwnership.rows` | Same streaming/background sketch as `exportOwnershipTileCsv`. |
 
 **These export procs do NOT actually stream or background-export
 today.** They run the heavy aggregator on the server, build the
@@ -694,10 +698,10 @@ CSV string in memory, and return it through the tRPC single-
 response shape. The improvement vs. PR #332 is scoped: the client
 no longer hydrates the multi-MB JSON detail rows into the browser,
 but the server still builds the full CSV string and sends it as a
-single response. Treat the entries as transitional debt — a future
-PR replaces them with the mutation-enqueued / S3-streamed /
-artifact-URL path described above. The plan lives inline on the
-proc docstrings (`server/_core/solarRecDashboardRouter.ts`).
+single response. Treat the entries as **unscheduled transitional
+debt** — there is no committed PR / issue / phase replacing them.
+Until one is filed, do not describe the streaming/background
+architecture as scheduled or imminent.
 
 The legacy `getDatasetAssembled` batch procedure (the worst
 default-mount offender, 50–150 MB on prod) was removed in Task

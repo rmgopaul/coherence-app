@@ -32,6 +32,7 @@ import {
   type CsvRow,
 } from "./aggregatorHelpers";
 import { loadDatasetRows } from "./buildSystemSnapshot";
+import { computeFinancialsHash } from "./financialsVersion";
 import { jsonSerde, withArtifactCache } from "./withArtifactCache";
 
 export type FinancialsProfitRow = {
@@ -560,6 +561,31 @@ async function resolveFinancialsBatchIds(
   };
 }
 
+/**
+ * PR #337 follow-up item 4 (2026-05-04) — combined batch-ID
+ * resolution + canonical financials freshness hash. The slim KPI
+ * read path needs both; computing them via separate calls
+ * `resolveFinancialsBatchIds` + `computeFinancialsHash` doubled the
+ * dataset-versions DB read on every Overview mount.
+ *
+ * Concurrent execution via `Promise.all` — `computeFinancialsHash`
+ * does its own dataset-versions read internally, so this still
+ * issues 2 indexed reads in parallel rather than 3 sequential. A
+ * future cleanup could also pass `batchIds` into
+ * `computeFinancialsHash` directly to drop the second dataset-
+ * versions read entirely; deferred since it touches the public
+ * `getFinancialsHash` proc's contract.
+ */
+async function resolveFinancialsBatchIdsAndHash(
+  scopeId: string
+): Promise<{ batchIds: FinancialsBatchIds; financialsHash: string }> {
+  const [batchIds, financialsHash] = await Promise.all([
+    resolveFinancialsBatchIds(scopeId),
+    computeFinancialsHash(scopeId),
+  ]);
+  return { batchIds, financialsHash };
+}
+
 function buildFinancialCsgIds(mappingRows: CsvRow[]): string[] {
   const ids = new Set<string>();
   for (const row of mappingRows) {
@@ -628,7 +654,13 @@ export async function getOrBuildFinancialsAggregates(scopeId: string): Promise<
     fromCache: boolean;
   }
 > {
-  const batchIds = await resolveFinancialsBatchIds(scopeId);
+  // PR #337 follow-up item 4 (2026-05-04) — single helper resolves
+  // batch IDs + canonical financials hash in one pass so the slim
+  // KPI write path doesn't re-call `resolveFinancialsBatchIds` /
+  // `computeFinancialsHash` later. The captured hash also feeds the
+  // race-safety recheck inside `writeFinancialsKpiSideCache`.
+  const { batchIds, financialsHash: captureKpiHash } =
+    await resolveFinancialsBatchIdsAndHash(scopeId);
 
   // No datasets uploaded at all → nothing to compute on any axis.
   if (
@@ -747,27 +779,24 @@ export async function getOrBuildFinancialsAggregates(scopeId: string): Promise<
 
   // Side cache: write the 4 Overview KPI sums under the canonical
   // financials freshness hash from `financialsVersion.ts` — the
-  // SAME hash inputs the heavy aggregator's invalidation depends
-  // on. The hash includes:
-  //   - All 8 financial dataset batch IDs (mapping, ICC, ABP, etc.).
-  //   - `getScopeContractScanVersion(scopeId).latestCompletedJobId`
-  //     so a fresh scan job invalidates the slim cache.
-  //   - `latestOverrideAt` so an override edit invalidates the slim
-  //     cache.
-  //   - The slim runner version so a slim shape change invalidates.
+  // SAME hash inputs the heavy aggregator's invalidation depends on
+  // (now includes `abpReport` after PR #337 follow-up item 3).
   //
-  // PR #334 follow-up item 1 (2026-05-02): the previous
-  // batch-ID-only hash silently kept stale KPIs after override
-  // edits. The Overview tile would show pre-edit values until the
-  // next cold cycle. The new hash matches contract-scan freshness
-  // so the slim endpoint returns `available: false` rather than
-  // stale-true the moment overrides change.
-  await writeFinancialsKpiSideCache(scopeId, result).catch((error) => {
-    console.warn(
-      `[financialsAggregates] kpi side cache write failed for scope=${scopeId}:`,
-      error instanceof Error ? error.message : error
-    );
-  });
+  // Race-safety (PR #337 follow-up item 2, 2026-05-04). The hash is
+  // captured BEFORE the heavy build kicks off (`captureKpiHash`),
+  // and re-checked just before the upsert. If a concurrent override
+  // edit / fresh scan job / dataset re-upload bumped the freshness
+  // signal mid-build, we'd otherwise upsert old totals under the
+  // NEW hash and serve them as fresh from the slim Overview path.
+  // The pre-write recheck skips with a warning instead.
+  await writeFinancialsKpiSideCache(scopeId, captureKpiHash, result).catch(
+    (error) => {
+      console.warn(
+        `[financialsAggregates] kpi side cache write failed for scope=${scopeId}:`,
+        error instanceof Error ? error.message : error
+      );
+    }
+  );
 
   return {
     ...result,
@@ -790,19 +819,30 @@ export async function getOrBuildFinancialsAggregates(scopeId: string): Promise<
 // `getOrBuildFinancialsAggregates` after it runs, so KPIs become
 // available the first time any user visits Financials/Pipeline.
 //
-// Cache-key freshness — PR #334 follow-up item 1 (2026-05-02). The
-// hash is built from `computeFinancialsHash(scopeId)` in
-// `financialsVersion.ts`, plus the slim runner version. That hash
-// already binds:
-//   - All 8 financial dataset batch IDs.
+// Cache-key freshness — PR #334 follow-up item 1 + PR #337
+// follow-up items 2 & 3 (2026-05-02 and 2026-05-04). The hash is
+// built from `computeFinancialsHash(scopeId)` in
+// `financialsVersion.ts` plus the slim runner version. That hash
+// binds:
+//   - All 9 financial dataset batch IDs (mapping, ICC, ABP, ABP
+//     report, etc. — `abpReport` was added to FINANCIALS_CSV_DEPS
+//     in PR #337 follow-up item 3 so a re-upload of that single
+//     dataset also invalidates the slim cache).
 //   - `solarRecScopeContractScanVersion.latestCompletedJobId`
 //     (set on every contract-scan job completion).
 //   - `solarRecScopeContractScanVersion.latestOverrideAt`
 //     (set on every override edit).
-// So when an override OR a fresh scan job changes the scope's
-// scan version, the slim cache lookup misses and
-// `getCachedFinancialsKpiSummary` returns `available: false` —
-// the Overview tile renders "N/A" instead of stale-true KPIs.
+// So when an override / fresh scan job / dataset re-upload changes
+// the scope's freshness signal, the slim cache lookup misses and
+// `getCachedFinancialsKpiSummary` returns `available: false` — the
+// Overview tile renders "N/A" instead of stale-true KPIs.
+//
+// Race-safety (PR #337 follow-up item 2). The heavy aggregator
+// captures the hash BEFORE its row build and re-checks it before
+// upserting the side-cache row. If a concurrent edit changed the
+// freshness signal mid-build, the upsert is skipped — otherwise we
+// would write old KPIs under a NEW hash and the slim path would
+// serve them as fresh on the next read.
 // ---------------------------------------------------------------------------
 
 const FINANCIALS_KPI_SUMMARY_ARTIFACT_TYPE = "financials-kpi-summary";
@@ -816,11 +856,15 @@ const FINANCIALS_KPI_SUMMARY_ARTIFACT_TYPE = "financials-kpi-summary";
  *
  * v2 (2026-05-02, PR #334 follow-up item 1) — switched the hash
  * inputs from "3 dataset batch IDs" to `computeFinancialsHash` +
- * runner version. Cached v1 rows had stale KPIs after override
- * edits.
+ * runner version.
+ *
+ * v3 (2026-05-04, PR #337 follow-up item 3) — `abpReport` is now
+ * inside `computeFinancialsHash`, so the slim hash drops the
+ * separate `abpReport` term. Cached v2 rows under the old hash
+ * shape are stale.
  */
 export const FINANCIALS_KPI_SUMMARY_RUNNER_VERSION =
-  "kpi-summary-v2" as const;
+  "kpi-summary-v3" as const;
 
 export type FinancialsKpiSummary = {
   totalProfit: number;
@@ -831,50 +875,56 @@ export type FinancialsKpiSummary = {
 };
 
 /**
- * Slim KPI cache key. Bound to the scope's full financials
- * freshness signal so override + scan-job changes invalidate.
+ * Slim KPI cache key. Pure projection of the canonical financials
+ * freshness hash + slim runner version — no extra dataset reads
+ * once the canonical hash is in hand.
  *
- * Inputs:
- *   - `computeFinancialsHash(scopeId)` from
- *     `financialsVersion.ts` — includes 8 financial dataset batch
- *     IDs + `latestCompletedJobId` + `latestOverrideAt`.
- *   - The `abpReport` batch ID, which `computeFinancialsHash`
- *     omits today (the financialsVersion module focuses on the 8
- *     ABP-CSV-side datasets) but the heavy aggregator reads in its
- *     join chain via `loadDatasetRows(srDsAbpReport)`. Without
- *     this, an `abpReport` re-upload would NOT invalidate the slim
- *     KPI cache and Overview would show pre-upload KPIs.
- *   - `FINANCIALS_KPI_SUMMARY_RUNNER_VERSION` so a slim shape
- *     change invalidates every persisted side-cache row.
- *
- * Single-scope DB read (1 indexed version-row SELECT + 1 indexed
- * active-dataset-versions read; both run inside `computeFinancials
- * Hash` and `resolveFinancialsBatchIds`). No row materialization —
- * safe to call from the slim Overview endpoint.
+ * Caller MUST already hold the canonical hash from
+ * `computeFinancialsHash` (or via `resolveFinancialsBatchIdsAndHash`).
+ * Threading the hash through avoids redundant DB reads on the slim
+ * read/write paths and is the substrate for the race-safety
+ * recheck inside `writeFinancialsKpiSideCache`.
  */
-async function computeFinancialsKpiHash(scopeId: string): Promise<string> {
-  const { computeFinancialsHash } = await import("./financialsVersion");
-  const [financialsHash, batchIds] = await Promise.all([
-    computeFinancialsHash(scopeId),
-    resolveFinancialsBatchIds(scopeId),
-  ]);
+function deriveFinancialsKpiHash(financialsHash: string): string {
   return createHash("sha256")
     .update(
       [
         `runner:${FINANCIALS_KPI_SUMMARY_RUNNER_VERSION}`,
         `financials:${financialsHash}`,
-        `abpReport:${batchIds.abpReportBatchId ?? ""}`,
       ].join("|")
     )
     .digest("hex")
     .slice(0, 16);
 }
 
+/**
+ * Write the slim KPI side-cache row.
+ *
+ * `capturedFinancialsHash` is the freshness hash sampled BEFORE the
+ * heavy build started. We re-sample the current hash and refuse to
+ * upsert if it doesn't match — that's the race guard for a
+ * concurrent edit landing during the build (override, fresh scan
+ * job, dataset re-upload). On mismatch, the heavy aggregator's
+ * own cache is also stale, so the next read of either layer will
+ * trigger a recompute against the new freshness signal.
+ *
+ * PR #337 follow-up item 2 (2026-05-04).
+ */
 export async function writeFinancialsKpiSideCache(
   scopeId: string,
+  capturedFinancialsHash: string,
   result: FinancialsAggregates
 ): Promise<void> {
-  const hash = await computeFinancialsKpiHash(scopeId);
+  const currentFinancialsHash = await computeFinancialsHash(scopeId);
+  if (currentFinancialsHash !== capturedFinancialsHash) {
+    console.warn(
+      `[financialsAggregates] kpi side cache write SKIPPED for scope=${scopeId}: ` +
+        `freshness changed mid-build (captured=${capturedFinancialsHash} ` +
+        `current=${currentFinancialsHash}). The next heavy build will overwrite.`
+    );
+    return;
+  }
+  const hash = deriveFinancialsKpiHash(capturedFinancialsHash);
   const summary: FinancialsKpiSummary = {
     totalProfit: result.totalProfit,
     totalUtilityCollateral: result.totalUtilityCollateral,
@@ -900,21 +950,24 @@ export type CachedFinancialsKpiSummaryResult =
  * either:
  *   - Required dataset batches aren't uploaded (financials can't
  *     be computed at all).
- *   - The current `computeFinancialsHash(scopeId)` doesn't match
- *     anything in the side cache. This is the case immediately
- *     after an override edit or a fresh scan job — the side cache
- *     is keyed on a freshness hash that follows scan/override
- *     state, so a stale row keyed on the previous hash is
- *     correctly skipped.
+ *   - The current canonical financials hash doesn't match anything
+ *     in the side cache. This is the case immediately after an
+ *     override edit, a fresh scan job, or a dataset re-upload —
+ *     the side cache is keyed on a freshness hash that follows
+ *     all three signals.
  *
- * NEVER triggers a row materialization. Overview tile consumers
- * MUST render an explicit "—" / "N/A" placeholder when
- * `available: false`, not a silent zero.
+ * NEVER triggers a row materialization. Single combined DB call
+ * (`resolveFinancialsBatchIdsAndHash`) covers both the
+ * required-batches early-exit AND the cache-key derivation.
+ *
+ * Overview tile consumers MUST render an explicit "—" / "N/A"
+ * placeholder when `available: false`, not a silent zero.
  */
 export async function getCachedFinancialsKpiSummary(
   scopeId: string
 ): Promise<CachedFinancialsKpiSummaryResult> {
-  const batchIds = await resolveFinancialsBatchIds(scopeId);
+  const { batchIds, financialsHash } =
+    await resolveFinancialsBatchIdsAndHash(scopeId);
   if (
     !batchIds.abpCsgSystemMappingBatchId ||
     !batchIds.abpIccReport3RowsBatchId ||
@@ -922,7 +975,7 @@ export async function getCachedFinancialsKpiSummary(
   ) {
     return { available: false };
   }
-  const hash = await computeFinancialsKpiHash(scopeId);
+  const hash = deriveFinancialsKpiHash(financialsHash);
   const cached = await getComputedArtifact(
     scopeId,
     FINANCIALS_KPI_SUMMARY_ARTIFACT_TYPE,

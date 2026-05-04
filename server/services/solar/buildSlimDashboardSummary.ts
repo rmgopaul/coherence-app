@@ -95,26 +95,36 @@ import {
 import { getOrBuildFoundation } from "./foundationRunner";
 import { jsonSerde, withArtifactCache } from "./withArtifactCache";
 
+/**
+ * v6 (2026-05-04, PR #337 follow-up item 6) — `SlimOwnershipOverview`
+ * stopped exposing `terminatedReporting / terminatedNotReporting /
+ * terminatedTotal`. Those fields were structurally 0 on the slim
+ * path (foundation excludes terminated from `part2EligibleCsgIds`)
+ * and only invited silent-zero reads. Cached v5 rows under the old
+ * shape are stale.
+ */
 export const SLIM_DASHBOARD_SUMMARY_RUNNER_VERSION =
-  "slim-dashboard-summary-v5" as const;
-const ARTIFACT_TYPE = "slim-dashboard-summary-v5";
+  "slim-dashboard-summary-v6" as const;
+const ARTIFACT_TYPE = "slim-dashboard-summary-v6";
 
 export type SizeBucket = "<=10 kW AC" | ">10 kW AC" | "Unknown";
 
 /**
- * Ownership tile breakdown over Part-II-eligible systems. PR #334
- * follow-up item 4 (option B, 2026-05-02): the foundation contract
- * (`buildFoundationArtifact.ts:606`) excludes terminated systems
- * from `part2EligibleCsgIds` — a terminated system never satisfies
- * `isPart2Verified === true`. So the slim Part-II walk physically
- * cannot count terminated reporting / not-reporting without leaving
- * its scope. The terminated fields below are always 0 on the slim
- * path; consumers that need the portfolio terminated count read
- * `SlimDashboardSummary.terminatedSystems` (from
- * `foundation.summaryCounts.terminated`). Heavy aggregators expose
- * Part-II-scoped terminated counts independently — UI that needs
- * the breakdown must wait for the heavy/detail path or render an
- * explicit "—" placeholder.
+ * Ownership tile breakdown over Part-II-eligible systems.
+ *
+ * Foundation contract (`buildFoundationArtifact.ts:606`): a
+ * terminated system is NEVER in `part2EligibleCsgIds` — the builder
+ * gates `isPart2Verified` on `!system.isTerminated`. The slim
+ * Part-II walk therefore cannot supply Part-II-scoped terminated
+ * reporting / not-reporting counts.
+ *
+ * PR #337 follow-up item 6 (2026-05-04) — the `terminatedReporting`,
+ * `terminatedNotReporting`, and `terminatedTotal` fields used to be
+ * present here as always-0 placeholders. They were removed. The
+ * portfolio-wide terminated count is on
+ * `SlimDashboardSummary.terminatedSystems`. The Part-II-scoped
+ * breakdown is heavy-only — consumers must narrow on
+ * `summary.kind === "heavy"` to read it.
  */
 export interface SlimOwnershipOverview {
   reportingOwnershipTotal: number;
@@ -123,12 +133,6 @@ export interface SlimOwnershipOverview {
   notReportingOwnershipTotal: number;
   notTransferredNotReporting: number;
   transferredNotReporting: number;
-  /** Always 0 on the slim path. See type docstring. */
-  terminatedReporting: number;
-  /** Always 0 on the slim path. See type docstring. */
-  terminatedNotReporting: number;
-  /** Always 0 on the slim path. See type docstring. */
-  terminatedTotal: number;
 }
 
 export interface SlimSizeBreakdownRow {
@@ -274,9 +278,6 @@ const EMPTY_OWNERSHIP_OVERVIEW: SlimOwnershipOverview = {
   notReportingOwnershipTotal: 0,
   notTransferredNotReporting: 0,
   transferredNotReporting: 0,
-  terminatedReporting: 0,
-  terminatedNotReporting: 0,
-  terminatedTotal: 0,
 };
 
 const EMPTY_SIZE_BREAKDOWN: SlimSizeBreakdownRow[] = [
@@ -387,15 +388,13 @@ async function computeSlimDashboardSummary(
   //   `part2EligibleCsgIds` is the sorted set of those CSG IDs.
   // Therefore every system encountered in this walk satisfies
   // `!sys.isTerminated`. The ownership tile breakdown below is
-  // intentionally Part-II-scoped + non-terminated; the
-  // `terminatedReporting / terminatedNotReporting / terminatedTotal`
-  // fields on the slim payload are ALWAYS 0 on the slim path. The
-  // portfolio-wide terminated count is surfaced separately on
-  // `summary.terminatedSystems` (from `foundation.summaryCounts.
-  // terminated`) — the UI tile that wants the terminated number
-  // must read THAT field, not `ownershipOverview.terminatedTotal`,
-  // until a heavy/detail path provides Part-II-scoped terminated
-  // counts. PR #334 follow-up item 4 (option B, 2026-05-02).
+  // intentionally Part-II-scoped + non-terminated. PR #337
+  // follow-up item 6 (2026-05-04) removed the always-0 terminated
+  // fields from `SlimOwnershipOverview` so consumers can no longer
+  // accidentally read them as if real. The portfolio-wide
+  // terminated count is on `summary.terminatedSystems` (from
+  // `foundation.summaryCounts.terminated`); Part-II-scoped
+  // terminated breakdown is heavy-only.
   let notTransferredReporting = 0;
   let transferredReporting = 0;
   let notTransferredNotReporting = 0;
@@ -744,16 +743,13 @@ async function computeSlimDashboardSummary(
   const notReportingOwnershipTotal =
     notTransferredNotReporting + transferredNotReporting;
   // Foundation contract: terminated systems are excluded from the
-  // Part-II-eligible set. Slim cannot count "terminated reporting"
-  // / "terminated not reporting" without scanning systems outside
-  // `part2EligibleCsgIds`, which is the heavy aggregator's job.
-  // Surface as fixed 0s on the slim path; consumers read the
-  // portfolio terminated count from `summary.terminatedSystems`
-  // instead. See `SlimOwnershipOverview` doc + the foundation walk
-  // comment above. PR #334 follow-up item 4 (option B).
-  const terminatedReporting = 0;
-  const terminatedNotReporting = 0;
-  const terminatedTotal = 0;
+  // Part-II-eligible set, so slim cannot supply "terminated
+  // reporting" / "terminated not reporting" Part-II-scoped counts.
+  // The `SlimOwnershipOverview` type no longer declares those
+  // fields (PR #337 follow-up item 6) — consumers read the
+  // portfolio terminated count from `summary.terminatedSystems` or
+  // narrow on `summary.kind === "heavy"` for the Part-II-scoped
+  // breakdown. See type docstring + foundation walk above.
 
   const totalSystems = foundation.summaryCounts.totalSystems;
   const reportingSystems = foundation.summaryCounts.reporting;
@@ -841,9 +837,6 @@ async function computeSlimDashboardSummary(
       notReportingOwnershipTotal,
       notTransferredNotReporting,
       transferredNotReporting,
-      terminatedReporting,
-      terminatedNotReporting,
-      terminatedTotal,
     },
     withValueDataCount,
     totalContractedValue,

@@ -356,11 +356,19 @@ describe("getOrBuildSlimDashboardSummary", () => {
     expect(result.ownershipOverview.transferredReporting).toBe(2);
     expect(result.ownershipOverview.notTransferredReporting).toBe(1);
     expect(result.ownershipOverview.transferredNotReporting).toBe(1);
-    // Terminated fields STRUCTURALLY 0 on the slim path —
-    // foundation excludes terminated from Part-II eligibility.
-    expect(result.ownershipOverview.terminatedReporting).toBe(0);
-    expect(result.ownershipOverview.terminatedNotReporting).toBe(0);
-    expect(result.ownershipOverview.terminatedTotal).toBe(0);
+    // Terminated fields are NOT in `SlimOwnershipOverview` —
+    // PR #337 follow-up item 6 dropped the always-0 placeholders
+    // so consumers can no longer accidentally read them.
+    expect(
+      Object.keys(result.ownershipOverview).sort()
+    ).toEqual([
+      "notReportingOwnershipTotal",
+      "notTransferredNotReporting",
+      "notTransferredReporting",
+      "reportingOwnershipTotal",
+      "transferredNotReporting",
+      "transferredReporting",
+    ]);
     // Portfolio terminated count surfaces here instead.
     expect(result.terminatedSystems).toBe(2);
   });
@@ -813,8 +821,8 @@ describe("getOrBuildSlimDashboardSummary", () => {
     expect(foundationMocks.streamRowsByPage).not.toHaveBeenCalled();
   });
 
-  it("uses runner version v5 (post Excel-serial Part-II date parity fix)", () => {
-    expect(SLIM_DASHBOARD_SUMMARY_RUNNER_VERSION).toBe("slim-dashboard-summary-v5");
+  it("uses runner version v6 (post terminated-fields removal — PR #337 follow-up item 6)", () => {
+    expect(SLIM_DASHBOARD_SUMMARY_RUNNER_VERSION).toBe("slim-dashboard-summary-v6");
   });
 
   it("accepts Excel-serial part2AppVerificationDate (parity with foundation eligibility — PR #334 follow-up item 3)", async () => {

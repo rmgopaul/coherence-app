@@ -1332,11 +1332,16 @@ export default memo(function FinancialsTab(props: FinancialsTabProps) {
                                     result.additionalCollateralPercent ?? "N/A"
                                   }%`,
                                 );
+                                // PR #337 follow-up item 5 (2026-05-04) —
+                                // mirror the batch-rescan refresh order so
+                                // the heavy row data and the slim KPI side
+                                // cache stay aligned. Pre-fix this only
+                                // refetched contract-scan + invalidated the
+                                // slim KPI cache, leaving the heavy
+                                // `getDashboardFinancials` cache one tick
+                                // stale until React Query's staleTime fired.
                                 await contractScanRefetch();
-                                // Single-row rescan changed scan rows; the
-                                // heavy financials cache will refetch on the
-                                // next Financials read, but the slim Overview
-                                // KPI query may be cached at a stale value.
+                                await financialsRefetch();
                                 await invalidateFinancialKpiSummary();
                               } catch (err) {
                                 toast.error(
