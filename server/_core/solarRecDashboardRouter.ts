@@ -3567,15 +3567,16 @@ export const solarRecDashboardRouter = t.router({
    * roundtrip. Replaces the browser's pattern of holding raw rows in
    * memory just to read `.length` on the Data Quality tab.
    *
-   * Response is small (one row per dataset, ~16 fields each → ~5 KB
+   * Response is small (one row per dataset, ~16 fields each -> ~5 KB
    * gzipped) and cheap to compute (one batch sync-state read + one
-   * batch active-version read + one COUNT per row-backed table).
+   * batch active-version read). The active import batch's recorded
+   * `rowCount` is the default-mount source of truth; exact row-table
+   * verification belongs to `debugDatasetPersistenceRaw`.
    *
    * Per-dataset shape:
-   *   - `rowCount`: actual COUNT(*) from `srDs*` for the active batch
+   *   - `rowCount`: recorded row count from the active import batch
    *     (row-backed datasets only). For non-row-backed datasets,
-   *     `null` — the chunked-CSV path doesn't expose a row count
-   *     server-side without parsing the blob.
+   *     `null`.
    *   - `byteCount`: bytes of the chunked-CSV payload, from
    *     `solarRecDatasetSyncState.payloadBytes`.
    *   - `lastUpdated`: from sync state, or the active batch's
@@ -3697,31 +3698,6 @@ export const solarRecDashboardRouter = t.router({
         }
       }
 
-      // For row-backed datasets with an active batch, get actual
-      // COUNT(*). Bounded fan-out (max 7 queries, all indexed).
-      const actualRowCounts = new Map<string, number>();
-      if (db) {
-        await Promise.all(
-          (Object.keys(ROW_TABLES_BY_DATASET_KEY) as Array<
-            keyof typeof ROW_TABLES_BY_DATASET_KEY
-          >).map(async (key) => {
-            const batch = activeVersions.get(key);
-            if (!batch) return;
-            const table = ROW_TABLES_BY_DATASET_KEY[key];
-            const result = await db
-              .select({ count: sql<number>`COUNT(*)` })
-              .from(table)
-              .where(
-                and(
-                  eq(table.scopeId, scopeId),
-                  eq(table.batchId, batch.batchId)
-                )
-              );
-            actualRowCounts.set(key, Number(result[0]?.count ?? 0));
-          })
-        );
-      }
-
       type PopulationStatus = "populated" | "empty" | "missing" | "failed";
 
       type Summary = {
@@ -3738,8 +3714,8 @@ export const solarRecDashboardRouter = t.router({
          * — the locked v3 "populated dataset" definition. Mirrors
          * the foundation's `populatedDatasets` derivation:
          *
-         *   - "populated" — active batch + COUNT(*) > 0
-         *   - "empty"     — active batch + COUNT(*) === 0
+         *   - "populated" — active batch + recorded rowCount > 0
+         *   - "empty"     — active batch + recorded rowCount === 0
          *   - "missing"   — no active batch
          *   - "failed"    — sync state indicates the upload failed
          *                   to persist (chunked-CSV legacy path)
@@ -3752,7 +3728,8 @@ export const solarRecDashboardRouter = t.router({
         const syncRow = syncByKey.get(dbStorageKey);
         const isRowBacked = datasetKey in ROW_TABLES_BY_DATASET_KEY;
         const activeBatch = activeVersions.get(datasetKey);
-        const actualRowCount = actualRowCounts.get(datasetKey) ?? null;
+        const recordedRowCount =
+          activeBatch?.rowCount == null ? null : Number(activeBatch.rowCount);
 
         // Cloud status derivation — mirrors PR-2's tightened
         // `isChildKeyRecoverable` semantics: dbPersisted is required
@@ -3774,7 +3751,7 @@ export const solarRecDashboardRouter = t.router({
           cloudStatus = "failed";
         }
 
-        const rowCount = isRowBacked ? actualRowCount : null;
+        const rowCount = isRowBacked ? recordedRowCount : null;
 
         let populationStatus: PopulationStatus;
         if (cloudStatus === "failed") {

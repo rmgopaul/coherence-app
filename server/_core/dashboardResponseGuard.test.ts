@@ -394,6 +394,22 @@ describe("solarRecDashboardRouter wiring", () => {
     );
   });
 
+  it("keeps getDatasetSummariesAll on metadata-only row counts", () => {
+    const filePath = resolve(__dirname, "solarRecDashboardRouter.ts");
+    const source = readFileSync(filePath, "utf8");
+    const procBlock =
+      /getDatasetSummariesAll\s*:\s*dashboardProcedure[\s\S]*?\n  \/\*\*\n   \* CSV export/.exec(
+        source
+      )?.[0];
+    expect(procBlock).toBeDefined();
+    // This query runs on default Overview mount. It must not fan out
+    // into live COUNT(*) scans over all active srDs* tables; the upload
+    // and migration paths already persist the active batch rowCount.
+    expect(procBlock!).not.toMatch(/COUNT\s*\(\s*\*\s*\)/);
+    expect(procBlock!).not.toMatch(/actualRowCounts/);
+    expect(procBlock!).toMatch(/activeBatch\?\.rowCount/);
+  });
+
   it("registers startDashboardCsvExport + getDashboardCsvExportJobStatus as dashboardProcedure", () => {
     const filePath = resolve(__dirname, "solarRecDashboardRouter.ts");
     const source = readFileSync(filePath, "utf8");
