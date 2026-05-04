@@ -143,21 +143,6 @@ export type FinancialsDebugData = {
   };
 };
 
-/**
- * Stringify a `Promise.allSettled` rejection reason for the
- * `[financials:save-override]` console.warn payload. Keeps the
- * resulting log line single-line + searchable.
- */
-function reasonText(reason: unknown): string {
-  if (reason instanceof Error) return reason.message;
-  if (typeof reason === "string") return reason;
-  try {
-    return JSON.stringify(reason);
-  } catch {
-    return String(reason);
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Props
 // ---------------------------------------------------------------------------
@@ -250,6 +235,23 @@ type EditingFinancialRow = {
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
+
+/**
+ * Stringify a `Promise.allSettled` rejection reason for the
+ * `[financials:post-mutation-refresh]` console.warn payload. Kept at
+ * module scope so it isn't reallocated per render, but co-located
+ * with the component since it's only used by
+ * `refreshFinancialsAfterMutation`.
+ */
+function reasonText(reason: unknown): string {
+  if (reason instanceof Error) return reason.message;
+  if (typeof reason === "string") return reason;
+  try {
+    return JSON.stringify(reason);
+  } catch {
+    return String(reason);
+  }
+}
 
 export default memo(function FinancialsTab(props: FinancialsTabProps) {
   const {
@@ -458,9 +460,8 @@ export default memo(function FinancialsTab(props: FinancialsTabProps) {
   );
 
   // -------------------------------------------------------------------------
-  // PR #342 follow-up (2026-05-05) — shared post-mutation refresh
-  // helper. Used by saveOverride, handleBatchRescan, and the inline
-  // single-row rescan handler. Behavior:
+  // Shared post-mutation refresh helper. Used by saveOverride,
+  // handleBatchRescan, and handleSingleRowRescan. Behavior:
   //   1. contractScanRefetch + financialsRefetch run in parallel via
   //      Promise.allSettled — they're independent heavy queries.
   //   2. invalidateFinancialKpiSummary runs ONLY when financialsRefetch
@@ -468,19 +469,16 @@ export default memo(function FinancialsTab(props: FinancialsTabProps) {
   //      side cache, so invalidating before it lands re-caches the
   //      stale value.
   //   3. Each step's failure is captured into a string array via
-  //      reasonText so callers can console.warn + toast on the
-  //      caller-specific prefix (e.g. [financials:save-override],
-  //      [financials:batch-rescan]).
-  //   4. financialsRefreshed is true iff financialsRefetch fulfilled,
-  //      regardless of whether invalidate or contractScanRefetch
-  //      succeeded. saveOverride uses this to decide whether to clear
-  //      the optimistic localOverrides entry.
+  //      reasonText so callers can console.warn + toast under the
+  //      shared `[financials:post-mutation-refresh]` prefix.
+  //   4. financialsRefreshed is true iff financialsRefetch fulfilled.
+  //      saveOverride uses this to decide whether to clear the
+  //      optimistic localOverrides entry.
   //
-  // Note: the SolarRecDashboard parent passes refetch wrappers that
-  // call `refetch({ throwOnError: true })`, so a fulfilled outcome
-  // here genuinely means the underlying TanStack Query refetch
-  // succeeded — without throwOnError, refetch resolves even when the
-  // query errors.
+  // The SolarRecDashboard parent passes refetch wrappers that call
+  // `refetch({ throwOnError: true })`, so a fulfilled outcome here
+  // genuinely means the underlying TanStack Query refetch succeeded —
+  // without throwOnError, refetch resolves even when the query errors.
   const refreshFinancialsAfterMutation = useCallback(async (): Promise<{
     financialsRefreshed: boolean;
     failures: string[];
@@ -523,12 +521,11 @@ export default memo(function FinancialsTab(props: FinancialsTabProps) {
     batchRescanCancelledRef.current = false;
     setBatchRescanRunning(true);
 
-    // PR #339 follow-up item 1 (2026-05-05) — wrap the entire
-    // post-`setBatchRescanRunning(true)` body in try/finally so a
-    // thrown refetch / invalidate doesn't strand the UI in
-    // "running" mode. Pre-fix the final block ran outside any
-    // catch boundary; a transient network error during refetch
-    // left the Cancel button stuck visible.
+    // The try/finally guards the row-scan loop so a thrown
+    // mutateAsync (the only call below that can reject) can't
+    // strand the UI with batchRescanRunning=true. The post-loop
+    // refresh helper itself never throws — failures land in
+    // `failures[]` — so the finally is purely for the mutation path.
     try {
       const initial = new Map<string, RescanStatus>();
       for (const row of rowsToScan) {
@@ -580,15 +577,10 @@ export default memo(function FinancialsTab(props: FinancialsTabProps) {
         }
       }
 
-      // PR #342 follow-up (2026-05-05) — delegate to the shared
-      // helper so the slim KPI invalidate runs only after the heavy
-      // financials refetch fulfills. A thrown refetch/invalidate is
-      // caught by the outer try/finally so the Running flag still
-      // flips off.
       const { failures } = await refreshFinancialsAfterMutation();
       if (failures.length > 0) {
         console.warn(
-          `[financials:post-mutation-refresh] [financials:batch-rescan] dashboard refresh failed after batch rescan: ${failures.join("; ")}`
+          `[financials:post-mutation-refresh] batch-rescan failed: ${failures.join("; ")}`
         );
         toast.error(
           "Batch rescan completed, but a background data refresh failed. Latest values will load on the next dashboard refresh."
@@ -636,25 +628,10 @@ export default memo(function FinancialsTab(props: FinancialsTabProps) {
         return next;
       });
       setEditingFinancialRow(null);
-      // PR #342 follow-up (2026-05-05). The save mutation already
-      // succeeded — the optimistic localOverrides entry is in place
-      // and the user's seen the success toast. The background refresh
-      // is fire-and-forget against `refreshFinancialsAfterMutation`,
-      // which:
-      //   1. runs contractScanRefetch + financialsRefetch in parallel
-      //      via Promise.allSettled (parent passes
-      //      `refetch({ throwOnError: true })`, so a fulfilled outcome
-      //      really means the query succeeded);
-      //   2. invalidates the slim KPI side cache ONLY after the heavy
-      //      financials refetch lands (the heavy refetch is what
-      //      writes the side cache; invalidating before it lands
-      //      re-caches the stale value);
-      //   3. reports financialsRefreshed=true iff financialsRefetch
-      //      fulfilled.
-      // We clear the optimistic override only when financialsRefreshed
-      // is true — a transient refetch failure leaves the optimistic
-      // value in place so the user's table doesn't snap back to
-      // pre-edit numbers.
+      // Fire-and-forget background refresh. Only clear the optimistic
+      // override when the heavy refetch actually succeeded — a
+      // transient refetch failure must leave the optimistic value in
+      // place so the table doesn't snap back to pre-edit numbers.
       void (async () => {
         const { financialsRefreshed, failures } =
           await refreshFinancialsAfterMutation();
@@ -667,7 +644,7 @@ export default memo(function FinancialsTab(props: FinancialsTabProps) {
         }
         if (failures.length > 0) {
           console.warn(
-            `[financials:post-mutation-refresh] [financials:save-override] dashboard refresh failed for csgId=${savedCsgId}: ${failures.join("; ")}`
+            `[financials:post-mutation-refresh] save-override failed for csgId=${savedCsgId}: ${failures.join("; ")}`
           );
           toast.error(
             "Override saved, but a background data refresh failed. Latest values will load on the next dashboard refresh."
@@ -683,6 +660,38 @@ export default memo(function FinancialsTab(props: FinancialsTabProps) {
     setLocalOverrides,
     updateContractOverride,
   ]);
+
+  // -------------------------------------------------------------------------
+  // Single-row rescan: invoked from the per-row "Re-scan" button.
+  // Mirrors handleBatchRescan's contract — kept as a useCallback so the
+  // <Button> handler ref is stable per row and the body is testable
+  // alongside its sibling via the same source-rail slicer.
+  // -------------------------------------------------------------------------
+  const handleSingleRowRescan = useCallback(
+    async (csgId: string) => {
+      try {
+        const result = await rescanSingleContract.mutateAsync({ csgId });
+        toast.success(
+          `Re-scanned CSG ${csgId}: vendor fee ${
+            result.vendorFeePercent ?? "N/A"
+          }%, collateral ${result.additionalCollateralPercent ?? "N/A"}%`,
+        );
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : "Re-scan failed");
+        return;
+      }
+      const { failures } = await refreshFinancialsAfterMutation();
+      if (failures.length > 0) {
+        console.warn(
+          `[financials:post-mutation-refresh] single-row-rescan failed for csgId=${csgId}: ${failures.join("; ")}`,
+        );
+        toast.error(
+          "Re-scan completed, but a background data refresh failed. Latest values will load on the next dashboard refresh.",
+        );
+      }
+    },
+    [refreshFinancialsAfterMutation, rescanSingleContract],
+  );
 
   // -------------------------------------------------------------------------
   // CSV downloads
@@ -1425,44 +1434,7 @@ export default memo(function FinancialsTab(props: FinancialsTabProps) {
                             size="sm"
                             className="h-6 px-2 text-[10px]"
                             disabled={rescanSingleContract.isPending}
-                            onClick={async () => {
-                              // PR #342 follow-up (2026-05-05) — keep the
-                              // mutation try/catch tight so a background
-                              // refresh failure can't fire "Re-scan failed".
-                              // The shared helper captures refetch +
-                              // invalidate outcomes into failures[] without
-                              // throwing.
-                              let scanSucceeded = false;
-                              try {
-                                const result = await rescanSingleContract.mutateAsync({
-                                  csgId: r.csgId,
-                                });
-                                toast.success(
-                                  `Re-scanned CSG ${r.csgId}: vendor fee ${
-                                    result.vendorFeePercent ?? "N/A"
-                                  }%, collateral ${
-                                    result.additionalCollateralPercent ?? "N/A"
-                                  }%`,
-                                );
-                                scanSucceeded = true;
-                              } catch (err) {
-                                toast.error(
-                                  err instanceof Error ? err.message : "Re-scan failed",
-                                );
-                              }
-                              if (scanSucceeded) {
-                                const { failures } =
-                                  await refreshFinancialsAfterMutation();
-                                if (failures.length > 0) {
-                                  console.warn(
-                                    `[financials:post-mutation-refresh] [financials:single-row-rescan] dashboard refresh failed for csgId=${r.csgId}: ${failures.join("; ")}`,
-                                  );
-                                  toast.error(
-                                    "Re-scan completed, but a background data refresh failed. Latest values will load on the next dashboard refresh.",
-                                  );
-                                }
-                              }
-                            }}
+                            onClick={() => handleSingleRowRescan(r.csgId)}
                           >
                             Re-scan
                           </Button>

@@ -2,13 +2,16 @@
  * PR #340 follow-up item 4 (2026-05-05) — source-level regression
  * rail for the post-mutation refresh contract in `FinancialsTab.tsx`.
  * Originally landed in PR #342 (saveOverride ordering); extended in
- * the PR #342 follow-up to cover the shared
- * `refreshFinancialsAfterMutation` helper now used by saveOverride,
- * handleBatchRescan, and the inline single-row rescan handler, plus
- * a `throwOnError: true` rail on `SolarRecDashboard.tsx` so a refetch
- * rejection actually rejects (TanStack Query's `refetch()` resolves
- * even when the underlying query errors unless `throwOnError` is
- * set).
+ * PR #342 follow-up (the shared `refreshFinancialsAfterMutation`
+ * helper used by saveOverride, handleBatchRescan, and the inline
+ * single-row rescan, plus a `throwOnError: true` rail on
+ * `SolarRecDashboard.tsx` so a refetch rejection actually rejects —
+ * TanStack Query's `refetch()` resolves even when the underlying
+ * query errors unless `throwOnError` is set); and PR #344 follow-up
+ * (extract the inline JSX rescan handler to a sibling
+ * `handleSingleRowRescan` useCallback for ref stability + slicer
+ * symmetry, and wrap the dashboard refetch wrappers in `useCallback`
+ * so memo() on FinancialsTab and the helper's deps don't churn).
  *
  * The freshness contract for the slim KPI side cache requires:
  *   1. `financialsRefetch()` must complete BEFORE
@@ -302,34 +305,13 @@ describe("FinancialsTab handleBatchRescan — uses shared refresh helper (PR #34
   });
 });
 
-describe("FinancialsTab inline single-row rescan — uses shared refresh helper (PR #342 follow-up)", () => {
-  // The inline rescan handler isn't a useCallback — it's an
-  // `onClick={async () => { … }}` arrow on the per-row `<Button>`.
-  // Slice it from the `Re-scan` button by walking from the
-  // `disabled={rescanSingleContract.isPending}` anchor to the
-  // first matching `}}` close-brace pair.
-  function sliceInlineRescanHandler(): string | null {
-    const anchor = /disabled=\{rescanSingleContract\.isPending\}/.exec(code);
-    if (!anchor || anchor.index === undefined) return null;
-    const onClickIdx = code.indexOf("onClick={async", anchor.index);
-    if (onClickIdx === -1) return null;
-    const arrowIdx = code.indexOf("{", code.indexOf("=>", onClickIdx));
-    if (arrowIdx === -1) return null;
-    let depth = 0;
-    for (let i = arrowIdx; i < code.length; i++) {
-      const ch = code[i];
-      if (ch === "{") depth++;
-      else if (ch === "}") {
-        depth--;
-        if (depth === 0) {
-          return code.slice(onClickIdx, i + 1);
-        }
-      }
-    }
-    return null;
-  }
-
-  const fnSlice = sliceInlineRescanHandler();
+describe("FinancialsTab handleSingleRowRescan — uses shared refresh helper (PR #344 follow-up)", () => {
+  // PR #344 follow-up extracted the inline JSX onClick to a sibling
+  // useCallback so it's testable through the same slicer as
+  // saveOverride / handleBatchRescan. The Re-scan <Button> now reads
+  //   onClick={() => handleSingleRowRescan(r.csgId)}
+  // — so the test rail also asserts the JSX wiring.
+  const fnSlice = sliceUseCallbackBody(code, "handleSingleRowRescan");
 
   it("source slice extracts cleanly", () => {
     expect(fnSlice).not.toBeNull();
@@ -344,46 +326,64 @@ describe("FinancialsTab inline single-row rescan — uses shared refresh helper 
   });
 
   it("does NOT let a refresh failure trip the scan-failure toast", () => {
-    // The mutation try/catch must not wrap the helper call. Look
-    // for the helper invocation OUTSIDE the catch handler — the
-    // simplest source-level signal is that the `Re-scan failed`
-    // toast.error appears in a catch BEFORE any refresh helper
-    // call, and the helper call appears guarded by a separate
-    // success flag (or after the catch closes).
+    // The mutation try/catch must not wrap the helper call. Verify
+    // by source: the catch block ends with `return;` and the helper
+    // call sits AFTER the catch closes.
     expect(fnSlice).not.toBeNull();
     const catchIdx = fnSlice!.indexOf('"Re-scan failed"');
     const helperIdx = fnSlice!.indexOf("refreshFinancialsAfterMutation(");
     expect(catchIdx).toBeGreaterThan(-1);
     expect(helperIdx).toBeGreaterThan(-1);
-    // Helper is called AFTER the scan-failure toast site, in a
-    // separate control flow guarded by `scanSucceeded`.
     expect(helperIdx).toBeGreaterThan(catchIdx);
-    expect(fnSlice!).toMatch(/scanSucceeded/);
+    // The catch block returns early so the helper only runs on the
+    // success path. No mutable success-flag ladder.
+    expect(fnSlice!).toMatch(
+      /toast\.error\([^)]*"Re-scan failed"[^)]*\);[\s\S]{0,40}return\s*;/
+    );
+    expect(fnSlice!).not.toMatch(/scanSucceeded/);
   });
 
-  it("logs failures with the [financials:post-mutation-refresh] prefix", () => {
+  it("logs failures with the [financials:post-mutation-refresh] prefix and toasts re-scan-specific copy", () => {
     expect(fnSlice).not.toBeNull();
     expect(fnSlice!).toMatch(
       /console\.warn\s*\(\s*[`'"][^`'"]*\[financials:post-mutation-refresh\]/
     );
-  });
-});
-
-describe("SolarRecDashboard FinancialsTabLazy refetch wrappers — throwOnError (PR #342 follow-up)", () => {
-  it("contractScanRefetch is wired through refetch({ throwOnError: true })", () => {
-    // Without `throwOnError`, TanStack Query's `refetch()` resolves
-    // even when the underlying query errors — the
-    // Promise.allSettled inside the helper would then see a
-    // fulfilled outcome for a query that actually failed and the
-    // helper would (incorrectly) clear the optimistic override.
-    expect(dashboardCode).toMatch(
-      /contractScanRefetch=\{\s*\(\s*\)\s*=>\s*contractScanResultsQuery\.refetch\(\s*\{\s*throwOnError\s*:\s*true\s*\}\s*\)\s*\}/
+    expect(fnSlice!).toMatch(
+      /toast\.error\s*\(\s*[`'"][^`'"]*Re-scan completed/
     );
   });
 
-  it("financialsRefetch is wired through refetch({ throwOnError: true })", () => {
+  it("the per-row Re-scan button wires onClick to handleSingleRowRescan(r.csgId)", () => {
+    expect(code).toMatch(
+      /onClick=\{\s*\(\s*\)\s*=>\s*handleSingleRowRescan\(\s*r\.csgId\s*\)\s*\}/
+    );
+    // And the old inline `onClick={async ...}` shape is gone.
+    expect(code).not.toMatch(
+      /onClick=\{\s*async\s*\(\s*\)\s*=>\s*\{[\s\S]{0,200}rescanSingleContract\.mutateAsync/
+    );
+  });
+});
+
+describe("SolarRecDashboard FinancialsTabLazy refetch wrappers — throwOnError + stability (PR #342 follow-up)", () => {
+  it("declares stable useCallback wrappers around refetch({ throwOnError: true })", () => {
+    // Inline arrow functions in JSX props create a fresh ref every
+    // render, defeating memo() on FinancialsTab and churning the
+    // refresh helper's useCallback deps. The wrapper must be a
+    // useCallback at component scope.
     expect(dashboardCode).toMatch(
-      /financialsRefetch=\{\s*\(\s*\)\s*=>\s*financialsQuery\.refetch\(\s*\{\s*throwOnError\s*:\s*true\s*\}\s*\)\s*\}/
+      /const\s+contractScanRefetchWithThrow\s*=\s*useCallback\s*\(\s*\(\s*\)\s*=>\s*contractScanResultsQuery\.refetch\(\s*\{\s*throwOnError\s*:\s*true\s*\}\s*\)/
+    );
+    expect(dashboardCode).toMatch(
+      /const\s+financialsRefetchWithThrow\s*=\s*useCallback\s*\(\s*\(\s*\)\s*=>\s*financialsQuery\.refetch\(\s*\{\s*throwOnError\s*:\s*true\s*\}\s*\)/
+    );
+  });
+
+  it("FinancialsTabLazy props reference the stable wrappers (not inline arrows)", () => {
+    expect(dashboardCode).toMatch(
+      /contractScanRefetch=\{\s*contractScanRefetchWithThrow\s*\}/
+    );
+    expect(dashboardCode).toMatch(
+      /financialsRefetch=\{\s*financialsRefetchWithThrow\s*\}/
     );
   });
 

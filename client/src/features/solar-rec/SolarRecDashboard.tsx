@@ -4775,6 +4775,12 @@ const financialsQuery =
     enabled: isFinancialsTabActive || isPipelineTabActive,
     staleTime: 60_000,
   });
+// Stable throwOnError wrapper — see contractScanRefetchWithThrow
+// below for the rationale.
+const financialsRefetchWithThrow = useCallback(
+  () => financialsQuery.refetch({ throwOnError: true }),
+  [financialsQuery.refetch],
+);
 const financialCsgIds = useMemo<string[]>(
   () => financialsQuery.data?.csgIds ?? [],
   [financialsQuery.data]
@@ -4835,6 +4841,16 @@ useEffect(() => {
 const contractScanResultsQuery = solarRecTrpc.contractScan.getContractScanResultsByCsgIds.useQuery(
   { csgIds: financialCsgIds },
   { enabled: (isFinancialsTabActive || isPipelineTabActive) && financialCsgIds.length > 0 }
+);
+// Stable refetch wrappers that pass `throwOnError: true` so a query
+// rejection surfaces as a Promise.allSettled "rejected" outcome
+// inside FinancialsTab's refresh helper (TanStack Query's bare
+// `refetch()` resolves even when the underlying query errors).
+// useCallback keeps the refs stable across renders so memo() on
+// FinancialsTab and the helper's useCallback deps don't churn.
+const contractScanRefetchWithThrow = useCallback(
+  () => contractScanResultsQuery.refetch({ throwOnError: true }),
+  [contractScanResultsQuery.refetch],
 );
 // updateContractOverride, rescanSingleContract mutations + editingFinancialRow state
 // — moved to @/solar-rec-dashboard/components/FinancialsTab
@@ -5675,12 +5691,8 @@ const aiDataContext = useMemo(() => {
                     contractScanStatus={contractScanResultsQuery.status}
                     contractScanIsFetching={contractScanResultsQuery.isFetching}
                     contractScanError={contractScanResultsQuery.error}
-                    contractScanRefetch={() =>
-                      contractScanResultsQuery.refetch({ throwOnError: true })
-                    }
-                    financialsRefetch={() =>
-                      financialsQuery.refetch({ throwOnError: true })
-                    }
+                    contractScanRefetch={contractScanRefetchWithThrow}
+                    financialsRefetch={financialsRefetchWithThrow}
                     invalidateFinancialKpiSummary={
                       invalidateFinancialKpiSummary
                     }
