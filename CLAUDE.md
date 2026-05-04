@@ -976,3 +976,53 @@ expected post-upload state even with no chunked blob present.
    `metric.fail(err)` is the contract. The structured payload
    makes log filtering by `[dashboard:...]` prefix uniform across
    job types and feeds the Phase 1 observability surface.
+
+### Snapshot Log — transitional state (NOT canonical)
+
+The Snapshot Log feature is **not yet on the target data plane**.
+Today's behavior:
+
+- Browser localStorage (`solarRecDashboardLogsV1`) is the working
+  copy the UI reads first.
+- Cloud `solarRecDashboardStorage` rows under
+  `storageKey = "snapshot_logs_v1"` were the historical persist
+  target. The cloud-fallback hydration path was deleted during a
+  Phase 5 cleanup; the UI was reading ONLY localStorage as a
+  result.
+- Production state on 2026-05-04: the main cloud row holds a
+  single-entry JSON array (a one-shot save by the only currently-
+  active dashboard). **Orphaned chunk rows** under
+  `storageKey LIKE "snapshot_logs_v1_chunk_%"` still exist and
+  contain ~21 unique historical entries from a prior chunked
+  write that got partially overwritten.
+
+**What's wired today:**
+
+- `solarRecDashboard.getSnapshotLogs` is a **read-only** tRPC
+  procedure that loads the main key, lists orphaned chunk rows,
+  and returns a recovery candidate (deduped by id, sorted
+  newest-first, paginated). Pure helpers in
+  `server/services/solar/snapshotLogRecovery.ts`.
+- `SolarRecDashboard.tsx` calls the proc when the Snapshot Log
+  tab is active and merges results into the localStorage state
+  via `mergeServerSnapshotLogsIntoLocal` (server entries WIN on
+  id conflict; never let a one-entry local copy overwrite a
+  larger server result).
+- **No write-back / restore.** The proc never mutates storage.
+  Production restore (collapsing the orphan chunks back into
+  the main key) is a separate, explicitly-approved follow-up
+  that should ship only after the read-only recovery surface is
+  deployed and verified.
+
+**Target state (Phase 2+):** server-owned snapshot-log rows /
+pagination, or a durable snapshot-log artifact written by a
+background builder. The localStorage path becomes a working
+draft buffer for an in-progress user edit, never the
+canonical history.
+
+**Hard rule:** localStorage is NOT canonical. A one-entry
+localStorage copy must never overwrite a larger server/cloud
+history. Code paths that write to `REMOTE_SNAPSHOT_LOGS_KEY`
+must protect against this — currently enforced by the merge
+helper in the read direction only; write-side protections come
+with the restore PR.

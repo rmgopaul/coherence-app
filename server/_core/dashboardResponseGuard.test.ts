@@ -411,6 +411,23 @@ describe("solarRecDashboardRouter wiring", () => {
     );
   });
 
+  it("registers getSnapshotLogs as a dashboardProcedure (read-only recovery surface)", () => {
+    const filePath = resolve(__dirname, "solarRecDashboardRouter.ts");
+    const source = readFileSync(filePath, "utf8");
+    expect(source).toMatch(
+      /getSnapshotLogs\s*:\s*dashboardProcedure\s*\(/
+    );
+    // Read-only contract: the proc body must be `.query(...)`,
+    // never `.mutation(...)`. Catches a future PR that
+    // accidentally adds a write-back/restore on the same name.
+    const procBlock =
+      /getSnapshotLogs\s*:\s*dashboardProcedure\s*\([\s\S]{0,300}?\.input\s*\([\s\S]{0,400}?\)\s*\.\s*(query|mutation)\s*\(/.exec(
+        source
+      );
+    expect(procBlock).not.toBeNull();
+    expect(procBlock![1]).toBe("query");
+  });
+
   it("does NOT re-register the retired synchronous CSV export procs", () => {
     const filePath = resolve(__dirname, "solarRecDashboardRouter.ts");
     const source = readFileSync(filePath, "utf8");

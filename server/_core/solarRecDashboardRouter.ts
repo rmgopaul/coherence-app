@@ -3248,6 +3248,85 @@ export const solarRecDashboardRouter = t.router({
     }),
 
   /**
+   * Snapshot-log read/recovery surface — READ-ONLY.
+   *
+   * Background. The Snapshot Log feature historically persisted to
+   * both browser localStorage (`solarRecDashboardLogsV1`) and
+   * cloud (`solarRecDashboardStorage` rows under
+   * `storageKey = "snapshot_logs_v1"`). Phase 5 cleanup removed the
+   * cloud-fallback hydration path, so the UI currently reads ONLY
+   * localStorage. In production the main cloud row holds a single-
+   * entry JSON array, but orphaned chunk rows
+   * (`storageKey LIKE "snapshot_logs_v1_chunk_%"`) from a prior
+   * chunked write still exist and contain ~21 unique historical
+   * snapshot entries.
+   *
+   * This procedure surfaces what's recoverable from the cloud side
+   * so the client can hydrate Snapshot Log from the larger of
+   * (localStorage, server) instead of clobbering the server with a
+   * single-entry local copy. It performs zero writes / zero
+   * deletes — production-data restore/write-back is a separate,
+   * explicitly-approved follow-up.
+   *
+   * Pagination: `limit` defaults to 50 (matches the dashboard's
+   * normal-UI page size); `cursorCreatedAt` is the `createdAt` of
+   * the last entry in the prior page (newer-first ordering, so
+   * "next page" returns entries strictly OLDER than the cursor).
+   */
+  getSnapshotLogs: dashboardProcedure("solar-rec-dashboard", "read")
+    .input(
+      z.object({
+        limit: z.number().int().min(1).max(100).default(50),
+        cursorCreatedAt: z.string().min(1).max(64).optional(),
+      })
+    )
+    .query(async ({ ctx, input }) => {
+      const { getSolarRecDashboardPayload, listSolarRecDashboardStorageByPrefix } =
+        await import("../db/preferences");
+      const {
+        composeSnapshotLogRecovery,
+        paginateSnapshotLogRecovery,
+        SNAPSHOT_LOG_RECOVERY_RUNNER_VERSION,
+      } = await import("../services/solar/snapshotLogRecovery");
+      const SNAPSHOT_LOG_KEY = "snapshot_logs_v1";
+      const SNAPSHOT_LOG_CHUNK_PREFIX = "snapshot_logs_v1_chunk_";
+
+      const [mainPayload, orphanRows] = await Promise.all([
+        getSolarRecDashboardPayload(ctx.userId, SNAPSHOT_LOG_KEY),
+        listSolarRecDashboardStorageByPrefix(
+          ctx.userId,
+          SNAPSHOT_LOG_CHUNK_PREFIX,
+          { maxRows: 256 }
+        ),
+      ]);
+
+      const recovery = composeSnapshotLogRecovery({
+        mainPayload,
+        orphanRows,
+      });
+
+      const page = paginateSnapshotLogRecovery(recovery, {
+        limit: input.limit,
+        cursorCreatedAt: input.cursorCreatedAt,
+      });
+
+      return {
+        source: recovery.source,
+        entries: page.entries,
+        nextCursorCreatedAt: page.nextCursorCreatedAt,
+        totalEntries: recovery.totalEntries,
+        uniqueEntries: recovery.uniqueEntries,
+        duplicateEntries: recovery.duplicateEntries,
+        newestCreatedAt: recovery.newestCreatedAt,
+        oldestCreatedAt: recovery.oldestCreatedAt,
+        mainPayloadEntries: recovery.mainPayloadEntries,
+        orphanedChunkEntries: recovery.orphanedChunkEntries,
+        warnings: recovery.warnings,
+        _runnerVersion: SNAPSHOT_LOG_RECOVERY_RUNNER_VERSION,
+      };
+    }),
+
+  /**
    * Phase 5e Followup #4 step 4 PR-A (2026-04-30) — server-side
    * aggregator for the Offline Monitoring tab. Replaces four client
    * useMemos in `SolarRecDashboard.tsx` that derived from
