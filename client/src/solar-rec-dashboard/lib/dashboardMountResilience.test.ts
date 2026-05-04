@@ -179,20 +179,22 @@ describe("Solar REC dashboard mount: heavy-query gates", () => {
     );
   });
 
-  it("CSV export `notFound` is retryable until TTL, not immediate failure (in-memory registry isn't durable across restarts)", () => {
-    // Pre-fix the client treated `notFound` as terminal because
-    // the comment claimed "the server only prunes terminal records
-    // (per the running-prune skip rule), so this branch means the
-    // artifact actually expired." That's only true under stable
-    // process state. The in-memory `Map` registry in
-    // `dashboardCsvExportJobs.ts` is wiped by any process restart
-    // (deploy, OOM, future multi-instance routing) — those
-    // clients then see notFound for a perfectly valid job that
-    // simply got orphaned. Until Phase 6 (DB-backed registry), the
-    // ONLY terminal client outcomes are: server `succeeded`,
-    // server `failed`, start-mutation throw, or TTL exhaustion.
-    // notFound joins the "transient retry" path with the same
-    // "interrupted" toast UX as a poll error.
+  it("CSV export `notFound` is TERMINAL with DB-backed registry (Phase 6 PR-B revert)", () => {
+    // The pre-Phase 6 PR-A code shipped an in-memory `Map` registry
+    // wiped by every process restart, so a valid in-flight job
+    // could appear notFound through no fault of its own. PR #352
+    // patched the client to retry notFound until TTL as a
+    // workaround.
+    //
+    // Phase 6 PR-A added the DB table; Phase 6 PR-B switched
+    // `dashboardCsvExportJobs` over to it. The DB row survives
+    // restarts and cross-process claims are race-safe. Under the
+    // DB-backed registry, notFound genuinely means the row was
+    // pruned (TTL elapsed) or never existed for this scope.
+    // Retrying just delays the user-facing failure.
+    //
+    // This rail enforces the revert: notFound -> toast.error +
+    // return, NO continue, NO interrupted-toast retry.
     const sharedHelper = sliceFn(code, "runDashboardCsvExport");
     expect(sharedHelper).not.toBeNull();
     // Walk balanced braces to extract the notFound branch body
@@ -219,15 +221,14 @@ describe("Solar REC dashboard mount: heavy-query gates", () => {
     expect(closeBraceIdx).toBeGreaterThan(openBraceIdx);
     const branchBody = sharedHelper!.slice(openBraceIdx + 1, closeBraceIdx);
 
-    // No early return out of the helper.
-    expect(branchBody).not.toMatch(/\breturn\s*;/);
-    // No toast.error (would be the user-visible "failed" surface).
-    expect(branchBody).not.toMatch(/toast\.error/);
-    // Must surface the interrupted UX so the user knows we're still
-    // trying.
-    expect(branchBody).toMatch(/setToastPhase\s*\(\s*["']interrupted["']/);
-    // Must `continue` the polling loop.
-    expect(branchBody).toMatch(/\bcontinue\s*;/);
+    // Terminal: surface the failure toast and return out of the helper.
+    expect(branchBody).toMatch(/toast\.error/);
+    expect(branchBody).toMatch(/\breturn\s*;/);
+    // No retry: must NOT continue the polling loop on notFound.
+    expect(branchBody).not.toMatch(/\bcontinue\s*;/);
+    // No "interrupted" UX dwell — that's reserved for transient
+    // poll-fetch errors, which DO retry.
+    expect(branchBody).not.toMatch(/setToastPhase\s*\(\s*["']interrupted["']/);
   });
 
   it("CSV export status-poll errors are NOT terminal — the loop keeps polling until server terminal status or TTL", () => {

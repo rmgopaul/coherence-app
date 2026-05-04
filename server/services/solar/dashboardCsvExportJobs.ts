@@ -1,52 +1,48 @@
 /**
- * Dashboard CSV export job registry — TRANSITIONAL.
+ * Dashboard CSV export job registry — Phase 6 PR-B (DB-backed).
  *
- * Replaces the synchronous tRPC procs `exportOwnershipTileCsv` and
- * `exportChangeOwnershipTileCsv` (both formerly on
- * DASHBOARD_OVERSIZE_ALLOWLIST). Those procs returned MB-scale CSV
- * strings inline through tRPC, which violated the dashboard response
- * budget and held the whole CSV in browser heap during the response.
+ * Replaces the in-memory `Map` registry shipped in PR #346. The
+ * `dashboardCsvExportJobs` table (Phase 6 PR-A, migration 0058)
+ * provides durable single-source-of-truth state across process
+ * restarts AND across multi-instance deployments. PR #352's
+ * `notFound is retryable` workaround is reverted: DB-backed
+ * `notFound` genuinely means the row was pruned (TTL elapsed) or
+ * never existed.
  *
- * New flow:
+ * Flow:
  *   1. Client calls `startDashboardCsvExport` (mutation), gets a
  *      `{ jobId }`.
- *   2. Worker (run on the same process via `setImmediate`) loads the
- *      heavy aggregator artifact, builds the CSV, writes it to
- *      storage via `storagePut`, and resolves the URL via
- *      `storageGet`.
- *   3. Client polls `getDashboardCsvExportJobStatus(jobId)` until the
- *      status is `succeeded` (with `url` + `fileName` + `rowCount`)
- *      or `failed` (with `error`).
- *   4. Client navigates an `<a download>` to the URL.
+ *   2. Service inserts a `queued` row, then schedules
+ *      `runCsvExportJob(jobId)` via `setImmediate`.
+ *   3. Worker atomically claims the row (`queued → running` with
+ *      `claimedBy` + `claimedAt` set in the same UPDATE), loads
+ *      the heavy aggregator artifact, builds the CSV, writes it
+ *      to storage, and atomically completes the row
+ *      (`running → succeeded` WHERE `claimedBy` still equals
+ *      ours).
+ *   4. Client polls `getDashboardCsvExportJobStatus(jobId)`. The
+ *      proc reads the row's status. Cross-scope reads return
+ *      `null` (caller sees `notFound` without leaking existence).
+ *   5. A periodic sweep (also fired opportunistically on each
+ *      status read) prunes terminal rows older than
+ *      `JOB_TTL_MS` and best-effort `storageDelete`s their
+ *      artifact URLs. Stale `running` rows (worker died
+ *      mid-flight, claim is older than `STALE_CLAIM_MS`) get
+ *      flipped to `failed` so the client poll resolves.
  *
- * V1 transitional constraints — explicitly NOT the target architecture:
- *   - Single-process in-memory `Map`. A multi-instance deploy would
- *     route a poll to a different process than the worker that
- *     started the job and 404 the lookup. Acceptable for this PR
- *     because the repo runs single-instance today; the next step is
- *     either a `dashboardCsvExportJobs` DB table mirroring the
- *     `datasetUploadJobs` shape, or migrating to background-job
- *     infrastructure (e.g. SQS / a dedicated worker).
- *   - The worker still builds the CSV string in memory (via
- *     `buildOwnershipTileCsv` / `buildChangeOwnershipTileCsv`). True
- *     row-streaming directly to storage is the next hardening step;
- *     this PR moves the MB-scale work OFF the tRPC response path,
- *     which restores the response budget for these two endpoints.
- *   - TTL pruning runs opportunistically on each `getStatus` poll.
- *     A long-idle process accumulates terminal records up to TTL,
- *     bounded by `JOB_TTL_MS`. Pruning skips `running` records so a
- *     mid-flight aggregator load can never have its registry row
- *     deleted out from under it.
- *   - Pruned terminal records also trigger a best-effort
- *     `storageDelete` of their artifact. Local-mode deletes work
- *     directly; proxy-mode deletes are not yet wired and the
- *     artifact persists until the storage lifecycle policy
- *     reclaims it (logged once per attempted delete).
- *   - Job IDs are 16 random bytes hex-encoded. Cross-scope safety is
- *     enforced on the status read by comparing the stored
- *     `record.scopeId` to the caller's `ctx.scopeId`.
+ * Cross-process safety:
+ *   - `claimedBy` is `pid-${pid}-host-${hostname}-${suffix}`,
+ *     unique per process. Suffix is a 4-byte random hex so a
+ *     restarted process with the same pid can't accidentally
+ *     re-claim its dead predecessor's rows.
+ *   - Every UPDATE that mutates a `running` row's terminal
+ *     fields predicates on `claimedBy = ourClaimId AND status
+ *     = 'running'`. A worker that lost its claim (e.g. its
+ *     process restarted, sweeper marked it stale) cannot
+ *     overwrite the new claim's state.
  */
 
+import { hostname as osHostname } from "node:os";
 import { randomBytes } from "node:crypto";
 import { storageDelete, storageGet, storagePut } from "../../storage";
 import {
@@ -60,13 +56,38 @@ import {
 } from "./buildChangeOwnershipAggregates";
 import { getOrBuildOverviewSummary } from "./buildOverviewSummaryAggregates";
 import { startDashboardJobMetric } from "./dashboardJobMetrics";
+import {
+  claimDashboardCsvExportJob,
+  completeDashboardCsvExportJobFailure,
+  completeDashboardCsvExportJobSuccess,
+  failStaleDashboardCsvExportJobs,
+  getDashboardCsvExportJob,
+  insertDashboardCsvExportJob,
+  pruneTerminalDashboardCsvExportJobs,
+} from "../../db/dashboardCsvExportJobs";
+import type { DashboardCsvExportJob } from "../../../drizzle/schema";
 
 const METRIC_PREFIX = "[dashboard:csv-export-jobs]";
 
 export const DASHBOARD_CSV_EXPORT_RUNNER_VERSION =
-  "dashboard-csv-export-jobs-v1";
+  "dashboard-csv-export-jobs-v2-db-backed";
 
+/**
+ * TTL for terminal rows. After `completedAt + JOB_TTL_MS`, the
+ * row is eligible for prune (which also fires `storageDelete` on
+ * the artifact URL).
+ */
 const JOB_TTL_MS = 30 * 60 * 1000; // 30 minutes
+
+/**
+ * Stale-claim threshold. A `running` row whose `claimedAt` is
+ * older than this is considered abandoned (worker process
+ * died / restarted between claim and completion). The next
+ * sweep reclassifies it as `failed`. Set generously so a slow
+ * but healthy aggregator run never appears stale: cold-cache
+ * builds can take 30s+; we give 5 min headroom.
+ */
+const STALE_CLAIM_MS = 5 * 60 * 1000; // 5 minutes
 
 export type DashboardCsvExportInput =
   | { exportType: "ownershipTile"; tile: OwnershipTileKey }
@@ -90,91 +111,24 @@ export interface DashboardCsvExportStatusSnapshot {
   error: string | null;
 }
 
-interface JobRecord {
-  jobId: string;
-  scopeId: string;
-  input: DashboardCsvExportInput;
-  status: DashboardCsvExportStatus;
-  createdAt: number;
-  startedAt: number | null;
-  completedAt: number | null;
-  fileName: string | null;
-  url: string | null;
-  rowCount: number | null;
-  error: string | null;
-}
+// ─────────────────────────────────────────────────────────────────────
+// Process identity for cross-process claim safety
+// ─────────────────────────────────────────────────────────────────────
 
-const jobs = new Map<string, JobRecord>();
-
-function pruneExpired(now: number = Date.now()): void {
-  // Snapshot entries via Array.from to avoid mutating the Map during
-  // iteration. Project tsconfig has no explicit `target`, so direct
-  // for-of over a Map needs `--downlevelIteration` — Array.from is
-  // the cross-target-safe equivalent the rest of the codebase uses.
-  const entries = Array.from(jobs.entries());
-  for (const [jobId, record] of entries) {
-    // Never prune a `running` record. The worker's closure still
-    // holds a `record` reference and will mutate fields on the
-    // succeeded/failed branch — if we delete the Map entry now,
-    // those mutations land on an orphaned object and the next
-    // status poll reads `notFound` even though the job actually
-    // finished. Heavy aggregator cold paths can take >30s; not
-    // worth the eviction race.
-    if (record.status === "running") continue;
-    if (record.completedAt && now - record.completedAt > JOB_TTL_MS) {
-      deleteRecord(jobId, record);
-      continue;
+let cachedClaimId: string | null = null;
+function getClaimId(): string {
+  if (cachedClaimId) return cachedClaimId;
+  const pid = typeof process.pid === "number" ? process.pid : 0;
+  const host = (() => {
+    try {
+      return osHostname();
+    } catch {
+      return "unknown";
     }
-    // Defensive: a record that never reached a terminal state but is
-    // older than TTL is also pruned. In practice the runner always
-    // sets `completedAt`, but a thrown-during-spawn scenario could
-    // leave the record in `queued` forever otherwise.
-    if (!record.completedAt && now - record.createdAt > JOB_TTL_MS) {
-      deleteRecord(jobId, record);
-    }
-  }
-}
-
-/**
- * Drop a record from the in-memory registry and best-effort delete
- * its storage artifact. Fires storageDelete asynchronously so the
- * prune sweep can return without awaiting network IO.
- */
-function deleteRecord(jobId: string, record: JobRecord): void {
-  jobs.delete(jobId);
-  if (!record.url) return;
-  // Reconstruct the storage key from the URL pattern that the
-  // runner wrote. We could store the key alongside the URL on the
-  // record, but reconstruction keeps the snapshot shape narrow and
-  // the runner's `key` derivation is the single source of truth.
-  const key = storageKeyForJob(jobId, record);
-  if (!key) return;
-  storageDelete(key).catch((err) => {
-    console.warn(
-      `[dashboard:csv-export-jobs] cleanup storageDelete failed for jobId=${jobId}: ${
-        err instanceof Error ? err.message : String(err)
-      }`
-    );
-  });
-}
-
-function storageKeyForJob(jobId: string, record: JobRecord): string | null {
-  if (!record.fileName) return null;
-  return `solar-rec-dashboard/${record.scopeId}/exports/${jobId}-${record.fileName}`;
-}
-
-function snapshot(record: JobRecord): DashboardCsvExportStatusSnapshot {
-  return {
-    jobId: record.jobId,
-    status: record.status,
-    createdAt: record.createdAt,
-    startedAt: record.startedAt,
-    completedAt: record.completedAt,
-    fileName: record.fileName,
-    url: record.url,
-    rowCount: record.rowCount,
-    error: record.error,
-  };
+  })();
+  const suffix = randomBytes(4).toString("hex");
+  cachedClaimId = `pid-${pid}-host-${host}-${suffix}`;
+  return cachedClaimId;
 }
 
 function newJobId(): string {
@@ -182,143 +136,312 @@ function newJobId(): string {
 }
 
 /**
- * Enqueue an export job. Returns synchronously with the job ID. The
- * actual work runs on `setImmediate` so the mutation response does
- * not block on aggregator load + CSV build.
- *
- * The default `runner` is the production `runCsvExportJob` below;
- * tests can pass a deterministic stub instead.
+ * Reconstruct the storage key the runner used. Mirrored on read
+ * so the prune sweep can call `storageDelete` without having
+ * persisted the storage key on the row (we only persist the URL,
+ * which can be a Forge proxy URL or a local-mode `/_local_uploads/...`
+ * path — neither of which is the storage key directly).
  */
-export function startCsvExportJob(
+function storageKeyForJob(
+  jobId: string,
+  scopeId: string,
+  fileName: string | null
+): string | null {
+  if (!fileName) return null;
+  return `solar-rec-dashboard/${scopeId}/exports/${jobId}-${fileName}`;
+}
+
+function buildSnapshot(
+  row: DashboardCsvExportJob
+): DashboardCsvExportStatusSnapshot {
+  return {
+    jobId: row.id,
+    status: row.status as DashboardCsvExportStatus,
+    createdAt: row.createdAt.getTime(),
+    startedAt: row.startedAt ? row.startedAt.getTime() : null,
+    completedAt: row.completedAt ? row.completedAt.getTime() : null,
+    fileName: row.fileName,
+    url: row.artifactUrl,
+    rowCount: row.rowCount,
+    error: row.errorMessage,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Public API: start, run, status
+// ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Enqueue an export job. Inserts a `queued` row and schedules
+ * the runner via `setImmediate` (so the mutation returns fast,
+ * before the heavy aggregator load).
+ *
+ * `runner` and `scheduler` are dependency-injected for tests; in
+ * production they default to `runCsvExportJob` and `setImmediate`
+ * respectively.
+ */
+export async function startCsvExportJob(
   scopeId: string,
   input: DashboardCsvExportInput,
   runner: (jobId: string) => Promise<void> = runCsvExportJob,
   scheduler: (cb: () => void) => void = (cb) => setImmediate(cb)
-): { jobId: string } {
+): Promise<{ jobId: string }> {
   const jobId = newJobId();
-  const record: JobRecord = {
-    jobId,
+  await insertDashboardCsvExportJob({
+    id: jobId,
     scopeId,
     input,
     status: "queued",
-    createdAt: Date.now(),
-    startedAt: null,
-    completedAt: null,
-    fileName: null,
-    url: null,
-    rowCount: null,
-    error: null,
-  };
-  jobs.set(jobId, record);
+    runnerVersion: DASHBOARD_CSV_EXPORT_RUNNER_VERSION,
+  });
   scheduler(() => {
     runner(jobId).catch((err) => {
-      // The runner already captures errors into the record. A throw
-      // surfacing here means the runner itself is broken; log it but
-      // also try to mark the job failed so the client poll resolves.
+      // The runner already captures errors atomically; a throw
+      // here means the runner itself is broken (programming
+      // error, not aggregator/storage failure). Log loud — the
+      // row will eventually be marked stale by
+      // `failStaleDashboardCsvExportJobs` and the client poll
+      // resolves on the failed transition.
       console.error(
-        `[dashboard:csv-export-jobs] runner threw for jobId=${jobId}: ${
+        `${METRIC_PREFIX} runner threw for jobId=${jobId}: ${
           err instanceof Error ? err.message : String(err)
         }`
       );
-      const stuck = jobs.get(jobId);
-      if (stuck && stuck.status !== "succeeded" && stuck.status !== "failed") {
-        stuck.status = "failed";
-        stuck.error =
-          err instanceof Error ? err.message : "Runner threw unexpectedly.";
-        stuck.completedAt = Date.now();
-      }
     });
   });
   return { jobId };
 }
 
 /**
- * Read job status for a given scope. Returns `null` if the jobId
- * is unknown OR if the job was started for a different scope —
- * scope-mismatch is reported as "not found" rather than a permission
- * error to avoid leaking the existence of cross-scope jobIds.
+ * Read job status for a given scope. Returns `null` when:
+ *   - the row doesn't exist (genuine `notFound`), OR
+ *   - the row exists for a different scope (cross-scope safety).
  *
- * Calls `pruneExpired` on every read so the registry's footprint is
- * bounded by `JOB_TTL_MS` even on long-idle processes.
+ * Public proc translates `null` to `status: "notFound"` so
+ * cross-scope job IDs cannot be probed.
+ *
+ * Opportunistically fires the prune + stale-claim sweeps on each
+ * read. Both helpers no-op cheaply when there's nothing to
+ * sweep, and TiDB latency is low enough that the cost is
+ * negligible compared to a missed sweep tick.
  */
-export function getCsvExportJobStatus(
+export async function getCsvExportJobStatus(
   scopeId: string,
   jobId: string
-): DashboardCsvExportStatusSnapshot | null {
-  pruneExpired();
-  const record = jobs.get(jobId);
-  if (!record) return null;
-  if (record.scopeId !== scopeId) return null;
-  return snapshot(record);
+): Promise<DashboardCsvExportStatusSnapshot | null> {
+  await sweepStaleAndPruned();
+  const row = await getDashboardCsvExportJob(scopeId, jobId);
+  if (!row) return null;
+  return buildSnapshot(row);
 }
 
 /**
- * Worker entry point. Loads the heavy aggregator artifact for the
- * job's scope, builds the CSV, writes it to storage, and updates the
- * job record. Errors are captured into the record's `error` field;
- * this function does not throw under any expected control flow.
+ * Worker entry point. Atomically claims the job, runs the heavy
+ * aggregator + CSV build, writes to storage, and atomically
+ * completes the row.
+ *
+ * Cross-process safety:
+ *   - The claim is an UPDATE that only matches `queued` OR a
+ *     `running` row whose claim went stale. If two workers race
+ *     for the same `queued` row, only one's UPDATE matches.
+ *   - Completion UPDATEs predicate on `claimedBy = ours`. If a
+ *     stale-claim sweep flipped our row to `failed` while we
+ *     were in flight, our completion UPDATE no-ops and the
+ *     storage write becomes orphaned (cleaned up at TTL).
+ *
+ * Errors are captured into the row's `errorMessage`; this
+ * function does NOT throw under any expected control flow.
  */
 export async function runCsvExportJob(jobId: string): Promise<void> {
-  const record = jobs.get(jobId);
-  if (!record) {
-    // Another caller (or a TTL prune) removed the record before the
-    // runner started. Nothing to do.
+  // Fetch the row to know which scope to claim under. The claim
+  // call needs `scopeId` because every WHERE in this module is
+  // scoped — we don't want a runner from one scope to claim a
+  // row in another scope (which can't happen given the schema
+  // but the predicate cost is essentially zero).
+  const row = await getDashboardCsvExportJobById(jobId);
+  if (!row) {
+    // Row was pruned between INSERT and the runner firing
+    // (extreme edge: TTL would have to elapse in the schedule
+    // gap). Nothing to do.
     return;
   }
-  record.status = "running";
-  record.startedAt = Date.now();
+  const claimId = getClaimId();
+  const staleClaimBefore = new Date(Date.now() - STALE_CLAIM_MS);
+  const claimed = await claimDashboardCsvExportJob(
+    row.scopeId,
+    jobId,
+    claimId,
+    staleClaimBefore
+  );
+  if (!claimed) {
+    // Another worker holds a fresh claim, OR the row already
+    // reached a terminal state (most likely: the previous run
+    // completed and a duplicate `runCsvExportJob` got scheduled).
+    // Nothing for us to do.
+    return;
+  }
+
+  const input = parseInputJson(row.input);
+  if (!input) {
+    await completeDashboardCsvExportJobFailure(
+      row.scopeId,
+      jobId,
+      claimId,
+      "input JSON failed to parse — runner version mismatch?"
+    );
+    return;
+  }
+
   const metric = startDashboardJobMetric({
     prefix: METRIC_PREFIX,
     jobId,
-    context: { exportType: record.input.exportType },
+    context: { exportType: input.exportType },
   });
   try {
-    const built = await buildExport(record.input, record.scopeId);
+    const built = await buildExport(input, row.scopeId);
     if (built.rowCount === 0) {
-      // No rows match — skip the storage write entirely. The client
-      // surfaces this case with a "no rows match" toast and does not
-      // attempt a download.
-      record.status = "succeeded";
-      record.fileName = built.fileName;
-      record.rowCount = 0;
-      record.url = null;
-      record.completedAt = Date.now();
+      // No rows match — skip the storage write entirely. The
+      // client surfaces this case with a "no rows match" toast
+      // and does not attempt a download.
+      const ok = await completeDashboardCsvExportJobSuccess(
+        row.scopeId,
+        jobId,
+        claimId,
+        {
+          fileName: built.fileName,
+          artifactUrl: null,
+          rowCount: 0,
+          csvBytes: 0,
+        }
+      );
+      if (!ok) {
+        // Lost our claim mid-flight (sweeper flipped us stale).
+        // Nothing more to do; the row is already terminal.
+        metric.fail(
+          new Error("lost claim before completion (rowCount=0 path)")
+        );
+        return;
+      }
       metric.finish({ rowCount: 0, csvBytes: 0, storageWrite: false });
       return;
     }
-    record.fileName = built.fileName;
-    const key = storageKeyForJob(jobId, record);
+
+    const key = storageKeyForJob(jobId, row.scopeId, built.fileName);
     if (!key) {
-      // storageKeyForJob only returns null when fileName is missing,
-      // and we just set it. This branch is here for the type
-      // checker — a future refactor of storageKeyForJob's contract
-      // shouldn't silently swallow the storage write.
-      throw new Error("storageKeyForJob returned null after fileName was set");
+      throw new Error(
+        "storageKeyForJob returned null after fileName was set"
+      );
     }
     await storagePut(key, built.csv, "text/csv; charset=utf-8");
     const { url } = await storageGet(key);
-    record.status = "succeeded";
-    record.rowCount = built.rowCount;
-    record.url = url;
-    record.completedAt = Date.now();
-    // `String.length` returns UTF-16 code units, NOT UTF-8 bytes.
-    // Non-ASCII characters in system names / installer names /
-    // copied smart punctuation undercount the actual artifact byte
-    // size (e.g. "é" is 1 code unit but 2 UTF-8 bytes; "🎉" is a
-    // 2-unit surrogate pair but 4 UTF-8 bytes). storagePut writes
-    // the UTF-8 form so the metric must measure UTF-8 to match the
-    // memory + RU plan's accounting.
+    const ok = await completeDashboardCsvExportJobSuccess(
+      row.scopeId,
+      jobId,
+      claimId,
+      {
+        fileName: built.fileName,
+        artifactUrl: url,
+        rowCount: built.rowCount,
+        csvBytes: Buffer.byteLength(built.csv, "utf8"),
+      }
+    );
+    if (!ok) {
+      // Lost claim mid-flight. Storage write succeeded — orphan
+      // artifact will be cleaned up at TTL. Don't surface as
+      // success because the row's authoritative state is failed
+      // (whichever worker re-claimed will re-do or fail-out).
+      metric.fail(new Error("lost claim before completion (success path)"));
+      return;
+    }
     metric.finish({
       rowCount: built.rowCount,
       csvBytes: Buffer.byteLength(built.csv, "utf8"),
       storageWrite: true,
     });
   } catch (err) {
-    record.status = "failed";
-    record.error = err instanceof Error ? err.message : String(err);
-    record.completedAt = Date.now();
+    const message = err instanceof Error ? err.message : String(err);
+    await completeDashboardCsvExportJobFailure(
+      row.scopeId,
+      jobId,
+      claimId,
+      message
+    );
     metric.fail(err);
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Internal helpers
+// ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Lookup helper that doesn't require the caller to know the
+ * scope. Used by `runCsvExportJob` which is fired with only a
+ * jobId from `setImmediate`. Bypass the cross-scope null
+ * filtering because the worker is trusted server-side code.
+ */
+async function getDashboardCsvExportJobById(
+  jobId: string
+): Promise<DashboardCsvExportJob | null> {
+  // The DB helper requires a scope, so we read first by
+  // scanning across all scopes — but in practice the unique-id
+  // assumption means at most one row matches. We do this with a
+  // direct Drizzle query rather than adding a new exported
+  // helper just for the worker's narrow needs.
+  const { getDb, withDbRetry, eq } = await import("../../db/_core");
+  const { dashboardCsvExportJobs } = await import("../../../drizzle/schema");
+  const db = await getDb();
+  if (!db) return null;
+  const rows = await withDbRetry(
+    "get dashboard csv export job by id",
+    async () =>
+      db
+        .select()
+        .from(dashboardCsvExportJobs)
+        .where(eq(dashboardCsvExportJobs.id, jobId))
+        .limit(1)
+  );
+  return rows[0] ?? null;
+}
+
+/**
+ * Defensive parse of the row's `input` JSON column. Drizzle's
+ * MySQL JSON column returns parsed objects, but a future runner
+ * version change could leave stale-shape rows that the new code
+ * can't decode. Return `null` to signal "fail this job" so the
+ * runner doesn't hang.
+ */
+function parseInputJson(rawInput: unknown): DashboardCsvExportInput | null {
+  if (!rawInput || typeof rawInput !== "object") return null;
+  const candidate = rawInput as Record<string, unknown>;
+  if (candidate.exportType === "ownershipTile") {
+    if (
+      candidate.tile === "reporting" ||
+      candidate.tile === "notReporting" ||
+      candidate.tile === "terminated"
+    ) {
+      return {
+        exportType: "ownershipTile",
+        tile: candidate.tile,
+      };
+    }
+    return null;
+  }
+  if (candidate.exportType === "changeOwnershipTile") {
+    // Trust the discriminator; a future addition to the
+    // ChangeOwnershipStatus union doesn't break older readers
+    // because the worker's only consumer is
+    // `buildChangeOwnershipTileCsv` which already filters by
+    // exact-string equality.
+    if (typeof candidate.status === "string") {
+      return {
+        exportType: "changeOwnershipTile",
+        status: candidate.status as ChangeOwnershipStatus,
+      };
+    }
+    return null;
+  }
+  return null;
 }
 
 interface BuiltCsvArtifact {
@@ -340,15 +463,63 @@ async function buildExport(
 }
 
 /**
- * Test-only surface — exposed so unit tests can drive the registry
- * deterministically (clear, peek at internals, drive the runner with
- * a stubbed builder). Never imported by production code.
+ * Combined sweep: stale-claim recovery + TTL prune + best-effort
+ * storage cleanup. Fired opportunistically on every status read.
+ * Both individual sweeps short-circuit cheaply when there's
+ * nothing to do (zero affected rows).
+ *
+ * The TTL prune deletes the row first then fires `storageDelete`
+ * for each artifact URL — the storage cleanup is best-effort
+ * (proxy-mode `storageDelete` is a logged no-op until that
+ * endpoint is wired). A failed `storageDelete` doesn't roll back
+ * the row delete: the artifact would persist until the storage
+ * lifecycle policy reclaims it.
+ */
+async function sweepStaleAndPruned(): Promise<void> {
+  try {
+    const staleClaimBefore = new Date(Date.now() - STALE_CLAIM_MS);
+    const ttlBefore = new Date(Date.now() - JOB_TTL_MS);
+    // Fire both sweeps in parallel — they touch disjoint row
+    // states (`failStale` only updates `running`, `prune` only
+    // deletes terminal rows).
+    const [staleCount, prunedRows] = await Promise.all([
+      failStaleDashboardCsvExportJobs(staleClaimBefore),
+      pruneTerminalDashboardCsvExportJobs(ttlBefore),
+    ]);
+    if (staleCount > 0) {
+      console.warn(
+        `${METRIC_PREFIX} marked ${staleCount} stale-claim row(s) failed`
+      );
+    }
+    for (const row of prunedRows) {
+      const key = storageKeyForJob(row.id, row.scopeId, row.fileName);
+      if (!key || !row.artifactUrl) continue;
+      // Fire-and-forget; don't block the sweep on storage IO.
+      storageDelete(key).catch((err) => {
+        console.warn(
+          `${METRIC_PREFIX} cleanup storageDelete failed for jobId=${row.id}: ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        );
+      });
+    }
+  } catch (err) {
+    console.warn(
+      `${METRIC_PREFIX} sweep failed: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+}
+
+/**
+ * Test-only surface — exposed so unit tests can trigger sweeps
+ * deterministically and inspect the configured constants. Never
+ * imported by production code.
  */
 export const __TEST_ONLY__ = {
-  reset: (): void => {
-    jobs.clear();
-  },
-  size: (): number => jobs.size,
-  pruneExpired,
+  sweepStaleAndPruned,
+  getClaimId,
+  parseInputJson,
+  storageKeyForJob,
   JOB_TTL_MS,
+  STALE_CLAIM_MS,
 };

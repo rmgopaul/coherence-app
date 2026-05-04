@@ -3202,7 +3202,10 @@ export const solarRecDashboardRouter = t.router({
     .mutation(async ({ ctx, input }) => {
       const { startCsvExportJob, DASHBOARD_CSV_EXPORT_RUNNER_VERSION } =
         await import("../services/solar/dashboardCsvExportJobs");
-      const { jobId } = startCsvExportJob(ctx.scopeId, input);
+      // Phase 6 PR-B: `startCsvExportJob` is now async (DB-backed
+      // INSERT replaces the in-memory `Map.set` — see
+      // `dashboardCsvExportJobs.ts` runner-version marker).
+      const { jobId } = await startCsvExportJob(ctx.scopeId, input);
       return {
         jobId,
         _runnerVersion: DASHBOARD_CSV_EXPORT_RUNNER_VERSION,
@@ -3234,7 +3237,13 @@ export const solarRecDashboardRouter = t.router({
     .query(async ({ ctx, input }) => {
       const { getCsvExportJobStatus, DASHBOARD_CSV_EXPORT_RUNNER_VERSION } =
         await import("../services/solar/dashboardCsvExportJobs");
-      const snapshot = getCsvExportJobStatus(ctx.scopeId, input.jobId);
+      // Phase 6 PR-B: `getCsvExportJobStatus` is now async (DB
+      // SELECT replaces in-memory `Map.get`). Also: `notFound`
+      // genuinely means the row was pruned (TTL elapsed) or never
+      // existed for this scope — the in-memory-restart workaround
+      // from PR #352 is no longer needed because the DB-backed
+      // registry survives process restarts.
+      const snapshot = await getCsvExportJobStatus(ctx.scopeId, input.jobId);
       if (!snapshot) {
         return {
           status: "notFound" as const,
