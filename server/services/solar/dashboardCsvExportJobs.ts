@@ -301,9 +301,16 @@ export async function runCsvExportJob(jobId: string): Promise<void> {
     record.rowCount = built.rowCount;
     record.url = url;
     record.completedAt = Date.now();
+    // `String.length` returns UTF-16 code units, NOT UTF-8 bytes.
+    // Non-ASCII characters in system names / installer names /
+    // copied smart punctuation undercount the actual artifact byte
+    // size (e.g. "é" is 1 code unit but 2 UTF-8 bytes; "🎉" is a
+    // 2-unit surrogate pair but 4 UTF-8 bytes). storagePut writes
+    // the UTF-8 form so the metric must measure UTF-8 to match the
+    // memory + RU plan's accounting.
     metric.finish({
       rowCount: built.rowCount,
-      csvBytes: built.csv.length,
+      csvBytes: Buffer.byteLength(built.csv, "utf8"),
       storageWrite: true,
     });
   } catch (err) {

@@ -39,6 +39,24 @@
  * existing control flow.
  */
 
+/**
+ * Reserved envelope keys — the metric utility owns these and their
+ * values are guaranteed to be present + accurate on every emitted
+ * line. Caller-supplied `context` and `extra` keys with these names
+ * are silently shadowed by the spread order in `emit()`. Exported
+ * so source-rail tests can prove the contract instead of
+ * hard-coding the list in two places.
+ */
+export const RESERVED_METRIC_KEYS: ReadonlySet<string> = new Set([
+  "jobId",
+  "outcome",
+  "elapsedMs",
+  "heapBeforeBytes",
+  "heapAfterBytes",
+  "heapDeltaBytes",
+  "error",
+]);
+
 export interface DashboardJobMetricStartOptions {
   /** Searchable log prefix, e.g. `"[dashboard:csv-export-jobs]"`. */
   prefix: string;
@@ -48,6 +66,12 @@ export interface DashboardJobMetricStartOptions {
    * Free-form context spread into every log line for this metric.
    * Keep small (a few enum-style fields) so log lines stay one-line
    * scannable. Don't put large objects in here.
+   *
+   * **Reserved-key collision:** keys present in `RESERVED_METRIC_KEYS`
+   * (`jobId`, `outcome`, `elapsedMs`, `heap*Bytes`, `error`) are
+   * silently shadowed by the envelope. Future Phase 2/4 builders
+   * can rely on the envelope's invariants regardless of what
+   * callers pass in here.
    */
   context?: Record<string, unknown>;
 }
@@ -75,15 +99,20 @@ export function startDashboardJobMetric(
     if (settled) return;
     settled = true;
     const heapAfterBytes = process.memoryUsage().heapUsed;
+    // Caller fields go FIRST so the reserved envelope fields below
+    // ALWAYS win the spread. A future Phase 2 builder that
+    // accidentally passes `context: { jobId: "x" }` or
+    // `extra: { outcome: "weird" }` cannot corrupt the metric
+    // contract that downstream log filters depend on.
     const payload: Record<string, unknown> = {
-      jobId: options.jobId,
       ...options.context,
+      ...extra,
+      jobId: options.jobId,
       outcome,
       elapsedMs: Date.now() - startedAt,
       heapBeforeBytes,
       heapAfterBytes,
       heapDeltaBytes: heapAfterBytes - heapBeforeBytes,
-      ...extra,
     };
     if (error !== undefined) {
       payload.error = error instanceof Error ? error.message : String(error);

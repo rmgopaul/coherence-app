@@ -3435,6 +3435,20 @@ export default function SolarRecDashboard() {
    * running, leaving an orphaned artifact and a confused user — see
    * PR #347 follow-up).
    *
+   * **Status-poll errors are NOT terminal.** A transient
+   * `getDashboardCsvExportJobStatus.fetch(...)` rejection (network
+   * blip, transient 5xx, rate limit) used to throw into the outer
+   * catch and surface "Failed to export" while the server job kept
+   * running and possibly wrote the artifact afterwards. Since the
+   * server job is independent of the poll connection, we now
+   * swallow per-poll errors, swap the toast to "connection
+   * interrupted, retrying status check…", and keep polling until
+   * either a terminal server status arrives or the TTL window
+   * exhausts. The only terminal client-side outcomes are:
+   *   - server returns `succeeded` / `failed` / `notFound`
+   *   - the start mutation itself fails (no jobId to poll)
+   *   - the 30-min TTL window elapses with no terminal server status
+   *
    * `successLabel` is the human-readable subject for the toasts —
    * "Reporting ownership-status tile", "Transferred and Reporting
    * status", etc. `noRowsMessage` is the full empty-result toast
@@ -3458,6 +3472,8 @@ export default function SolarRecDashboard() {
       // registry and we surface a failure.
       const CSV_EXPORT_POLL_MAX_MS = 30 * 60 * 1000;
       const CSV_EXPORT_TOAST_HINT_AT_MS = 30_000;
+      const INTERRUPTED_TOAST_MESSAGE =
+        "Still preparing; connection interrupted, retrying status check…";
 
       function nextPollDelayMs(elapsedMs: number): number {
         if (elapsedMs < 30_000) return 1500;
@@ -3465,67 +3481,110 @@ export default function SolarRecDashboard() {
         return 15_000;
       }
 
+      // Start failure IS terminal — there's no jobId to poll.
+      let jobId: string;
       try {
-        const { jobId } = await startDashboardCsvExport.mutateAsync(
+        const startResult = await startDashboardCsvExport.mutateAsync(
           params.input
         );
-        const startedAt = Date.now();
-        let switchedToHintToast = false;
-        while (Date.now() - startedAt < CSV_EXPORT_POLL_MAX_MS) {
-          const status =
+        jobId = startResult.jobId;
+      } catch (error) {
+        toast.error(params.failureMessage, { id: params.toastId });
+        console.error(`[${params.consoleTag}] start mutation failed:`, error);
+        return;
+      }
+
+      // Toast-text transitions across the loop. We track the last
+      // intended state and only call `toast.loading` on transitions
+      // so an intermittently failing connection doesn't replay the
+      // same text on every iteration.
+      type ToastPhase = "initial" | "stillPreparing" | "interrupted";
+      let toastPhase: ToastPhase = "initial";
+      function setToastPhase(next: ToastPhase): void {
+        if (toastPhase === next) return;
+        toastPhase = next;
+        if (next === "stillPreparing") {
+          toast.loading(params.preparingMessage, { id: params.toastId });
+        } else if (next === "interrupted") {
+          toast.loading(INTERRUPTED_TOAST_MESSAGE, { id: params.toastId });
+        }
+      }
+
+      const startedAt = Date.now();
+      while (Date.now() - startedAt < CSV_EXPORT_POLL_MAX_MS) {
+        const elapsedMs = Date.now() - startedAt;
+
+        let status:
+          | Awaited<
+              ReturnType<
+                typeof solarRecTrpcUtils.solarRecDashboard.getDashboardCsvExportJobStatus.fetch
+              >
+            >
+          | null = null;
+        try {
+          status =
             await solarRecTrpcUtils.solarRecDashboard.getDashboardCsvExportJobStatus.fetch(
               { jobId }
             );
-          if (status.status === "succeeded") {
-            if ((status.rowCount ?? 0) === 0 || !status.url) {
-              toast.error(params.noRowsMessage, { id: params.toastId });
-              return;
-            }
-            triggerUrlDownload(
-              status.fileName ?? `${params.successLabel}.csv`,
-              status.url
-            );
-            toast.success(
-              `Exported ${status.rowCount} ${params.noun}${status.rowCount === 1 ? "" : "s"} (${params.successLabel}).`,
-              { id: params.toastId }
-            );
-            return;
-          }
-          if (status.status === "failed") {
-            toast.error(params.failureMessage, { id: params.toastId });
-            console.error(`[${params.consoleTag}]`, status.error ?? "unknown");
-            return;
-          }
-          if (status.status === "notFound") {
-            // TTL pruned the job before we could read it. The server
-            // only prunes terminal records (per the running-prune
-            // skip rule in dashboardCsvExportJobs), so this branch
-            // means the artifact actually expired — surface as a
-            // failure rather than an infinite poll.
-            toast.error(params.failureMessage, { id: params.toastId });
-            console.error(`[${params.consoleTag}] job expired before completion`);
-            return;
-          }
-          // Still queued/running. Update the toast text once we
-          // cross the hint threshold so a long-running aggregator
-          // doesn't look like a stalled UI.
-          const elapsedMs = Date.now() - startedAt;
-          if (!switchedToHintToast && elapsedMs >= CSV_EXPORT_TOAST_HINT_AT_MS) {
-            toast.loading(params.preparingMessage, { id: params.toastId });
-            switchedToHintToast = true;
-          }
+        } catch (pollError) {
+          // Per-poll failure is transient — the server job is
+          // independent of this fetch. Log + show a "connection
+          // interrupted" hint and keep polling.
+          console.warn(
+            `[${params.consoleTag}] status poll failed (will retry):`,
+            pollError
+          );
+          setToastPhase("interrupted");
           await new Promise((resolve) =>
             setTimeout(resolve, nextPollDelayMs(elapsedMs))
           );
+          continue;
         }
-        toast.error(params.failureMessage, { id: params.toastId });
-        console.error(
-          `[${params.consoleTag}] poll timed out after ${CSV_EXPORT_POLL_MAX_MS}ms (server TTL window exhausted)`
+
+        if (status.status === "succeeded") {
+          if ((status.rowCount ?? 0) === 0 || !status.url) {
+            toast.error(params.noRowsMessage, { id: params.toastId });
+            return;
+          }
+          triggerUrlDownload(
+            status.fileName ?? `${params.successLabel}.csv`,
+            status.url
+          );
+          toast.success(
+            `Exported ${status.rowCount} ${params.noun}${status.rowCount === 1 ? "" : "s"} (${params.successLabel}).`,
+            { id: params.toastId }
+          );
+          return;
+        }
+        if (status.status === "failed") {
+          toast.error(params.failureMessage, { id: params.toastId });
+          console.error(`[${params.consoleTag}]`, status.error ?? "unknown");
+          return;
+        }
+        if (status.status === "notFound") {
+          // TTL pruned the job before we could read it. The server
+          // only prunes terminal records (per the running-prune
+          // skip rule in dashboardCsvExportJobs), so this branch
+          // means the artifact actually expired — surface as a
+          // failure rather than an infinite poll.
+          toast.error(params.failureMessage, { id: params.toastId });
+          console.error(`[${params.consoleTag}] job expired before completion`);
+          return;
+        }
+        // Still queued/running. If we previously hit an interrupted
+        // state, recovering re-anchors the toast to whichever
+        // preparing phase the elapsed time dictates.
+        if (elapsedMs >= CSV_EXPORT_TOAST_HINT_AT_MS) {
+          setToastPhase("stillPreparing");
+        }
+        await new Promise((resolve) =>
+          setTimeout(resolve, nextPollDelayMs(elapsedMs))
         );
-      } catch (error) {
-        toast.error(params.failureMessage, { id: params.toastId });
-        console.error(`[${params.consoleTag}]`, error);
       }
+      toast.error(params.failureMessage, { id: params.toastId });
+      console.error(
+        `[${params.consoleTag}] poll timed out after ${CSV_EXPORT_POLL_MAX_MS}ms (server TTL window exhausted)`
+      );
     },
     [startDashboardCsvExport, solarRecTrpcUtils]
   );
