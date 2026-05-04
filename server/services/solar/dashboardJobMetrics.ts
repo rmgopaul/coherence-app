@@ -42,12 +42,27 @@
  */
 
 /**
- * Reserved envelope keys — the metric utility owns these and their
- * values are guaranteed to be present + accurate on every emitted
- * line. Caller-supplied `context` and `extra` keys with these names
- * are silently shadowed by the spread order in `emit()`. Exported
- * so source-rail tests can prove the contract instead of
- * hard-coding the list in two places.
+ * Reserved envelope keys — the metric utility owns these. Caller-
+ * supplied `context` and `extra` keys with these names cannot
+ * override them: the runtime either spread-shadows the key (the
+ * envelope value lands AFTER the spreads in `emit()`) or explicitly
+ * deletes it on the no-error branch (this is what `error` does on
+ * `finish()`). The Set is exported so source-rail tests can prove
+ * the contract instead of hard-coding the list in two places.
+ *
+ * **Emitted-when-applicable, not always-present:** reserved keys are
+ * owned by the utility but not all are emitted on every line. Today
+ * `error` is emitted only on `fail()`; on `finish()` it is
+ * unconditionally absent (any caller `extra.error` / `context.error`
+ * is deleted). The other six keys (`jobId`, `outcome`, `elapsedMs`,
+ * `heap*Bytes`) appear on every emitted line.
+ *
+ * **Maintainer note:** adding a key here is necessary but NOT
+ * sufficient. The runtime in `emit()` must be updated to either
+ * (a) write the key after the `...extra` spread (so it shadows), or
+ * (b) explicitly delete/handle it on the relevant branches. Without
+ * one of those, a new entry here ships a hole — the test mirror
+ * passes but caller `extra` survives at runtime.
  */
 export const RESERVED_METRIC_KEYS: ReadonlySet<string> = new Set([
   "jobId",
