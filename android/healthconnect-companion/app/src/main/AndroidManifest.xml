@@ -183,6 +183,26 @@
         android:name="android.appwidget.provider"
         android:resource="@xml/coherence_king_right_widget_info" />
     </receiver>
+
+    <!-- Habits widget — Loop-style tappable tiles. Each tile logs the
+         habit for today and recolors to indicate completion. Shares
+         the same WidgetDataWorker pipeline as the dashboard / King
+         widgets. -->
+    <receiver
+      android:name=".widget.CoherenceHabitsWidgetReceiver"
+      android:enabled="true"
+      android:exported="true"
+      android:label="Coherence Habits">
+      <intent-filter>
+        <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+      </intent-filter>
+      <intent-filter>
+        <action android:name="com.coherence.healthconnect.widget.habits.ACTION_REFRESH" />
+      </intent-filter>
+      <meta-data
+        android:name="android.appwidget.provider"
+        android:resource="@xml/coherence_habits_widget_info" />
+    </receiver>
   </application>
 
 </manifest>

@@ -45,6 +45,15 @@ data class WidgetData(
   val kingOfDayReason: String? = null,
   val kingOfDaySource: String? = null,
 
+  // Habits — today's active habit definitions plus their per-day
+  // completion + current streak. The dedicated habits widget renders
+  // each as a tappable tile; tap toggles `completed` via the
+  // ToggleHabitAction callback. `dateKey` is the local-day key the
+  // completion state is anchored to so a tap from a widget that's
+  // been bound across midnight still writes to the right day.
+  val habits: List<WidgetHabit> = emptyList(),
+  val habitsDateKey: String? = null,
+
   // Metadata
   val updatedAtMillis: Long = 0L,
   val error: String? = null,
@@ -91,4 +100,13 @@ data class WidgetCalendarEvent(
   val title: String,
   val time: String,
   val location: String = "",
+)
+
+@Serializable
+data class WidgetHabit(
+  val id: String,
+  val name: String,
+  val color: String = "slate",
+  val completed: Boolean = false,
+  val streak: Int = 0,
 )

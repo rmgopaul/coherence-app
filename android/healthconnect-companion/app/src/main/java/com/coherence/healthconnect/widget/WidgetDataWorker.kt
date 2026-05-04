@@ -99,6 +99,7 @@ class WidgetDataWorker(
           CoherenceKingWidget().updateAll(context)
           CoherenceKingLeftWidget().updateAll(context)
           CoherenceKingRightWidget().updateAll(context)
+          CoherenceHabitsWidget().updateAll(context)
           Result.success()
         }
       }
@@ -111,6 +112,7 @@ class WidgetDataWorker(
       try { CoherenceKingWidget().updateAll(context) } catch (_: Exception) {}
       try { CoherenceKingLeftWidget().updateAll(context) } catch (_: Exception) {}
       try { CoherenceKingRightWidget().updateAll(context) } catch (_: Exception) {}
+      try { CoherenceHabitsWidget().updateAll(context) } catch (_: Exception) {}
       if (runAttemptCount < 3) Result.retry() else Result.failure()
     }
   }
@@ -143,9 +145,10 @@ class WidgetDataWorker(
     val tasksR = runCatching { fetchTasks(app, todayKey) }
     val upcomingEventsR = runCatching { fetchUpcomingEvents(app) }
     val kingR = runCatching { fetchKingOfDay(app, todayKey) }
+    val habitsR = runCatching { fetchHabits(app, todayKey) }
 
     val networkResults = listOf(
-      headlinesR, tickersR, sportsR, emailsR, tasksR, upcomingEventsR, kingR,
+      headlinesR, tickersR, sportsR, emailsR, tasksR, upcomingEventsR, kingR, habitsR,
     )
     val anySuccess = networkResults.any { it.isSuccess }
     if (!anySuccess) {
@@ -166,6 +169,7 @@ class WidgetDataWorker(
     val upcomingEvents = upcomingEventsR.getOrDefault(emptyList())
     val weather = runCatching { extractWeather(headlines) }.getOrNull()
     val king = kingR.getOrNull()
+    val habits = habitsR.getOrDefault(emptyList())
 
     // Cache more rows than any single widget needs so King · Left
     // (which surfaces top 9 tasks / top 7 emails / top 4 events) has
@@ -183,6 +187,8 @@ class WidgetDataWorker(
         kingOfDayTitle = king?.title,
         kingOfDayReason = king?.reason,
         kingOfDaySource = king?.source,
+        habits = habits,
+        habitsDateKey = todayKey,
         updatedAtMillis = now,
       ),
     )
@@ -307,6 +313,39 @@ class WidgetDataWorker(
           title = (event.summary ?: "Untitled").take(40),
           time = timeStr,
           location = event.location?.take(30) ?: "",
+        )
+      }
+  }
+
+  /**
+   * Build the habit tile list for the dedicated habits widget. We need
+   * BOTH `getForDate` (for today's completion state + the active list,
+   * already filtered by `isActive`) AND `getStreaks` (for the rolling
+   * streak count rendered on each tile). Streaks come back as a flat
+   * list keyed by `habitId`; we fold them into a map and zip.
+   *
+   * Failures in either call collapse the list to empty rather than
+   * showing a half-populated UI; the caller's surrounding runCatching
+   * keeps a network outage from clobbering the rest of the snapshot.
+   */
+  private suspend fun fetchHabits(
+    app: CoherenceApplication,
+    todayKey: String,
+  ): List<WidgetHabit> {
+    val today = app.container.habitsRepository.getForDate(todayKey)
+    if (today.isEmpty()) return emptyList()
+    val streaksByHabitId = app.container.habitsRepository.getStreaks()
+      .associateBy({ it.habitId }, { it.streak })
+    return today
+      .filter { it.isActive }
+      .sortedBy { it.sortOrder }
+      .map { habit ->
+        WidgetHabit(
+          id = habit.id,
+          name = habit.name,
+          color = habit.color,
+          completed = habit.completed,
+          streak = streaksByHabitId[habit.id] ?: 0,
         )
       }
   }
