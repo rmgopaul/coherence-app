@@ -3,10 +3,11 @@
  *
  * Every procedure mounted on `solarRecDashboardRouter` must keep its
  * response payload under a configurable byte budget (default 1 MB,
- * env `DASHBOARD_RESPONSE_LIMIT_BYTES`). Five legacy procedures
- * exceed that budget today and are listed in
- * `DASHBOARD_OVERSIZE_ALLOWLIST` with a comment naming the rebuild
- * phase that retires each.
+ * env `DASHBOARD_RESPONSE_LIMIT_BYTES`). Legacy procedures that
+ * exceed that budget on production-shaped data are listed in
+ * `DASHBOARD_OVERSIZE_ALLOWLIST` (the Set itself is the source of
+ * truth — no maintained count in the prose) with a comment naming
+ * the rebuild phase that retires each.
  *
  * Enforcement (`DASHBOARD_RESPONSE_ENFORCEMENT`):
  *   - `throw`  — TRPCError unless allowlisted. Default in dev/test.
