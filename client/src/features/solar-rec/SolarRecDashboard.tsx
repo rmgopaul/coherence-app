@@ -3458,13 +3458,13 @@ export default function SolarRecDashboard() {
   const runDashboardCsvExport = useCallback(
     async (params: {
       input: Parameters<typeof startDashboardCsvExport.mutateAsync>[0];
+      initialMessage: string;
       preparingMessage: string;
       successLabel: string;
       noun: "system" | "project";
       noRowsMessage: string;
       failureMessage: string;
       consoleTag: string;
-      toastId: string | number;
     }) => {
       // Aligned to the server's `JOB_TTL_MS` (30 min) in
       // `dashboardCsvExportJobs.ts`. After this point a job that
@@ -3481,6 +3481,15 @@ export default function SolarRecDashboard() {
         return 15_000;
       }
 
+      // Helper owns the loading toast so it can recover to "initial"
+      // text after an "interrupted" phase if elapsed is still
+      // pre-hint. Pre-fix the per-tile handler set the initial
+      // toast.loading() outside the helper, so the helper had no
+      // way to revert to the initial text — a poll error at 10s
+      // followed by recovery at 20s left the user staring at
+      // "interrupted" until the 30s hint flipped it.
+      const toastId = toast.loading(params.initialMessage);
+
       // Start failure IS terminal — there's no jobId to poll.
       let jobId: string;
       try {
@@ -3489,7 +3498,7 @@ export default function SolarRecDashboard() {
         );
         jobId = startResult.jobId;
       } catch (error) {
-        toast.error(params.failureMessage, { id: params.toastId });
+        toast.error(params.failureMessage, { id: toastId });
         console.error(`[${params.consoleTag}] start mutation failed:`, error);
         return;
       }
@@ -3497,30 +3506,30 @@ export default function SolarRecDashboard() {
       // Toast-text transitions across the loop. We track the last
       // intended state and only call `toast.loading` on transitions
       // so an intermittently failing connection doesn't replay the
-      // same text on every iteration.
+      // same text on every iteration. Recovery from "interrupted"
+      // re-anchors to "initial" (pre-hint) or "stillPreparing"
+      // (post-hint) based on elapsed time.
       type ToastPhase = "initial" | "stillPreparing" | "interrupted";
       let toastPhase: ToastPhase = "initial";
       function setToastPhase(next: ToastPhase): void {
         if (toastPhase === next) return;
         toastPhase = next;
-        if (next === "stillPreparing") {
-          toast.loading(params.preparingMessage, { id: params.toastId });
+        if (next === "initial") {
+          toast.loading(params.initialMessage, { id: toastId });
+        } else if (next === "stillPreparing") {
+          toast.loading(params.preparingMessage, { id: toastId });
         } else if (next === "interrupted") {
-          toast.loading(INTERRUPTED_TOAST_MESSAGE, { id: params.toastId });
+          toast.loading(INTERRUPTED_TOAST_MESSAGE, { id: toastId });
         }
       }
 
       const startedAt = Date.now();
       while (Date.now() - startedAt < CSV_EXPORT_POLL_MAX_MS) {
-        const elapsedMs = Date.now() - startedAt;
-
-        let status:
-          | Awaited<
-              ReturnType<
-                typeof solarRecTrpcUtils.solarRecDashboard.getDashboardCsvExportJobStatus.fetch
-              >
-            >
-          | null = null;
+        let status: Awaited<
+          ReturnType<
+            typeof solarRecTrpcUtils.solarRecDashboard.getDashboardCsvExportJobStatus.fetch
+          >
+        >;
         try {
           status =
             await solarRecTrpcUtils.solarRecDashboard.getDashboardCsvExportJobStatus.fetch(
@@ -3536,14 +3545,14 @@ export default function SolarRecDashboard() {
           );
           setToastPhase("interrupted");
           await new Promise((resolve) =>
-            setTimeout(resolve, nextPollDelayMs(elapsedMs))
+            setTimeout(resolve, nextPollDelayMs(Date.now() - startedAt))
           );
           continue;
         }
 
         if (status.status === "succeeded") {
           if ((status.rowCount ?? 0) === 0 || !status.url) {
-            toast.error(params.noRowsMessage, { id: params.toastId });
+            toast.error(params.noRowsMessage, { id: toastId });
             return;
           }
           triggerUrlDownload(
@@ -3552,12 +3561,12 @@ export default function SolarRecDashboard() {
           );
           toast.success(
             `Exported ${status.rowCount} ${params.noun}${status.rowCount === 1 ? "" : "s"} (${params.successLabel}).`,
-            { id: params.toastId }
+            { id: toastId }
           );
           return;
         }
         if (status.status === "failed") {
-          toast.error(params.failureMessage, { id: params.toastId });
+          toast.error(params.failureMessage, { id: toastId });
           console.error(`[${params.consoleTag}]`, status.error ?? "unknown");
           return;
         }
@@ -3567,21 +3576,25 @@ export default function SolarRecDashboard() {
           // skip rule in dashboardCsvExportJobs), so this branch
           // means the artifact actually expired — surface as a
           // failure rather than an infinite poll.
-          toast.error(params.failureMessage, { id: params.toastId });
+          toast.error(params.failureMessage, { id: toastId });
           console.error(`[${params.consoleTag}] job expired before completion`);
           return;
         }
-        // Still queued/running. If we previously hit an interrupted
-        // state, recovering re-anchors the toast to whichever
-        // preparing phase the elapsed time dictates.
-        if (elapsedMs >= CSV_EXPORT_TOAST_HINT_AT_MS) {
-          setToastPhase("stillPreparing");
-        }
+        // Still queued/running. Re-anchor the toast to the right
+        // phase (initial pre-hint, stillPreparing post-hint). This
+        // covers BOTH the natural progression (initial → stillPreparing
+        // at 30s) AND recovery from a prior "interrupted" phase.
+        const elapsedMs = Date.now() - startedAt;
+        setToastPhase(
+          elapsedMs >= CSV_EXPORT_TOAST_HINT_AT_MS
+            ? "stillPreparing"
+            : "initial"
+        );
         await new Promise((resolve) =>
-          setTimeout(resolve, nextPollDelayMs(elapsedMs))
+          setTimeout(resolve, nextPollDelayMs(Date.now() - startedAt))
         );
       }
-      toast.error(params.failureMessage, { id: params.toastId });
+      toast.error(params.failureMessage, { id: toastId });
       console.error(
         `[${params.consoleTag}] poll timed out after ${CSV_EXPORT_POLL_MAX_MS}ms (server TTL window exhausted)`
       );
@@ -3597,18 +3610,15 @@ export default function SolarRecDashboard() {
           : tile === "notReporting"
             ? "Not Reporting"
             : "Terminated";
-      const toastId = toast.loading(
-        `Preparing ${tileLabel} ownership-status export…`
-      );
       await runDashboardCsvExport({
         input: { exportType: "ownershipTile", tile },
+        initialMessage: `Preparing ${tileLabel} ownership-status export…`,
         preparingMessage: `Still preparing ${tileLabel} ownership-status export — this can take a few minutes.`,
         successLabel: `${tileLabel} ownership-status tile`,
         noun: "system",
         noRowsMessage: `No systems match the ${tileLabel} ownership-status tile.`,
         failureMessage: "Failed to export ownership-status CSV.",
         consoleTag: "ownership-csv-export",
-        toastId,
       });
     },
     [runDashboardCsvExport]
@@ -3616,16 +3626,15 @@ export default function SolarRecDashboard() {
 
   const downloadChangeOwnershipCountTileCsv = useCallback(
     async (status: ChangeOwnershipStatus) => {
-      const toastId = toast.loading(`Preparing ${status} export…`);
       await runDashboardCsvExport({
         input: { exportType: "changeOwnershipTile", status },
+        initialMessage: `Preparing ${status} export…`,
         preparingMessage: `Still preparing ${status} export — this can take a few minutes.`,
         successLabel: `${status} status`,
         noun: "project",
         noRowsMessage: `No projects match the ${status} status.`,
         failureMessage: "Failed to export Change-of-Ownership CSV.",
         consoleTag: "change-ownership-csv-export",
-        toastId,
       });
     },
     [runDashboardCsvExport]

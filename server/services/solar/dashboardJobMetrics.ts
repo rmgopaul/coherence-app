@@ -26,17 +26,19 @@
  *   });
  *   try {
  *     // ...do work...
- *     metric.finish({ rowCount, csvBytes: built.csv.length });
+ *     metric.finish({
+ *       rowCount,
+ *       // UTF-8 byte count, NOT String.length (which is UTF-16 code
+ *       // units and undercounts for non-ASCII content).
+ *       csvBytes: Buffer.byteLength(csv, "utf8"),
+ *     });
  *   } catch (err) {
+ *     // fail() does NOT re-throw. The caller decides whether to
+ *     // bubble the error (re-throw after fail) or capture it into
+ *     // a record (return after fail) — see runCsvExportJob for the
+ *     // capture pattern.
  *     metric.fail(err);
- *     throw err;
  *   }
- *
- * The caller controls success/failure semantics — `fail()` does not
- * re-throw, and `finish()` does not consume errors. This is so a
- * runner that captures errors into a record (rather than throwing)
- * can still emit a structured failure metric without disturbing its
- * existing control flow.
  */
 
 /**
@@ -116,6 +118,16 @@ export function startDashboardJobMetric(
     };
     if (error !== undefined) {
       payload.error = error instanceof Error ? error.message : String(error);
+    } else {
+      // `error` is in `RESERVED_METRIC_KEYS` so the contract is
+      // "always reserved." On finish(), the runtime has no error to
+      // write — but a caller could have passed `extra: { error: ... }`
+      // or `context: { error: ... }` and it would survive the spread
+      // unless we explicitly delete here. Without this delete, a log
+      // filter that uses `error` presence as a failure signal would
+      // misclassify success metrics that happen to carry an `error`
+      // field from caller context.
+      delete payload.error;
     }
     const line = `${options.prefix} metric ${JSON.stringify(payload)}`;
     if (level === "info") {
