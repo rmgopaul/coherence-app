@@ -856,6 +856,18 @@ type RemoteDatasetManifestEntry = {
   }>;
 };
 
+type DatasetUploadSourceSummary = {
+  fileName: string;
+  uploadedAt: string | null;
+  rowCount: number | null;
+};
+
+type UploadSourceDisplay = {
+  fileName: string;
+  uploadedAt: Date;
+  rowCount: number;
+};
+
 type DatasetCloudSyncStatus = "pending" | "synced" | "failed" | "not-synced";
 
 type DatasetSyncProgressState = {
@@ -977,6 +989,41 @@ async function computeSha256Hex(value: string): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+function toUploadSourceDisplay(
+  source: DatasetUploadSourceSummary | NonNullable<CsvDataset["sources"]>[number]
+): UploadSourceDisplay | null {
+  const uploadedAt =
+    source.uploadedAt instanceof Date
+      ? source.uploadedAt
+      : source.uploadedAt
+        ? new Date(source.uploadedAt)
+        : null;
+  if (!uploadedAt || Number.isNaN(uploadedAt.getTime())) return null;
+  const rowCount = Number(source.rowCount ?? 0);
+  return {
+    fileName: source.fileName,
+    uploadedAt,
+    rowCount: Number.isFinite(rowCount) ? rowCount : 0,
+  };
+}
+
+function mergeUploadSourcesForDisplay(
+  serverSources: DatasetUploadSourceSummary[] | undefined,
+  datasetSources: CsvDataset["sources"] | undefined
+): UploadSourceDisplay[] {
+  const merged = new Map<string, UploadSourceDisplay>();
+  const add = (source: UploadSourceDisplay | null) => {
+    if (!source) return;
+    const key = `${source.fileName}|${source.uploadedAt.toISOString()}`;
+    merged.set(key, source);
+  };
+  serverSources?.forEach((source) => add(toUploadSourceDisplay(source)));
+  datasetSources?.forEach((source) => add(toUploadSourceDisplay(source)));
+  return Array.from(merged.values()).sort(
+    (a, b) => b.uploadedAt.getTime() - a.uploadedAt.getTime()
+  );
 }
 
 // Phase 5e (2026-04-29): the dead IDB-serialization chain is gone.
@@ -1445,6 +1492,7 @@ export default function SolarRecDashboard() {
       isRowBacked: boolean;
       lastUploadFileName: string | null;
       lastUploadCompletedAt: string | null;
+      lastUploadSources: DatasetUploadSourceSummary[];
     }>> = {};
     if (datasetSummariesQuery.data?.summaries) {
       for (const s of datasetSummariesQuery.data.summaries) {
@@ -1456,6 +1504,7 @@ export default function SolarRecDashboard() {
           isRowBacked: s.isRowBacked,
           lastUploadFileName: s.lastUploadFileName,
           lastUploadCompletedAt: s.lastUploadCompletedAt,
+          lastUploadSources: s.lastUploadSources ?? [],
         };
       }
     }
@@ -6314,6 +6363,7 @@ const aiDataContext = useMemo(() => {
                 const isMultiAppend = MULTI_APPEND_DATASET_KEYS.has(key);
                 const isScannerManaged = SCANNER_MANAGED_DATASET_KEYS.has(key);
                 const serverCloudStatus = serverDatasetCloudStatusByKey[key];
+                const datasetSummary = datasetSummariesByKey[key];
                 const hasCloudBackfillMarker = Boolean(
                   dataset &&
                     (dataset.fileName.toLowerCase().includes("cloud-backfill") ||
@@ -6334,6 +6384,28 @@ const aiDataContext = useMemo(() => {
                     cloudStatusForDataset = "not-synced";
                   }
                 }
+                const appendSourcesForDisplay = isMultiAppend
+                  ? mergeUploadSourcesForDisplay(
+                      datasetSummary?.lastUploadSources,
+                      dataset?.sources
+                    )
+                  : [];
+                const latestAppendSource = appendSourcesForDisplay[0] ?? null;
+                const primaryUploadFileName =
+                  latestAppendSource?.fileName ??
+                  dataset?.fileName ??
+                  datasetSummary?.lastUploadFileName ??
+                  null;
+                const primaryUploadedAt =
+                  latestAppendSource?.uploadedAt ??
+                  dataset?.uploadedAt ??
+                  (datasetSummary?.lastUploadCompletedAt
+                    ? new Date(datasetSummary.lastUploadCompletedAt)
+                    : null);
+                const safePrimaryUploadedAt =
+                  primaryUploadedAt && !Number.isNaN(primaryUploadedAt.getTime())
+                    ? primaryUploadedAt
+                    : null;
 
                 return (
                   <div key={key} className="space-y-3 rounded-lg border border-slate-200 bg-white p-4">
@@ -6391,16 +6463,27 @@ const aiDataContext = useMemo(() => {
                             </Badge>
                           ) : null}
                         </div>
-                        <p className="truncate text-xs text-slate-600">{dataset.fileName}</p>
-                        {isMultiAppend && dataset.sources && dataset.sources.length > 0 ? (
-                          <p className="text-xs text-slate-500">{formatNumber(dataset.sources.length)} files appended</p>
+                        <p className="truncate text-xs text-slate-600">
+                          {isMultiAppend && primaryUploadFileName
+                            ? primaryUploadFileName
+                            : dataset.fileName}
+                        </p>
+                        {isMultiAppend && appendSourcesForDisplay.length > 0 ? (
+                          <p className="text-xs text-slate-500">
+                            {formatNumber(appendSourcesForDisplay.length)} file
+                            {appendSourcesForDisplay.length === 1 ? "" : "s"} appended
+                          </p>
                         ) : null}
-                        <p className="text-xs text-slate-500">Last updated {dataset.uploadedAt.toLocaleString()}</p>
-                        {isMultiAppend && dataset.sources && dataset.sources.length > 0 ? (
+                        <p className="text-xs text-slate-500">
+                          Last updated{" "}
+                          {(isMultiAppend && safePrimaryUploadedAt
+                            ? safePrimaryUploadedAt
+                            : dataset.uploadedAt
+                          ).toLocaleString()}
+                        </p>
+                        {isMultiAppend && appendSourcesForDisplay.length > 0 ? (
                           <div className="max-h-24 overflow-auto rounded-md border border-slate-200 bg-slate-50 p-2">
-                            {dataset.sources
-                              .slice()
-                              .reverse()
+                            {appendSourcesForDisplay
                               .slice(0, 8)
                               .map((source) => (
                                 <p
@@ -6429,28 +6512,42 @@ const aiDataContext = useMemo(() => {
                             for v2-uploaded datasets. Legacy (v1)
                             uploads have no datasetUploadJobs row and
                             stay at the generic "Tabs read..." copy. */}
-                        {datasetSummariesByKey[key]?.lastUploadFileName ? (
+                        {primaryUploadFileName ? (
                           <>
                             <p className="truncate text-xs text-slate-600">
-                              {datasetSummariesByKey[key]!.lastUploadFileName}
+                              {primaryUploadFileName}
                             </p>
-                            {datasetSummariesByKey[key]?.lastUploadCompletedAt ? (
+                            {safePrimaryUploadedAt ? (
                               <p className="text-xs text-slate-500">
-                                Last updated{" "}
-                                {new Date(
-                                  datasetSummariesByKey[key]!
-                                    .lastUploadCompletedAt as string
-                                ).toLocaleString()}
+                                Last updated {safePrimaryUploadedAt.toLocaleString()}
                               </p>
                             ) : null}
                           </>
-                        ) : datasetSummariesByKey[key]?.lastUpdated ? (
+                        ) : datasetSummary?.lastUpdated ? (
                           <p className="text-xs text-slate-500">
                             Last updated{" "}
                             {new Date(
-                              datasetSummariesByKey[key]!.lastUpdated as string
+                              datasetSummary.lastUpdated as string
                             ).toLocaleString()}
                           </p>
+                        ) : null}
+                        {isMultiAppend && appendSourcesForDisplay.length > 0 ? (
+                          <>
+                            <p className="text-xs text-slate-500">
+                              {formatNumber(appendSourcesForDisplay.length)} file
+                              {appendSourcesForDisplay.length === 1 ? "" : "s"} appended
+                            </p>
+                            <div className="max-h-24 overflow-auto rounded-md border border-slate-200 bg-slate-50 p-2">
+                              {appendSourcesForDisplay.slice(0, 8).map((source) => (
+                                <p
+                                  key={`${source.fileName}-${source.uploadedAt.toISOString()}`}
+                                  className="text-xs text-slate-600"
+                                >
+                                  {source.fileName} ({formatNumber(source.rowCount)} rows)
+                                </p>
+                              ))}
+                            </div>
+                          </>
                         ) : null}
                         <p className="text-xs text-slate-500">
                           Tabs read this dataset directly from the
