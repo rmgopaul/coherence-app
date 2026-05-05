@@ -1,16 +1,21 @@
 /**
- * Tesla Powerhub adapter — pure-helper tests.
+ * Tesla Powerhub adapter — unit + integration tests.
  *
- * First slice of Concern #1 from the PRs 366-383 review: vendor
- * restoration PRs (#368, #371, #373) shipped without adapter-level
- * vitest specs. This file covers the file-local pure helpers
- * (URL canonicalization, token-payload parsing, timestamp coercion,
- * abort-error detection, JSON-body parsing, base64 basic auth) via
- * the `__TEST_ONLY__` export. Network-bound integration paths
- * (`getTeslaPowerhubProductionMetrics`,
- * `getTeslaPowerhubAccessibleGroups`, `listTeslaPowerhubSites`)
- * stay out of scope here — they need fetch mocking and are
- * follow-up PRs.
+ * Slice 1 (the original file content, below the divider): pure
+ * helpers — URL canonicalization, token-payload parsing, timestamp
+ * coercion, abort-error detection, JSON-body parsing, base64 basic
+ * auth. Behavior of file-local helpers via `__TEST_ONLY__`.
+ *
+ * Slice 3 (this PR's addition, the `requestClientCredentialsToken`
+ * describe block): integration tests for the token-fetch path. It's
+ * the simplest network-bound entry in the adapter (single fetch, 4
+ * distinct outcomes), so it's the natural place to establish the
+ * fetch-mock pattern (`vi.stubGlobal("fetch", ...)`) for solar
+ * adapters before tackling the multi-fetch site-discovery + telemetry
+ * paths.
+ *
+ * Concern #1 from the PRs 366-383 review: vendor restoration PRs
+ * (#368, #371, #373) shipped without adapter-level vitest specs.
  *
  * Why pure helpers first:
  *   - Adapter regressions in pure helpers manifest as silent wrong
@@ -23,10 +28,23 @@
  *   - Exposes the helpers via `__TEST_ONLY__` (mirrors
  *     `dashboardCsvExportJobs`, `teslaPowerhubProductionJobs`)
  *     without changing the adapter's public import surface.
+ *
+ * Why the token path next:
+ *   - Every other Tesla integration path (`listTeslaPowerhubSites`,
+ *     `getTeslaPowerhubAccessibleGroups`,
+ *     `getTeslaPowerhubProductionMetrics`) calls
+ *     `requestClientCredentialsToken` first. A regression in the
+ *     token path takes EVERY downstream path with it.
+ *   - The 4 outcomes are well-defined (200 / non-2xx / timeout /
+ *     network error) which makes the test rails clean.
+ *   - It's a single fetch — multi-fetch paths can layer on top of
+ *     this once the pattern is established.
  */
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   normalizeTeslaPowerhubUrl,
+  TESLA_POWERHUB_DEFAULT_TOKEN_URL,
+  type TeslaPowerhubApiContext,
   __TEST_ONLY__,
 } from "./teslaPowerhub";
 
@@ -39,6 +57,7 @@ const {
   parseTokenPayload,
   parseTimestampMs,
   isLikelySiteIdKey,
+  requestClientCredentialsToken,
 } = __TEST_ONLY__;
 
 // ────────────────────────────────────────────────────────────────────
@@ -366,5 +385,251 @@ describe("isLikelySiteIdKey", () => {
 
   it("trims before evaluating", () => {
     expect(isLikelySiteIdKey("  1234  ")).toBe(true);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────
+// requestClientCredentialsToken — integration tests w/ fetch mock
+// (Concern #1 slice 3 — establishes the fetch-mock pattern for
+// solar adapters before tackling the multi-fetch paths)
+// ────────────────────────────────────────────────────────────────────
+
+const VALID_CONTEXT: TeslaPowerhubApiContext = {
+  clientId: "client-abc",
+  clientSecret: "secret-xyz",
+  tokenUrl: null,
+  apiBaseUrl: null,
+  portalBaseUrl: null,
+};
+
+/** Build a Response stand-in that matches what the implementation reads. */
+function buildResponse(opts: {
+  ok: boolean;
+  status?: number;
+  statusText?: string;
+  body?: string;
+}): Response {
+  // Implementation calls `response.text()` for both happy and error
+  // paths; we don't need a full Response. A minimal duck-typed object
+  // is enough and avoids polyfill-specific behavior.
+  const status = opts.status ?? (opts.ok ? 200 : 500);
+  return {
+    ok: opts.ok,
+    status,
+    statusText: opts.statusText ?? (opts.ok ? "OK" : "Internal Server Error"),
+    text: async () => opts.body ?? "",
+  } as unknown as Response;
+}
+
+describe("requestClientCredentialsToken", () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("returns the parsed token on a 200 response", async () => {
+    fetchMock.mockResolvedValueOnce(
+      buildResponse({
+        ok: true,
+        body: JSON.stringify({
+          access_token: "tok-abc",
+          token_type: "Bearer",
+          expires_in: 3600,
+        }),
+      })
+    );
+    const token = await requestClientCredentialsToken(VALID_CONTEXT);
+    expect(token.access_token).toBe("tok-abc");
+    expect(token.token_type).toBe("Bearer");
+    expect(token.expires_in).toBe(3600);
+  });
+
+  it("calls the default token URL when context.tokenUrl is empty/null", async () => {
+    fetchMock.mockResolvedValueOnce(
+      buildResponse({
+        ok: true,
+        body: JSON.stringify({ access_token: "tok-1" }),
+      })
+    );
+    await requestClientCredentialsToken(VALID_CONTEXT);
+    const [url] = fetchMock.mock.calls[0];
+    expect(url).toBe(TESLA_POWERHUB_DEFAULT_TOKEN_URL);
+  });
+
+  it("respects an override token URL when provided", async () => {
+    fetchMock.mockResolvedValueOnce(
+      buildResponse({
+        ok: true,
+        body: JSON.stringify({ access_token: "tok-2" }),
+      })
+    );
+    await requestClientCredentialsToken({
+      ...VALID_CONTEXT,
+      tokenUrl: "https://custom.example.com/oauth/token",
+    });
+    const [url] = fetchMock.mock.calls[0];
+    expect(url).toBe("https://custom.example.com/oauth/token");
+  });
+
+  it("sends Basic auth header derived from clientId:clientSecret", async () => {
+    fetchMock.mockResolvedValueOnce(
+      buildResponse({
+        ok: true,
+        body: JSON.stringify({ access_token: "tok-3" }),
+      })
+    );
+    await requestClientCredentialsToken(VALID_CONTEXT);
+    const init = fetchMock.mock.calls[0][1] as RequestInit;
+    const headers = init.headers as Record<string, string>;
+    // base64("client-abc:secret-xyz") = "Y2xpZW50LWFiYzpzZWNyZXQteHl6"
+    expect(headers["Authorization"]).toBe(
+      `Basic ${Buffer.from("client-abc:secret-xyz").toString("base64")}`
+    );
+  });
+
+  it("sends the form-encoded grant_type=client_credentials body", async () => {
+    fetchMock.mockResolvedValueOnce(
+      buildResponse({
+        ok: true,
+        body: JSON.stringify({ access_token: "tok-4" }),
+      })
+    );
+    await requestClientCredentialsToken(VALID_CONTEXT);
+    const init = fetchMock.mock.calls[0][1] as RequestInit;
+    expect(init.method).toBe("POST");
+    expect(init.body).toBe("grant_type=client_credentials");
+    const headers = init.headers as Record<string, string>;
+    expect(headers["Content-Type"]).toBe("application/x-www-form-urlencoded");
+    expect(headers["Accept"]).toBe("application/json");
+  });
+
+  it("throws on a non-2xx response with status + statusText", async () => {
+    fetchMock.mockResolvedValueOnce(
+      buildResponse({
+        ok: false,
+        status: 401,
+        statusText: "Unauthorized",
+        body: "",
+      })
+    );
+    await expect(requestClientCredentialsToken(VALID_CONTEXT)).rejects.toThrow(
+      /401 Unauthorized/
+    );
+  });
+
+  it("includes response body in the error message when present", async () => {
+    fetchMock.mockResolvedValueOnce(
+      buildResponse({
+        ok: false,
+        status: 403,
+        statusText: "Forbidden",
+        body: '{"error":"client_not_allowlisted"}',
+      })
+    );
+    await expect(requestClientCredentialsToken(VALID_CONTEXT)).rejects.toThrow(
+      /client_not_allowlisted/
+    );
+  });
+
+  it("surfaces a 5xx as a non-OK error (not silently retrying)", async () => {
+    fetchMock.mockResolvedValueOnce(
+      buildResponse({
+        ok: false,
+        status: 503,
+        statusText: "Service Unavailable",
+      })
+    );
+    await expect(requestClientCredentialsToken(VALID_CONTEXT)).rejects.toThrow(
+      /503/
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("translates an AbortError into the operator-friendly timeout message", async () => {
+    const abortErr = new Error("aborted");
+    abortErr.name = "AbortError";
+    fetchMock.mockRejectedValueOnce(abortErr);
+    await expect(requestClientCredentialsToken(VALID_CONTEXT)).rejects.toThrow(
+      /timed out after 20 seconds.*allowlisted this server egress/i
+    );
+  });
+
+  it("translates a TimeoutError the same way as AbortError", async () => {
+    const timeoutErr = new Error("timeout");
+    timeoutErr.name = "TimeoutError";
+    fetchMock.mockRejectedValueOnce(timeoutErr);
+    await expect(requestClientCredentialsToken(VALID_CONTEXT)).rejects.toThrow(
+      /timed out after 20 seconds/
+    );
+  });
+
+  it("re-throws an unrelated network error verbatim (no timeout-message rewrite)", async () => {
+    fetchMock.mockRejectedValueOnce(new Error("ECONNREFUSED"));
+    await expect(requestClientCredentialsToken(VALID_CONTEXT)).rejects.toThrow(
+      /ECONNREFUSED/
+    );
+    // Importantly NOT the timeout message — operator-debugging hint
+    // would be misleading on a connection-refused error.
+    await expect(
+      (async () => {
+        fetchMock.mockRejectedValueOnce(new Error("ECONNREFUSED"));
+        try {
+          await requestClientCredentialsToken(VALID_CONTEXT);
+        } catch (err) {
+          expect((err as Error).message).not.toMatch(/allowlisted/);
+          throw err;
+        }
+      })()
+    ).rejects.toBeDefined();
+  });
+
+  it("propagates an externally-aborted signal (caller cancels mid-flight)", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    // Simulate fetch noticing the aborted signal — implementation
+    // wires the caller's signal into AbortSignal.any alongside its
+    // 20s timeout, so an already-aborted external signal surfaces
+    // as an AbortError that gets remapped to the timeout message.
+    const abortErr = new Error("aborted");
+    abortErr.name = "AbortError";
+    fetchMock.mockRejectedValueOnce(abortErr);
+    await expect(
+      requestClientCredentialsToken(VALID_CONTEXT, {
+        signal: controller.signal,
+      })
+    ).rejects.toThrow(/timed out after 20 seconds/);
+  });
+
+  it("throws missing-access_token when the 200 body has no access_token", async () => {
+    // Defends against a regression where an empty/garbage 200 body
+    // would silently succeed and downstream `Authorization: Bearer`
+    // would send `Bearer undefined`.
+    fetchMock.mockResolvedValueOnce(
+      buildResponse({
+        ok: true,
+        body: '{"unrelated":"value"}',
+      })
+    );
+    await expect(requestClientCredentialsToken(VALID_CONTEXT)).rejects.toThrow(
+      /missing access_token/
+    );
+  });
+
+  it("throws missing-access_token when the 200 body is malformed JSON", async () => {
+    fetchMock.mockResolvedValueOnce(
+      buildResponse({
+        ok: true,
+        body: "not json",
+      })
+    );
+    await expect(requestClientCredentialsToken(VALID_CONTEXT)).rejects.toThrow(
+      /missing access_token/
+    );
   });
 });
