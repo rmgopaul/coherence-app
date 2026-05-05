@@ -113,6 +113,18 @@ describe("Solar REC dashboard mount: heavy-query gates", () => {
     expect(block!).not.toMatch(/enabled\s*:/);
   });
 
+  it("Part II Filter QA uses slim-summary counts before heavy queries load", () => {
+    const start = code.indexOf("const part2FilterAudit = useMemo");
+    expect(start).toBeGreaterThan(-1);
+    const block = code.slice(start, start + 900);
+    expect(block).toMatch(/slimSummary\?\.part2VerifiedAbpRowsCount/);
+    expect(block).toMatch(/slimSummary\?\.abpEligibleTotalSystemsCount/);
+    expect(block).toMatch(/slimSummary\?\.part2VerifiedSystems/);
+    expect(block).toMatch(
+      /toPercentValue\s*\(\s*scopedSystems\s*,\s*part2UniqueSystems\s*\)/
+    );
+  });
+
   it("CSV export uses the background-job flow (start + poll), not an inline tRPC CSV fetch", () => {
     // Both handlers must drive the background-job flow:
     //   startDashboardCsvExport (mutation) → poll

@@ -5028,21 +5028,30 @@ export default function SolarRecDashboard() {
   const part2FilterAudit = useMemo(() => {
     const totalAbpRows = datasetSummariesByKey['abpReport']?.rowCount ?? 0;
     const part2Rows =
+      slimSummary?.part2VerifiedAbpRowsCount ??
       offlineMonitoringQuery.data?.part2VerifiedAbpRowsCount ?? 0;
+    const part2UniqueSystems =
+      slimSummary?.abpEligibleTotalSystemsCount ??
+      offlineMonitoringQuery.data?.abpEligibleTotalSystemsCount ??
+      abpEligibleTotalSystems;
+    const scopedSystems =
+      slimSummary?.part2VerifiedSystems ??
+      part2EligibleSystemsForSizeReporting.length;
     const excludedRows = Math.max(0, totalAbpRows - part2Rows);
     return {
       totalAbpRows,
       part2Rows,
       excludedRows,
-      part2UniqueSystems: abpEligibleTotalSystems,
-      scopedSystems: part2EligibleSystemsForSizeReporting.length,
-      scopedCoveragePercent: toPercentValue(part2EligibleSystemsForSizeReporting.length, abpEligibleTotalSystems),
+      part2UniqueSystems,
+      scopedSystems,
+      scopedCoveragePercent: toPercentValue(scopedSystems, part2UniqueSystems),
     };
   }, [
     abpEligibleTotalSystems,
     datasetSummariesByKey,
     offlineMonitoringQuery.data,
     part2EligibleSystemsForSizeReporting.length,
+    slimSummary,
   ]);
 
   // sizeReportingChartRows, ownershipStackedChartRows
