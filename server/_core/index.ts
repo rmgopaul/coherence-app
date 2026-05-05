@@ -19,6 +19,7 @@ import {
   largeResponseLogger,
 } from "./bandwidthDiagnostics";
 import { shouldRunSolarRecStartupCleanup } from "./startupCleanupPolicy";
+import { shouldMutateProdState } from "./runtimeTarget";
 import {
   registerSolarRecAuth,
   authenticateSolarRecRequest,
@@ -154,27 +155,52 @@ async function createSolarRecMainContext(
 async function startServer() {
   assertServerRuntimeSafety();
   installFetchBandwidthDiagnostics();
-  startNightlySnapshotScheduler();
-  startMonitoringScheduler();
-  startDatasetUploadStaleJobSweeper();
 
-  // Mark any MonitoringBatchRun rows left in "running" state by the prior
-  // Node process (killed by deploy, crash, OOM) as "failed" so the client
-  // dashboard stops polling them forever. Fire-and-forget — don't block
-  // server startup if this fails.
-  void (async () => {
-    try {
-      const { failOrphanedRunningBatches } = await import("../db");
-      const count = await failOrphanedRunningBatches();
-      if (count > 0) {
-        console.log(
-          `[Monitoring] Marked ${count} orphaned "running" batch${count === 1 ? "" : "es"} as failed on startup.`
-        );
+  // Concern #4 PR-2 (per docs/triage/local-dev-prod-mutation-findings.md):
+  // schedulers + the orphan-batch cleanup mutate prod state on every
+  // boot/tick. Gating them on `shouldMutateProdState()` keeps a local
+  // dev server pointed at `DATABASE_URL=prod` from accidentally
+  // marking real in-flight monitoring runs as failed (the most
+  // dangerous unguarded path the findings doc enumerated) or running
+  // a scheduled monitoring sweep against prod credentials.
+  //
+  // Local dev with intentional dev-against-prod workflows can opt in
+  // via `ALLOW_LOCAL_TO_PROD_WRITES=true` (see PR #391's
+  // `runtimeTarget.ts`). Test runs (NODE_ENV=test) are always gated
+  // off — vitest never starts schedulers regardless of opt-in.
+  if (shouldMutateProdState()) {
+    startNightlySnapshotScheduler();
+    startMonitoringScheduler();
+    startDatasetUploadStaleJobSweeper();
+
+    // Mark any MonitoringBatchRun rows left in "running" state by the
+    // prior Node process (killed by deploy, crash, OOM) as "failed"
+    // so the client dashboard stops polling them forever. Fire-and-
+    // forget — don't block server startup if this fails. Same gate
+    // as the schedulers above: a local dev server pointed at prod
+    // would otherwise wipe every prod monitoring batch's in-flight
+    // status on boot.
+    void (async () => {
+      try {
+        const { failOrphanedRunningBatches } = await import("../db");
+        const count = await failOrphanedRunningBatches();
+        if (count > 0) {
+          console.log(
+            `[Monitoring] Marked ${count} orphaned "running" batch${count === 1 ? "" : "es"} as failed on startup.`
+          );
+        }
+      } catch (err) {
+        console.error("[Monitoring] Orphan cleanup failed on startup:", err);
       }
-    } catch (err) {
-      console.error("[Monitoring] Orphan cleanup failed on startup:", err);
-    }
-  })();
+    })();
+  } else {
+    console.warn(
+      "[startServer] Skipping schedulers + orphan-batch cleanup: not on " +
+        "hosted-prod and `ALLOW_LOCAL_TO_PROD_WRITES` not set. Set the env " +
+        "var to opt in if this local-dev process intentionally targets " +
+        "prod DATABASE_URL."
+    );
+  }
 
   const app = express();
 
