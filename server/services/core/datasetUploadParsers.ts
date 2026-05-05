@@ -180,13 +180,36 @@ export function buildBaseInsert(
 
 // Common alias chains reused across parsers. Defined once so a
 // future header rename only needs editing in one place.
-const APPLICATION_ID = ["applicationId", "Application ID", "ApplicationId", "application_id", "App ID"] as const;
+const APPLICATION_ID = [
+  "applicationId",
+  "Application ID",
+  "ApplicationId",
+  "application_id",
+  "App ID",
+] as const;
 const SYSTEM_ID = ["systemId", "System ID", "system_id", "id"] as const;
-const TRACKING_REF = ["trackingSystemRefId", "GATS Unit ID", "trackingId", "tracking_system_ref_id", "Unit ID"] as const;
+const TRACKING_REF = [
+  "trackingSystemRefId",
+  "GATS Unit ID",
+  "trackingId",
+  "tracking_system_ref_id",
+  "reporting_entity_ref_id",
+  "PJM_GATS_or_MRETS_Unit_ID_Part_2",
+  "Unit ID",
+] as const;
 const CSG_ID = ["csgId", "CSG ID", "csg_id"] as const;
-const FACILITY_NAME = ["facilityName", "Facility Name", "facility_name"] as const;
+const FACILITY_NAME = [
+  "facilityName",
+  "Facility Name",
+  "facility_name",
+] as const;
 const UNIT_ID = ["unitId", "Unit ID", "unit_id", "GATS Unit ID"] as const;
-const INVOICE_NUMBER = ["invoiceNumber", "Invoice Number", "Invoice #", "invoice_number"] as const;
+const INVOICE_NUMBER = [
+  "invoiceNumber",
+  "Invoice Number",
+  "Invoice #",
+  "invoice_number",
+] as const;
 
 // ── contractedDate (Phase 1) ───────────────────────────────────────
 
@@ -207,96 +230,119 @@ const CONTRACTED_DATE_DATE = [
   "ContractedDate",
 ] as const;
 
-export const CONTRACTED_DATE_PARSER: DatasetUploadParser<InsertSrDsContractedDate> = {
-  table: srDsContractedDate,
-  parseRow(rawRow, ctx) {
-    const systemId = pickField(rawRow, CONTRACTED_DATE_SYSTEM_ID);
-    const contractedDate = pickField(rawRow, CONTRACTED_DATE_DATE);
-    if (!systemId && !contractedDate) return null;
-    if (!systemId) {
-      throw new Error(
-        `Row ${ctx.rowIndex + 1}: missing systemId (alias chain: ${CONTRACTED_DATE_SYSTEM_ID.join(", ")})`
-      );
-    }
-    return {
-      id: nanoid(),
-      scopeId: ctx.scopeId,
-      batchId: ctx.batchId,
-      systemId,
-      contractedDate,
-      createdAt: new Date(),
-    };
-  },
-};
+export const CONTRACTED_DATE_PARSER: DatasetUploadParser<InsertSrDsContractedDate> =
+  {
+    table: srDsContractedDate,
+    parseRow(rawRow, ctx) {
+      const systemId = pickField(rawRow, CONTRACTED_DATE_SYSTEM_ID);
+      const contractedDate = pickField(rawRow, CONTRACTED_DATE_DATE);
+      if (!systemId && !contractedDate) return null;
+      if (!systemId) {
+        throw new Error(
+          `Row ${ctx.rowIndex + 1}: missing systemId (alias chain: ${CONTRACTED_DATE_SYSTEM_ID.join(", ")})`
+        );
+      }
+      return {
+        id: nanoid(),
+        scopeId: ctx.scopeId,
+        batchId: ctx.batchId,
+        systemId,
+        contractedDate,
+        createdAt: new Date(),
+      };
+    },
+  };
 
 // ── solarApplications ──────────────────────────────────────────────
 
-export const SOLAR_APPLICATIONS_PARSER: DatasetUploadParser<InsertSrDsSolarApplication> = {
-  table: srDsSolarApplications,
-  parseRow(rawRow, ctx) {
-    const applicationId = pickField(rawRow, APPLICATION_ID);
-    const systemId = pickField(rawRow, SYSTEM_ID);
-    const trackingSystemRefId = pickField(rawRow, TRACKING_REF);
-    if (!applicationId && !systemId && !trackingSystemRefId) return null;
-    return {
-      ...buildBaseInsert(rawRow, ctx),
-      applicationId,
-      systemId,
-      trackingSystemRefId,
-      stateCertificationNumber: pickField(rawRow, [
-        "stateCertificationNumber",
-        "State Certification Number",
-        "Certification Number",
-      ]),
-      systemName: pickField(rawRow, [
-        "systemName",
-        "System Name",
-        "name",
-        "Project Name",
-      ]),
-      installedKwAc: pickNumber(rawRow, [
-        "installedKwAc",
-        "Installed kW AC",
-        "kW AC",
-        "AC kW",
-      ]),
-      installedKwDc: pickNumber(rawRow, [
-        "installedKwDc",
-        "Installed kW DC",
-        "kW DC",
-        "DC kW",
-      ]),
-      recPrice: pickNumber(rawRow, [
-        "recPrice",
-        "REC Price",
-        "rec_price",
-      ]),
-      totalContractAmount: pickNumber(rawRow, [
-        "totalContractAmount",
-        "Total Contract Amount",
-        "Total Contract Value",
-      ]),
-      annualRecs: pickNumber(rawRow, [
-        "annualRecs",
-        "Annual RECs",
-        "Annual REC",
-        "Annual REC Quantity",
-      ]),
-      contractType: pickField(rawRow, [
-        "contractType",
-        "Contract Type",
-      ]),
-      installerName: pickField(rawRow, [
-        "installerName",
-        "Installer Name",
-        "Installer",
-      ]),
-      county: pickField(rawRow, ["county", "County"]),
-      state: pickField(rawRow, ["state", "State"]),
-      zipCode: pickField(rawRow, ["zipCode", "ZIP", "Zip Code", "Zip"]),
-    };
-  },
-};
+export const SOLAR_APPLICATIONS_PARSER: DatasetUploadParser<InsertSrDsSolarApplication> =
+  {
+    table: srDsSolarApplications,
+    parseRow(rawRow, ctx) {
+      const applicationId = pickField(rawRow, APPLICATION_ID);
+      const systemId = pickField(rawRow, SYSTEM_ID);
+      const trackingSystemRefId = pickField(rawRow, TRACKING_REF);
+      if (!applicationId && !systemId && !trackingSystemRefId) return null;
+      return {
+        ...buildBaseInsert(rawRow, ctx),
+        applicationId,
+        systemId,
+        trackingSystemRefId,
+        stateCertificationNumber: pickField(rawRow, [
+          "stateCertificationNumber",
+          "State Certification Number",
+          "Certification Number",
+        ]),
+        systemName: pickField(rawRow, [
+          "systemName",
+          "system_name",
+          "System Name",
+          "name",
+          "Project Name",
+          "Project_Name",
+        ]),
+        installedKwAc: pickNumber(rawRow, [
+          "installedKwAc",
+          "installed_system_size_kw_ac",
+          "planned_system_size_kw_ac",
+          "financialDetail.contract_kw_ac",
+          "Inverter_Size_kW_AC_Part_2",
+          "Inverter_Size_kW_AC_Part_1",
+          "Installed kW AC",
+          "kW AC",
+          "AC kW",
+        ]),
+        installedKwDc: pickNumber(rawRow, [
+          "installedKwDc",
+          "installed_system_size_kw_dc",
+          "planned_system_size_kw_dc",
+          "financialDetail.contract_kw_dc",
+          "Inverter_Size_kW_DC_Part_2",
+          "Inverter_Size_kW_DC_Part_1",
+          "Installed kW DC",
+          "kW DC",
+          "DC kW",
+        ]),
+        recPrice: pickNumber(rawRow, ["recPrice", "REC Price", "rec_price"]),
+        totalContractAmount: pickNumber(rawRow, [
+          "totalContractAmount",
+          "total_contract_amount",
+          "Total Contract Amount",
+          "Total Contract Value",
+        ]),
+        annualRecs: pickNumber(rawRow, [
+          "annualRecs",
+          "Annual RECs",
+          "Annual REC",
+          "Annual REC Quantity",
+        ]),
+        contractType: pickField(rawRow, [
+          "contractType",
+          "contract_type",
+          "Contract Type",
+        ]),
+        installerName: pickField(rawRow, [
+          "installerName",
+          "installer_name",
+          "installer_company_name",
+          "partnerCompany.name",
+          "system_installer",
+          "Installer Name",
+          "Installer",
+        ]),
+        county: pickField(rawRow, ["county", "system_county", "County"]),
+        state: pickField(rawRow, ["state", "system_state", "State"]),
+        zipCode: pickField(rawRow, [
+          "zipCode",
+          "zip_code",
+          "system_zip",
+          "ZIP",
+          "Zip Code",
+          "Zip",
+        ]),
+      };
+    },
+  };
 
 // ── abpReport ──────────────────────────────────────────────────────
 
@@ -324,6 +370,8 @@ export const ABP_REPORT_PARSER: DatasetUploadParser<InsertSrDsAbpReport> = {
       ]),
       inverterSizeKwAc: pickNumber(rawRow, [
         "inverterSizeKwAc",
+        "Inverter_Size_kW_AC_Part_2",
+        "Inverter_Size_kW_AC_Part_1",
         "Inverter Size kW AC",
         "Inverter kW AC",
       ]),
@@ -333,138 +381,134 @@ export const ABP_REPORT_PARSER: DatasetUploadParser<InsertSrDsAbpReport> = {
 
 // ── generationEntry ────────────────────────────────────────────────
 
-export const GENERATION_ENTRY_PARSER: DatasetUploadParser<InsertSrDsGenerationEntry> = {
-  table: srDsGenerationEntry,
-  parseRow(rawRow, ctx) {
-    const unitId = pickField(rawRow, UNIT_ID);
-    const facilityName = pickField(rawRow, FACILITY_NAME);
-    if (!unitId && !facilityName) return null;
-    return {
-      ...buildBaseInsert(rawRow, ctx),
-      unitId,
-      facilityName,
-      lastMonthOfGen: pickField(rawRow, [
-        "lastMonthOfGen",
-        "Last Month of Gen",
-        "Last Month of Generation",
-      ]),
-      effectiveDate: pickField(rawRow, [
-        "effectiveDate",
-        "Effective Date",
-      ]),
-      onlineMonitoring: pickField(rawRow, [
-        "onlineMonitoring",
-        "Online Monitoring",
-        "Monitoring",
-      ]),
-      onlineMonitoringAccessType: pickField(rawRow, [
-        "onlineMonitoringAccessType",
-        "Online Monitoring Access Type",
-        "Monitoring Access Type",
-      ]),
-      onlineMonitoringSystemId: pickField(rawRow, [
-        "onlineMonitoringSystemId",
-        "Online Monitoring System ID",
-        "Monitoring System ID",
-      ]),
-      onlineMonitoringSystemName: pickField(rawRow, [
-        "onlineMonitoringSystemName",
-        "Online Monitoring System Name",
-        "Monitoring System Name",
-      ]),
-    };
-  },
-};
+export const GENERATION_ENTRY_PARSER: DatasetUploadParser<InsertSrDsGenerationEntry> =
+  {
+    table: srDsGenerationEntry,
+    parseRow(rawRow, ctx) {
+      const unitId = pickField(rawRow, UNIT_ID);
+      const facilityName = pickField(rawRow, FACILITY_NAME);
+      if (!unitId && !facilityName) return null;
+      return {
+        ...buildBaseInsert(rawRow, ctx),
+        unitId,
+        facilityName,
+        lastMonthOfGen: pickField(rawRow, [
+          "lastMonthOfGen",
+          "Last Month of Gen",
+          "Last Month of Generation",
+        ]),
+        effectiveDate: pickField(rawRow, ["effectiveDate", "Effective Date"]),
+        onlineMonitoring: pickField(rawRow, [
+          "onlineMonitoring",
+          "Online Monitoring",
+          "Monitoring",
+        ]),
+        onlineMonitoringAccessType: pickField(rawRow, [
+          "onlineMonitoringAccessType",
+          "Online Monitoring Access Type",
+          "Monitoring Access Type",
+        ]),
+        onlineMonitoringSystemId: pickField(rawRow, [
+          "onlineMonitoringSystemId",
+          "Online Monitoring System ID",
+          "Monitoring System ID",
+        ]),
+        onlineMonitoringSystemName: pickField(rawRow, [
+          "onlineMonitoringSystemName",
+          "Online Monitoring System Name",
+          "Monitoring System Name",
+        ]),
+      };
+    },
+  };
 
 // ── accountSolarGeneration ─────────────────────────────────────────
 
-export const ACCOUNT_SOLAR_GENERATION_PARSER: DatasetUploadParser<InsertSrDsAccountSolarGeneration> = {
-  table: srDsAccountSolarGeneration,
-  parseRow(rawRow, ctx) {
-    const gatsGenId = pickField(rawRow, [
-      "gatsGenId",
-      "GATS Gen ID",
-      "gats_gen_id",
-    ]);
-    const facilityName = pickField(rawRow, FACILITY_NAME);
-    const monthOfGeneration = pickField(rawRow, [
-      "monthOfGeneration",
-      "Month of Generation",
-      "month_of_generation",
-    ]);
-    if (!gatsGenId && !facilityName && !monthOfGeneration) return null;
-    return {
-      ...buildBaseInsert(rawRow, ctx),
-      gatsGenId,
-      facilityName,
-      monthOfGeneration,
-      lastMeterReadDate: pickField(rawRow, [
-        "lastMeterReadDate",
-        "Last Meter Read Date",
-        "Meter Read Date",
-      ]),
-      // 2026-04-30 — added the 4 parenthesised header aliases the
-      // CSG portal export actually uses ("(kWh)", "(kWh/Btu)",
-      // "(kW)", and the bare "Last Meter Read"). Pre-fix the parser
-      // only matched "Last Meter Read kWh" (no parens), so every
-      // row from the actual portal export landed with this typed
-      // column null + the value only present in `rawRow`. That
-      // forced the snapshot builder to keep rawRow loaded for the
-      // whole table, which on a populated scope blew Render's 4 GB
-      // heap.
-      lastMeterReadKwh: pickField(rawRow, [
-        "lastMeterReadKwh",
-        "Last Meter Read (kWh)",
-        "Last Meter Read (kWh/Btu)",
-        "Last Meter Read (kW)",
-        "Last Meter Read",
-        "Last Meter Read kWh",
-        "Meter Read kWh",
-      ]),
-    };
-  },
-};
+export const ACCOUNT_SOLAR_GENERATION_PARSER: DatasetUploadParser<InsertSrDsAccountSolarGeneration> =
+  {
+    table: srDsAccountSolarGeneration,
+    parseRow(rawRow, ctx) {
+      const gatsGenId = pickField(rawRow, [
+        "gatsGenId",
+        "GATS Gen ID",
+        "gats_gen_id",
+      ]);
+      const facilityName = pickField(rawRow, FACILITY_NAME);
+      const monthOfGeneration = pickField(rawRow, [
+        "monthOfGeneration",
+        "Month of Generation",
+        "month_of_generation",
+      ]);
+      if (!gatsGenId && !facilityName && !monthOfGeneration) return null;
+      return {
+        ...buildBaseInsert(rawRow, ctx),
+        gatsGenId,
+        facilityName,
+        monthOfGeneration,
+        lastMeterReadDate: pickField(rawRow, [
+          "lastMeterReadDate",
+          "Last Meter Read Date",
+          "Meter Read Date",
+        ]),
+        // 2026-04-30 — added the 4 parenthesised header aliases the
+        // CSG portal export actually uses ("(kWh)", "(kWh/Btu)",
+        // "(kW)", and the bare "Last Meter Read"). Pre-fix the parser
+        // only matched "Last Meter Read kWh" (no parens), so every
+        // row from the actual portal export landed with this typed
+        // column null + the value only present in `rawRow`. That
+        // forced the snapshot builder to keep rawRow loaded for the
+        // whole table, which on a populated scope blew Render's 4 GB
+        // heap.
+        lastMeterReadKwh: pickField(rawRow, [
+          "lastMeterReadKwh",
+          "Last Meter Read (kWh)",
+          "Last Meter Read (kWh/Btu)",
+          "Last Meter Read (kW)",
+          "Last Meter Read",
+          "Last Meter Read kWh",
+          "Meter Read kWh",
+        ]),
+      };
+    },
+  };
 
 // ── convertedReads ─────────────────────────────────────────────────
 
-export const CONVERTED_READS_PARSER: DatasetUploadParser<InsertSrDsConvertedReads> = {
-  table: srDsConvertedReads,
-  parseRow(rawRow, ctx) {
-    const monitoringSystemId = pickField(rawRow, [
-      "monitoring_system_id",
-      "monitoringSystemId",
-      "Monitoring System ID",
-    ]);
-    const readDate = pickField(rawRow, [
-      "read_date",
-      "readDate",
-      "Read Date",
-      "date",
-    ]);
-    if (!monitoringSystemId && !readDate) return null;
-    return {
-      ...buildBaseInsert(rawRow, ctx),
-      monitoring: pickField(rawRow, [
-        "monitoring",
-        "Monitoring",
-        "vendor",
-      ]),
-      monitoringSystemId,
-      monitoringSystemName: pickField(rawRow, [
-        "monitoring_system_name",
-        "monitoringSystemName",
-        "Monitoring System Name",
-      ]),
-      lifetimeMeterReadWh: pickNumber(rawRow, [
-        "lifetime_meter_read_wh",
-        "lifetimeMeterReadWh",
-        "Lifetime Meter Read Wh",
-        "Lifetime Wh",
-      ]),
-      readDate,
-    };
-  },
-};
+export const CONVERTED_READS_PARSER: DatasetUploadParser<InsertSrDsConvertedReads> =
+  {
+    table: srDsConvertedReads,
+    parseRow(rawRow, ctx) {
+      const monitoringSystemId = pickField(rawRow, [
+        "monitoring_system_id",
+        "monitoringSystemId",
+        "Monitoring System ID",
+      ]);
+      const readDate = pickField(rawRow, [
+        "read_date",
+        "readDate",
+        "Read Date",
+        "date",
+      ]);
+      if (!monitoringSystemId && !readDate) return null;
+      return {
+        ...buildBaseInsert(rawRow, ctx),
+        monitoring: pickField(rawRow, ["monitoring", "Monitoring", "vendor"]),
+        monitoringSystemId,
+        monitoringSystemName: pickField(rawRow, [
+          "monitoring_system_name",
+          "monitoringSystemName",
+          "Monitoring System Name",
+        ]),
+        lifetimeMeterReadWh: pickNumber(rawRow, [
+          "lifetime_meter_read_wh",
+          "lifetimeMeterReadWh",
+          "Lifetime Meter Read Wh",
+          "Lifetime Wh",
+        ]),
+        readDate,
+      };
+    },
+  };
 
 // ── annualProductionEstimates ──────────────────────────────────────
 
@@ -483,204 +527,211 @@ const MONTH_ALIASES: ReadonlyArray<readonly string[]> = [
   ["dec", "Dec", "December"],
 ];
 
-export const ANNUAL_PRODUCTION_ESTIMATES_PARSER: DatasetUploadParser<InsertSrDsAnnualProductionEstimates> = {
-  table: srDsAnnualProductionEstimates,
-  parseRow(rawRow, ctx) {
-    const unitId = pickField(rawRow, UNIT_ID);
-    const facilityName = pickField(rawRow, FACILITY_NAME);
-    if (!unitId && !facilityName) return null;
-    const months = MONTH_ALIASES.map((aliases) => pickNumber(rawRow, aliases));
-    return {
-      ...buildBaseInsert(rawRow, ctx),
-      unitId,
-      facilityName,
-      jan: months[0],
-      feb: months[1],
-      mar: months[2],
-      apr: months[3],
-      may: months[4],
-      jun: months[5],
-      jul: months[6],
-      aug: months[7],
-      sep: months[8],
-      oct: months[9],
-      nov: months[10],
-      decMonth: months[11],
-    };
-  },
-};
+export const ANNUAL_PRODUCTION_ESTIMATES_PARSER: DatasetUploadParser<InsertSrDsAnnualProductionEstimates> =
+  {
+    table: srDsAnnualProductionEstimates,
+    parseRow(rawRow, ctx) {
+      const unitId = pickField(rawRow, UNIT_ID);
+      const facilityName = pickField(rawRow, FACILITY_NAME);
+      if (!unitId && !facilityName) return null;
+      const months = MONTH_ALIASES.map(aliases => pickNumber(rawRow, aliases));
+      return {
+        ...buildBaseInsert(rawRow, ctx),
+        unitId,
+        facilityName,
+        jan: months[0],
+        feb: months[1],
+        mar: months[2],
+        apr: months[3],
+        may: months[4],
+        jun: months[5],
+        jul: months[6],
+        aug: months[7],
+        sep: months[8],
+        oct: months[9],
+        nov: months[10],
+        decMonth: months[11],
+      };
+    },
+  };
 
 // ── generatorDetails ───────────────────────────────────────────────
 
-export const GENERATOR_DETAILS_PARSER: DatasetUploadParser<InsertSrDsGeneratorDetails> = {
-  table: srDsGeneratorDetails,
-  parseRow(rawRow, ctx) {
-    const gatsUnitId = pickField(rawRow, [
-      "gatsUnitId",
-      "GATS Unit ID",
-      "gats_unit_id",
-    ]);
-    const dateOnline = pickField(rawRow, [
-      "dateOnline",
-      "Date Online",
-      "date_online",
-    ]);
-    if (!gatsUnitId && !dateOnline) return null;
-    return {
-      ...buildBaseInsert(rawRow, ctx),
-      gatsUnitId,
-      dateOnline,
-    };
-  },
-};
+export const GENERATOR_DETAILS_PARSER: DatasetUploadParser<InsertSrDsGeneratorDetails> =
+  {
+    table: srDsGeneratorDetails,
+    parseRow(rawRow, ctx) {
+      const gatsUnitId = pickField(rawRow, [
+        "gatsUnitId",
+        "GATS Unit ID",
+        "gats_unit_id",
+      ]);
+      const dateOnline = pickField(rawRow, [
+        "dateOnline",
+        "Date Online",
+        "date_online",
+      ]);
+      if (!gatsUnitId && !dateOnline) return null;
+      return {
+        ...buildBaseInsert(rawRow, ctx),
+        gatsUnitId,
+        dateOnline,
+      };
+    },
+  };
 
 // ── abpUtilityInvoiceRows ──────────────────────────────────────────
 
-export const ABP_UTILITY_INVOICE_ROWS_PARSER: DatasetUploadParser<InsertSrDsAbpUtilityInvoiceRows> = {
-  table: srDsAbpUtilityInvoiceRows,
-  parseRow(rawRow, ctx) {
-    const systemId = pickField(rawRow, SYSTEM_ID);
-    if (!systemId) return null;
-    return { ...buildBaseInsert(rawRow, ctx), systemId };
-  },
-};
+export const ABP_UTILITY_INVOICE_ROWS_PARSER: DatasetUploadParser<InsertSrDsAbpUtilityInvoiceRows> =
+  {
+    table: srDsAbpUtilityInvoiceRows,
+    parseRow(rawRow, ctx) {
+      const systemId = pickField(rawRow, SYSTEM_ID);
+      if (!systemId) return null;
+      return { ...buildBaseInsert(rawRow, ctx), systemId };
+    },
+  };
 
 // ── abpCsgSystemMapping ────────────────────────────────────────────
 
-export const ABP_CSG_SYSTEM_MAPPING_PARSER: DatasetUploadParser<InsertSrDsAbpCsgSystemMapping> = {
-  table: srDsAbpCsgSystemMapping,
-  parseRow(rawRow, ctx) {
-    const csgId = pickField(rawRow, CSG_ID);
-    const systemId = pickField(rawRow, SYSTEM_ID);
-    if (!csgId && !systemId) return null;
-    return { ...buildBaseInsert(rawRow, ctx), csgId, systemId };
-  },
-};
+export const ABP_CSG_SYSTEM_MAPPING_PARSER: DatasetUploadParser<InsertSrDsAbpCsgSystemMapping> =
+  {
+    table: srDsAbpCsgSystemMapping,
+    parseRow(rawRow, ctx) {
+      const csgId = pickField(rawRow, CSG_ID);
+      const systemId = pickField(rawRow, SYSTEM_ID);
+      if (!csgId && !systemId) return null;
+      return { ...buildBaseInsert(rawRow, ctx), csgId, systemId };
+    },
+  };
 
 // ── abpQuickBooksRows ──────────────────────────────────────────────
 
-export const ABP_QUICK_BOOKS_ROWS_PARSER: DatasetUploadParser<InsertSrDsAbpQuickBooksRows> = {
-  table: srDsAbpQuickBooksRows,
-  parseRow(rawRow, ctx) {
-    const invoiceNumber = pickField(rawRow, [
-      ...INVOICE_NUMBER,
-      "Num", // QuickBooks export header
-    ]);
-    if (!invoiceNumber) return null;
-    return { ...buildBaseInsert(rawRow, ctx), invoiceNumber };
-  },
-};
+export const ABP_QUICK_BOOKS_ROWS_PARSER: DatasetUploadParser<InsertSrDsAbpQuickBooksRows> =
+  {
+    table: srDsAbpQuickBooksRows,
+    parseRow(rawRow, ctx) {
+      const invoiceNumber = pickField(rawRow, [
+        ...INVOICE_NUMBER,
+        "Num", // QuickBooks export header
+      ]);
+      if (!invoiceNumber) return null;
+      return { ...buildBaseInsert(rawRow, ctx), invoiceNumber };
+    },
+  };
 
 // ── abpProjectApplicationRows ──────────────────────────────────────
 
-export const ABP_PROJECT_APPLICATION_ROWS_PARSER: DatasetUploadParser<InsertSrDsAbpProjectApplicationRows> = {
-  table: srDsAbpProjectApplicationRows,
-  parseRow(rawRow, ctx) {
-    const applicationId = pickField(rawRow, APPLICATION_ID);
-    if (!applicationId) return null;
-    return {
-      ...buildBaseInsert(rawRow, ctx),
-      applicationId,
-      // These three live as varchar — no coercion. Typed
-      // varchar(32) so over-long strings throw at the DB; the
-      // alias chain catches the most common header variants.
-      inverterSizeKwAcPart1: pickField(rawRow, [
-        "inverterSizeKwAcPart1",
-        "Inverter Size kW AC (Part 1)",
-        "Inverter Size Part 1",
-      ]),
-      part1SubmissionDate: pickField(rawRow, [
-        "part1SubmissionDate",
-        "Part 1 Submission Date",
-        "Part1SubmissionDate",
-      ]),
-      part1OriginalSubmissionDate: pickField(rawRow, [
-        "part1OriginalSubmissionDate",
-        "Part 1 Original Submission Date",
-        "Original Submission Date",
-      ]),
-    };
-  },
-};
+export const ABP_PROJECT_APPLICATION_ROWS_PARSER: DatasetUploadParser<InsertSrDsAbpProjectApplicationRows> =
+  {
+    table: srDsAbpProjectApplicationRows,
+    parseRow(rawRow, ctx) {
+      const applicationId = pickField(rawRow, APPLICATION_ID);
+      if (!applicationId) return null;
+      return {
+        ...buildBaseInsert(rawRow, ctx),
+        applicationId,
+        // These three live as varchar — no coercion. Typed
+        // varchar(32) so over-long strings throw at the DB; the
+        // alias chain catches the most common header variants.
+        inverterSizeKwAcPart1: pickField(rawRow, [
+          "inverterSizeKwAcPart1",
+          "Inverter Size kW AC (Part 1)",
+          "Inverter Size Part 1",
+        ]),
+        part1SubmissionDate: pickField(rawRow, [
+          "part1SubmissionDate",
+          "Part 1 Submission Date",
+          "Part1SubmissionDate",
+        ]),
+        part1OriginalSubmissionDate: pickField(rawRow, [
+          "part1OriginalSubmissionDate",
+          "Part 1 Original Submission Date",
+          "Original Submission Date",
+        ]),
+      };
+    },
+  };
 
 // ── abpPortalInvoiceMapRows ────────────────────────────────────────
 
-export const ABP_PORTAL_INVOICE_MAP_ROWS_PARSER: DatasetUploadParser<InsertSrDsAbpPortalInvoiceMapRows> = {
-  table: srDsAbpPortalInvoiceMapRows,
-  parseRow(rawRow, ctx) {
-    const csgId = pickField(rawRow, CSG_ID);
-    const invoiceNumber = pickField(rawRow, INVOICE_NUMBER);
-    if (!csgId && !invoiceNumber) return null;
-    return { ...buildBaseInsert(rawRow, ctx), csgId, invoiceNumber };
-  },
-};
+export const ABP_PORTAL_INVOICE_MAP_ROWS_PARSER: DatasetUploadParser<InsertSrDsAbpPortalInvoiceMapRows> =
+  {
+    table: srDsAbpPortalInvoiceMapRows,
+    parseRow(rawRow, ctx) {
+      const csgId = pickField(rawRow, CSG_ID);
+      const invoiceNumber = pickField(rawRow, INVOICE_NUMBER);
+      if (!csgId && !invoiceNumber) return null;
+      return { ...buildBaseInsert(rawRow, ctx), csgId, invoiceNumber };
+    },
+  };
 
 // ── abpCsgPortalDatabaseRows ───────────────────────────────────────
 
-export const ABP_CSG_PORTAL_DATABASE_ROWS_PARSER: DatasetUploadParser<InsertSrDsAbpCsgPortalDatabaseRows> = {
-  table: srDsAbpCsgPortalDatabaseRows,
-  parseRow(rawRow, ctx) {
-    const systemId = pickField(rawRow, SYSTEM_ID);
-    const csgId = pickField(rawRow, CSG_ID);
-    if (!systemId && !csgId) return null;
-    return { ...buildBaseInsert(rawRow, ctx), systemId, csgId };
-  },
-};
+export const ABP_CSG_PORTAL_DATABASE_ROWS_PARSER: DatasetUploadParser<InsertSrDsAbpCsgPortalDatabaseRows> =
+  {
+    table: srDsAbpCsgPortalDatabaseRows,
+    parseRow(rawRow, ctx) {
+      const systemId = pickField(rawRow, SYSTEM_ID);
+      const csgId = pickField(rawRow, CSG_ID);
+      if (!systemId && !csgId) return null;
+      return { ...buildBaseInsert(rawRow, ctx), systemId, csgId };
+    },
+  };
 
 // ── abpIccReport2Rows ──────────────────────────────────────────────
 
-export const ABP_ICC_REPORT_2_ROWS_PARSER: DatasetUploadParser<InsertSrDsAbpIccReport2Rows> = {
-  table: srDsAbpIccReport2Rows,
-  parseRow(rawRow, ctx) {
-    const applicationId = pickField(rawRow, APPLICATION_ID);
-    if (!applicationId) return null;
-    return { ...buildBaseInsert(rawRow, ctx), applicationId };
-  },
-};
+export const ABP_ICC_REPORT_2_ROWS_PARSER: DatasetUploadParser<InsertSrDsAbpIccReport2Rows> =
+  {
+    table: srDsAbpIccReport2Rows,
+    parseRow(rawRow, ctx) {
+      const applicationId = pickField(rawRow, APPLICATION_ID);
+      if (!applicationId) return null;
+      return { ...buildBaseInsert(rawRow, ctx), applicationId };
+    },
+  };
 
 // ── abpIccReport3Rows ──────────────────────────────────────────────
 
-export const ABP_ICC_REPORT_3_ROWS_PARSER: DatasetUploadParser<InsertSrDsAbpIccReport3Rows> = {
-  table: srDsAbpIccReport3Rows,
-  parseRow(rawRow, ctx) {
-    const applicationId = pickField(rawRow, APPLICATION_ID);
-    if (!applicationId) return null;
-    return { ...buildBaseInsert(rawRow, ctx), applicationId };
-  },
-};
+export const ABP_ICC_REPORT_3_ROWS_PARSER: DatasetUploadParser<InsertSrDsAbpIccReport3Rows> =
+  {
+    table: srDsAbpIccReport3Rows,
+    parseRow(rawRow, ctx) {
+      const applicationId = pickField(rawRow, APPLICATION_ID);
+      if (!applicationId) return null;
+      return { ...buildBaseInsert(rawRow, ctx), applicationId };
+    },
+  };
 
 // ── transferHistory ────────────────────────────────────────────────
 
-export const TRANSFER_HISTORY_PARSER: DatasetUploadParser<InsertSrDsTransferHistory> = {
-  table: srDsTransferHistory,
-  parseRow(rawRow, ctx) {
-    const transactionId = pickField(rawRow, [
-      "transactionId",
-      "Transaction ID",
-      "transaction_id",
-      "Txn ID",
-    ]);
-    const unitId = pickField(rawRow, UNIT_ID);
-    if (!transactionId && !unitId) return null;
-    return {
-      ...buildBaseInsert(rawRow, ctx),
-      transactionId,
-      unitId,
-      transferCompletionDate: pickField(rawRow, [
-        "transferCompletionDate",
-        "Transfer Completion Date",
-        "Completion Date",
-      ]),
-      quantity: pickNumber(rawRow, [
-        "quantity",
-        "Quantity",
-        "Qty",
-      ]),
-      transferor: pickField(rawRow, ["transferor", "Transferor", "From"]),
-      transferee: pickField(rawRow, ["transferee", "Transferee", "To"]),
-    };
-  },
-};
+export const TRANSFER_HISTORY_PARSER: DatasetUploadParser<InsertSrDsTransferHistory> =
+  {
+    table: srDsTransferHistory,
+    parseRow(rawRow, ctx) {
+      const transactionId = pickField(rawRow, [
+        "transactionId",
+        "Transaction ID",
+        "transaction_id",
+        "Txn ID",
+      ]);
+      const unitId = pickField(rawRow, UNIT_ID);
+      if (!transactionId && !unitId) return null;
+      return {
+        ...buildBaseInsert(rawRow, ctx),
+        transactionId,
+        unitId,
+        transferCompletionDate: pickField(rawRow, [
+          "transferCompletionDate",
+          "Transfer Completion Date",
+          "Completion Date",
+        ]),
+        quantity: pickNumber(rawRow, ["quantity", "Quantity", "Qty"]),
+        transferor: pickField(rawRow, ["transferor", "Transferor", "From"]),
+        transferee: pickField(rawRow, ["transferee", "Transferee", "To"]),
+      };
+    },
+  };
 
 // ── Registry ───────────────────────────────────────────────────────
 
@@ -689,18 +740,28 @@ const PARSERS: Record<DatasetKey, DatasetUploadParser<unknown> | null> = {
   solarApplications: SOLAR_APPLICATIONS_PARSER as DatasetUploadParser<unknown>,
   abpReport: ABP_REPORT_PARSER as DatasetUploadParser<unknown>,
   generationEntry: GENERATION_ENTRY_PARSER as DatasetUploadParser<unknown>,
-  accountSolarGeneration: ACCOUNT_SOLAR_GENERATION_PARSER as DatasetUploadParser<unknown>,
+  accountSolarGeneration:
+    ACCOUNT_SOLAR_GENERATION_PARSER as DatasetUploadParser<unknown>,
   convertedReads: CONVERTED_READS_PARSER as DatasetUploadParser<unknown>,
-  annualProductionEstimates: ANNUAL_PRODUCTION_ESTIMATES_PARSER as DatasetUploadParser<unknown>,
+  annualProductionEstimates:
+    ANNUAL_PRODUCTION_ESTIMATES_PARSER as DatasetUploadParser<unknown>,
   generatorDetails: GENERATOR_DETAILS_PARSER as DatasetUploadParser<unknown>,
-  abpUtilityInvoiceRows: ABP_UTILITY_INVOICE_ROWS_PARSER as DatasetUploadParser<unknown>,
-  abpCsgSystemMapping: ABP_CSG_SYSTEM_MAPPING_PARSER as DatasetUploadParser<unknown>,
-  abpQuickBooksRows: ABP_QUICK_BOOKS_ROWS_PARSER as DatasetUploadParser<unknown>,
-  abpProjectApplicationRows: ABP_PROJECT_APPLICATION_ROWS_PARSER as DatasetUploadParser<unknown>,
-  abpPortalInvoiceMapRows: ABP_PORTAL_INVOICE_MAP_ROWS_PARSER as DatasetUploadParser<unknown>,
-  abpCsgPortalDatabaseRows: ABP_CSG_PORTAL_DATABASE_ROWS_PARSER as DatasetUploadParser<unknown>,
-  abpIccReport2Rows: ABP_ICC_REPORT_2_ROWS_PARSER as DatasetUploadParser<unknown>,
-  abpIccReport3Rows: ABP_ICC_REPORT_3_ROWS_PARSER as DatasetUploadParser<unknown>,
+  abpUtilityInvoiceRows:
+    ABP_UTILITY_INVOICE_ROWS_PARSER as DatasetUploadParser<unknown>,
+  abpCsgSystemMapping:
+    ABP_CSG_SYSTEM_MAPPING_PARSER as DatasetUploadParser<unknown>,
+  abpQuickBooksRows:
+    ABP_QUICK_BOOKS_ROWS_PARSER as DatasetUploadParser<unknown>,
+  abpProjectApplicationRows:
+    ABP_PROJECT_APPLICATION_ROWS_PARSER as DatasetUploadParser<unknown>,
+  abpPortalInvoiceMapRows:
+    ABP_PORTAL_INVOICE_MAP_ROWS_PARSER as DatasetUploadParser<unknown>,
+  abpCsgPortalDatabaseRows:
+    ABP_CSG_PORTAL_DATABASE_ROWS_PARSER as DatasetUploadParser<unknown>,
+  abpIccReport2Rows:
+    ABP_ICC_REPORT_2_ROWS_PARSER as DatasetUploadParser<unknown>,
+  abpIccReport3Rows:
+    ABP_ICC_REPORT_3_ROWS_PARSER as DatasetUploadParser<unknown>,
   transferHistory: TRANSFER_HISTORY_PARSER as DatasetUploadParser<unknown>,
   // `deliveryScheduleBase` stays null — it's populated by the
   // Schedule B PDF scanner on the Delivery Tracker tab, not a
@@ -727,6 +788,6 @@ export function getDatasetParser(
  */
 export function listImplementedDatasetParsers(): DatasetKey[] {
   return (Object.keys(PARSERS) as DatasetKey[]).filter(
-    (key) => PARSERS[key] != null
+    key => PARSERS[key] != null
   );
 }

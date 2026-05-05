@@ -32,9 +32,9 @@ describe("pickField", () => {
   });
 
   it("falls through to the next alias when the first is empty", () => {
-    expect(pickField({ id: "", systemId: "fallback" }, ["id", "systemId"])).toBe(
-      "fallback"
-    );
+    expect(
+      pickField({ id: "", systemId: "fallback" }, ["id", "systemId"])
+    ).toBe("fallback");
   });
 
   it("matches case-insensitively on the second-pass scan", () => {
@@ -67,10 +67,9 @@ describe("pickField", () => {
   describe("header separator normalization", () => {
     it("matches snake_case CSV header against space-separated alias", () => {
       expect(
-        pickField(
-          { Part_2_App_Verification_Date: "2024-12-01" },
-          ["Part 2 App Verification Date"]
-        )
+        pickField({ Part_2_App_Verification_Date: "2024-12-01" }, [
+          "Part 2 App Verification Date",
+        ])
       ).toBe("2024-12-01");
     });
 
@@ -82,10 +81,9 @@ describe("pickField", () => {
 
     it("matches snake_case CSV against snake_case alias (degenerate stays passing)", () => {
       expect(
-        pickField(
-          { state_certification_number: "X123" },
-          ["state_certification_number"]
-        )
+        pickField({ state_certification_number: "X123" }, [
+          "state_certification_number",
+        ])
       ).toBe("X123");
     });
 
@@ -116,9 +114,9 @@ describe("pickField", () => {
           "Part 2 Verification Date",
         ])
       ).toBe("2024-12-01 17:32:11.566");
-      expect(
-        pickField(row, ["inverterSizeKwAc", "Inverter Size kW AC"])
-      ).toBe("7.5");
+      expect(pickField(row, ["inverterSizeKwAc", "Inverter Size kW AC"])).toBe(
+        "7.5"
+      );
     });
   });
 });
@@ -292,6 +290,37 @@ describe("SOLAR_APPLICATIONS_PARSER", () => {
     expect(rawParsed.installerName).toBe("Acme");
   });
 
+  it("parses CSG portal-style snake_case Solar Applications headers", () => {
+    const out = SOLAR_APPLICATIONS_PARSER.parseRow(
+      {
+        system_id: "113639",
+        system_name: "Portal Site",
+        tracking_system_ref_id: "NON447861",
+        installed_system_size_kw_ac: "15",
+        installed_system_size_kw_dc: "18.4",
+        total_contract_amount: "$25,664.73",
+        contract_type: "IL ABP",
+        "partnerCompany.name": "Portal Installer",
+        system_county: "Boone",
+        system_state: "IL",
+        system_zip: "61065",
+      },
+      baseCtx
+    );
+
+    expect(out!.systemId).toBe("113639");
+    expect(out!.systemName).toBe("Portal Site");
+    expect(out!.trackingSystemRefId).toBe("NON447861");
+    expect(out!.installedKwAc).toBe(15);
+    expect(out!.installedKwDc).toBe(18.4);
+    expect(out!.totalContractAmount).toBe(25664.73);
+    expect(out!.contractType).toBe("IL ABP");
+    expect(out!.installerName).toBe("Portal Installer");
+    expect(out!.county).toBe("Boone");
+    expect(out!.state).toBe("IL");
+    expect(out!.zipCode).toBe("61065");
+  });
+
   it("returns null for blank rows", () => {
     expect(SOLAR_APPLICATIONS_PARSER.parseRow({}, baseCtx)).toBeNull();
   });
@@ -310,6 +339,21 @@ describe("ABP_REPORT_PARSER", () => {
     expect(out!.applicationId).toBe("APP-9");
     expect(out!.projectName).toBe("Sunny Acres");
     expect(out!.inverterSizeKwAc).toBe(8.2);
+  });
+
+  it("parses Part II ABP inverter size headers", () => {
+    const out = ABP_REPORT_PARSER.parseRow(
+      {
+        Application_ID: "APP-9",
+        Project_Name: "Sunny Acres",
+        Inverter_Size_kW_AC_Part_2: "7.6",
+      },
+      baseCtx
+    );
+
+    expect(out!.applicationId).toBe("APP-9");
+    expect(out!.projectName).toBe("Sunny Acres");
+    expect(out!.inverterSizeKwAc).toBe(7.6);
   });
 
   it("returns null for empty rows", () => {
@@ -414,9 +458,7 @@ describe("GENERATOR_DETAILS_PARSER", () => {
 
 describe("ABP_UTILITY_INVOICE_ROWS_PARSER", () => {
   it("requires a systemId", () => {
-    expect(
-      ABP_UTILITY_INVOICE_ROWS_PARSER.parseRow({}, baseCtx)
-    ).toBeNull();
+    expect(ABP_UTILITY_INVOICE_ROWS_PARSER.parseRow({}, baseCtx)).toBeNull();
     const out = ABP_UTILITY_INVOICE_ROWS_PARSER.parseRow(
       { "System ID": "SYS-1", paymentNumber: "5" },
       baseCtx

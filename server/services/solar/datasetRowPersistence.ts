@@ -141,31 +141,60 @@ const persistSolarApplications: DatasetInserter = async (
   rows,
   options
 ) => {
-  const values = rows.map((row) => ({
+  const values = rows.map(row => ({
     id: nanoid(),
     scopeId,
     batchId,
     applicationId: clip(pick(row, "Application_ID", "system_id"), 64),
     systemId: clip(pick(row, "system_id"), 64),
     trackingSystemRefId: clip(
-      pick(row, "tracking_system_ref_id", "PJM_GATS_or_MRETS_Unit_ID_Part_2"),
+      pick(
+        row,
+        "tracking_system_ref_id",
+        "reporting_entity_ref_id",
+        "PJM_GATS_or_MRETS_Unit_ID_Part_2"
+      ),
       64
     ),
-    stateCertificationNumber: clip(
-      pick(row, "state_certification_number"),
-      64
-    ),
+    stateCertificationNumber: clip(pick(row, "state_certification_number"), 64),
     systemName: clip(pick(row, "system_name", "Project_Name"), 255),
-    installedKwAc: parseNum(row.installed_system_size_kw_ac),
-    installedKwDc: parseNum(row.installed_system_size_kw_dc),
+    installedKwAc: parseNum(
+      pick(
+        row,
+        "installed_system_size_kw_ac",
+        "planned_system_size_kw_ac",
+        "financialDetail.contract_kw_ac",
+        "Inverter_Size_kW_AC_Part_2",
+        "Inverter_Size_kW_AC_Part_1"
+      )
+    ),
+    installedKwDc: parseNum(
+      pick(
+        row,
+        "installed_system_size_kw_dc",
+        "planned_system_size_kw_dc",
+        "financialDetail.contract_kw_dc",
+        "Inverter_Size_kW_DC_Part_2",
+        "Inverter_Size_kW_DC_Part_1"
+      )
+    ),
     recPrice: parseNum(row.rec_price),
     totalContractAmount: parseNum(row.total_contract_amount),
     annualRecs: parseNum(row.annual_recs),
     contractType: clip(pick(row, "contract_type"), 128),
-    installerName: clip(pick(row, "installer_name"), 255),
-    county: clip(pick(row, "county"), 128),
-    state: clip(pick(row, "state"), 64),
-    zipCode: clip(pick(row, "zip_code"), 16),
+    installerName: clip(
+      pick(
+        row,
+        "installer_name",
+        "installer_company_name",
+        "partnerCompany.name",
+        "system_installer"
+      ),
+      255
+    ),
+    county: clip(pick(row, "county", "system_county"), 128),
+    state: clip(pick(row, "state", "system_state"), 64),
+    zipCode: clip(pick(row, "zip_code", "system_zip"), 16),
     rawRow: JSON.stringify(row),
   }));
   return chunkedInsert(
@@ -182,7 +211,7 @@ const persistAbpReport: DatasetInserter = async (
   rows,
   options
 ) => {
-  const values = rows.map((row) => ({
+  const values = rows.map(row => ({
     id: nanoid(),
     scopeId,
     batchId,
@@ -198,7 +227,13 @@ const persistAbpReport: DatasetInserter = async (
       32
     ),
     inverterSizeKwAc: parseNum(
-      row.inverter_size_kw_ac ?? row.Inverter_Size_kW_AC
+      pick(
+        row,
+        "inverter_size_kw_ac",
+        "Inverter_Size_kW_AC",
+        "Inverter_Size_kW_AC_Part_2",
+        "Inverter_Size_kW_AC_Part_1"
+      )
     ),
     rawRow: JSON.stringify(row),
   }));
@@ -211,7 +246,7 @@ const persistGenerationEntry: DatasetInserter = async (
   rows,
   options
 ) => {
-  const values = rows.map((row) => ({
+  const values = rows.map(row => ({
     id: nanoid(),
     scopeId,
     batchId,
@@ -224,19 +259,17 @@ const persistGenerationEntry: DatasetInserter = async (
       pick(row, "online_monitoring_access_type"),
       64
     ),
-    onlineMonitoringSystemId: clip(pick(row, "online_monitoring_system_id"), 255),
+    onlineMonitoringSystemId: clip(
+      pick(row, "online_monitoring_system_id"),
+      255
+    ),
     onlineMonitoringSystemName: clip(
       pick(row, "online_monitoring_system_name"),
       255
     ),
     rawRow: JSON.stringify(row),
   }));
-  return chunkedInsert(
-    srDsGenerationEntry,
-    values,
-    "generationEntry",
-    options
-  );
+  return chunkedInsert(srDsGenerationEntry, values, "generationEntry", options);
 };
 
 const persistAccountSolarGeneration: DatasetInserter = async (
@@ -245,7 +278,7 @@ const persistAccountSolarGeneration: DatasetInserter = async (
   rows,
   options
 ) => {
-  const values = rows.map((row) => ({
+  const values = rows.map(row => ({
     id: nanoid(),
     scopeId,
     batchId,
@@ -270,19 +303,14 @@ const persistContractedDate: DatasetInserter = async (
   rows,
   options
 ) => {
-  const values = rows.map((row) => ({
+  const values = rows.map(row => ({
     id: nanoid(),
     scopeId,
     batchId,
     systemId: clip(pick(row, "id", "system_id"), 64),
     contractedDate: clip(pick(row, "contracted"), 32),
   }));
-  return chunkedInsert(
-    srDsContractedDate,
-    values,
-    "contractedDate",
-    options
-  );
+  return chunkedInsert(srDsContractedDate, values, "contractedDate", options);
 };
 
 const persistDeliverySchedule: DatasetInserter = async (
@@ -291,7 +319,7 @@ const persistDeliverySchedule: DatasetInserter = async (
   rows,
   options
 ) => {
-  const values = rows.map((row) => ({
+  const values = rows.map(row => ({
     id: nanoid(),
     scopeId,
     batchId,
@@ -325,7 +353,7 @@ const persistTransferHistory: DatasetInserter = async (
   rows,
   options
 ) => {
-  const values = rows.map((row) => ({
+  const values = rows.map(row => ({
     id: nanoid(),
     scopeId,
     batchId,
@@ -340,12 +368,7 @@ const persistTransferHistory: DatasetInserter = async (
     transferee: clip(pick(row, "Transferee", "transferee"), 255),
     rawRow: JSON.stringify(row),
   }));
-  return chunkedInsert(
-    srDsTransferHistory,
-    values,
-    "transferHistory",
-    options
-  );
+  return chunkedInsert(srDsTransferHistory, values, "transferHistory", options);
 };
 
 // Task 5.12 PR-1: generatorDetails is a single-file replace dataset
@@ -359,7 +382,7 @@ const persistGeneratorDetails: DatasetInserter = async (
   rows,
   options
 ) => {
-  const values = rows.map((row) => ({
+  const values = rows.map(row => ({
     id: nanoid(),
     scopeId,
     batchId,
@@ -389,7 +412,7 @@ const persistAbpCsgSystemMapping: DatasetInserter = async (
   rows,
   options
 ) => {
-  const values = rows.map((row) => ({
+  const values = rows.map(row => ({
     id: nanoid(),
     scopeId,
     batchId,
@@ -418,7 +441,7 @@ const persistAbpProjectApplicationRows: DatasetInserter = async (
   rows,
   options
 ) => {
-  const values = rows.map((row) => ({
+  const values = rows.map(row => ({
     id: nanoid(),
     scopeId,
     batchId,
@@ -461,7 +484,7 @@ const persistAbpPortalInvoiceMapRows: DatasetInserter = async (
   rows,
   options
 ) => {
-  const values = rows.map((row) => ({
+  const values = rows.map(row => ({
     id: nanoid(),
     scopeId,
     batchId,
@@ -495,7 +518,7 @@ const persistAbpCsgPortalDatabaseRows: DatasetInserter = async (
   rows,
   options
 ) => {
-  const values = rows.map((row) => ({
+  const values = rows.map(row => ({
     id: nanoid(),
     scopeId,
     batchId,
@@ -526,7 +549,7 @@ const persistAbpQuickBooksRows: DatasetInserter = async (
   rows,
   options
 ) => {
-  const values = rows.map((row) => ({
+  const values = rows.map(row => ({
     id: nanoid(),
     scopeId,
     batchId,
@@ -559,7 +582,7 @@ const persistAbpUtilityInvoiceRows: DatasetInserter = async (
   rows,
   options
 ) => {
-  const values = rows.map((row) => ({
+  const values = rows.map(row => ({
     id: nanoid(),
     scopeId,
     batchId,
@@ -597,7 +620,7 @@ const persistAnnualProductionEstimates: DatasetInserter = async (
 ) => {
   const monthValue = (row: CsvRow, label: string): number | null =>
     parseNum(row[label] ?? row[label.toLowerCase()]);
-  const values = rows.map((row) => ({
+  const values = rows.map(row => ({
     id: nanoid(),
     scopeId,
     batchId,
@@ -644,12 +667,18 @@ const persistAbpIccReport2Rows: DatasetInserter = async (
   rows,
   options
 ) => {
-  const values = rows.map((row) => ({
+  const values = rows.map(row => ({
     id: nanoid(),
     scopeId,
     batchId,
     applicationId: clip(
-      pick(row, "applicationId", "Application ID", "Application_ID", "application_id"),
+      pick(
+        row,
+        "applicationId",
+        "Application ID",
+        "Application_ID",
+        "application_id"
+      ),
       64
     ),
     rawRow: JSON.stringify(row),
@@ -668,12 +697,18 @@ const persistAbpIccReport3Rows: DatasetInserter = async (
   rows,
   options
 ) => {
-  const values = rows.map((row) => ({
+  const values = rows.map(row => ({
     id: nanoid(),
     scopeId,
     batchId,
     applicationId: clip(
-      pick(row, "applicationId", "Application ID", "Application_ID", "application_id"),
+      pick(
+        row,
+        "applicationId",
+        "Application ID",
+        "Application_ID",
+        "application_id"
+      ),
       64
     ),
     rawRow: JSON.stringify(row),
@@ -700,7 +735,7 @@ const persistConvertedReads: DatasetInserter = async (
   rows,
   options
 ) => {
-  const values = rows.map((row) => ({
+  const values = rows.map(row => ({
     id: nanoid(),
     scopeId,
     batchId,
@@ -711,12 +746,7 @@ const persistConvertedReads: DatasetInserter = async (
     readDate: clip(pick(row, "read_date"), 32),
     rawRow: JSON.stringify(row),
   }));
-  return chunkedInsert(
-    srDsConvertedReads,
-    values,
-    "convertedReads",
-    options
-  );
+  return chunkedInsert(srDsConvertedReads, values, "convertedReads", options);
 };
 
 // ---------------------------------------------------------------------------
@@ -790,7 +820,8 @@ const accountSolarGenerationRowExists: AppendRowChecker = async (
       db
         .select({ id: srDsAccountSolarGeneration.id })
         .from(srDsAccountSolarGeneration)
-        .where(sql`
+        .where(
+          sql`
           ${srDsAccountSolarGeneration.scopeId} = ${scopeId}
           AND ${srDsAccountSolarGeneration.batchId} = ${batchId}
           AND ${srDsAccountSolarGeneration.gatsGenId} <=> ${gatsGenId}
@@ -798,7 +829,8 @@ const accountSolarGenerationRowExists: AppendRowChecker = async (
           AND ${srDsAccountSolarGeneration.monthOfGeneration} <=> ${monthOfGeneration}
           AND ${srDsAccountSolarGeneration.lastMeterReadDate} <=> ${lastMeterReadDate}
           AND ${srDsAccountSolarGeneration.lastMeterReadKwh} <=> ${lastMeterReadKwh}
-        `)
+        `
+        )
         .limit(1)
   );
 
@@ -836,11 +868,13 @@ const transferHistoryRowExists: AppendRowChecker = async (
         db
           .select({ id: srDsTransferHistory.id })
           .from(srDsTransferHistory)
-          .where(sql`
+          .where(
+            sql`
             ${srDsTransferHistory.scopeId} = ${scopeId}
             AND ${srDsTransferHistory.batchId} = ${batchId}
             AND ${srDsTransferHistory.transactionId} = ${transactionId}
-          `)
+          `
+          )
           .limit(1)
     );
     return rows.length > 0;
@@ -850,14 +884,16 @@ const transferHistoryRowExists: AppendRowChecker = async (
     db
       .select({ id: srDsTransferHistory.id })
       .from(srDsTransferHistory)
-      .where(sql`
+      .where(
+        sql`
         ${srDsTransferHistory.scopeId} = ${scopeId}
         AND ${srDsTransferHistory.batchId} = ${batchId}
         AND ${srDsTransferHistory.transactionId} <=> ${transactionId}
         AND ${srDsTransferHistory.unitId} <=> ${unitId}
         AND ${srDsTransferHistory.transferCompletionDate} <=> ${transferCompletionDate}
         AND ${srDsTransferHistory.quantity} <=> ${quantity}
-      `)
+      `
+      )
       .limit(1)
   );
 
@@ -971,7 +1007,8 @@ const convertedReadsRowExists: AppendRowChecker = async (
     db
       .select({ id: srDsConvertedReads.id })
       .from(srDsConvertedReads)
-      .where(sql`
+      .where(
+        sql`
         ${srDsConvertedReads.scopeId} = ${scopeId}
         AND ${srDsConvertedReads.batchId} = ${batchId}
         AND ${srDsConvertedReads.monitoring} <=> ${monitoring}
@@ -979,7 +1016,8 @@ const convertedReadsRowExists: AppendRowChecker = async (
         AND ${srDsConvertedReads.monitoringSystemName} <=> ${monitoringSystemName}
         AND ${srDsConvertedReads.lifetimeMeterReadWh} <=> ${lifetimeMeterReadWh}
         AND ${srDsConvertedReads.readDate} <=> ${readDate}
-      `)
+      `
+      )
       .limit(1)
   );
 
@@ -1041,7 +1079,7 @@ const BATCH_CLONERS: Record<string, BatchRowCloner> = {
 };
 
 function makeBatchDeleter(tableName: string): BatchRowDeleter {
-  return async (batchId) => {
+  return async batchId => {
     const db = await getDb();
     if (!db) throw new Error("Database not available");
 
@@ -1135,7 +1173,7 @@ function rowKey(datasetKey: string, row: CsvRow): string {
       pick(row, "Last Meter Read Date"),
       pick(row, "Last Meter Read (kWh)"),
     ]
-      .map((v) => (v ?? "").trim().toLowerCase())
+      .map(v => (v ?? "").trim().toLowerCase())
       .join("|");
   }
   if (datasetKey === "transferHistory") {
@@ -1150,15 +1188,10 @@ function rowKey(datasetKey: string, row: CsvRow): string {
     }
     return [
       pick(row, "Unit ID", "unit_id"),
-      pick(
-        row,
-        "Transfer Completion Date",
-        "Transfer Date",
-        "transfer_date"
-      ),
+      pick(row, "Transfer Completion Date", "Transfer Date", "transfer_date"),
       String(parseNum(row.Quantity ?? row.quantity) ?? ""),
     ]
-      .map((v) => (v ?? "").trim().toLowerCase())
+      .map(v => (v ?? "").trim().toLowerCase())
       .join("|");
   }
   if (datasetKey === "convertedReads") {
@@ -1175,7 +1208,7 @@ function rowKey(datasetKey: string, row: CsvRow): string {
       String(parseNum(row.lifetime_meter_read_wh) ?? ""),
       pick(row, "read_date"),
     ]
-      .map((v) => (v ?? "").trim().toLowerCase())
+      .map(v => (v ?? "").trim().toLowerCase())
       .join("|");
   }
   return "";
@@ -1187,10 +1220,7 @@ function rowKey(datasetKey: string, row: CsvRow): string {
  * LHS, CSV header equivalents on the RHS. Keeping both in one file
  * avoids the drift that bit us with the rawRow column-name mismatch.
  */
-function typedRowKey(
-  datasetKey: string,
-  row: Record<string, unknown>
-): string {
+function typedRowKey(datasetKey: string, row: Record<string, unknown>): string {
   const s = (v: unknown): string =>
     v === null || v === undefined ? "" : String(v).trim().toLowerCase();
   if (datasetKey === "accountSolarGeneration") {
@@ -1217,11 +1247,7 @@ function typedRowKey(
         : typeof quantity === "number"
           ? String(quantity)
           : String(quantity).trim().toLowerCase();
-    return [
-      s(row.unitId),
-      s(row.transferCompletionDate),
-      qtyKey,
-    ].join("|");
+    return [s(row.unitId), s(row.transferCompletionDate), qtyKey].join("|");
   }
   if (datasetKey === "convertedReads") {
     // Mirror rowKey above for convertedReads. `lifetimeMeterReadWh`
@@ -1266,22 +1292,20 @@ export async function loadExistingRowKeys(
   if (!db) return new Set();
 
   if (datasetKey === "accountSolarGeneration") {
-    const rows = (await withDbRetry(
-      "load account solar generation keys",
-      () =>
-        db
-          .select({
-            gatsGenId: srDsAccountSolarGeneration.gatsGenId,
-            facilityName: srDsAccountSolarGeneration.facilityName,
-            monthOfGeneration: srDsAccountSolarGeneration.monthOfGeneration,
-            lastMeterReadDate: srDsAccountSolarGeneration.lastMeterReadDate,
-            lastMeterReadKwh: srDsAccountSolarGeneration.lastMeterReadKwh,
-          })
-          .from(srDsAccountSolarGeneration)
-          .where(
-            sql`${srDsAccountSolarGeneration.scopeId} = ${scopeId}
+    const rows = (await withDbRetry("load account solar generation keys", () =>
+      db
+        .select({
+          gatsGenId: srDsAccountSolarGeneration.gatsGenId,
+          facilityName: srDsAccountSolarGeneration.facilityName,
+          monthOfGeneration: srDsAccountSolarGeneration.monthOfGeneration,
+          lastMeterReadDate: srDsAccountSolarGeneration.lastMeterReadDate,
+          lastMeterReadKwh: srDsAccountSolarGeneration.lastMeterReadKwh,
+        })
+        .from(srDsAccountSolarGeneration)
+        .where(
+          sql`${srDsAccountSolarGeneration.scopeId} = ${scopeId}
               AND ${srDsAccountSolarGeneration.batchId} = ${batchId}`
-          )
+        )
     )) as Array<Record<string, unknown>>;
     const set = new Set<string>();
     for (const row of rows) set.add(typedRowKey(datasetKey, row));
