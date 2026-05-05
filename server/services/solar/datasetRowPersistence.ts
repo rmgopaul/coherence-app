@@ -121,6 +121,49 @@ function pickAccountSolarGenerationMeterId(row: CsvRow): string | null {
   return pick(row, ...ACCOUNT_SOLAR_GENERATION_METER_ID_KEYS);
 }
 
+function parseStoredRawRow(rawRow: unknown): CsvRow | null {
+  let value: unknown = rawRow;
+  if (typeof rawRow === "string") {
+    try {
+      value = JSON.parse(rawRow);
+    } catch {
+      return null;
+    }
+  }
+
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+
+  const row: CsvRow = {};
+  for (const [key, fieldValue] of Object.entries(value)) {
+    if (fieldValue === null || fieldValue === undefined) continue;
+    row[key] = String(fieldValue);
+  }
+  return row;
+}
+
+export function buildAccountSolarGenerationStoredRowKey(
+  row: Record<string, unknown>
+): string {
+  const rawRow = parseStoredRawRow(row.rawRow);
+  const meterId =
+    clean(row.meterId) ??
+    (rawRow ? pickAccountSolarGenerationMeterId(rawRow) : null);
+  const lastMeterReadKwh =
+    clean(row.lastMeterReadKwh) ??
+    (rawRow ? pickAccountSolarGenerationLastMeterRead(rawRow) : null);
+
+  return [
+    normalizeKeyPart(row.gatsGenId),
+    normalizeKeyPart(row.facilityName),
+    normalizeKeyPart(row.monthOfGeneration),
+    normalizeKeyPart(row.lastMeterReadDate),
+    normalizeKeyPart(meterId),
+    normalizeKeyPart(lastMeterReadKwh),
+  ].join("|");
+}
+
 type DatasetInserter = (
   scopeId: string,
   batchId: string,
@@ -1428,14 +1471,7 @@ function typedRowKey(datasetKey: string, row: Record<string, unknown>): string {
   const s = (v: unknown): string =>
     v === null || v === undefined ? "" : String(v).trim().toLowerCase();
   if (datasetKey === "accountSolarGeneration") {
-    return [
-      s(row.gatsGenId),
-      s(row.facilityName),
-      s(row.monthOfGeneration),
-      s(row.lastMeterReadDate),
-      s(row.meterId),
-      s(row.lastMeterReadKwh),
-    ].join("|");
+    return buildAccountSolarGenerationStoredRowKey(row);
   }
   if (datasetKey === "transferHistory") {
     // Mirror rowKey above: prefer the Transaction ID alone when
@@ -1512,33 +1548,8 @@ export async function loadExistingRowKeys(
               facilityName,
               monthOfGeneration,
               lastMeterReadDate,
-              CASE
-                WHEN rawRow IS NULL OR JSON_VALID(rawRow) = 0
-                  THEN NULL
-                ELSE COALESCE(
-                  NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT(rawRow, '$."meterId"'))), ''),
-                  NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT(rawRow, '$."Meter ID"'))), ''),
-                  NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT(rawRow, '$."meter_id"'))), ''),
-                  NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT(rawRow, '$."GATS Meter ID"'))), '')
-                )
-              END AS meterId,
-              CASE
-                WHEN lastMeterReadKwh IS NOT NULL
-                  AND TRIM(lastMeterReadKwh) <> ''
-                  THEN lastMeterReadKwh
-                WHEN rawRow IS NULL OR JSON_VALID(rawRow) = 0
-                  THEN lastMeterReadKwh
-                ELSE COALESCE(
-                  NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT(rawRow, '$."lastMeterReadKwh"'))), ''),
-                  NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT(rawRow, '$."Last Meter Read (kWh)"'))), ''),
-                  NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT(rawRow, '$."Last Meter Read (kWh/Btu)"'))), ''),
-                  NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT(rawRow, '$."Last Meter Read (kW)"'))), ''),
-                  NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT(rawRow, '$."Last Meter Read"'))), ''),
-                  NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT(rawRow, '$."Last Meter Read kWh"'))), ''),
-                  NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT(rawRow, '$."Meter Read kWh"'))), ''),
-                  lastMeterReadKwh
-                )
-              END AS lastMeterReadKwh
+              lastMeterReadKwh,
+              rawRow
             FROM srDsAccountSolarGeneration
             WHERE scopeId = ${scopeId}
               AND batchId = ${batchId}
@@ -1658,6 +1669,14 @@ type AccountSolarGenerationCompactionRow = {
   meterId: string | null;
 };
 
+type AccountSolarGenerationCompactionSourceRow = Omit<
+  AccountSolarGenerationCompactionRow,
+  "meterId"
+> & {
+  meterId?: string | null;
+  rawRow?: unknown;
+};
+
 export type AccountSolarGenerationCompactionResult = {
   rowCount: number;
   deletedRows: number;
@@ -1704,16 +1723,7 @@ export async function compactAccountSolarGenerationLatestMeterReads(
             monthOfGeneration,
             lastMeterReadDate,
             createdAt,
-            CASE
-              WHEN rawRow IS NULL OR JSON_VALID(rawRow) = 0
-                THEN NULL
-              ELSE COALESCE(
-                NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT(rawRow, '$."meterId"'))), ''),
-                NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT(rawRow, '$."Meter ID"'))), ''),
-                NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT(rawRow, '$."meter_id"'))), ''),
-                NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT(rawRow, '$."GATS Meter ID"'))), '')
-              )
-            END AS meterId
+            rawRow
           FROM srDsAccountSolarGeneration
           WHERE scopeId = ${scopeId}
             AND batchId = ${batchId}
@@ -1722,11 +1732,12 @@ export async function compactAccountSolarGenerationLatestMeterReads(
           LIMIT ${APPEND_PREP_PAGE_SIZE}
         `)
     );
-    const rows: AccountSolarGenerationCompactionRow[] =
-      extractExecuteRows<AccountSolarGenerationCompactionRow>(result);
+    const rows =
+      extractExecuteRows<AccountSolarGenerationCompactionSourceRow>(result);
     if (rows.length === 0) break;
 
-    for (const row of rows) {
+    for (const sourceRow of rows) {
+      const row = toAccountSolarGenerationCompactionRow(sourceRow);
       scannedRows += 1;
       const identity = accountSolarGenerationMeterIdentity(row);
       if (!identity) continue;
@@ -1779,6 +1790,25 @@ export async function compactAccountSolarGenerationLatestMeterReads(
   }
 
   return { rowCount: scannedRows - deletedRows, deletedRows };
+}
+
+function toAccountSolarGenerationCompactionRow(
+  row: AccountSolarGenerationCompactionSourceRow
+): AccountSolarGenerationCompactionRow {
+  const rawRow = parseStoredRawRow(row.rawRow);
+  const meterId =
+    clean(row.meterId) ??
+    (rawRow ? pickAccountSolarGenerationMeterId(rawRow) : null);
+
+  return {
+    id: row.id,
+    gatsGenId: row.gatsGenId,
+    facilityName: row.facilityName,
+    monthOfGeneration: row.monthOfGeneration,
+    lastMeterReadDate: row.lastMeterReadDate,
+    createdAt: row.createdAt,
+    meterId,
+  };
 }
 
 function accountSolarGenerationMeterIdentity(
