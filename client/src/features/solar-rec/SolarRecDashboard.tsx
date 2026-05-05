@@ -5026,25 +5026,37 @@ export default function SolarRecDashboard() {
   ]);
 
   const part2FilterAudit = useMemo(() => {
-    const totalAbpRows = datasetSummariesByKey['abpReport']?.rowCount ?? 0;
-    const part2Rows =
-      slimSummary?.part2VerifiedAbpRowsCount ??
-      offlineMonitoringQuery.data?.part2VerifiedAbpRowsCount ?? 0;
-    const part2UniqueSystems =
-      slimSummary?.abpEligibleTotalSystemsCount ??
-      offlineMonitoringQuery.data?.abpEligibleTotalSystemsCount ??
-      abpEligibleTotalSystems;
-    const scopedSystems =
-      slimSummary?.part2VerifiedSystems ??
-      part2EligibleSystemsForSizeReporting.length;
-    const excludedRows = Math.max(0, totalAbpRows - part2Rows);
+    const totalAbpRows = datasetSummariesByKey["abpReport"]?.rowCount ?? 0;
+    const hasPart2SummaryCounts = Boolean(
+      slimSummary || offlineMonitoringQuery.data
+    );
+    const part2Rows = hasPart2SummaryCounts
+      ? (slimSummary?.part2VerifiedAbpRowsCount ??
+        offlineMonitoringQuery.data?.part2VerifiedAbpRowsCount ??
+        null)
+      : null;
+    const part2UniqueSystems = hasPart2SummaryCounts
+      ? (slimSummary?.abpEligibleTotalSystemsCount ??
+        offlineMonitoringQuery.data?.abpEligibleTotalSystemsCount ??
+        abpEligibleTotalSystems)
+      : null;
+    const scopedSystems = hasPart2SummaryCounts
+      ? (slimSummary?.part2VerifiedSystems ??
+        part2EligibleSystemsForSizeReporting.length)
+      : null;
+    const excludedRows =
+      part2Rows === null ? null : Math.max(0, totalAbpRows - part2Rows);
     return {
       totalAbpRows,
+      hasPart2SummaryCounts,
       part2Rows,
       excludedRows,
       part2UniqueSystems,
       scopedSystems,
-      scopedCoveragePercent: toPercentValue(scopedSystems, part2UniqueSystems),
+      scopedCoveragePercent:
+        scopedSystems === null || part2UniqueSystems === null
+          ? null
+          : toPercentValue(scopedSystems, part2UniqueSystems),
     };
   }, [
     abpEligibleTotalSystems,
@@ -5512,13 +5524,28 @@ const aiDataContext = useMemo(() => {
               <div className="rounded-md border border-sky-300 bg-sky-50 px-3 py-2">
                 <p className="text-xs uppercase tracking-wide text-slate-500">Part II Filter QA</p>
                 <p className="text-sm font-semibold text-slate-900">
-                  {formatNumber(part2FilterAudit.scopedSystems)} / {formatNumber(part2FilterAudit.part2UniqueSystems)} systems mapped
+                  {part2FilterAudit.hasPart2SummaryCounts
+                    ? `${formatNumber(part2FilterAudit.scopedSystems)} / ${formatNumber(
+                        part2FilterAudit.part2UniqueSystems
+                      )} systems mapped`
+                    : dashboardSummaryQuery.isError
+                      ? "Summary unavailable"
+                      : "Loading summary..."}
                 </p>
                 <p className="mt-1 text-xs text-slate-700">
-                  Coverage: {formatPercent(part2FilterAudit.scopedCoveragePercent)}
+                  Coverage:{" "}
+                  {part2FilterAudit.scopedCoveragePercent === null
+                    ? "N/A"
+                    : formatPercent(part2FilterAudit.scopedCoveragePercent)}
                 </p>
                 <p className="text-xs text-slate-700">
-                  Rows: {formatNumber(part2FilterAudit.part2Rows)} Part II, {formatNumber(part2FilterAudit.excludedRows)} excluded
+                  {part2FilterAudit.hasPart2SummaryCounts
+                    ? `Rows: ${formatNumber(
+                        part2FilterAudit.part2Rows
+                      )} Part II, ${formatNumber(
+                        part2FilterAudit.excludedRows
+                      )} excluded`
+                    : `Rows: ${formatNumber(part2FilterAudit.totalAbpRows)} ABP loaded; Part II pending`}
                 </p>
               </div>
               <div className={`rounded-md border px-3 py-2 xl:col-span-2 ${
