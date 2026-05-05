@@ -81,6 +81,20 @@ function pick(row: CsvRow, ...keys: string[]): string | null {
   return null;
 }
 
+const ACCOUNT_SOLAR_GENERATION_LAST_METER_READ_KEYS = [
+  "lastMeterReadKwh",
+  "Last Meter Read (kWh)",
+  "Last Meter Read (kWh/Btu)",
+  "Last Meter Read (kW)",
+  "Last Meter Read",
+  "Last Meter Read kWh",
+  "Meter Read kWh",
+] as const;
+
+function pickAccountSolarGenerationLastMeterRead(row: CsvRow): string | null {
+  return pick(row, ...ACCOUNT_SOLAR_GENERATION_LAST_METER_READ_KEYS);
+}
+
 type DatasetInserter = (
   scopeId: string,
   batchId: string,
@@ -304,7 +318,7 @@ const persistAccountSolarGeneration: DatasetInserter = async (
     facilityName: clip(pick(row, "Facility Name"), 255),
     monthOfGeneration: clip(pick(row, "Month of Generation"), 32),
     lastMeterReadDate: clip(pick(row, "Last Meter Read Date"), 32),
-    lastMeterReadKwh: clip(pick(row, "Last Meter Read (kWh)"), 64),
+    lastMeterReadKwh: clip(pickAccountSolarGenerationLastMeterRead(row), 64),
     rawRow: JSON.stringify(row),
   }));
   return chunkedInsert(
@@ -830,7 +844,10 @@ const accountSolarGenerationRowExists: AppendRowChecker = async (
   const facilityName = clip(pick(row, "Facility Name"), 255);
   const monthOfGeneration = clip(pick(row, "Month of Generation"), 32);
   const lastMeterReadDate = clip(pick(row, "Last Meter Read Date"), 32);
-  const lastMeterReadKwh = clip(pick(row, "Last Meter Read (kWh)"), 64);
+  const lastMeterReadKwh = clip(
+    pickAccountSolarGenerationLastMeterRead(row),
+    64
+  );
 
   const rows = await withDbRetry(
     "check account solar generation append row",
@@ -1227,7 +1244,7 @@ function rowKey(datasetKey: string, row: CsvRow): string {
       pick(row, "Facility Name"),
       pick(row, "Month of Generation"),
       pick(row, "Last Meter Read Date"),
-      pick(row, "Last Meter Read (kWh)"),
+      pickAccountSolarGenerationLastMeterRead(row),
     ]
       .map(v => (v ?? "").trim().toLowerCase())
       .join("|");
@@ -1361,7 +1378,23 @@ export async function loadExistingRowKeys(
               facilityName,
               monthOfGeneration,
               lastMeterReadDate,
-              lastMeterReadKwh
+              CASE
+                WHEN lastMeterReadKwh IS NOT NULL
+                  AND TRIM(lastMeterReadKwh) <> ''
+                  THEN lastMeterReadKwh
+                WHEN rawRow IS NULL OR JSON_VALID(rawRow) = 0
+                  THEN lastMeterReadKwh
+                ELSE COALESCE(
+                  NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT(rawRow, '$."lastMeterReadKwh"'))), ''),
+                  NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT(rawRow, '$."Last Meter Read (kWh)"'))), ''),
+                  NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT(rawRow, '$."Last Meter Read (kWh/Btu)"'))), ''),
+                  NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT(rawRow, '$."Last Meter Read (kW)"'))), ''),
+                  NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT(rawRow, '$."Last Meter Read"'))), ''),
+                  NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT(rawRow, '$."Last Meter Read kWh"'))), ''),
+                  NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT(rawRow, '$."Meter Read kWh"'))), ''),
+                  lastMeterReadKwh
+                )
+              END AS lastMeterReadKwh
             FROM srDsAccountSolarGeneration
             WHERE scopeId = ${scopeId}
               AND batchId = ${batchId}
