@@ -3401,18 +3401,30 @@ export async function getTeslaPowerhubGroupProductionMetricsCached(
 //   here breaks every downstream path. Outcomes: 200+JSON / non-OK /
 //   wrong content-type / timeout / external abort / network error.
 //
-// Slice 4b (this PR): adds the 3 URL-candidate iterators that wrap
+// Slice 4b (#402): adds the 3 URL-candidate iterators that wrap
 //   `fetchJsonWithBearerToken` — `fetchAccessibleSites`,
-//   `fetchAccessibleGroups`, `fetchGroupSites`. They share an
-//   identical shape: build N candidate URLs, try each, return the
-//   first non-empty success (with `resolvedEndpointUrl` so callers
-//   know which URL won), accumulate diagnostics on failure /
-//   empty-but-200, return empty result + diagnostics if all URLs
-//   fail. `fetchAccessibleGroups` also has an early-return path for
-//   when `endpointUrl` already encodes a group ID — no fetch needed.
+//   `fetchAccessibleGroups`, `fetchGroupSites`. Shared shape: build
+//   N candidate URLs, try each, return first non-empty success,
+//   accumulate diagnostics, return empty result if all fail.
+//   `fetchAccessibleGroups` also has an early-return for endpointUrl
+//   that already encodes a group ID.
 //
-// Still to come: telemetry window totals
-// (`getTeslaPowerhubProductionMetrics` → `fetchTelemetryWindowTotals`).
+// Slice 4c PR-A (this PR): adds `fetchSingleSiteTelemetryTotal` —
+//   the simplest telemetry entry. Single fetch (or two, if a
+//   fallback signal is configured) against `/telemetry/history`.
+//   Builds the URL with the canonical query-string params
+//   (`target_id`, `signals`, `start_datetime`, `end_datetime`,
+//   `period`, `rollup`, `fill`), parses the cumulative-meter
+//   payload via `computeSiteDeltasByTelemetryPayload` to derive a
+//   max-min delta in kWh. Primary→fallback signal logic exists so a
+//   site with `solar_energy_exported_rgm` (RGM meter) can fall back
+//   to `solar_energy_exported` (inverter) when the RGM signal is
+//   absent or returns a zero-delta window.
+//
+// Still to come: window-loop orchestration
+// (`fetchTelemetryWindowTotals` — daily/weekly/monthly/yearly/
+// lifetime windows × N sites with concurrency + rate-limiting),
+// then the top-level `getTeslaPowerhubProductionMetrics`.
 // ────────────────────────────────────────────────────────────────────
 export const __TEST_ONLY__ = {
   normalizeTimeoutMs,
@@ -3428,4 +3440,5 @@ export const __TEST_ONLY__ = {
   fetchAccessibleSites,
   fetchAccessibleGroups,
   fetchGroupSites,
+  fetchSingleSiteTelemetryTotal,
 };
