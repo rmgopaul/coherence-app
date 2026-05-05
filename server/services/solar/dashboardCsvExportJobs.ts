@@ -32,9 +32,9 @@
  *
  * Cross-process safety:
  *   - `claimedBy` is `pid-${pid}-host-${hostname}-${suffix}`,
- *     unique per process. Suffix is a 4-byte random hex so a
- *     restarted process with the same pid can't accidentally
- *     re-claim its dead predecessor's rows.
+ *     unique per claim attempt. Suffix is a 4-byte random hex so
+ *     every retry writes to its own artifact key and a stale
+ *     attempt can't clean up a later successful retry's file.
  *   - Every UPDATE that mutates a `running` row's terminal
  *     fields predicates on `claimedBy = ourClaimId AND status
  *     = 'running'`. A worker that lost its claim (e.g. its
@@ -71,6 +71,8 @@ import type { DashboardCsvExportJob } from "../../../drizzle/schema";
 const METRIC_PREFIX = "[dashboard:csv-export-jobs]";
 
 export const DASHBOARD_CSV_EXPORT_RUNNER_VERSION =
+  "dashboard-csv-export-jobs-v4-claim-scoped-artifacts";
+const LEGACY_DETERMINISTIC_ARTIFACT_RUNNER_VERSION =
   "dashboard-csv-export-jobs-v3-heartbeat";
 
 /**
@@ -110,7 +112,8 @@ const HEARTBEAT_INTERVAL_MS = 30 * 1000; // 30 seconds
  * the same queued row when several status polls arrive before the
  * first setImmediate fires.
  */
-const MAX_LOCAL_RUNNERS = 2;
+const DEFAULT_MAX_LOCAL_RUNNERS = 2;
+let maxLocalRunners = DEFAULT_MAX_LOCAL_RUNNERS;
 const EXPORT_RUNNER_TIMEOUT_MS = 25 * 60 * 1000; // 25 minutes
 const TERMINAL_UPDATE_TIMEOUT_MS = 10 * 1000; // 10 seconds
 
@@ -160,9 +163,7 @@ export interface DashboardCsvExportStatusSnapshot {
 // Process identity for cross-process claim safety
 // ─────────────────────────────────────────────────────────────────────
 
-let cachedClaimId: string | null = null;
 function getClaimId(): string {
-  if (cachedClaimId) return cachedClaimId;
   const pid = typeof process.pid === "number" ? process.pid : 0;
   const host = (() => {
     try {
@@ -172,8 +173,7 @@ function getClaimId(): string {
     }
   })();
   const suffix = randomBytes(4).toString("hex");
-  cachedClaimId = `pid-${pid}-host-${host}-${suffix}`;
-  return cachedClaimId;
+  return `pid-${pid}-host-${host}-${suffix}`;
 }
 
 function newJobId(): string {
@@ -190,10 +190,22 @@ function newJobId(): string {
 function storageKeyForJob(
   jobId: string,
   scopeId: string,
-  fileName: string | null
+  fileName: string | null,
+  claimId: string | null = null,
+  runnerVersion: string | null = null
 ): string | null {
   if (!fileName) return null;
+  if (usesClaimScopedArtifactKey(runnerVersion)) {
+    if (!claimId) return null;
+    const safeClaimId = encodeURIComponent(claimId);
+    return `solar-rec-dashboard/${scopeId}/exports/${jobId}-${safeClaimId}-${fileName}`;
+  }
   return `solar-rec-dashboard/${scopeId}/exports/${jobId}-${fileName}`;
+}
+
+function usesClaimScopedArtifactKey(runnerVersion: string | null): boolean {
+  if (!runnerVersion) return false;
+  return runnerVersion !== LEGACY_DETERMINISTIC_ARTIFACT_RUNNER_VERSION;
 }
 
 function buildSnapshot(
@@ -459,7 +471,13 @@ export async function runCsvExportJob(jobId: string): Promise<void> {
       return;
     }
 
-    const key = storageKeyForJob(jobId, row.scopeId, built.fileName);
+    const key = storageKeyForJob(
+      jobId,
+      row.scopeId,
+      built.fileName,
+      claimId,
+      DASHBOARD_CSV_EXPORT_RUNNER_VERSION
+    );
     if (!key) {
       throw new Error(
         "storageKeyForJob returned null after fileName was set"
@@ -628,7 +646,7 @@ function drainScheduledRunnerQueue(
 ): void {
   runnerDrainScheduled = false;
   while (
-    activeRunnerJobIds.size < MAX_LOCAL_RUNNERS &&
+    activeRunnerJobIds.size < maxLocalRunners &&
     pendingRunnerJobs.length > 0
   ) {
     const next = pendingRunnerJobs.shift();
@@ -654,7 +672,7 @@ function drainScheduledRunnerQueue(
   }
   if (
     pendingRunnerJobs.length > 0 &&
-    activeRunnerJobIds.size < MAX_LOCAL_RUNNERS
+    activeRunnerJobIds.size < maxLocalRunners
   ) {
     scheduleRunnerDrain(scheduler);
   }
@@ -875,7 +893,13 @@ async function sweepStaleAndPruned(): Promise<void> {
       );
     }
     for (const row of prunedRows) {
-      const key = storageKeyForJob(row.id, row.scopeId, row.fileName);
+      const key = storageKeyForJob(
+        row.id,
+        row.scopeId,
+        row.fileName,
+        row.claimedBy,
+        row.runnerVersion
+      );
       if (!key || !row.artifactUrl) continue;
       // Fire-and-forget; don't block the sweep on storage IO.
       storageDelete(key).catch((err) => {
@@ -914,10 +938,14 @@ export const __TEST_ONLY__ = {
     pendingRunnerJobIdSet.clear();
     activeRunnerJobIds.clear();
     runnerDrainScheduled = false;
+    maxLocalRunners = DEFAULT_MAX_LOCAL_RUNNERS;
+  },
+  setMaxLocalRunnersForTest: (value: number) => {
+    maxLocalRunners = value;
   },
   JOB_TTL_MS,
   STALE_CLAIM_MS,
   HEARTBEAT_INTERVAL_MS,
-  MAX_LOCAL_RUNNERS,
+  MAX_LOCAL_RUNNERS: DEFAULT_MAX_LOCAL_RUNNERS,
   EXPORT_RUNNER_TIMEOUT_MS,
 };
