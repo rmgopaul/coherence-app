@@ -425,6 +425,14 @@ const TABULAR_DATASET_KEYS = new Set<DatasetKey>(["abpIccReport2Rows", "abpIccRe
  * replaced with an explanatory badge pointing at the correct workflow.
  */
 const SCANNER_MANAGED_DATASET_KEYS = new Set<DatasetKey>(["deliveryScheduleBase"]);
+const SHARED_DELIVERY_AGGREGATE_DATASET_KEYS = new Set<DatasetKey>([
+  "deliveryScheduleBase",
+  "transferHistory",
+  "annualProductionEstimates",
+  "generationEntry",
+  "accountSolarGeneration",
+  "abpReport",
+]);
 const CORE_REQUIRED_DATASET_KEYS: DatasetKey[] = ["abpReport"];
 
 // Phase 5e (2026-04-29) — stable empty fallback for the
@@ -1677,8 +1685,12 @@ export default function SolarRecDashboard() {
   const CORE_DATASET_SYNC_POLL_INTERVAL_MS = 2000;
 
   const invalidateSharedDatasetConsumers = useCallback(
-    async (sid: string) => {
-      await Promise.all([
+    async (sid: string, changedKey?: DatasetKey) => {
+      const shouldRefreshTransferLookup =
+        !changedKey || changedKey === "transferHistory";
+      const shouldRefreshSharedAggregates =
+        !changedKey || SHARED_DELIVERY_AGGREGATE_DATASET_KEYS.has(changedKey);
+      const invalidations = [
         solarRecTrpcUtils.solarRecDashboard.getDatasetSummariesAll.invalidate(),
         solarRecTrpcUtils.solarRecDashboard.getDatasetCloudStatuses.invalidate({
           keys: allDatasetKeys,
@@ -1692,15 +1704,27 @@ export default function SolarRecDashboard() {
         solarRecTrpcUtils.solarRecDashboard.getSystemSnapshotHash.invalidate({
           scopeId: sid,
         }),
-        solarRecTrpcUtils.solarRecDashboard.getTransferDeliveryLookup.invalidate({
-          scopeId: sid,
-        }),
-        solarRecTrpcUtils.solarRecDashboard.getDashboardDeliveryTrackerAggregates.invalidate(),
-        solarRecTrpcUtils.solarRecDashboard.getDashboardContractVintageAggregates.invalidate(),
-        solarRecTrpcUtils.solarRecDashboard.getDashboardPerformanceSourceRows.invalidate(),
-        solarRecTrpcUtils.solarRecDashboard.getDashboardForecast.invalidate(),
         solarRecTrpcUtils.solarRecDashboard.listDatasetUploadJobs.invalidate(),
-      ]);
+      ];
+
+      if (shouldRefreshTransferLookup) {
+        invalidations.push(
+          solarRecTrpcUtils.solarRecDashboard.getTransferDeliveryLookup.invalidate({
+            scopeId: sid,
+          })
+        );
+      }
+
+      if (shouldRefreshSharedAggregates) {
+        invalidations.push(
+          solarRecTrpcUtils.solarRecDashboard.getDashboardDeliveryTrackerAggregates.invalidate(),
+          solarRecTrpcUtils.solarRecDashboard.getDashboardContractVintageAggregates.invalidate(),
+          solarRecTrpcUtils.solarRecDashboard.getDashboardPerformanceSourceRows.invalidate(),
+          solarRecTrpcUtils.solarRecDashboard.getDashboardForecast.invalidate()
+        );
+      }
+
+      await Promise.all(invalidations);
     },
     [allDatasetKeys, solarRecTrpcUtils]
   );
@@ -1743,7 +1767,7 @@ export default function SolarRecDashboard() {
           jobId,
           updatedAt: Date.now(),
         });
-        await invalidateSharedDatasetConsumers(sid);
+        await invalidateSharedDatasetConsumers(sid, key);
         window.setTimeout(() => {
           setDatasetSyncProgressState(key, undefined);
         }, 1500);
@@ -1755,7 +1779,7 @@ export default function SolarRecDashboard() {
       // Best effort: the in-memory job registry may have been lost after
       // a restart even though the underlying batch already activated.
       if (sid) {
-        await invalidateSharedDatasetConsumers(sid);
+        await invalidateSharedDatasetConsumers(sid, key);
       }
       // eslint-disable-next-line no-console
       console.error(
@@ -2311,10 +2335,13 @@ export default function SolarRecDashboard() {
     [pickCsvParserWorker],
   );
 
-  const invalidateServerDerivedSolarData = useCallback(async () => {
-    if (!scopeId) return;
-    await invalidateSharedDatasetConsumers(scopeId);
-  }, [invalidateSharedDatasetConsumers, scopeId]);
+  const invalidateServerDerivedSolarData = useCallback(
+    async (changedKey?: DatasetKey) => {
+      if (!scopeId) return;
+      await invalidateSharedDatasetConsumers(scopeId, changedKey);
+    },
+    [invalidateSharedDatasetConsumers, scopeId]
+  );
 
   const pollCoreDatasetSyncJob = useCallback(
     async (key: DatasetKey, jobId: string) => {
@@ -6673,19 +6700,20 @@ const aiDataContext = useMemo(() => {
                           acceptExcel={TABULAR_DATASET_KEYS.has(key)}
                           acceptMultiple={isMultiAppend}
                           onSuccess={() => {
-                            // Refresh every server-side query that
-                            // reads from this dataset. Per CLAUDE.md
-                            // "Solar REC Dashboard data flow", the
-                            // server is the source of truth —
-                            // invalidating these queries pulls fresh
-                            // counts + snapshot in automatically.
+                            // Refresh the shared server-side queries
+                            // that can depend on this dataset. Per
+                            // CLAUDE.md "Solar REC Dashboard data
+                            // flow", the server is the source of
+                            // truth; passing the key avoids recomputing
+                            // unrelated delivery aggregates after
+                            // unrelated uploads.
                             // `getDataset` is a mutation (the
                             // chunked-CSV reader) so it isn't
                             // invalidatable; the central helper
                             // refreshes the row counts, active
-                            // versions, system snapshot, transfer
-                            // lookup, and tab aggregates.
-                            void invalidateServerDerivedSolarData();
+                            // versions, system snapshot, and only the
+                            // dependent transfer lookup/tab aggregates.
+                            void invalidateServerDerivedSolarData(key);
                           }}
                         />
                         {dataset ? (

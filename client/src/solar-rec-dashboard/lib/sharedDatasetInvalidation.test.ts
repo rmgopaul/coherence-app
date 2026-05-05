@@ -44,7 +44,7 @@ function sliceFn(source: string, name: string): string | null {
 }
 
 describe("Solar REC shared dataset invalidation", () => {
-  it("central helper invalidates every shared dataset consumer", () => {
+  it("central helper invalidates shared dataset consumers without hard-coding every upload to every aggregate", () => {
     const helper = sliceFn(dashboardSource, "invalidateSharedDatasetConsumers");
     expect(helper).not.toBeNull();
 
@@ -62,14 +62,31 @@ describe("Solar REC shared dataset invalidation", () => {
     ]) {
       expect(helper!).toContain(`${procedure}.invalidate`);
     }
+    expect(helper!).toContain("changedKey?: DatasetKey");
+    expect(helper!).toContain("shouldRefreshSharedAggregates");
+    expect(helper!).toContain("SHARED_DELIVERY_AGGREGATE_DATASET_KEYS.has(changedKey)");
+    expect(helper!).toContain("if (shouldRefreshSharedAggregates)");
+    expect(helper!).toContain('changedKey === "transferHistory"');
+    expect(helper!).toContain("if (shouldRefreshTransferLookup)");
+    expect(dashboardSource).toContain("SHARED_DELIVERY_AGGREGATE_DATASET_KEYS");
+    for (const key of [
+      "deliveryScheduleBase",
+      "transferHistory",
+      "annualProductionEstimates",
+      "generationEntry",
+      "accountSolarGeneration",
+      "abpReport",
+    ]) {
+      expect(dashboardSource).toContain(`"${key}"`);
+    }
   });
 
-  it("v2 dataset upload success uses the central invalidation helper", () => {
+  it("v2 dataset upload success passes the changed dataset key to the central invalidation helper", () => {
     const start = dashboardSource.indexOf("<DatasetUploadV2Button\n");
     expect(start).toBeGreaterThan(-1);
     const block = dashboardSource.slice(start, start + 2500);
     expect(block).toMatch(
-      /onSuccess=\{\(\)\s*=>\s*\{[\s\S]{0,1200}invalidateServerDerivedSolarData\(\)/
+      /onSuccess=\{\(\)\s*=>\s*\{[\s\S]{0,1600}invalidateServerDerivedSolarData\(key\)/
     );
   });
 
