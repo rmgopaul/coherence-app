@@ -5,7 +5,7 @@ import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import { t } from "./solarRecBase";
 import { dashboardProcedure } from "./dashboardResponseGuard";
-import { and, eq, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import {
   scheduleBImportFiles,
   scheduleBImportResults,
@@ -65,6 +65,12 @@ import {
 import { storageGet, storagePut } from "../storage";
 import { resolveSolarRecOwnerUserId } from "./solarRecAuth";
 import { Semaphore } from "../services/core/concurrency";
+
+const APPEND_UPLOAD_SOURCE_DATASET_KEYS = [
+  "accountSolarGeneration",
+  "convertedReads",
+  "transferHistory",
+] as const;
 
 /**
  * Dataset keys that are team-wide (shared across all Solar REC users) rather
@@ -3681,7 +3687,15 @@ export const solarRecDashboardRouter = t.router({
         uploadFileName: string | null;
         uploadCompletedAt: Date | null;
       };
+      type UploadSourceSummary = {
+        jobId: string;
+        fileName: string;
+        uploadedAt: string | null;
+        rowCount: number | null;
+      };
+
       const activeVersions = new Map<string, ActiveVersion>();
+      const uploadSourcesByDataset = new Map<string, UploadSourceSummary[]>();
       if (db) {
         const rows = await db
           .select({
@@ -3718,6 +3732,52 @@ export const solarRecDashboardRouter = t.router({
             uploadFileName: r.uploadFileName ?? null,
             uploadCompletedAt: r.uploadCompletedAt ?? null,
           });
+        }
+
+        const appendUploadRows = await db
+          .select({
+            jobId: datasetUploadJobs.id,
+            datasetKey: datasetUploadJobs.datasetKey,
+            fileName: datasetUploadJobs.fileName,
+            totalRows: datasetUploadJobs.totalRows,
+            rowsParsed: datasetUploadJobs.rowsParsed,
+            rowsWritten: datasetUploadJobs.rowsWritten,
+            completedAt: datasetUploadJobs.completedAt,
+            createdAt: datasetUploadJobs.createdAt,
+          })
+          .from(datasetUploadJobs)
+          .where(
+            and(
+              eq(datasetUploadJobs.scopeId, scopeId),
+              eq(datasetUploadJobs.status, "done"),
+              inArray(
+                datasetUploadJobs.datasetKey,
+                APPEND_UPLOAD_SOURCE_DATASET_KEYS
+              )
+            )
+          )
+          .orderBy(
+            desc(datasetUploadJobs.completedAt),
+            desc(datasetUploadJobs.createdAt)
+          );
+        for (const row of appendUploadRows) {
+          const uploadedAt = row.completedAt ?? row.createdAt ?? null;
+          const source: UploadSourceSummary = {
+            jobId: row.jobId,
+            fileName: row.fileName,
+            uploadedAt: uploadedAt?.toISOString() ?? null,
+            rowCount:
+              row.totalRows == null
+                ? row.rowsParsed > 0
+                  ? row.rowsParsed
+                  : row.rowsWritten > 0
+                    ? row.rowsWritten
+                    : null
+                : Number(row.totalRows),
+          };
+          const list = uploadSourcesByDataset.get(row.datasetKey) ?? [];
+          list.push(source);
+          uploadSourcesByDataset.set(row.datasetKey, list);
         }
       }
 
@@ -3756,6 +3816,13 @@ export const solarRecDashboardRouter = t.router({
          */
         lastUploadFileName: string | null;
         lastUploadCompletedAt: string | null;
+        /**
+         * For append datasets, the upload jobs that feed the current
+         * accumulated dataset, newest first. The active batch has only one
+         * `batchId`, so the old scalar `lastUploadFileName` could only show
+         * one file after reload.
+         */
+        lastUploadSources: UploadSourceSummary[];
       };
 
       const summaries: Summary[] = ALL_DATASET_KEYS.map((datasetKey) => {
@@ -3819,15 +3886,19 @@ export const solarRecDashboardRouter = t.router({
           lastUploadFileName: activeBatch?.uploadFileName ?? null,
           lastUploadCompletedAt:
             activeBatch?.uploadCompletedAt?.toISOString() ?? null,
+          lastUploadSources: uploadSourcesByDataset.get(datasetKey) ?? [],
         };
       });
 
       return {
         _checkpoint: "dataset-summaries-all-v1",
-        // 2026-05-04: surfaces lastUploadFileName + lastUploadCompletedAt
+        // 2026-05-05: also surfaces append upload source lists for the
+        // multi-file slot UI. 2026-05-04: surfaces lastUploadFileName +
+        // lastUploadCompletedAt
         // for the upload-slot UI's saved-in-cloud branch (Phase 5e
         // IDB-removal regression). Bumped from "+phase-2.6".
-        _runnerVersion: "task-5.12-pr10+phase-2.6+last-upload-meta" as const,
+        _runnerVersion:
+          "task-5.12-pr10+phase-2.6+last-upload-meta+append-sources" as const,
         scopeId,
         summaries,
       };
