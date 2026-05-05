@@ -79,8 +79,14 @@ export const FOUNDATION_ARTIFACT_TYPE = "foundation-v1" as const;
  * generation rows to whichever CSG happened to be processed last.
  * Bumping invalidates them so the first dashboard load after
  * deploy rebuilds with deterministic linkage + the new warning.
+ *
+ * v5 (2026-05-05) — reporting generation parsing now accepts the
+ * GATS export formats actually present in row tables: slash dates
+ * like `03/01/2026` and comma-formatted kWh like `85,478`. Cached v4
+ * artifacts can have `reportingAnchorDateIso=null` and all reporting
+ * counts at 0 despite populated generation data.
  */
-export const FOUNDATION_DEFINITION_VERSION = 4;
+export const FOUNDATION_DEFINITION_VERSION = 5;
 
 /**
  * `_runnerVersion` shipped on every response that surfaces
