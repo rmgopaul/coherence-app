@@ -83,7 +83,8 @@ vi.mock("../../db/dashboardCsvExportJobs", () => ({
       scopeId: string,
       id: string,
       claimedBy: string,
-      staleClaimBefore: Date
+      staleClaimBefore: Date,
+      runnerVersion: string
     ): Promise<boolean> => {
       const row = fakeFind(scopeId, id);
       if (!row) return false;
@@ -98,6 +99,7 @@ vi.mock("../../db/dashboardCsvExportJobs", () => ({
       row.claimedBy = claimedBy;
       row.claimedAt = now;
       row.startedAt = now;
+      row.runnerVersion = runnerVersion;
       row.updatedAt = now;
       return true;
     }
@@ -538,7 +540,8 @@ describe("dashboardCsvExportJobs — cross-process claim safety", () => {
       SCOPE,
       id,
       "worker-A",
-      longAgo
+      longAgo,
+      DASHBOARD_CSV_EXPORT_RUNNER_VERSION
     );
     expect(claimedA).toBe(true);
     // Simulate worker B claiming after A's claim went stale.
@@ -550,7 +553,8 @@ describe("dashboardCsvExportJobs — cross-process claim safety", () => {
       SCOPE,
       id,
       "worker-B",
-      new Date(Date.now() - 5 * 60 * 1000) // staleClaimBefore = 5 min ago
+      new Date(Date.now() - 5 * 60 * 1000), // staleClaimBefore = 5 min ago
+      DASHBOARD_CSV_EXPORT_RUNNER_VERSION
     );
     expect(claimedB).toBe(true);
     // Now worker A tries to complete. It should fail because
@@ -588,7 +592,8 @@ describe("dashboardCsvExportJobs — sweepStaleAndPruned", () => {
       SCOPE,
       id,
       "worker-A",
-      new Date(Date.now() - 60 * 60 * 1000)
+      new Date(Date.now() - 60 * 60 * 1000),
+      DASHBOARD_CSV_EXPORT_RUNNER_VERSION
     );
     // Backdate the claim so the sweep treats it as stale.
     const row = fakeFindById(id)!;
@@ -634,6 +639,38 @@ describe("dashboardCsvExportJobs — sweepStaleAndPruned", () => {
     expect(deleteMock).toHaveBeenCalled();
   });
 
+  it("deletes claim-scoped v4 artifacts even when completion never recorded file metadata", async () => {
+    const dbHelpers = await import("../../db/dashboardCsvExportJobs");
+    const storageMod = await import("../../storage");
+    const deleteMock = vi.mocked(storageMod.storageDelete);
+    deleteMock.mockClear();
+
+    const id = "crash-after-upload-id";
+    await dbHelpers.insertDashboardCsvExportJob({
+      id,
+      scopeId: SCOPE,
+      input: { exportType: "ownershipTile", tile: "reporting" },
+      status: "queued",
+      runnerVersion: DASHBOARD_CSV_EXPORT_RUNNER_VERSION,
+    });
+    const row = fakeFindById(id)!;
+    row.status = "failed";
+    row.completedAt = new Date(
+      Date.now() - __TEST_ONLY__.JOB_TTL_MS - 60_000
+    );
+    row.claimedBy = "pid-9-host-z-99999999";
+    row.fileName = null;
+    row.artifactUrl = null;
+
+    await __TEST_ONLY__.sweepStaleAndPruned();
+    await flushMicrotasks();
+
+    expect(fakeFindById(id)).toBeUndefined();
+    expect(deleteMock).toHaveBeenCalledWith(
+      "solar-rec-dashboard/scope-A/exports/crash-after-upload-id-pid-9-host-z-99999999.csv"
+    );
+  });
+
   it("does NOT prune fresh terminal rows", async () => {
     const dbHelpers = await import("../../db/dashboardCsvExportJobs");
     const id = "fresh-terminal-test-id";
@@ -664,9 +701,6 @@ describe("dashboardCsvExportJobs — runner version + claim id", () => {
   it("claim id includes pid + host + suffix", () => {
     const id = __TEST_ONLY__.getClaimId();
     expect(id).toMatch(/^pid-\d+-host-.+-[0-9a-f]{8}$/);
-    // Unique per runner attempt so late cleanup for a timed-out
-    // attempt cannot delete a retry's artifact.
-    expect(__TEST_ONLY__.getClaimId()).not.toBe(id);
   });
 
   it("uses claim-scoped storage keys for v4 artifacts and legacy keys for older rows", () => {
@@ -679,17 +713,19 @@ describe("dashboardCsvExportJobs — runner version + claim id", () => {
         DASHBOARD_CSV_EXPORT_RUNNER_VERSION
       )
     ).toBe(
-      "solar-rec-dashboard/scope-A/exports/job-1-pid-1-host-a-aaaaaaaa-export.csv"
+      "solar-rec-dashboard/scope-A/exports/job-1-pid-1-host-a-aaaaaaaa.csv"
     );
     expect(
       __TEST_ONLY__.storageKeyForJob(
         "job-1",
         SCOPE,
-        "export.csv",
         null,
+        "pid-1-host-a-aaaaaaaa",
         DASHBOARD_CSV_EXPORT_RUNNER_VERSION
       )
-    ).toBeNull();
+    ).toBe(
+      "solar-rec-dashboard/scope-A/exports/job-1-pid-1-host-a-aaaaaaaa.csv"
+    );
     expect(
       __TEST_ONLY__.storageKeyForJob(
         "job-1",
@@ -699,6 +735,15 @@ describe("dashboardCsvExportJobs — runner version + claim id", () => {
         "dashboard-csv-export-jobs-v3-heartbeat"
       )
     ).toBe("solar-rec-dashboard/scope-A/exports/job-1-export.csv");
+    expect(
+      __TEST_ONLY__.storageKeyForJob(
+        "job-1",
+        SCOPE,
+        null,
+        "pid-1-host-a-aaaaaaaa",
+        "dashboard-csv-export-jobs-v3-heartbeat"
+      )
+    ).toBeNull();
   });
 });
 
@@ -849,13 +894,15 @@ describe("dashboardCsvExportJobs — Codex P1: queued-job resume on status read"
         SCOPE,
         id,
         "pid-A-host-x-aaaaaaaa",
-        staleClaimBefore
+        staleClaimBefore,
+        DASHBOARD_CSV_EXPORT_RUNNER_VERSION
       ),
       dbHelpers.claimDashboardCsvExportJob(
         SCOPE,
         id,
         "pid-B-host-y-bbbbbbbb",
-        staleClaimBefore
+        staleClaimBefore,
+        DASHBOARD_CSV_EXPORT_RUNNER_VERSION
       ),
     ]);
     expect([a, b].filter((r) => r === true)).toHaveLength(1);
@@ -880,7 +927,8 @@ describe("dashboardCsvExportJobs — Codex P1: heartbeat keeps healthy long jobs
       SCOPE,
       "long-job",
       claimId,
-      staleClaimBefore
+      staleClaimBefore,
+      DASHBOARD_CSV_EXPORT_RUNNER_VERSION
     );
     const initialClaimedAt = fakeFindById("long-job")!.claimedAt!.getTime();
 
@@ -1018,6 +1066,42 @@ describe("dashboardCsvExportJobs — Codex P1: heartbeat keeps healthy long jobs
 });
 
 describe("dashboardCsvExportJobs — Codex P2: lost-claim success path cleans storage", () => {
+  it("cleans the previous attempt's claim-scoped artifact when re-claiming a stale running row", async () => {
+    const storageMod = await import("../../storage");
+    const storageDelete = storageMod.storageDelete as unknown as ReturnType<
+      typeof vi.fn
+    >;
+    storageDelete.mockClear();
+    const dbHelpers = await import("../../db/dashboardCsvExportJobs");
+    const id = "reclaim-stale-upload";
+    await dbHelpers.insertDashboardCsvExportJob({
+      id,
+      scopeId: SCOPE,
+      input: { exportType: "ownershipTile", tile: "reporting" },
+      status: "queued",
+      runnerVersion: DASHBOARD_CSV_EXPORT_RUNNER_VERSION,
+    });
+    const row = fakeFindById(id)!;
+    row.status = "running";
+    row.claimedBy = "pid-old-host-z-00000000";
+    row.claimedAt = new Date(
+      Date.now() - __TEST_ONLY__.STALE_CLAIM_MS - 60_000
+    );
+    row.fileName = null;
+    row.artifactUrl = null;
+
+    await runCsvExportJob(id);
+    await flushMicrotasks();
+
+    expect(storageDelete).toHaveBeenCalledWith(
+      "solar-rec-dashboard/scope-A/exports/reclaim-stale-upload-pid-old-host-z-00000000.csv"
+    );
+    const after = fakeFindById(id);
+    expect(after?.status).toBe("succeeded");
+    expect(after?.claimedBy).not.toBe("pid-old-host-z-00000000");
+    expect(after?.runnerVersion).toBe(DASHBOARD_CSV_EXPORT_RUNNER_VERSION);
+  });
+
   it("calls storageDelete when completeSuccess returns false post-storagePut", async () => {
     const storageMod = await import("../../storage");
     const storageDelete = storageMod.storageDelete as unknown as ReturnType<

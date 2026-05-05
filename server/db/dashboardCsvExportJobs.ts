@@ -146,7 +146,8 @@ export async function claimDashboardCsvExportJob(
   scopeId: string,
   id: string,
   claimedBy: string,
-  staleClaimBefore: Date
+  staleClaimBefore: Date,
+  runnerVersion: string
 ): Promise<boolean> {
   const db = await getDb();
   if (!db) return false;
@@ -161,6 +162,7 @@ export async function claimDashboardCsvExportJob(
           claimedBy,
           claimedAt: now,
           startedAt: now,
+          runnerVersion,
           updatedAt: now,
         })
         .where(
