@@ -4765,24 +4765,13 @@ const teslaPowerhubRouter = t.router({
   ),
 
   listSites: requirePermission("meter-reads", "read").query(async ({ ctx }) => {
-    const { getTeslaPowerhubGroupProductionMetricsCached } =
+    const { listTeslaPowerhubSites } =
       await import("../services/solar/teslaPowerhub");
     const team = await resolveTeslaPowerhubTeamContext(ctx.scopeId);
-    const result = await getTeslaPowerhubGroupProductionMetricsCached(
-      team.apiContext,
-      {
-        groupId: team.groupId,
-        cacheKey: JSON.stringify([
-          "solar-rec",
-          team.credentialId,
-          team.groupId,
-          team.endpointUrl ?? "",
-          team.signal ?? "",
-        ]),
-        endpointUrl: team.endpointUrl,
-        signal: team.signal,
-      }
-    );
+    const result = await listTeslaPowerhubSites(team.apiContext, {
+      groupId: team.groupId,
+      endpointUrl: team.endpointUrl,
+    });
     return {
       sites: result.sites.map(site => ({
         siteId: site.siteId,
