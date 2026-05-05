@@ -20,12 +20,20 @@
  *
  * Usage:
  *   tsx server/scripts/backfillSrDsTypedColumnsFromRawRow.ts \
- *     [--dry-run] [--scope <scopeId>] [--dataset <key>] [--page-size <n>]
+ *     [--dry-run] [--scope <scopeId>] [--dataset <key>] \
+ *     [--batch <batchId>] [--page-size <n>]
  *
  *   --dry-run           Report counts; do not write.
  *   --scope <id>        Limit to one scope (default: all scopes).
  *   --dataset <key>     Limit to one dataset (default: all datasets
  *                       with `rawRow` — see DATASETS_WITH_RAW_ROW).
+ *   --batch <batchId>   Limit to one import batch. Useful when
+ *                       only the active batch needs repair (the
+ *                       slim summary + dashboard tabs only read
+ *                       active batches; superseded batches are
+ *                       dead weight pruned by the archive sweep).
+ *                       Active batch id is in
+ *                       `solarRecActiveDatasetVersions.batchId`.
  *   --page-size <n>     Rows per SELECT page. Default 500. Smaller
  *                       pages reduce peak heap usage at the cost
  *                       of more round-trips to TiDB.
@@ -127,6 +135,20 @@ export interface RunOptions {
   dryRun: boolean;
   scopeId: string | null;
   datasetKey: DatasetKey | null;
+  /**
+   * Limit the backfill to one specific import batch. Useful when
+   * only the active batch needs repair (the slim summary +
+   * dashboard tabs read only the active batch — superseded
+   * batches are dead weight pruned by
+   * `archiveSupersededImportBatchesOnStartup`). Targeting the
+   * active batch turns a multi-hour scan into a 10-50 min one
+   * for production-sized tables.
+   *
+   * Look up the active batch id via:
+   *   SELECT batchId FROM solarRecActiveDatasetVersions
+   *   WHERE datasetKey = '<key>' AND scopeId = '<scope>';
+   */
+  batchId: string | null;
   pageSize: number;
 }
 
@@ -137,6 +159,7 @@ export function parseArgs(argv: string[]): RunOptions {
     dryRun: false,
     scopeId: null,
     datasetKey: null,
+    batchId: null,
     pageSize: DEFAULT_PAGE_SIZE,
   };
   for (let i = 0; i < argv.length; i += 1) {
@@ -149,6 +172,9 @@ export function parseArgs(argv: string[]): RunOptions {
     } else if (arg === "--dataset") {
       const key = argv[i + 1] ?? null;
       if (key) opts.datasetKey = key as DatasetKey;
+      i += 1;
+    } else if (arg === "--batch") {
+      opts.batchId = argv[i + 1] ?? null;
       i += 1;
     } else if (arg === "--page-size") {
       const raw = argv[i + 1] ?? "";
@@ -297,6 +323,7 @@ async function backfillOneDataset(
   while (true) {
     const whereClauses = [gt(table.id, lastId)];
     if (opts.scopeId) whereClauses.push(eq(table.scopeId, opts.scopeId));
+    if (opts.batchId) whereClauses.push(eq(table.batchId, opts.batchId));
     const page = (await db
       .select()
       .from(table)
@@ -394,6 +421,7 @@ async function main(): Promise<void> {
   process.stdout.write(
     `[backfill] datasets: ${datasets.join(", ")}\n` +
       `[backfill] scope: ${opts.scopeId ?? "<all>"}\n` +
+      `[backfill] batch: ${opts.batchId ?? "<all>"}\n` +
       `[backfill] dryRun: ${opts.dryRun}\n` +
       `[backfill] pageSize: ${opts.pageSize}\n`
   );
