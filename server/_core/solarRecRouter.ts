@@ -4599,12 +4599,9 @@ const solaredgeRouter = t.router({
 
 // ---------------------------------------------------------------------------
 // Task 5.4 vendor 14/16 — Tesla Powerhub. Different shape from every
-// other vendor: a single bulk endpoint returns all sites in a group at
-// once with daily/weekly/monthly/yearly/lifetime kWh per site. We
-// expose `getStatus`, `listSites` (which calls the bulk endpoint then
-// strips to {id, name}), and `getSiteSnapshot` (also calls the bulk
-// endpoint and picks the matching site). The bulk endpoint is
-// expensive — service has its own 5-min cache keyed by groupId.
+// other vendor: production reads are best handled as a background bulk job,
+// while connection probes and single-site snapshots use lightweight/direct
+// paths to avoid foreground proxy timeouts.
 //
 // Team credential row stores:
 //   - accessToken column → clientSecret
@@ -4765,24 +4762,13 @@ const teslaPowerhubRouter = t.router({
   ),
 
   listSites: requirePermission("meter-reads", "read").query(async ({ ctx }) => {
-    const { getTeslaPowerhubGroupProductionMetricsCached } =
+    const { listTeslaPowerhubSites } =
       await import("../services/solar/teslaPowerhub");
     const team = await resolveTeslaPowerhubTeamContext(ctx.scopeId);
-    const result = await getTeslaPowerhubGroupProductionMetricsCached(
-      team.apiContext,
-      {
-        groupId: team.groupId,
-        cacheKey: JSON.stringify([
-          "solar-rec",
-          team.credentialId,
-          team.groupId,
-          team.endpointUrl ?? "",
-          team.signal ?? "",
-        ]),
-        endpointUrl: team.endpointUrl,
-        signal: team.signal,
-      }
-    );
+    const result = await listTeslaPowerhubSites(team.apiContext, {
+      groupId: team.groupId,
+      endpointUrl: team.endpointUrl,
+    });
     return {
       sites: result.sites.map(site => ({
         siteId: site.siteId,
@@ -4851,56 +4837,15 @@ const teslaPowerhubRouter = t.router({
   getSiteSnapshot: requirePermission("meter-reads", "edit")
     .input(z.object({ siteId: z.string().min(1) }))
     .mutation(async ({ ctx, input }) => {
-      const { getTeslaPowerhubGroupProductionMetricsCached } =
+      const { getTeslaPowerhubSiteSnapshot } =
         await import("../services/solar/teslaPowerhub");
       const team = await resolveTeslaPowerhubTeamContext(ctx.scopeId);
-      const result = await getTeslaPowerhubGroupProductionMetricsCached(
-        team.apiContext,
-        {
-          groupId: team.groupId,
-          cacheKey: JSON.stringify([
-            "solar-rec",
-            team.credentialId,
-            team.groupId,
-            team.endpointUrl ?? "",
-            team.signal ?? "",
-          ]),
-          endpointUrl: team.endpointUrl,
-          signal: team.signal,
-        }
-      );
-      const trimmed = input.siteId.trim();
-      const site = result.sites.find(
-        s => s.siteId === trimmed || s.siteExternalId === trimmed
-      );
-      if (!site) {
-        return {
-          siteId: trimmed,
-          status: "Not Found" as const,
-          siteName: null,
-          siteExternalId: null,
-          dailyKwh: null,
-          weeklyKwh: null,
-          monthlyKwh: null,
-          yearlyKwh: null,
-          lifetimeKwh: null,
-          dataSource: null,
-          error: null,
-        };
-      }
-      return {
-        siteId: site.siteId,
-        status: "Found" as const,
-        siteName: site.siteName,
-        siteExternalId: site.siteExternalId,
-        dailyKwh: site.dailyKwh,
-        weeklyKwh: site.weeklyKwh,
-        monthlyKwh: site.monthlyKwh,
-        yearlyKwh: site.yearlyKwh,
-        lifetimeKwh: site.lifetimeKwh,
-        dataSource: site.dataSource,
-        error: null,
-      };
+      return getTeslaPowerhubSiteSnapshot(team.apiContext, {
+        siteId: input.siteId,
+        groupId: team.groupId,
+        endpointUrl: team.endpointUrl,
+        signal: team.signal,
+      });
     }),
 });
 
