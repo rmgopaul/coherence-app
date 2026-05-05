@@ -5078,7 +5078,9 @@ const teslaPowerhubRouter = t.router({
       const groupId = normalizeTeslaPowerhubGroupId(
         input.groupId ?? team.groupId
       );
-      const job = startTeslaPowerhubProductionJob({
+      // Service is async since the v3 DB-backed migration; wire
+      // shape unchanged ({ jobId, status, _runnerVersion }).
+      return startTeslaPowerhubProductionJob({
         scopeId: ctx.scopeId,
         createdBy: ctx.userId,
         apiContext: team.apiContext,
@@ -5086,11 +5088,6 @@ const teslaPowerhubRouter = t.router({
         endpointUrl: input.endpointUrl?.trim() || team.endpointUrl,
         signal: input.signal?.trim() || team.signal,
       });
-      return {
-        jobId: job.id,
-        status: job.status,
-        _runnerVersion: job._runnerVersion,
-      };
     }),
 
   getGroupProductionMetricsJob: requirePermission("meter-reads", "read")
@@ -5098,7 +5095,7 @@ const teslaPowerhubRouter = t.router({
     .query(async ({ ctx, input }) => {
       const { getTeslaPowerhubProductionJobSnapshot } =
         await import("../services/solar/teslaPowerhubProductionJobs");
-      const job = getTeslaPowerhubProductionJobSnapshot(
+      const job = await getTeslaPowerhubProductionJobSnapshot(
         ctx.scopeId,
         input.jobId.trim()
       );

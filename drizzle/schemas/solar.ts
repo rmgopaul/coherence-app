@@ -1783,3 +1783,115 @@ export type DashboardCsvExportJob =
   typeof dashboardCsvExportJobs.$inferSelect;
 export type InsertDashboardCsvExportJob =
   typeof dashboardCsvExportJobs.$inferInsert;
+
+// ────────────────────────────────────────────────────────────────────
+// teslaPowerhubProductionJobs — DB-backed registry for the Tesla
+// Powerhub multi-site production fetch.
+//
+// Phase 6 PR-B established Hard Rule #8 in CLAUDE.md: dashboard +
+// solar background-job registries must be DB-backed (process
+// restart safe, multi-instance race-safe). PR #368 restored the
+// Tesla Powerhub multi-site production-metrics endpoint via an
+// in-memory `Map<jobId, snapshot>` in
+// `server/services/solar/teslaPowerhubProductionJobs.ts` —
+// a direct violation of that rule. This table replaces the Map
+// using the same shape as `dashboardCsvExportJobs`:
+//   - Atomic queued → running claim via WHERE-predicated UPDATE.
+//   - `claimedBy` per-process identity prevents stale workers
+//     from overwriting a re-claimer's state.
+//   - Periodic sweep flips `running` rows whose `claimedAt`
+//     predates the heartbeat window to `failed`, and TTL-prunes
+//     terminal rows.
+//
+// Wire-shape preservation: the existing client polls a snapshot
+// shape with `progress`, `result`, `config`, `_runnerVersion`. The
+// snapshot is reconstructed from this row server-side; the row's
+// columns store the raw state and the runner / status helpers
+// shape the wire payload back to the legacy contract.
+// ────────────────────────────────────────────────────────────────────
+
+export const teslaPowerhubProductionJobs = mysqlTable(
+  "teslaPowerhubProductionJobs",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    scopeId: varchar("scopeId", { length: 64 }).notNull(),
+    // Initiating user (FK semantics not enforced; matches the
+    // existing in-memory `createdBy: number | null` shape).
+    createdBy: int("createdBy"),
+    // Configuration snapshot taken at start time. Carries the
+    // optional `groupId` / `endpointUrl` / `signal` overrides the
+    // worker uses to scope discovery + fetch:
+    //   { groupId: string | null, endpointUrl: string | null,
+    //     signal: string | null }
+    // Stored as JSON so adding new override fields doesn't
+    // require a migration; the worker re-validates the shape on
+    // read.
+    config: json("config").notNull(),
+    // Status state machine:
+    //   "queued" | "running" | "completed" | "failed"
+    // Note: this registry uses "completed" (not "succeeded" like
+    // dashboardCsvExportJobs) for wire-compat with the existing
+    // client polling code that already shipped via PR #368.
+    status: varchar("status", { length: 32 })
+      .default("queued")
+      .notNull(),
+    // Live progress snapshot (debounced writes from the worker —
+    // every ~5 s, not every onProgress tick — so the row update
+    // rate stays bounded). Shape:
+    //   { currentStep: number, totalSteps: number, percent:
+    //     number, message: string, windowKey: string | null }
+    // Treated as best-effort UX state; client polls render from
+    // this directly. Loss on process restart degrades the
+    // progress display but not correctness — the worker re-claims
+    // and resumes.
+    progressJson: json("progressJson"),
+    // Result payload (success only). MEDIUMTEXT JSON because a
+    // typical Tesla Powerhub group result is well under 1 MB but
+    // can grow with site count + telemetry depth. The shape is
+    // `TeslaPowerhubProductionMetricsResult` from
+    // `server/services/solar/teslaPowerhub.ts`. Stored as
+    // mediumtext (16 MB ceiling) rather than `text` (64 KB) to
+    // accommodate larger groups; future migration to
+    // storage-blob + URL pointer is fine if results outgrow this.
+    resultJson: mediumtext("resultJson"),
+    // Failure field (populated on failed). Mirrors the existing
+    // `errorMessage` convention from dashboardCsvExportJobs.
+    errorMessage: text("errorMessage"),
+    // Cross-process claim fields. Mirror dashboardCsvExportJobs
+    // 1:1 — same heartbeat / stale-claim / TTL semantics.
+    claimedBy: varchar("claimedBy", { length: 128 }),
+    claimedAt: timestamp("claimedAt"),
+    runnerVersion: varchar("runnerVersion", { length: 64 }).notNull(),
+    // Lifecycle timestamps. `finishedAt` is populated on either
+    // terminal state (completed OR failed); preserves the
+    // existing in-memory snapshot field name.
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    startedAt: timestamp("startedAt"),
+    finishedAt: timestamp("finishedAt"),
+    updatedAt: timestamp("updatedAt")
+      .defaultNow()
+      .onUpdateNow()
+      .notNull(),
+  },
+  (table) => ({
+    // Active-job lookup per scope + status — bounds the worker's
+    // claim search and supports the legacy "list my jobs" debug
+    // surface.
+    scopeStatusCreatedIdx: index(
+      "tesla_powerhub_production_jobs_scope_status_created_idx"
+    ).on(table.scopeId, table.status, table.createdAt),
+    // TTL prune: terminal rows older than X.
+    finishedAtIdx: index(
+      "tesla_powerhub_production_jobs_finished_at_idx"
+    ).on(table.finishedAt),
+    // Stale-claim detection: status = 'running' AND claimedAt < ?
+    statusClaimedAtIdx: index(
+      "tesla_powerhub_production_jobs_status_claimed_at_idx"
+    ).on(table.status, table.claimedAt),
+  })
+);
+
+export type TeslaPowerhubProductionJobRow =
+  typeof teslaPowerhubProductionJobs.$inferSelect;
+export type InsertTeslaPowerhubProductionJobRow =
+  typeof teslaPowerhubProductionJobs.$inferInsert;
