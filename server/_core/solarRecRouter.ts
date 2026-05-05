@@ -33,6 +33,12 @@ import { solarRecJobsRouter } from "./solarRecJobsRouter";
 import { solarRecSystemsRouter } from "./solarRecSystemsRouter";
 import { solarRecWorksetsRouter } from "./solarRecWorksetsRouter";
 import { sanitizeApiKey as solarEdgeSanitizeApiKey } from "../services/solar/solarEdge";
+import {
+  extractHoymilesCredentialProfiles,
+  maskHoymilesUsername,
+  selectHoymilesCredentialProfile,
+  type HoymilesCredentialProfile,
+} from "../services/solar/hoymilesCredentials";
 
 // ---------------------------------------------------------------------------
 // Context — `createSolarRecContext` stays here because `_core/index.ts`
@@ -2972,92 +2978,289 @@ const goodweRouter = t.router({
 });
 
 // ---------------------------------------------------------------------------
-// Task 5.4 vendor 4/16 — Hoymiles (S-Miles Cloud). Team credential
-// stores `{username, password, baseUrl}`; single-station reads.
+// Task 5.4 vendor 4/16 — Hoymiles (S-Miles Cloud).
+//
+// Pre-migration Hoymiles supported multiple saved API profiles, listing every
+// station across profiles, and checking a station against all profiles. Solar
+// REC stores the credentials in team-wide rows, so the router rebuilds that
+// feature surface from `solarRecTeamCredentials[provider='hoymiles']`.
 // ---------------------------------------------------------------------------
 
-type HoymilesTeamContext = {
-  username: string;
-  password: string;
-  baseUrl: string | null;
-  credentialId: string;
-};
-
-function parseHoymilesTeamMetadata(
-  raw: string | null
-): HoymilesTeamContext | null {
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw);
-    const username =
-      typeof parsed?.username === "string" && parsed.username.trim().length > 0
-        ? parsed.username.trim()
-        : null;
-    const password =
-      typeof parsed?.password === "string" && parsed.password.length > 0
-        ? parsed.password
-        : null;
-    if (!username || !password) return null;
-    return {
-      username,
-      password,
-      baseUrl:
-        typeof parsed?.baseUrl === "string" && parsed.baseUrl.trim().length > 0
-          ? parsed.baseUrl.trim()
-          : null,
-      credentialId: "",
-    };
-  } catch {
-    return null;
-  }
-}
-
-async function resolveHoymilesTeamContext(
-  scopeId: string
-): Promise<HoymilesTeamContext> {
-  void scopeId;
+async function loadHoymilesTeamProfiles(): Promise<
+  HoymilesCredentialProfile[]
+> {
   const { getSolarRecTeamCredentialsByProvider } = await import("../db");
   const credentials = await getSolarRecTeamCredentialsByProvider("hoymiles");
-  for (const cred of credentials) {
-    const parsed = parseHoymilesTeamMetadata(cred.metadata);
-    if (parsed) {
-      return { ...parsed, credentialId: cred.id };
-    }
-  }
+  return credentials.flatMap(cred => extractHoymilesCredentialProfiles(cred));
+}
+
+async function resolveHoymilesTeamProfile(
+  connectionId?: string | null
+): Promise<HoymilesCredentialProfile> {
+  const profiles = await loadHoymilesTeamProfiles();
+  const selected = selectHoymilesCredentialProfile(profiles, connectionId);
+  if (selected) return selected;
   throw new TRPCError({
     code: "PRECONDITION_FAILED",
-    message:
-      "No Hoymiles team credential found. An admin must add one in Solar REC Settings → Credentials.",
+    message: connectionId
+      ? "Selected Hoymiles profile was not found."
+      : "No Hoymiles team credential found. An admin must add one in Solar REC Settings -> Credentials.",
   });
+}
+
+function hoymilesProfileStatus(profile: HoymilesCredentialProfile) {
+  return {
+    id: profile.id,
+    credentialId: profile.credentialId,
+    sourceConnectionId: profile.sourceConnectionId,
+    name: profile.name,
+    usernameMasked: maskHoymilesUsername(profile.username),
+    hasPassword: Boolean(profile.password),
+    baseUrl: profile.baseUrl,
+    updatedAt:
+      profile.updatedAt instanceof Date
+        ? profile.updatedAt.toISOString()
+        : typeof profile.updatedAt === "string"
+          ? profile.updatedAt
+          : null,
+  };
+}
+
+function annotateHoymilesSnapshot(
+  snapshot: Record<string, unknown>,
+  profile: HoymilesCredentialProfile | null,
+  checkedConnections: number,
+  foundInConnections: number,
+  profileStatusSummary: string
+): Record<string, unknown> {
+  return {
+    ...snapshot,
+    matchedConnectionId: profile?.id ?? null,
+    matchedConnectionName: profile?.name ?? null,
+    checkedConnections,
+    foundInConnections,
+    profileStatusSummary,
+  };
+}
+
+async function getHoymilesSnapshotAcrossProfiles(
+  profiles: HoymilesCredentialProfile[],
+  stationId: string,
+  anchorDate?: string | null
+) {
+  const { getStationProductionSnapshot } =
+    await import("../services/solar/hoymiles");
+  const summaries: string[] = [];
+  let firstNonFound: Record<string, unknown> | null = null;
+  let firstNonFoundProfile: HoymilesCredentialProfile | null = null;
+  let errorCount = 0;
+
+  for (const profile of profiles) {
+    const snapshot = (await getStationProductionSnapshot(
+      profile.context,
+      stationId,
+      anchorDate
+    )) as Record<string, unknown>;
+    const status = snapshot.status;
+    summaries.push(`${profile.name}: ${String(status ?? "Unknown")}`);
+    if (status === "Found" || snapshot.found === true) {
+      return annotateHoymilesSnapshot(
+        snapshot,
+        profile,
+        profiles.length,
+        1,
+        summaries.join(" | ")
+      );
+    }
+    if (!firstNonFound) {
+      firstNonFound = snapshot;
+      firstNonFoundProfile = profile;
+    }
+    if (status === "Error") errorCount += 1;
+  }
+
+  const fallback =
+    firstNonFound ??
+    ({
+      stationId,
+      name: null,
+      status: "Not Found",
+      found: false,
+      lifetimeKwh: null,
+      monthlyProductionKwh: null,
+      last12MonthsProductionKwh: null,
+      dailyProductionKwh: null,
+      anchorDate: anchorDate ?? todayIsoDate(),
+      error: `Station not found in any of ${profiles.length} Hoymiles profiles.`,
+    } as Record<string, unknown>);
+  const allErrored = profiles.length > 0 && errorCount === profiles.length;
+
+  return annotateHoymilesSnapshot(
+    {
+      ...fallback,
+      status: allErrored ? "Error" : (fallback.status ?? "Not Found"),
+      found: false,
+      error:
+        typeof fallback.error === "string" && fallback.error
+          ? fallback.error
+          : `Station not found in any of ${profiles.length} Hoymiles profiles.`,
+    },
+    allErrored ? null : firstNonFoundProfile,
+    profiles.length,
+    0,
+    summaries.join(" | ")
+  );
 }
 
 const hoymilesRouter = t.router({
   getStatus: requirePermission("meter-reads", "read").query(async () => {
-    const { getSolarRecTeamCredentialsByProvider } = await import("../db");
-    const credentials = await getSolarRecTeamCredentialsByProvider("hoymiles");
-    const active = credentials.find(
-      cred => parseHoymilesTeamMetadata(cred.metadata) !== null
-    );
+    const profiles = await loadHoymilesTeamProfiles();
+    const connections = profiles.map((profile, index) => ({
+      ...hoymilesProfileStatus(profile),
+      isActive: index === 0,
+    }));
     return {
-      connected: !!active,
-      connectionCount: credentials.length,
-      activeConnectionId: active?.id ?? null,
+      connected: profiles.length > 0,
+      connectionCount: profiles.length,
+      activeConnectionId: profiles[0]?.id ?? null,
+      connections,
+      profiles: connections,
     };
   }),
 
-  listStations: requirePermission("meter-reads", "read").query(
-    async ({ ctx }) => {
+  listStations: requirePermission("meter-reads", "read")
+    .input(z.object({ connectionId: z.string().optional() }).optional())
+    .query(async ({ input }) => {
       const { listStations } = await import("../services/solar/hoymiles");
-      const context = await resolveHoymilesTeamContext(ctx.scopeId);
-      return listStations({
-        username: context.username,
-        password: context.password,
-        baseUrl: context.baseUrl,
-      });
+      const profile = await resolveHoymilesTeamProfile(input?.connectionId);
+      const result = await listStations(profile.context);
+      return {
+        connectionId: profile.id,
+        connectionName: profile.name,
+        ...result,
+      };
+    }),
+
+  listAllStations: requirePermission("meter-reads", "read").mutation(
+    async () => {
+      const profiles = await loadHoymilesTeamProfiles();
+      if (profiles.length === 0) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message:
+            "No Hoymiles team credential found. An admin must add one in Solar REC Settings -> Credentials.",
+        });
+      }
+      const { listStations } = await import("../services/solar/hoymiles");
+      const { mapWithConcurrency } =
+        await import("../services/core/concurrency");
+      const profileResults = await mapWithConcurrency(
+        profiles,
+        3,
+        async profile => {
+          try {
+            const result = await listStations(profile.context);
+            return {
+              connectionId: profile.id,
+              connectionName: profile.name,
+              stationCount: result.stations.length,
+              error: null as string | null,
+              stations: result.stations.map(station => ({
+                ...station,
+                connectionId: profile.id,
+                connectionName: profile.name,
+              })),
+            };
+          } catch (err) {
+            return {
+              connectionId: profile.id,
+              connectionName: profile.name,
+              stationCount: 0,
+              error: err instanceof Error ? err.message : String(err),
+              stations: [] as Array<Record<string, unknown>>,
+            };
+          }
+        }
+      );
+      const seen = new Set<string>();
+      const stations = profileResults
+        .flatMap(result => result.stations)
+        .filter(station => {
+          const stationId =
+            typeof station.stationId === "string" ? station.stationId : null;
+          const key = stationId?.trim().toLowerCase();
+          if (!key || seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+      if (
+        stations.length === 0 &&
+        profileResults.length > 0 &&
+        profileResults.every(result => result.error)
+      ) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `All Hoymiles station discovery calls failed: ${profileResults
+            .map(result => `${result.connectionName}: ${result.error}`)
+            .join(" | ")}`,
+        });
+      }
+      return {
+        stations,
+        perProfile: profileResults.map(
+          ({ stations: _stations, ...rest }) => rest
+        ),
+        totalProfiles: profiles.length,
+      };
     }
   ),
 
   getProductionSnapshot: requirePermission("meter-reads", "edit")
+    .input(
+      z.object({
+        stationId: z.string().min(1),
+        connectionId: z.string().min(1).optional(),
+        connectionScope: z.enum(["active", "all"]).optional(),
+        anchorDate: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/)
+          .optional(),
+      })
+    )
+    .mutation(async ({ input }) => {
+      const stationId = input.stationId.trim();
+      if (input.connectionScope === "all") {
+        const profiles = await loadHoymilesTeamProfiles();
+        if (profiles.length === 0) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: "No Hoymiles team credential available.",
+          });
+        }
+        return getHoymilesSnapshotAcrossProfiles(
+          profiles,
+          stationId,
+          input.anchorDate
+        );
+      }
+      const { getStationProductionSnapshot } =
+        await import("../services/solar/hoymiles");
+      const profile = await resolveHoymilesTeamProfile(input.connectionId);
+      const snapshot = (await getStationProductionSnapshot(
+        profile.context,
+        stationId,
+        input.anchorDate
+      )) as Record<string, unknown>;
+      return annotateHoymilesSnapshot(
+        snapshot,
+        profile,
+        1,
+        snapshot.status === "Found" || snapshot.found === true ? 1 : 0,
+        `${profile.name}: ${String(snapshot.status ?? "Unknown")}`
+      );
+    }),
+
+  getProductionSnapshotAllProfiles: requirePermission("meter-reads", "edit")
     .input(
       z.object({
         stationId: z.string().min(1),
@@ -3067,19 +3270,97 @@ const hoymilesRouter = t.router({
           .optional(),
       })
     )
-    .mutation(async ({ ctx, input }) => {
-      const { getStationProductionSnapshot } =
-        await import("../services/solar/hoymiles");
-      const context = await resolveHoymilesTeamContext(ctx.scopeId);
-      return getStationProductionSnapshot(
-        {
-          username: context.username,
-          password: context.password,
-          baseUrl: context.baseUrl,
-        },
+    .mutation(async ({ input }) => {
+      const profiles = await loadHoymilesTeamProfiles();
+      if (profiles.length === 0) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "No Hoymiles team credential available.",
+        });
+      }
+      return getHoymilesSnapshotAcrossProfiles(
+        profiles,
         input.stationId.trim(),
         input.anchorDate
       );
+    }),
+
+  getProductionSnapshots: requirePermission("meter-reads", "edit")
+    .input(
+      z.object({
+        stationIds: z.array(z.string().min(1)).min(1).max(5000),
+        connectionId: z.string().min(1).optional(),
+        connectionScope: z.enum(["active", "all"]).optional(),
+        anchorDate: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/)
+          .optional(),
+      })
+    )
+    .mutation(async ({ input }) => {
+      const stationIds = Array.from(
+        new Map(
+          input.stationIds
+            .map(stationId => stationId.trim())
+            .filter(Boolean)
+            .map(stationId => [stationId.toLowerCase(), stationId])
+        ).values()
+      );
+      const { mapWithConcurrency } =
+        await import("../services/core/concurrency");
+      const { getStationProductionSnapshot } =
+        await import("../services/solar/hoymiles");
+
+      const rows =
+        input.connectionScope === "all"
+          ? await (async () => {
+              const profiles = await loadHoymilesTeamProfiles();
+              if (profiles.length === 0) {
+                throw new TRPCError({
+                  code: "PRECONDITION_FAILED",
+                  message: "No Hoymiles team credential available.",
+                });
+              }
+              return mapWithConcurrency(stationIds, 4, stationId =>
+                getHoymilesSnapshotAcrossProfiles(
+                  profiles,
+                  stationId,
+                  input.anchorDate
+                )
+              );
+            })()
+          : await (async () => {
+              const profile = await resolveHoymilesTeamProfile(
+                input.connectionId
+              );
+              return mapWithConcurrency(stationIds, 4, async stationId => {
+                const snapshot = (await getStationProductionSnapshot(
+                  profile.context,
+                  stationId,
+                  input.anchorDate
+                )) as Record<string, unknown>;
+                return annotateHoymilesSnapshot(
+                  snapshot,
+                  profile,
+                  1,
+                  snapshot.status === "Found" || snapshot.found === true
+                    ? 1
+                    : 0,
+                  `${profile.name}: ${String(snapshot.status ?? "Unknown")}`
+                );
+              });
+            })();
+      const found = rows.filter(row => row.status === "Found").length;
+      const notFound = rows.filter(row => row.status === "Not Found").length;
+      const errored = rows.filter(row => row.status === "Error").length;
+      return {
+        total: rows.length,
+        found,
+        notFound,
+        errored,
+        connectionScope: input.connectionScope ?? "active",
+        rows,
+      };
     }),
 });
 
