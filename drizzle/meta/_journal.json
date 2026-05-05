@@ -386,6 +386,13 @@
       "when": 1777930836980,
       "tag": "0058_add_dashboard_csv_export_jobs",
       "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "5",
+      "when": 1778005332341,
+      "tag": "0059_add_tesla_powerhub_production_jobs",
+      "breakpoints": true
     }
   ]
 }
