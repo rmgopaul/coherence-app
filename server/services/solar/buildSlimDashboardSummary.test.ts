@@ -392,7 +392,17 @@ describe("getOrBuildSlimDashboardSummary", () => {
     expect(result.withValueDataCount).toBe(1);
   });
 
-  it("falls back to Solar Applications rawRow aliases when typed size/value columns are null", async () => {
+  it("treats null typed size/value columns as missing data — no rawRow fallback (v9 retirement)", async () => {
+    // v8 carried a rawRow fallback that re-parsed the JSON column
+    // when typed `installedKwAc` / `installedKwDc` /
+    // `totalContractAmount` were null. After the active-batch
+    // backfill (PR #386 operational run, 2026-05-05), typed
+    // columns are the source of truth; remaining nulls are
+    // genuinely missing data (empty cells in the source CSV).
+    // Retirement asserts: a row with null typed values + a rawRow
+    // that DOES contain extractable values still produces null
+    // counts in the slim summary — the fallback is genuinely
+    // gone, not just dead code waiting to come back.
     const systems = [makeCanonicalSystem("CSG-RAW", { isReporting: true })];
     runnerMocks.getOrBuildFoundation.mockResolvedValue({
       payload: makeFoundation(systems),
@@ -408,6 +418,9 @@ describe("getOrBuildSlimDashboardSummary", () => {
           installedKwAc: null,
           installedKwDc: null,
           totalContractAmount: null,
+          // rawRow ignored by v9 — the field is no longer in the
+          // SELECT projection. We include it here only to prove
+          // the fallback does NOT silently re-engage.
           rawRow: JSON.stringify({
             installed_system_size_kw_ac: "15",
             installed_system_size_kw_dc: "18.4",
@@ -419,12 +432,19 @@ describe("getOrBuildSlimDashboardSummary", () => {
 
     const { result } = await getOrBuildSlimDashboardSummary(SCOPE);
 
-    expect(result.largeSystems).toBe(1);
-    expect(result.unknownSizeSystems).toBe(0);
-    expect(result.cumulativeKwAcPart2).toBe(15);
-    expect(result.cumulativeKwDcPart2).toBe(18.4);
-    expect(result.totalContractedValue).toBe(25664.73);
-    expect(result.contractedValueReporting).toBe(25664.73);
+    // Null kW => row contributes to `unknownSizeSystems`, not
+    // any size bucket.
+    expect(result.unknownSizeSystems).toBe(1);
+    expect(result.smallSystems).toBe(0);
+    expect(result.largeSystems).toBe(0);
+    // Null kW => 0 contribution to cumulative AC, null
+    // cumulative DC (no DC data available case).
+    expect(result.cumulativeKwAcPart2).toBe(0);
+    expect(result.cumulativeKwDcPart2).toBeNull();
+    // Null contract amount => 0 contributed value, missing-data
+    // count incremented.
+    expect(result.totalContractedValue).toBe(0);
+    expect(result.contractedValueReporting).toBe(0);
   });
 
   it("computes ownership tile breakdown over Part-II-eligible non-terminated systems; terminated fields stay 0 per slim contract (PR #334 follow-up item 4 option B)", async () => {
@@ -1026,9 +1046,9 @@ describe("getOrBuildSlimDashboardSummary", () => {
     expect(foundationMocks.streamRowsByPage).not.toHaveBeenCalled();
   });
 
-  it("uses runner version v8 (Part-II headline total semantics)", () => {
+  it("uses runner version v9 (rawRow fallback retired)", () => {
     expect(SLIM_DASHBOARD_SUMMARY_RUNNER_VERSION).toBe(
-      "slim-dashboard-summary-v8"
+      "slim-dashboard-summary-v9"
     );
   });
 
