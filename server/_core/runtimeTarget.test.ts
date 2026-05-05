@@ -7,11 +7,13 @@
  * here lock the contract: detection precedence, opt-in truthy
  * values, env-arg testability.
  */
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   allowsLocalProdWrites,
   detectRuntimeTarget,
+  schedulerTickAllowed,
   shouldMutateProdState,
+  __resetSchedulerSkipLoggedForTests,
 } from "./runtimeTarget";
 
 describe("detectRuntimeTarget", () => {
@@ -126,5 +128,68 @@ describe("shouldMutateProdState", () => {
   it("returns true on hosted-prod even when NODE_ENV is unset (defensive)", () => {
     // Render injects RENDER but doesn't always set NODE_ENV.
     expect(shouldMutateProdState({ RENDER: "true" })).toBe(true);
+  });
+});
+
+describe("schedulerTickAllowed (Concern #4 PR-3)", () => {
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    __resetSchedulerSkipLoggedForTests();
+    warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
+  });
+
+  it("returns true on hosted-prod (tick proceeds)", () => {
+    expect(schedulerTickAllowed("scheduler-x", { RENDER: "true" })).toBe(true);
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it("returns true on local-dev WITH explicit opt-in", () => {
+    expect(
+      schedulerTickAllowed("scheduler-x", {
+        ALLOW_LOCAL_TO_PROD_WRITES: "true",
+      })
+    ).toBe(true);
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it("returns false on local-dev without opt-in (default safety case)", () => {
+    expect(schedulerTickAllowed("scheduler-x", {})).toBe(false);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("scheduler-x")
+    );
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("ALLOW_LOCAL_TO_PROD_WRITES")
+    );
+  });
+
+  it("returns false during test runs (NODE_ENV=test wins over opt-in)", () => {
+    // Mirrors the shouldMutateProdState test-isolation rule.
+    expect(
+      schedulerTickAllowed("scheduler-x", {
+        NODE_ENV: "test",
+        ALLOW_LOCAL_TO_PROD_WRITES: "true",
+      })
+    ).toBe(false);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("logs at most once per scheduler-name per process", () => {
+    expect(schedulerTickAllowed("chatty-sweeper", {})).toBe(false);
+    expect(schedulerTickAllowed("chatty-sweeper", {})).toBe(false);
+    expect(schedulerTickAllowed("chatty-sweeper", {})).toBe(false);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("logs once per distinct scheduler-name (different schedulers don't share quota)", () => {
+    expect(schedulerTickAllowed("scheduler-a", {})).toBe(false);
+    expect(schedulerTickAllowed("scheduler-b", {})).toBe(false);
+    expect(schedulerTickAllowed("scheduler-a", {})).toBe(false);
+    expect(warnSpy).toHaveBeenCalledTimes(2);
   });
 });

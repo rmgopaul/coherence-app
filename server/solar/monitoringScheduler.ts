@@ -12,6 +12,7 @@
  *   SOLAR_REC_MONITOR_DAYS=1,12,15,last (default; use "daily" to restore daily)
  */
 import { scheduleDaily } from "../_core/scheduleDaily";
+import { schedulerTickAllowed } from "../_core/runtimeTarget";
 import { resolveSolarRecScopeId } from "../_core/solarRecAuth";
 import { executeMonitoringBatch } from "./monitoring.service";
 import * as db from "../db";
@@ -79,6 +80,15 @@ export function shouldRunMonthlyMonitoring(dateKey: string): boolean {
 }
 
 async function runMonitoringBatch(dateKey: string): Promise<void> {
+  // Concern #4 PR-3 in-tick safety net (defense in depth). The
+  // boot-time gate in `startServer()` already prevents this
+  // scheduler from being registered on local-dev without
+  // `ALLOW_LOCAL_TO_PROD_WRITES`; this guard is the second layer
+  // for any future regression that bypasses that gate.
+  // `startScheduledMonitoringBatchManually` (the operator-triggered
+  // tRPC path) is intentionally NOT gated — explicit user actions
+  // are out of scope per the findings doc's Open Question #3.
+  if (!schedulerTickAllowed("monitoring-batch")) return;
   if (!shouldRunMonthlyMonitoring(dateKey)) {
     console.log(
       `[MonitoringScheduler] Skipping ${dateKey}; scheduled days are ${getMonthlyScheduleTokens().join(", ")}.`

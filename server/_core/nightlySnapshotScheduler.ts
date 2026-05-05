@@ -5,11 +5,16 @@ import {
   previousWeekKey,
 } from "../services/notifications/weeklyReview";
 import { scheduleDaily } from "./scheduleDaily";
+import { schedulerTickAllowed } from "./runtimeTarget";
 
 let stopScheduler: (() => void) | null = null;
 let stopWeeklyReviewScheduler: (() => void) | null = null;
 
 async function runNightlySnapshot(dateKey: string): Promise<void> {
+  // Concern #4 PR-3 in-tick safety net — see monitoringScheduler.ts
+  // for rationale. Defense-in-depth against future registration
+  // regressions; the boot gate in startServer() is the primary line.
+  if (!schedulerTickAllowed("nightly-snapshot")) return;
   console.log(`[Nightly Snapshot] Starting 10:00 PM capture for ${dateKey}...`);
   const results = await captureDailySnapshotForAllUsers(dateKey);
   console.log(
@@ -100,6 +105,9 @@ async function runNightlySnapshot(dateKey: string): Promise<void> {
  * full ~9 hours to capture (the nightly snapshot fires at 10pm).
  */
 async function runWeeklyReview(dateKey: string): Promise<void> {
+  // Concern #4 PR-3 in-tick safety net — same rationale as
+  // runNightlySnapshot above.
+  if (!schedulerTickAllowed("weekly-review")) return;
   const todayUtc = new Date(`${dateKey}T00:00:00Z`);
   // ISO weekday: Mon=1 ... Sun=7. We use UTC since dateKey is UTC.
   const isoDay = todayUtc.getUTCDay() || 7;
