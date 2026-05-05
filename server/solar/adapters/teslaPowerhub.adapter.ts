@@ -10,6 +10,7 @@
  */
 import {
   getTeslaPowerhubProductionMetrics,
+  listTeslaPowerhubSites,
   type TeslaPowerhubApiContext,
   type TeslaPowerhubSiteProductionMetrics,
 } from "../../services/solar/teslaPowerhub";
@@ -200,11 +201,25 @@ const adapter = {
 
     const sitesById = new Map<string, { siteId: string; siteName: string }>();
     const errors: string[] = [];
-    const anchorDate = new Date().toISOString().slice(0, 10);
     for (const connection of connections) {
       try {
-        const sites = await loadGroupSites(connection, anchorDate);
-        sites.forEach(site => {
+        const result = await listTeslaPowerhubSites(
+          {
+            clientId: connection.clientId,
+            clientSecret: connection.clientSecret,
+            tokenUrl: connection.tokenUrl,
+            apiBaseUrl: connection.apiBaseUrl,
+            portalBaseUrl: connection.portalBaseUrl,
+          },
+          {
+            groupId: connection.groupId,
+            endpointUrl: connection.endpointUrl,
+          }
+        );
+        if (result.sites.length === 0) {
+          throw new Error("No Tesla Powerhub sites discovered.");
+        }
+        result.sites.forEach(site => {
           if (sitesById.has(site.siteId)) return;
           sitesById.set(site.siteId, {
             siteId: site.siteId,
