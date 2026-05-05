@@ -822,15 +822,63 @@ export const srDsDeliverySchedule = mysqlTable(
 export type SrDsDeliverySchedule = typeof srDsDeliverySchedule.$inferSelect;
 export type InsertSrDsDeliverySchedule = typeof srDsDeliverySchedule.$inferInsert;
 
+// ────────────────────────────────────────────────────────────────────
+// srDsTransferHistory — GATS REC certificate transfer ledger.
+//
+// **Naming gotcha (read this before joining on `unitId`).** The
+// table holds every REC *certificate* transfer/delivery, NOT
+// system-ownership changes. A row says "N RECs moved from
+// `transferor` to `transferee` on `transferCompletionDate`",
+// allocated to an energy year (June 1 – May 31) by completion
+// date. Transfers from Carbon Solutions SREC to a utility count
+// as REC deliveries; reverse transfers are subtracted. The
+// upstream GATS export is the dashboard's "Transfer History
+// (GATS)" upload card.
+//
+// Misreading this table as ownership state shipped a real bug:
+// PR #380 (foundation v7) had to remove a `transferHistory` →
+// "ownership transferred" join because the unitId-match path was
+// triggering for ~23,700 CSGs (every system that ever delivered
+// RECs), inverting the Change-of-Ownership rollup. System
+// ownership transfers come from the ABP report's contract-type
+// (`IL ABP - Transferred`/`Terminated`) and the Zillow
+// `last_price_action_event` headers — NEVER from this table.
+//
+// What's safe to read here:
+//   - per-system delivered REC totals (sum `quantity` keyed by
+//     `unitId` filtered by `transferor`/`transferee` ∈ allowed
+//     parties)
+//   - per-energy-year delivery aggregates for the Delivery
+//     Tracker tab (`buildDeliveryTrackerData.ts`)
+//   - chronology of REC transactions for a single system
+//
+// What's NOT safe:
+//   - inferring that the underlying solar system changed hands
+//   - inferring that a system was terminated
+//   - any aggregate that joins `unitId` and treats matches as
+//     "system event" rather than "REC event"
+// ────────────────────────────────────────────────────────────────────
 export const srDsTransferHistory = mysqlTable(
   "srDsTransferHistory",
   {
     id: varchar("id", { length: 64 }).primaryKey(),
     scopeId: varchar("scopeId", { length: 64 }).notNull(),
     batchId: varchar("batchId", { length: 64 }).notNull(),
+    // GATS-issued transaction identifier for one REC transfer
+    // event (a "Transaction ID" or "transaction_id" header
+    // upstream). One row per REC bundle moved.
     transactionId: varchar("transactionId", { length: 64 }),
+    // GATS Unit ID for the system whose RECs moved. Joins to
+    // `solarApplications.tracking_system_ref_id` /
+    // `srDsAbpReport.tracking_system_ref_id`. **Joining here
+    // tells you a REC moved, NOT that the system changed
+    // owners.** See table-level comment.
     unitId: varchar("unitId", { length: 64 }),
+    // ISO-ish date string from the GATS export. Allocated to
+    // an energy year (June 1 – May 31) by `buildDeliveryTrackerData`.
     transferCompletionDate: varchar("transferCompletionDate", { length: 32 }),
+    // REC count moved in this transaction. Negative on reverse
+    // transfers — sum-keyed-by-unitId computes net delivered.
     quantity: double("quantity"),
     transferor: varchar("transferor", { length: 255 }),
     transferee: varchar("transferee", { length: 255 }),
