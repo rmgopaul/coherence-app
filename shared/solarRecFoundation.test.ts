@@ -111,10 +111,11 @@ describe("foundation constants", () => {
     // fixes in PR #323 + #324, this drops the cached JSON.parse
     // memory cost ~5x so 8 parallel tab aggregators don't OOM the
     // 4 GB Render Pro container.
-    // 2026-05-05 bumped to 7 — transferHistory no longer marks
-    // ownership transfer and Zillow sale events parse from active
-    // Solar Applications headers.
-    expect(FOUNDATION_DEFINITION_VERSION).toBe(7);
+    // 2026-05-05 bumped to 8 — transferHistory no longer marks
+    // ownership transfer, Zillow sale events parse from active Solar
+    // Applications headers, and Account Solar Generation recovers
+    // old meter reads from rawRow when the typed column is blank.
+    expect(FOUNDATION_DEFINITION_VERSION).toBe(8);
   });
 
   it("definition version matches the empty artifact's version", () => {
