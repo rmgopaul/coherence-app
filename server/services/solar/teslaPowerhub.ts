@@ -3396,10 +3396,19 @@ export async function getTeslaPowerhubGroupProductionMetricsCached(
 //   pattern (`vi.stubGlobal("fetch", ...)`) for solar adapters
 //   before tackling the multi-fetch site-discovery + telemetry paths.
 //
-// Still to come: site discovery (`listTeslaPowerhubSites` →
-// `requestClientCredentialsToken` then iterates through
-// `buildSiteDiscoveryCandidateUrls`); telemetry windows
-// (`getTeslaPowerhubProductionMetrics` →
+// Slice 4a (this PR): adds `fetchJsonWithBearerToken` — the
+//   foundational helper EVERY multi-fetch path uses
+//   (`fetchAccessibleSites`, `fetchAccessibleGroups`,
+//   `fetchGroupSites`, `fetchSiteExternalIds`,
+//   `fetchSingleSiteTelemetryTotal`, `fetchTelemetryWindowTotals`
+//   all delegate to it). A regression here breaks every downstream
+//   path. Outcomes: 200+JSON / non-OK / wrong content-type /
+//   timeout / external abort / network error.
+//
+// Still to come: URL-candidate iteration (`fetchAccessibleGroups`,
+// `fetchAccessibleSites`, `fetchGroupSites` — they wrap
+// `fetchJsonWithBearerToken` and try multiple URLs); telemetry
+// window totals (`getTeslaPowerhubProductionMetrics` →
 // `fetchTelemetryWindowTotals`).
 // ────────────────────────────────────────────────────────────────────
 export const __TEST_ONLY__ = {
@@ -3412,4 +3421,5 @@ export const __TEST_ONLY__ = {
   parseTimestampMs,
   isLikelySiteIdKey,
   requestClientCredentialsToken,
+  fetchJsonWithBearerToken,
 };
