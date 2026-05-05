@@ -5831,8 +5831,14 @@ const aiDataContext = useMemo(() => {
               <TabErrorBoundary tabLabel="Overview">
                 <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading overview tab...</div>}>
                   {summary === null ? (
-                    <div className="mt-4 text-sm text-slate-500">
-                      Loading dashboard summary…
+                    <div className="mt-4 space-y-2 rounded-md border border-slate-200 bg-white p-3 text-sm text-slate-600">
+                      <div className="flex items-center justify-between gap-3">
+                        <span>Loading dashboard summary…</span>
+                        <span className="text-xs font-medium text-slate-500">
+                          Preparing Overview
+                        </span>
+                      </div>
+                      <Progress value={65} className="h-2 bg-slate-100" />
                     </div>
                   ) : (
                   <OverviewTabLazy

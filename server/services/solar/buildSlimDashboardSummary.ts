@@ -9,7 +9,8 @@
  * populated by older alias lists.
  *
  * Coverage (every aggregate Overview needs on first paint):
- *   - System counts (foundation summaryCounts).
+ *   - Overview headline system counts over canonical Part-II verified
+ *     CSG systems (foundation Part-II summaryCounts).
  *   - Ownership tile breakdown (9-bucket reporting × transferred ×
  *     terminated counts) over Part-II-eligible systems.
  *   - Size buckets + per-bucket reporting/value rollup
@@ -97,15 +98,15 @@ import { getOrBuildFoundation } from "./foundationRunner";
 import { jsonSerde, withArtifactCache } from "./withArtifactCache";
 
 /**
- * v7 (2026-05-05) — Solar Applications size/value metrics now fall
- * back to rawRow aliases when typed `installedKwAc` / `installedKwDc`
- * / `totalContractAmount` are null. Cached v6 rows can put every
- * current Part-II system into the Unknown size bucket when the active
- * batch was ingested before those aliases were wired.
+ * v8 (2026-05-05) — Overview headline `totalSystems` /
+ * `reportingSystems` now use canonical Part-II verified CSG counts,
+ * matching the user-facing Part II Filter QA denominator. Cached v7
+ * rows used whole-portfolio counts and made the Overview Total Systems
+ * tile start at the wrong value until a heavier query replaced it.
  */
 export const SLIM_DASHBOARD_SUMMARY_RUNNER_VERSION =
-  "slim-dashboard-summary-v7" as const;
-const ARTIFACT_TYPE = "slim-dashboard-summary-v7";
+  "slim-dashboard-summary-v8" as const;
+const ARTIFACT_TYPE = "slim-dashboard-summary-v8";
 
 const SOLAR_APPLICATION_KW_AC_ALIASES = [
   "installedKwAc",
@@ -293,11 +294,12 @@ export interface SlimDashboardSummary {
   /** Discriminator so client consumers can branch on slim vs heavy explicitly. */
   kind: "slim";
 
-  // Core foundation counts (whole-portfolio, not Part-II-scoped).
+  // Overview headline counts (canonical Part-II verified CSG systems).
   totalSystems: number;
   reportingSystems: number;
   /** 0–100 (percentage points). */
   reportingPercent: number | null;
+  /** Portfolio-wide terminated count retained for the slim-only terminated tile. */
   terminatedSystems: number;
   part2VerifiedSystems: number;
   part2VerifiedAndReportingSystems: number;
@@ -869,8 +871,8 @@ async function computeSlimDashboardSummary(
   // narrow on `summary.kind === "heavy"` for the Part-II-scoped
   // breakdown. See type docstring + foundation walk above.
 
-  const totalSystems = foundation.summaryCounts.totalSystems;
-  const reportingSystems = foundation.summaryCounts.reporting;
+  const totalSystems = foundation.summaryCounts.part2Verified;
+  const reportingSystems = foundation.summaryCounts.part2VerifiedAndReporting;
   const reportingPercent = toPercentValue(reportingSystems, totalSystems);
   const contractedValueReportingPercent = toPercentValue(
     contractedValueReporting,

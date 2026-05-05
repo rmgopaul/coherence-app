@@ -317,6 +317,38 @@ describe("getOrBuildSlimDashboardSummary", () => {
     ).toBe(50);
   });
 
+  it("uses canonical Part-II verified CSG counts for Overview headline totals", async () => {
+    const systems = [
+      makeCanonicalSystem("CSG-1", { isReporting: true }),
+      makeCanonicalSystem("CSG-2", { isReporting: false }),
+      makeCanonicalSystem("CSG-OUT", {
+        isPart2Verified: false,
+        isReporting: true,
+      }),
+      makeCanonicalSystem("CSG-TERM", {
+        isTerminated: true,
+        isReporting: true,
+        ownershipStatus: "terminated",
+      }),
+    ];
+    runnerMocks.getOrBuildFoundation.mockResolvedValue({
+      payload: makeFoundation(systems),
+      fromCache: false,
+      fromInflight: false,
+      inputVersionHash: HASH,
+    });
+    setupStreamMock({});
+
+    const { result } = await getOrBuildSlimDashboardSummary(SCOPE);
+
+    expect(result.totalSystems).toBe(2);
+    expect(result.reportingSystems).toBe(1);
+    expect(result.reportingPercent).toBe(50);
+    expect(result.part2VerifiedSystems).toBe(2);
+    expect(result.part2VerifiedAndReportingSystems).toBe(1);
+    expect(result.terminatedSystems).toBe(1);
+  });
+
   it("dedupes Solar Applications rows by CSG ID — duplicate rows do not double-count", async () => {
     // One Part-II-eligible CSG with TWO duplicate solar rows.
     const systems = [makeCanonicalSystem("CSG-DUP", { isReporting: true })];
@@ -994,9 +1026,9 @@ describe("getOrBuildSlimDashboardSummary", () => {
     expect(foundationMocks.streamRowsByPage).not.toHaveBeenCalled();
   });
 
-  it("uses runner version v7 (raw Solar Applications size/value fallback)", () => {
+  it("uses runner version v8 (Part-II headline total semantics)", () => {
     expect(SLIM_DASHBOARD_SUMMARY_RUNNER_VERSION).toBe(
-      "slim-dashboard-summary-v7"
+      "slim-dashboard-summary-v8"
     );
   });
 

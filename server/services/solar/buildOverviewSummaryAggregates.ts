@@ -586,7 +586,7 @@ const OVERVIEW_SUMMARY_DEPS = ["abpReport"] as const;
 const ARTIFACT_TYPE = "overviewSummary-v2";
 
 export const OVERVIEW_SUMMARY_RUNNER_VERSION =
-  "phase-3.1-overview-foundation@1";
+  "phase-3.1-overview-foundation@2";
 
 async function computeOverviewSummaryInputHash(
   scopeId: string,
@@ -624,6 +624,12 @@ async function computeOverviewSummaryInputHash(
  * exercise the full foundation-overlay path without touching the
  * DB. Cached entrypoint passes already-loaded inputs.
  *
+ * Headline count fields (`totalSystems`, `reportingSystems`,
+ * `reportingPercent`) are canonical Part-II verified CSG-system
+ * counts from the foundation. The lower-level builder still walks
+ * ABP projects for ownership CSV rows; those rows are intentionally
+ * more granular and must not drive the Overview Total Systems card.
+ *
  * Display fields (systemName, contractedDate, zillowStatus, etc.)
  * and value math (totalContractAmount, deliveredValue) keep
  * snapshot values; `isReporting` / `isTerminated` / `isTransferred`
@@ -648,7 +654,15 @@ export function buildOverviewSummaryWithFoundationOverlay(
     if (!overlay) return sys;
     return { ...sys, ...overlay };
   });
-  return buildOverviewSummary({ part2VerifiedAbpRows, systems });
+  const aggregate = buildOverviewSummary({ part2VerifiedAbpRows, systems });
+  const totalSystems = foundation.summaryCounts.part2Verified;
+  const reportingSystems = foundation.summaryCounts.part2VerifiedAndReporting;
+  return {
+    ...aggregate,
+    totalSystems,
+    reportingSystems,
+    reportingPercent: toPercentValue(reportingSystems, totalSystems),
+  };
 }
 
 export async function getOrBuildOverviewSummary(
