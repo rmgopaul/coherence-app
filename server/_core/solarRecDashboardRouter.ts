@@ -266,14 +266,10 @@ import {
   parseJsonMetadata,
   toNonEmptyString,
   normalizeScheduleBDeliveryYears,
-  parseChunkPointerPayload,
-  parseScheduleBRemoteSourceManifest,
   parseCsvText,
-  parseRemoteCsvDataset,
   cleanScheduleBCell,
   loadDeliveryScheduleBaseDataset,
   parseContractIdMappingText,
-  buildTransferDeliveryLookup,
   findFirstTransferEnergyYear,
   makeDeliveryRowKey,
   scheduleRowsEqual,
@@ -290,6 +286,7 @@ import {
   persistDeliveryScheduleBaseCanonical,
   type DeliveryScheduleBaseRow,
 } from "../services/solar/deliveryScheduleBasePersistence";
+import type { TransferDeliveryLookupPayload } from "../services/solar/buildTransferDeliveryLookup";
 
 function stringifyDeliveryScheduleRows(
   rows: Array<Record<string, string | undefined>>
@@ -316,6 +313,43 @@ function inferDeliveryScheduleHeaders(
   return headers;
 }
 
+function reviveTransferDeliveryLookup(
+  payload: Pick<TransferDeliveryLookupPayload, "byTrackingId">
+): Map<string, Map<number, number>> {
+  const lookup = new Map<string, Map<number, number>>();
+  for (const [trackingId, years] of Object.entries(payload.byTrackingId)) {
+    if (!trackingId || !years || typeof years !== "object") continue;
+    const yearMap = new Map<number, number>();
+    for (const [yearKey, quantityValue] of Object.entries(years)) {
+      const year = Number(yearKey);
+      const quantity = Number(quantityValue);
+      if (!Number.isFinite(year) || !Number.isFinite(quantity)) continue;
+      yearMap.set(year, quantity);
+    }
+    if (yearMap.size > 0) {
+      lookup.set(trackingId.toLowerCase(), yearMap);
+    }
+  }
+  return lookup;
+}
+
+async function loadDeliveryScheduleBaseFromStorage(
+  userId: number
+): Promise<ParsedRemoteCsvDataset> {
+  return loadDeliveryScheduleBaseDataset(async (key) => {
+    const { key: storagePath, legacyKey: legacyStoragePath } =
+      await buildDashboardStorageKeys(userId, `datasets/${key}.json`);
+    return (
+      await loadDashboardPayload(
+        userId,
+        `dataset:${key}`,
+        storagePath,
+        legacyStoragePath
+      )
+    )?.payload ?? null;
+  });
+}
+
 async function loadCanonicalDeliveryScheduleBaseDataset(
   scopeId: string,
   userId: number
@@ -332,10 +366,17 @@ async function loadCanonicalDeliveryScheduleBaseDataset(
     const rows = stringifyDeliveryScheduleRows(
       await loadDatasetRows(scopeId, activeBatch.id, srDsDeliverySchedule)
     );
-    const expectedRows = Number(activeBatch.rowCount ?? 0);
-    if (expectedRows > 0 && rows.length === 0) {
+    const expectedRows =
+      activeBatch.rowCount === null || activeBatch.rowCount === undefined
+        ? null
+        : Number(activeBatch.rowCount);
+    if (
+      expectedRows !== null &&
+      Number.isFinite(expectedRows) &&
+      expectedRows !== rows.length
+    ) {
       throw new Error(
-        `Active deliveryScheduleBase batch ${activeBatch.id} reports ${expectedRows} row(s), but srDsDeliverySchedule returned 0. Aborting to avoid overwriting the canonical row table with stale cloud data.`
+        `Active deliveryScheduleBase batch ${activeBatch.id} reports ${expectedRows} row(s), but srDsDeliverySchedule returned ${rows.length}. Aborting because the row table is stale and proceeding would persist the partial set forward.`
       );
     }
     return {
@@ -349,9 +390,7 @@ async function loadCanonicalDeliveryScheduleBaseDataset(
     };
   }
 
-  return loadDeliveryScheduleBaseDataset((key) =>
-    getSolarRecDashboardPayload(userId, `dataset:${key}`)
-  );
+  return loadDeliveryScheduleBaseFromStorage(userId);
 }
 
 export const solarRecDashboardRouter = t.router({
@@ -1069,9 +1108,8 @@ export const solarRecDashboardRouter = t.router({
         "deliveryScheduleBase",
         ctx.userId
       );
-      const existingDataset = await loadDeliveryScheduleBaseDataset((key) =>
-        getSolarRecDashboardPayload(storageUserId, `dataset:${key}`)
-      );
+      const existingDataset =
+        await loadDeliveryScheduleBaseFromStorage(storageUserId);
       if (existingDataset.rows.length === 0) {
         return {
           success: false,
@@ -1675,32 +1713,6 @@ export const solarRecDashboardRouter = t.router({
         throw new Error("Schedule B import job not found.");
       }
 
-      const loadDatasetPayloadByKey = async (key: string): Promise<string | null> => {
-        const basePayload = await getSolarRecDashboardPayload(
-          ctx.userId,
-          `dataset:${key}`
-        );
-        if (!basePayload) return null;
-
-        const chunkKeys = parseChunkPointerPayload(basePayload);
-        if (!chunkKeys || chunkKeys.length === 0) {
-          return basePayload;
-        }
-
-        let merged = "";
-        for (const chunkKey of chunkKeys) {
-          const chunk = await getSolarRecDashboardPayload(
-            ctx.userId,
-            `dataset:${chunkKey}`
-          );
-          if (typeof chunk !== "string") {
-            return null;
-          }
-          merged += chunk;
-        }
-        return merged;
-      };
-
       // deliveryScheduleBase is row-table canonical. Fall back to the
       // legacy cloud blob only when no active srDs batch exists yet
       // (the production repair/backfill path uses that same fallback).
@@ -1739,29 +1751,12 @@ export const solarRecDashboardRouter = t.router({
         // Mapping unavailable — proceed without it.
       }
 
-      let transferHistoryRows: Array<Record<string, string>> = [];
-      const transferHistoryPayload = await loadDatasetPayloadByKey("transferHistory");
-      if (transferHistoryPayload) {
-        const sourceManifest = parseScheduleBRemoteSourceManifest(transferHistoryPayload);
-        if (sourceManifest && sourceManifest.length > 0) {
-          const latestSource = sourceManifest[sourceManifest.length - 1];
-          const sourcePayload = await loadDatasetPayloadByKey(latestSource.storageKey);
-          if (sourcePayload) {
-            const decoded =
-              latestSource.encoding === "base64"
-                ? Buffer.from(sourcePayload, "base64").toString("utf8")
-                : sourcePayload;
-            const parsedCsv = parseCsvText(decoded);
-            transferHistoryRows = parsedCsv.rows;
-          }
-        } else {
-          const parsed = parseRemoteCsvDataset(transferHistoryPayload);
-          if (parsed) {
-            transferHistoryRows = parsed.rows;
-          }
-        }
-      }
-      const transferDeliveryLookup = buildTransferDeliveryLookup(transferHistoryRows);
+      const { buildTransferDeliveryLookupForScope } = await import(
+        "../services/solar/buildTransferDeliveryLookup"
+      );
+      const transferDeliveryLookup = reviveTransferDeliveryLookup(
+        await buildTransferDeliveryLookupForScope(ctx.scopeId)
+      );
 
       const rawResults = await getAllScheduleBImportResults(job.id);
       const incomingRows: Array<Record<string, string>> = [];
