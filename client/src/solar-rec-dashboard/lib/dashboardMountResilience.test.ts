@@ -116,13 +116,30 @@ describe("Solar REC dashboard mount: heavy-query gates", () => {
   it("Part II Filter QA uses slim-summary counts before heavy queries load", () => {
     const start = code.indexOf("const part2FilterAudit = useMemo");
     expect(start).toBeGreaterThan(-1);
-    const block = code.slice(start, start + 900);
+    const block = code.slice(start, start + 1400);
     expect(block).toMatch(/slimSummary\?\.part2VerifiedAbpRowsCount/);
     expect(block).toMatch(/slimSummary\?\.abpEligibleTotalSystemsCount/);
     expect(block).toMatch(/slimSummary\?\.part2VerifiedSystems/);
+    expect(block).toMatch(/hasPart2SummaryCounts/);
     expect(block).toMatch(
       /toPercentValue\s*\(\s*scopedSystems\s*,\s*part2UniqueSystems\s*\)/
     );
+    expect(block).not.toMatch(
+      /part2VerifiedAbpRowsCount[\s\S]{0,160}\?\?\s*0/
+    );
+    expect(block).not.toMatch(
+      /abpEligibleTotalSystemsCount[\s\S]{0,180}\?\?\s*0/
+    );
+  });
+
+  it("Part II Filter QA renders unavailable summary state instead of 0 / 0", () => {
+    const start = code.indexOf("Part II Filter QA");
+    expect(start).toBeGreaterThan(-1);
+    const block = code.slice(start, start + 1500);
+    expect(block).toMatch(/hasPart2SummaryCounts/);
+    expect(block).toMatch(/Summary unavailable/);
+    expect(block).toMatch(/Loading summary\.\.\./);
+    expect(block).toMatch(/Part II pending/);
   });
 
   it("CSV export uses the background-job flow (start + poll), not an inline tRPC CSV fetch", () => {

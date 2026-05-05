@@ -18,6 +18,7 @@ import {
   installFetchBandwidthDiagnostics,
   largeResponseLogger,
 } from "./bandwidthDiagnostics";
+import { shouldRunSolarRecStartupCleanup } from "./startupCleanupPolicy";
 import {
   registerSolarRecAuth,
   authenticateSolarRecRequest,
@@ -186,45 +187,46 @@ async function startServer() {
 
   const server = createServer(app);
 
-  // Startup housekeeping: any compute_run left in "running" state is
-  // by definition orphaned (killed mid-compute by a Render restart,
-  // OOM, or deploy) — clear them so new requests don't have to wait
-  // 10 minutes for the self-heal threshold. Fire and forget; the DB
-  // layer is retryable and startup shouldn't block on this.
-  void (async () => {
-    try {
-      const {
-        clearOrphanedComputeRunsOnStartup,
-        clearOrphanedImportBatchesOnStartup,
-        archiveSupersededImportBatchesOnStartup,
-      } = await import(
-        "../db/solarRecDatasets"
-      );
-      const clearedBatches = await clearOrphanedImportBatchesOnStartup();
-      if (clearedBatches > 0) {
-        console.log(
-          `[startup] cleared ${clearedBatches} orphaned solar-rec import batch${clearedBatches === 1 ? "" : "es"}`
+  // Startup housekeeping mutates Solar REC job state. Run it in the
+  // hosted Render process, or in local/dev only when explicitly opted
+  // in, so a local server pointed at the production DB cannot mark a
+  // live production compute as orphaned.
+  if (shouldRunSolarRecStartupCleanup()) {
+    void (async () => {
+      try {
+        const {
+          clearOrphanedComputeRunsOnStartup,
+          clearOrphanedImportBatchesOnStartup,
+          archiveSupersededImportBatchesOnStartup,
+        } = await import(
+          "../db/solarRecDatasets"
+        );
+        const clearedBatches = await clearOrphanedImportBatchesOnStartup();
+        if (clearedBatches > 0) {
+          console.log(
+            `[startup] cleared ${clearedBatches} orphaned solar-rec import batch${clearedBatches === 1 ? "" : "es"}`
+          );
+        }
+        const archived = await archiveSupersededImportBatchesOnStartup();
+        if (archived.archivedBatches > 0) {
+          console.log(
+            `[startup] archived ${archived.archivedBatches} superseded solar-rec batch${archived.archivedBatches === 1 ? "" : "es"} and purged ${archived.purgedRows} retained row${archived.purgedRows === 1 ? "" : "s"}`
+          );
+        }
+        const cleared = await clearOrphanedComputeRunsOnStartup();
+        if (cleared > 0) {
+          console.log(
+            `[startup] cleared ${cleared} orphaned solar-rec compute run(s)`
+          );
+        }
+      } catch (err) {
+        console.warn(
+          "[startup] could not clear orphaned solar-rec jobs:",
+          err
         );
       }
-      const archived = await archiveSupersededImportBatchesOnStartup();
-      if (archived.archivedBatches > 0) {
-        console.log(
-          `[startup] archived ${archived.archivedBatches} superseded solar-rec batch${archived.archivedBatches === 1 ? "" : "es"} and purged ${archived.purgedRows} retained row${archived.purgedRows === 1 ? "" : "s"}`
-        );
-      }
-      const cleared = await clearOrphanedComputeRunsOnStartup();
-      if (cleared > 0) {
-        console.log(
-          `[startup] cleared ${cleared} orphaned solar-rec compute run(s)`
-        );
-      }
-    } catch (err) {
-      console.warn(
-        "[startup] could not clear orphaned solar-rec jobs:",
-        err
-      );
-    }
-  })();
+    })();
+  }
 
   // Security middleware (helmet, CORS, rate limiting) — must come first
   registerSecurityMiddleware(app);
