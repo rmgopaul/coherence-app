@@ -111,10 +111,27 @@ const HEARTBEAT_INTERVAL_MS = 30 * 1000; // 30 seconds
  * first setImmediate fires.
  */
 const MAX_LOCAL_RUNNERS = 2;
-const pendingRunnerJobIds: string[] = [];
+const EXPORT_RUNNER_TIMEOUT_MS = 25 * 60 * 1000; // 25 minutes
+
+interface PendingRunnerJob {
+  jobId: string;
+  runner: (jobId: string) => Promise<void>;
+}
+
+const pendingRunnerJobs: PendingRunnerJob[] = [];
 const pendingRunnerJobIdSet = new Set<string>();
 const activeRunnerJobIds = new Set<string>();
 let runnerDrainScheduled = false;
+
+class DashboardCsvExportTimeoutError extends Error {
+  constructor(jobId: string) {
+    super(
+      `dashboard CSV export job ${jobId} exceeded hard runtime limit ` +
+        `(${EXPORT_RUNNER_TIMEOUT_MS}ms)`
+    );
+    this.name = "DashboardCsvExportTimeoutError";
+  }
+}
 
 export type DashboardCsvExportInput =
   | { exportType: "ownershipTile"; tile: OwnershipTileKey }
@@ -365,24 +382,37 @@ export async function runCsvExportJob(jobId: string): Promise<void> {
 
   let uploadedKey: string | null = null;
   let completionRecorded = false;
+  let uploadedArtifactCleaned = false;
+  let successCompletionStarted = false;
+  const deadline = createRunnerDeadline(jobId);
+
+  const cleanupCurrentUploadedArtifact = async (reason: string) => {
+    if (!uploadedKey || completionRecorded || uploadedArtifactCleaned) return;
+    uploadedArtifactCleaned = true;
+    await cleanupUploadedArtifact(jobId, uploadedKey, reason);
+  };
 
   try {
-    const built = await buildExport(input, row.scopeId);
+    const built = await Promise.race([
+      buildExport(input, row.scopeId),
+      deadline.promise,
+    ]);
+    deadline.throwIfExpired();
     if (built.rowCount === 0) {
       // No rows match — skip the storage write entirely. The
       // client surfaces this case with a "no rows match" toast
       // and does not attempt a download.
-      const ok = await completeDashboardCsvExportJobSuccess(
-        row.scopeId,
-        jobId,
-        claimId,
-        {
+      successCompletionStarted = true;
+      const ok = await Promise.race([
+        completeDashboardCsvExportJobSuccess(row.scopeId, jobId, claimId, {
           fileName: built.fileName,
           artifactUrl: null,
           rowCount: 0,
           csvBytes: 0,
-        }
-      );
+        }),
+        deadline.promise,
+      ]);
+      successCompletionStarted = false;
       if (!ok) {
         // Lost our claim mid-flight (sweeper flipped us stale, or
         // heartbeat noticed in advance). No artifact was written
@@ -402,20 +432,25 @@ export async function runCsvExportJob(jobId: string): Promise<void> {
         "storageKeyForJob returned null after fileName was set"
       );
     }
-    await storagePut(key, built.csv, "text/csv; charset=utf-8");
+    await Promise.race([
+      storagePut(key, built.csv, "text/csv; charset=utf-8"),
+      deadline.promise,
+    ]);
     uploadedKey = key;
-    const { url } = await storageGet(key);
-    const ok = await completeDashboardCsvExportJobSuccess(
-      row.scopeId,
-      jobId,
-      claimId,
-      {
+    deadline.throwIfExpired();
+    const { url } = await Promise.race([storageGet(key), deadline.promise]);
+    deadline.throwIfExpired();
+    successCompletionStarted = true;
+    const ok = await Promise.race([
+      completeDashboardCsvExportJobSuccess(row.scopeId, jobId, claimId, {
         fileName: built.fileName,
         artifactUrl: url,
         rowCount: built.rowCount,
         csvBytes: Buffer.byteLength(built.csv, "utf8"),
-      }
-    );
+      }),
+      deadline.promise,
+    ]);
+    successCompletionStarted = false;
     if (!ok) {
       // Codex P2 follow-up (2026-05-04): lost claim AFTER
       // storagePut. The completion UPDATE didn't record fileName /
@@ -424,7 +459,7 @@ export async function runCsvExportJob(jobId: string): Promise<void> {
       // null for fileName=null). Without immediate cleanup the
       // artifact is genuinely orphaned. Best-effort delete here;
       // log + swallow if it fails.
-      await cleanupUploadedArtifact(jobId, key, "lost-claim");
+      await cleanupCurrentUploadedArtifact("lost-claim");
       metric.fail(new Error("lost claim before completion (success path)"));
       return;
     }
@@ -436,10 +471,25 @@ export async function runCsvExportJob(jobId: string): Promise<void> {
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    if (uploadedKey && !completionRecorded) {
-      await cleanupUploadedArtifact(jobId, uploadedKey, "post-upload-error");
+    const timedOutDuringSuccessCompletion =
+      err instanceof DashboardCsvExportTimeoutError &&
+      successCompletionStarted &&
+      !completionRecorded;
+    if (!timedOutDuringSuccessCompletion) {
+      await cleanupCurrentUploadedArtifact(
+        err instanceof DashboardCsvExportTimeoutError
+          ? "runner-timeout"
+          : "post-upload-error"
+      );
+    } else {
+      console.warn(
+        `${METRIC_PREFIX} runner timed out while success completion was ` +
+          `in flight for jobId=${jobId}; leaving artifact for the in-flight ` +
+          `completion to record. If completion never lands, storage lifecycle ` +
+          `cleanup must reclaim it.`
+      );
     }
-    if (!claimLost) {
+    if (!claimLost && !timedOutDuringSuccessCompletion) {
       await completeDashboardCsvExportJobFailure(
         row.scopeId,
         jobId,
@@ -449,6 +499,7 @@ export async function runCsvExportJob(jobId: string): Promise<void> {
     }
     metric.fail(err);
   } finally {
+    deadline.clear();
     clearInterval(heartbeat);
   }
 }
@@ -466,59 +517,55 @@ function scheduleCsvExportRunner(
     return false;
   }
   pendingRunnerJobIdSet.add(jobId);
-  pendingRunnerJobIds.push(jobId);
+  pendingRunnerJobs.push({ jobId, runner });
   if (!runnerDrainScheduled) {
     runnerDrainScheduled = true;
-    scheduler(() => drainScheduledRunnerQueue(runner, scheduler));
+    scheduler(() => drainScheduledRunnerQueue(scheduler));
   }
   return true;
 }
 
 function drainScheduledRunnerQueue(
-  runner: (jobId: string) => Promise<void> = runCsvExportJob,
   scheduler: (cb: () => void) => void = (cb) => setImmediate(cb)
 ): void {
   runnerDrainScheduled = false;
   while (
     activeRunnerJobIds.size < MAX_LOCAL_RUNNERS &&
-    pendingRunnerJobIds.length > 0
+    pendingRunnerJobs.length > 0
   ) {
-    const nextJobId = pendingRunnerJobIds.shift();
-    if (!nextJobId) continue;
-    pendingRunnerJobIdSet.delete(nextJobId);
-    if (activeRunnerJobIds.has(nextJobId)) continue;
-    activeRunnerJobIds.add(nextJobId);
+    const next = pendingRunnerJobs.shift();
+    if (!next) continue;
+    pendingRunnerJobIdSet.delete(next.jobId);
+    if (activeRunnerJobIds.has(next.jobId)) continue;
+    activeRunnerJobIds.add(next.jobId);
     Promise.resolve()
-      .then(() => runner(nextJobId))
+      .then(() => next.runner(next.jobId))
       .catch((err) => {
         console.error(
-          `${METRIC_PREFIX} runner threw for jobId=${nextJobId}: ${
+          `${METRIC_PREFIX} runner threw for jobId=${next.jobId}: ${
             err instanceof Error ? err.message : String(err)
           }`
         );
       })
       .finally(() => {
-        activeRunnerJobIds.delete(nextJobId);
-        if (pendingRunnerJobIds.length > 0) {
-          scheduleRunnerDrain(scheduler, runner);
+        activeRunnerJobIds.delete(next.jobId);
+        if (pendingRunnerJobs.length > 0) {
+          scheduleRunnerDrain(scheduler);
         }
       });
   }
   if (
-    pendingRunnerJobIds.length > 0 &&
+    pendingRunnerJobs.length > 0 &&
     activeRunnerJobIds.size < MAX_LOCAL_RUNNERS
   ) {
-    scheduleRunnerDrain(scheduler, runner);
+    scheduleRunnerDrain(scheduler);
   }
 }
 
-function scheduleRunnerDrain(
-  scheduler: (cb: () => void) => void,
-  runner: (jobId: string) => Promise<void>
-): void {
+function scheduleRunnerDrain(scheduler: (cb: () => void) => void): void {
   if (runnerDrainScheduled) return;
   runnerDrainScheduled = true;
-  scheduler(() => drainScheduledRunnerQueue(runner, scheduler));
+  scheduler(() => drainScheduledRunnerQueue(scheduler));
 }
 
 async function cleanupUploadedArtifact(
@@ -536,6 +583,35 @@ async function cleanupUploadedArtifact(
         }`
     );
   }
+}
+
+function createRunnerDeadline(jobId: string): {
+  promise: Promise<never>;
+  clear: () => void;
+  throwIfExpired: () => void;
+} {
+  let expired = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const timeoutError = new DashboardCsvExportTimeoutError(jobId);
+  const promise = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      expired = true;
+      reject(timeoutError);
+    }, EXPORT_RUNNER_TIMEOUT_MS);
+    const maybeUnref = timer as ReturnType<typeof setTimeout> & {
+      unref?: () => void;
+    };
+    if (typeof maybeUnref.unref === "function") maybeUnref.unref();
+  });
+  return {
+    promise,
+    clear: () => {
+      if (timer) clearTimeout(timer);
+    },
+    throwIfExpired: () => {
+      if (expired) throw timeoutError;
+    },
+  };
 }
 
 /**
@@ -684,15 +760,14 @@ export const __TEST_ONLY__ = {
   getClaimId,
   parseInputJson,
   storageKeyForJob,
-  scheduleCsvExportRunner,
   getRunnerSchedulerState: () => ({
-    pendingJobIds: [...pendingRunnerJobIds],
+    pendingJobIds: pendingRunnerJobs.map((job) => job.jobId),
     pendingJobIdSet: Array.from(pendingRunnerJobIdSet),
     activeJobIds: Array.from(activeRunnerJobIds),
     runnerDrainScheduled,
   }),
   resetRunnerSchedulerState: () => {
-    pendingRunnerJobIds.length = 0;
+    pendingRunnerJobs.length = 0;
     pendingRunnerJobIdSet.clear();
     activeRunnerJobIds.clear();
     runnerDrainScheduled = false;
@@ -701,4 +776,5 @@ export const __TEST_ONLY__ = {
   STALE_CLAIM_MS,
   HEARTBEAT_INTERVAL_MS,
   MAX_LOCAL_RUNNERS,
+  EXPORT_RUNNER_TIMEOUT_MS,
 };
