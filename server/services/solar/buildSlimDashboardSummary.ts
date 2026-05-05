@@ -1,9 +1,12 @@
 /**
  * True-slim dashboard mount summary.
  *
- * Output is fixed-shape, bounded peak heap (5000-row pages, no
- * `rawRow`), and cached separately under its own artifactType so
- * warm hits return without parsing the full foundation payload.
+ * Output is fixed-shape, bounded peak heap (5000-row pages), and
+ * cached separately under its own artifactType so warm hits return
+ * without parsing the full foundation payload. The Solar
+ * Applications pass includes `rawRow` only for a narrow fallback on
+ * already-ingested batches whose typed size/value columns were not
+ * populated by older alias lists.
  *
  * Coverage (every aggregate Overview needs on first paint):
  *   - System counts (foundation summaryCounts).
@@ -75,15 +78,13 @@
  * (percentage points), matching `aggregatorHelpers.toPercentValue`.
  */
 
-import {
-  srDsAbpReport,
-  srDsSolarApplications,
-} from "../../../drizzle/schema";
+import { srDsAbpReport, srDsSolarApplications } from "../../../drizzle/schema";
 import type {
   FoundationArtifactPayload,
   FoundationCanonicalSystem,
 } from "../../../shared/solarRecFoundation";
 import {
+  parseNumber,
   parsePart2VerificationDate,
   toPercentValue,
 } from "./aggregatorHelpers";
@@ -96,16 +97,87 @@ import { getOrBuildFoundation } from "./foundationRunner";
 import { jsonSerde, withArtifactCache } from "./withArtifactCache";
 
 /**
- * v6 (2026-05-04, PR #337 follow-up item 6) — `SlimOwnershipOverview`
- * stopped exposing `terminatedReporting / terminatedNotReporting /
- * terminatedTotal`. Those fields were structurally 0 on the slim
- * path (foundation excludes terminated from `part2EligibleCsgIds`)
- * and only invited silent-zero reads. Cached v5 rows under the old
- * shape are stale.
+ * v7 (2026-05-05) — Solar Applications size/value metrics now fall
+ * back to rawRow aliases when typed `installedKwAc` / `installedKwDc`
+ * / `totalContractAmount` are null. Cached v6 rows can put every
+ * current Part-II system into the Unknown size bucket when the active
+ * batch was ingested before those aliases were wired.
  */
 export const SLIM_DASHBOARD_SUMMARY_RUNNER_VERSION =
-  "slim-dashboard-summary-v6" as const;
-const ARTIFACT_TYPE = "slim-dashboard-summary-v6";
+  "slim-dashboard-summary-v7" as const;
+const ARTIFACT_TYPE = "slim-dashboard-summary-v7";
+
+const SOLAR_APPLICATION_KW_AC_ALIASES = [
+  "installedKwAc",
+  "installed_system_size_kw_ac",
+  "planned_system_size_kw_ac",
+  "financialDetail.contract_kw_ac",
+  "Inverter_Size_kW_AC_Part_2",
+  "Inverter_Size_kW_AC_Part_1",
+  "Installed kW AC",
+  "kW AC",
+  "AC kW",
+] as const;
+
+const SOLAR_APPLICATION_KW_DC_ALIASES = [
+  "installedKwDc",
+  "installed_system_size_kw_dc",
+  "planned_system_size_kw_dc",
+  "financialDetail.contract_kw_dc",
+  "Inverter_Size_kW_DC_Part_2",
+  "Inverter_Size_kW_DC_Part_1",
+  "Installed kW DC",
+  "kW DC",
+  "DC kW",
+] as const;
+
+const SOLAR_APPLICATION_TOTAL_CONTRACT_AMOUNT_ALIASES = [
+  "totalContractAmount",
+  "total_contract_amount",
+  "Total Contract Amount",
+  "Total Contract Value",
+] as const;
+
+function normalizeRawHeaderKey(key: string): string {
+  return key.toLowerCase().replace(/[_\s-]+/g, "");
+}
+
+function parseRawNumber(value: unknown): number | null {
+  if (value === null || value === undefined) return null;
+  return parseNumber(String(value));
+}
+
+function pickRawNumber(
+  rawRowJson: string | null | undefined,
+  aliases: readonly string[]
+): number | null {
+  if (!rawRowJson) return null;
+
+  let rawRow: Record<string, unknown>;
+  try {
+    rawRow = JSON.parse(rawRowJson) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+
+  for (const alias of aliases) {
+    const direct = parseRawNumber(rawRow[alias]);
+    if (direct !== null) return direct;
+  }
+
+  const byNormalizedKey = new Map<string, unknown>();
+  for (const [key, value] of Object.entries(rawRow)) {
+    byNormalizedKey.set(normalizeRawHeaderKey(key), value);
+  }
+
+  for (const alias of aliases) {
+    const value = byNormalizedKey.get(normalizeRawHeaderKey(alias));
+    const parsed = parseRawNumber(value);
+    if (parsed !== null) return parsed;
+  }
+
+  return null;
+}
 
 export type SizeBucket = "<=10 kW AC" | ">10 kW AC" | "Unknown";
 
@@ -281,9 +353,30 @@ const EMPTY_OWNERSHIP_OVERVIEW: SlimOwnershipOverview = {
 };
 
 const EMPTY_SIZE_BREAKDOWN: SlimSizeBreakdownRow[] = [
-  { bucket: "<=10 kW AC", total: 0, reporting: 0, notReporting: 0, reportingPercent: null, contractedValue: 0 },
-  { bucket: ">10 kW AC", total: 0, reporting: 0, notReporting: 0, reportingPercent: null, contractedValue: 0 },
-  { bucket: "Unknown", total: 0, reporting: 0, notReporting: 0, reportingPercent: null, contractedValue: 0 },
+  {
+    bucket: "<=10 kW AC",
+    total: 0,
+    reporting: 0,
+    notReporting: 0,
+    reportingPercent: null,
+    contractedValue: 0,
+  },
+  {
+    bucket: ">10 kW AC",
+    total: 0,
+    reporting: 0,
+    notReporting: 0,
+    reportingPercent: null,
+    contractedValue: 0,
+  },
+  {
+    bucket: "Unknown",
+    total: 0,
+    reporting: 0,
+    notReporting: 0,
+    reportingPercent: null,
+    contractedValue: 0,
+  },
 ];
 
 const EMPTY_CHANGE_OWNERSHIP: SlimChangeOwnership = {
@@ -297,7 +390,7 @@ const EMPTY_CHANGE_OWNERSHIP: SlimChangeOwnership = {
     contractedValueNotReporting: 0,
     contractedValueProjectsWithDataCount: 0,
     contractedValueProjectsMissingDataCount: 0,
-    counts: CHANGE_OWNERSHIP_STATUS_ORDER.map((status) => ({
+    counts: CHANGE_OWNERSHIP_STATUS_ORDER.map(status => ({
       status,
       count: 0,
       percent: null,
@@ -305,8 +398,18 @@ const EMPTY_CHANGE_OWNERSHIP: SlimChangeOwnership = {
   },
   cooNotTransferredNotReportingCurrentCount: 0,
   ownershipStackedChartRows: [
-    { label: "Reporting", notTransferred: 0, transferred: 0, changeOwnership: 0 },
-    { label: "Not Reporting", notTransferred: 0, transferred: 0, changeOwnership: 0 },
+    {
+      label: "Reporting",
+      notTransferred: 0,
+      transferred: 0,
+      changeOwnership: 0,
+    },
+    {
+      label: "Not Reporting",
+      notTransferred: 0,
+      transferred: 0,
+      changeOwnership: 0,
+    },
   ],
 };
 
@@ -451,6 +554,7 @@ async function computeSlimDashboardSummary(
       installedKwAc: number | null;
       installedKwDc: number | null;
       totalContractAmount: number | null;
+      rawRow: string | null;
     };
     await streamRowsByPage<SolarRow>(
       scopeId,
@@ -462,8 +566,9 @@ async function computeSlimDashboardSummary(
         installedKwAc: srDsSolarApplications.installedKwAc,
         installedKwDc: srDsSolarApplications.installedKwDc,
         totalContractAmount: srDsSolarApplications.totalContractAmount,
+        rawRow: srDsSolarApplications.rawRow,
       },
-      (row) => {
+      row => {
         const csgId = row.systemId;
         if (!csgId || !part2EligibleSet.has(csgId)) return;
         if (solarSeenCsgIds.has(csgId)) return; // first-row-wins dedupe
@@ -472,32 +577,40 @@ async function computeSlimDashboardSummary(
         const sys = foundation.canonicalSystemsByCsgId[csgId];
         if (!sys) return;
         const reporting = sys.isReporting;
+        const installedKwAc =
+          row.installedKwAc ??
+          pickRawNumber(row.rawRow, SOLAR_APPLICATION_KW_AC_ALIASES);
+        const installedKwDc =
+          row.installedKwDc ??
+          pickRawNumber(row.rawRow, SOLAR_APPLICATION_KW_DC_ALIASES);
+        const totalContractAmount =
+          row.totalContractAmount ??
+          pickRawNumber(
+            row.rawRow,
+            SOLAR_APPLICATION_TOTAL_CONTRACT_AMOUNT_ALIASES
+          );
         const hasAmount =
-          row.totalContractAmount !== null &&
-          Number.isFinite(row.totalContractAmount);
-        const amount = hasAmount ? (row.totalContractAmount as number) : 0;
+          totalContractAmount !== null && Number.isFinite(totalContractAmount);
+        const amount = hasAmount ? (totalContractAmount as number) : 0;
         if (hasAmount) solarContractedValueByCsg.set(csgId, amount);
 
         // Cumulative kW AC: sum of recorded values; null treated as 0.
-        cumulativeKwAcPart2 += row.installedKwAc ?? 0;
+        cumulativeKwAcPart2 += installedKwAc ?? 0;
 
         // Cumulative kW DC: track coverage explicitly so the UI can
         // distinguish "real zero" from "data not available."
         dcEligibleSystemCount++;
-        if (
-          row.installedKwDc !== null &&
-          Number.isFinite(row.installedKwDc)
-        ) {
-          cumulativeKwDcSum += row.installedKwDc;
+        if (installedKwDc !== null && Number.isFinite(installedKwDc)) {
+          cumulativeKwDcSum += installedKwDc;
           dcDataAvailableCount++;
         }
 
         // Size bucket.
         let bucket: SizeBucket;
-        if (row.installedKwAc === null) {
+        if (installedKwAc === null) {
           unknownSizeSystems++;
           bucket = "Unknown";
-        } else if (row.installedKwAc <= 10) {
+        } else if (installedKwAc <= 10) {
           smallSystems++;
           bucket = "<=10 kW AC";
         } else {
@@ -610,7 +723,7 @@ async function computeSlimDashboardSummary(
         projectName: srDsAbpReport.projectName,
         part2AppVerificationDate: srDsAbpReport.part2AppVerificationDate,
       },
-      (row) => {
+      row => {
         const idx = rowIndex++;
         // PR #334 follow-up item 3 (2026-05-02) — share the
         // canonical date parser with the foundation builder /
@@ -621,7 +734,11 @@ async function computeSlimDashboardSummary(
         // `isPart2VerifiedAbpRow` helper but skipped by slim,
         // causing a quiet count drift between slim and foundation
         // eligibility.
-        if (parsePart2VerificationDate(row.part2AppVerificationDate ?? undefined) === null) {
+        if (
+          parsePart2VerificationDate(
+            row.part2AppVerificationDate ?? undefined
+          ) === null
+        ) {
           return;
         }
         part2VerifiedAbpRowsCount++;
@@ -657,7 +774,7 @@ async function computeSlimDashboardSummary(
         // withdrawn ABP statuses even when the date column is
         // populated. `part2EligibleSet` is the canonical truth.
         const matchedEligible: FoundationCanonicalSystem[] = [];
-        Array.from(matchedByCsgId.values()).forEach((sys) => {
+        Array.from(matchedByCsgId.values()).forEach(sys => {
           if (sys.isPart2Verified && part2EligibleSet.has(sys.csgId)) {
             matchedEligible.push(sys);
           }
@@ -665,16 +782,16 @@ async function computeSlimDashboardSummary(
         if (matchedEligible.length === 0) return;
 
         // Project-level booleans over the eligible matched set.
-        const projectIsReporting = matchedEligible.some((s) => s.isReporting);
+        const projectIsReporting = matchedEligible.some(s => s.isReporting);
         const matchedEligibleNonTerminated = matchedEligible.filter(
-          (s) => !s.isTerminated
+          s => !s.isTerminated
         );
         const projectAllTerminated = matchedEligibleNonTerminated.length === 0;
         const projectHasTransferred = matchedEligibleNonTerminated.some(
-          (s) => s.ownershipStatus === "transferred"
+          s => s.ownershipStatus === "transferred"
         );
         const projectHasChangeOwnership = matchedEligibleNonTerminated.some(
-          (s) => s.ownershipStatus === "change-of-ownership"
+          s => s.ownershipStatus === "change-of-ownership"
         );
 
         // Status classification — mirrors heavy aggregator's
@@ -739,7 +856,8 @@ async function computeSlimDashboardSummary(
   }
 
   // ---- Assemble -----------------------------------------------------
-  const reportingOwnershipTotal = notTransferredReporting + transferredReporting;
+  const reportingOwnershipTotal =
+    notTransferredReporting + transferredReporting;
   const notReportingOwnershipTotal =
     notTransferredNotReporting + transferredNotReporting;
   // Foundation contract: terminated systems are excluded from the
@@ -760,14 +878,27 @@ async function computeSlimDashboardSummary(
   );
 
   const sizeBreakdownRows: SlimSizeBreakdownRow[] = [
-    buildBreakdownRow("<=10 kW AC", bucketSmallReporting, bucketSmallNotReporting),
-    buildBreakdownRow(">10 kW AC", bucketLargeReporting, bucketLargeNotReporting),
-    buildBreakdownRow("Unknown", bucketUnknownReporting, bucketUnknownNotReporting),
+    buildBreakdownRow(
+      "<=10 kW AC",
+      bucketSmallReporting,
+      bucketSmallNotReporting
+    ),
+    buildBreakdownRow(
+      ">10 kW AC",
+      bucketLargeReporting,
+      bucketLargeNotReporting
+    ),
+    buildBreakdownRow(
+      "Unknown",
+      bucketUnknownReporting,
+      bucketUnknownNotReporting
+    ),
   ];
 
   // Change-ownership counts using the project-status map.
   const statusCounts = new Map<ChangeOwnershipStatus, number>();
-  for (const status of CHANGE_OWNERSHIP_STATUS_ORDER) statusCounts.set(status, 0);
+  for (const status of CHANGE_OWNERSHIP_STATUS_ORDER)
+    statusCounts.set(status, 0);
   const projectStatuses = Array.from(projectStatusByDedupe.values());
   for (const status of projectStatuses) {
     statusCounts.set(status, (statusCounts.get(status) ?? 0) + 1);
@@ -785,7 +916,7 @@ async function computeSlimDashboardSummary(
   let changeOwnershipContractedValueNotReporting = 0;
   let changeOwnershipValueProjectsWithDataCount = 0;
   let changeOwnershipValueProjectsMissingDataCount = 0;
-  Array.from(projectStatusByDedupe.keys()).forEach((dedupeKey) => {
+  Array.from(projectStatusByDedupe.keys()).forEach(dedupeKey => {
     const reporting = projectReportingByDedupe.get(dedupeKey) ?? false;
     if (reporting) changeOwnershipReporting++;
 
@@ -801,10 +932,13 @@ async function computeSlimDashboardSummary(
   });
 
   const changeOwnershipCounts: SlimChangeOwnershipCount[] =
-    CHANGE_OWNERSHIP_STATUS_ORDER.map((status) => ({
+    CHANGE_OWNERSHIP_STATUS_ORDER.map(status => ({
       status,
       count: statusCounts.get(status) ?? 0,
-      percent: toPercentValue(statusCounts.get(status) ?? 0, changeOwnershipTotal),
+      percent: toPercentValue(
+        statusCounts.get(status) ?? 0,
+        changeOwnershipTotal
+      ),
     }));
 
   // DC null semantics: report null when no Part-II-eligible system
