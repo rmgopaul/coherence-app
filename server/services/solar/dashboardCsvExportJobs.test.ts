@@ -333,6 +333,7 @@ beforeEach(() => {
 
 afterEach(() => {
   __TEST_ONLY__.resetRunnerSchedulerState();
+  vi.useRealTimers();
   vi.clearAllMocks();
 });
 
@@ -404,6 +405,40 @@ describe("dashboardCsvExportJobs — start (DB-backed)", () => {
     await Promise.resolve();
     await Promise.resolve();
     expect(ranFor).toHaveLength(1);
+  });
+
+  it("preserves each queued job's injected runner", async () => {
+    let scheduledRunner: (() => void) | null = null;
+    const firstRunnerJobs: string[] = [];
+    const secondRunnerJobs: string[] = [];
+
+    const first = await startCsvExportJob(
+      SCOPE,
+      { exportType: "ownershipTile", tile: "reporting" },
+      async (jobId) => {
+        firstRunnerJobs.push(jobId);
+      },
+      (cb) => {
+        scheduledRunner = cb;
+      }
+    );
+    const second = await startCsvExportJob(
+      SCOPE,
+      { exportType: "ownershipTile", tile: "reporting" },
+      async (jobId) => {
+        secondRunnerJobs.push(jobId);
+      },
+      () => {
+        throw new Error("second enqueue should reuse the scheduled drain");
+      }
+    );
+
+    scheduledRunner!();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(firstRunnerJobs).toEqual([first.jobId]);
+    expect(secondRunnerJobs).toEqual([second.jobId]);
   });
 });
 
@@ -872,6 +907,35 @@ describe("dashboardCsvExportJobs — Codex P1: heartbeat keeps healthy long jobs
       "pid-W-host-z-cccccccc"
     );
     expect(refreshed).toBe(false);
+  });
+
+  it("fails and releases a hung export at the hard runner deadline", async () => {
+    vi.useFakeTimers();
+    const overviewMod = await import("./buildOverviewSummaryAggregates");
+    const getOverview =
+      overviewMod.getOrBuildOverviewSummary as unknown as ReturnType<
+        typeof vi.fn
+      >;
+    getOverview.mockImplementationOnce(
+      () => new Promise(() => undefined)
+    );
+    const dbHelpers = await import("../../db/dashboardCsvExportJobs");
+    await dbHelpers.insertDashboardCsvExportJob({
+      id: "hung-export",
+      scopeId: SCOPE,
+      input: { exportType: "ownershipTile", tile: "reporting" },
+      status: "queued",
+      runnerVersion: DASHBOARD_CSV_EXPORT_RUNNER_VERSION,
+    });
+
+    const runPromise = runCsvExportJob("hung-export");
+    await vi.advanceTimersByTimeAsync(__TEST_ONLY__.EXPORT_RUNNER_TIMEOUT_MS);
+    await runPromise;
+
+    const row = fakeFindById("hung-export");
+    expect(row?.status).toBe("failed");
+    expect(row?.errorMessage).toContain("exceeded hard runtime limit");
+    expect(__TEST_ONLY__.getRunnerSchedulerState().activeJobIds).toEqual([]);
   });
 });
 
