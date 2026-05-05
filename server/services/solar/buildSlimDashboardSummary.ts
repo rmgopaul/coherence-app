@@ -4,9 +4,12 @@
  * Output is fixed-shape, bounded peak heap (5000-row pages), and
  * cached separately under its own artifactType so warm hits return
  * without parsing the full foundation payload. The Solar
- * Applications pass includes `rawRow` only for a narrow fallback on
- * already-ingested batches whose typed size/value columns were not
- * populated by older alias lists.
+ * Applications pass reads typed columns directly — pre-2026-05-05
+ * versions carried a `rawRow` fallback for batches whose typed
+ * size/value columns were unpopulated by older alias lists. After
+ * the active-batch typed-column backfill (PR #386 + operational
+ * `backfillSrDsTypedColumnsFromRawRow.ts --batch <id>` run on
+ * 2026-05-05), the fallback was retired.
  *
  * Coverage (every aggregate Overview needs on first paint):
  *   - Overview headline system counts over canonical Part-II verified
@@ -85,7 +88,6 @@ import type {
   FoundationCanonicalSystem,
 } from "../../../shared/solarRecFoundation";
 import {
-  parseNumber,
   parsePart2VerificationDate,
   toPercentValue,
 } from "./aggregatorHelpers";
@@ -98,6 +100,17 @@ import { getOrBuildFoundation } from "./foundationRunner";
 import { jsonSerde, withArtifactCache } from "./withArtifactCache";
 
 /**
+ * v9 (2026-05-05) — Retired the rawRow fallback that v7/v8 used to
+ * paper over null typed columns on already-ingested
+ * `srDsSolarApplications` batches. The active batch's typed
+ * columns are now the source of truth: `installedKwAc` /
+ * `installedKwDc` / `totalContractAmount` come directly from the
+ * row, and rows where those are null after the
+ * `backfillSrDsTypedColumnsFromRawRow.ts` repair are genuinely
+ * missing data (empty cells in the source CSV). Net code
+ * reduction: `pickRawNumber` + 2 helpers + 3 alias arrays + the
+ * `rawRow` field on the SELECT projection are all gone.
+ *
  * v8 (2026-05-05) — Overview headline `totalSystems` /
  * `reportingSystems` now use canonical Part-II verified CSG counts,
  * matching the user-facing Part II Filter QA denominator. Cached v7
@@ -105,80 +118,8 @@ import { jsonSerde, withArtifactCache } from "./withArtifactCache";
  * tile start at the wrong value until a heavier query replaced it.
  */
 export const SLIM_DASHBOARD_SUMMARY_RUNNER_VERSION =
-  "slim-dashboard-summary-v8" as const;
-const ARTIFACT_TYPE = "slim-dashboard-summary-v8";
-
-const SOLAR_APPLICATION_KW_AC_ALIASES = [
-  "installedKwAc",
-  "installed_system_size_kw_ac",
-  "planned_system_size_kw_ac",
-  "financialDetail.contract_kw_ac",
-  "Inverter_Size_kW_AC_Part_2",
-  "Inverter_Size_kW_AC_Part_1",
-  "Installed kW AC",
-  "kW AC",
-  "AC kW",
-] as const;
-
-const SOLAR_APPLICATION_KW_DC_ALIASES = [
-  "installedKwDc",
-  "installed_system_size_kw_dc",
-  "planned_system_size_kw_dc",
-  "financialDetail.contract_kw_dc",
-  "Inverter_Size_kW_DC_Part_2",
-  "Inverter_Size_kW_DC_Part_1",
-  "Installed kW DC",
-  "kW DC",
-  "DC kW",
-] as const;
-
-const SOLAR_APPLICATION_TOTAL_CONTRACT_AMOUNT_ALIASES = [
-  "totalContractAmount",
-  "total_contract_amount",
-  "Total Contract Amount",
-  "Total Contract Value",
-] as const;
-
-function normalizeRawHeaderKey(key: string): string {
-  return key.toLowerCase().replace(/[_\s-]+/g, "");
-}
-
-function parseRawNumber(value: unknown): number | null {
-  if (value === null || value === undefined) return null;
-  return parseNumber(String(value));
-}
-
-function pickRawNumber(
-  rawRowJson: string | null | undefined,
-  aliases: readonly string[]
-): number | null {
-  if (!rawRowJson) return null;
-
-  let rawRow: Record<string, unknown>;
-  try {
-    rawRow = JSON.parse(rawRowJson) as Record<string, unknown>;
-  } catch {
-    return null;
-  }
-
-  for (const alias of aliases) {
-    const direct = parseRawNumber(rawRow[alias]);
-    if (direct !== null) return direct;
-  }
-
-  const byNormalizedKey = new Map<string, unknown>();
-  for (const [key, value] of Object.entries(rawRow)) {
-    byNormalizedKey.set(normalizeRawHeaderKey(key), value);
-  }
-
-  for (const alias of aliases) {
-    const value = byNormalizedKey.get(normalizeRawHeaderKey(alias));
-    const parsed = parseRawNumber(value);
-    if (parsed !== null) return parsed;
-  }
-
-  return null;
-}
+  "slim-dashboard-summary-v9" as const;
+const ARTIFACT_TYPE = "slim-dashboard-summary-v9";
 
 export type SizeBucket = "<=10 kW AC" | ">10 kW AC" | "Unknown";
 
@@ -556,7 +497,6 @@ async function computeSlimDashboardSummary(
       installedKwAc: number | null;
       installedKwDc: number | null;
       totalContractAmount: number | null;
-      rawRow: string | null;
     };
     await streamRowsByPage<SolarRow>(
       scopeId,
@@ -568,7 +508,6 @@ async function computeSlimDashboardSummary(
         installedKwAc: srDsSolarApplications.installedKwAc,
         installedKwDc: srDsSolarApplications.installedKwDc,
         totalContractAmount: srDsSolarApplications.totalContractAmount,
-        rawRow: srDsSolarApplications.rawRow,
       },
       row => {
         const csgId = row.systemId;
@@ -579,18 +518,12 @@ async function computeSlimDashboardSummary(
         const sys = foundation.canonicalSystemsByCsgId[csgId];
         if (!sys) return;
         const reporting = sys.isReporting;
-        const installedKwAc =
-          row.installedKwAc ??
-          pickRawNumber(row.rawRow, SOLAR_APPLICATION_KW_AC_ALIASES);
-        const installedKwDc =
-          row.installedKwDc ??
-          pickRawNumber(row.rawRow, SOLAR_APPLICATION_KW_DC_ALIASES);
-        const totalContractAmount =
-          row.totalContractAmount ??
-          pickRawNumber(
-            row.rawRow,
-            SOLAR_APPLICATION_TOTAL_CONTRACT_AMOUNT_ALIASES
-          );
+        // v9 (2026-05-05): typed columns are now the source of
+        // truth — the rawRow fallback was retired after the
+        // active-batch backfill in PR #386's operational run.
+        const installedKwAc = row.installedKwAc;
+        const installedKwDc = row.installedKwDc;
+        const totalContractAmount = row.totalContractAmount;
         const hasAmount =
           totalContractAmount !== null && Number.isFinite(totalContractAmount);
         const amount = hasAmount ? (totalContractAmount as number) : 0;
