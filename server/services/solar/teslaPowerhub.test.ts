@@ -58,6 +58,7 @@ const {
   parseTimestampMs,
   isLikelySiteIdKey,
   requestClientCredentialsToken,
+  fetchJsonWithBearerToken,
 } = __TEST_ONLY__;
 
 // ────────────────────────────────────────────────────────────────────
@@ -631,5 +632,243 @@ describe("requestClientCredentialsToken", () => {
     await expect(requestClientCredentialsToken(VALID_CONTEXT)).rejects.toThrow(
       /missing access_token/
     );
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────
+// fetchJsonWithBearerToken — integration tests w/ fetch mock
+// (Concern #1 slice 4a — covers the foundational helper EVERY
+//  multi-fetch path in this adapter delegates to)
+// ────────────────────────────────────────────────────────────────────
+
+/** Build a Response stand-in that exposes headers + json + text. */
+function buildBearerResponse(opts: {
+  ok: boolean;
+  status?: number;
+  statusText?: string;
+  contentType?: string;
+  body?: string;
+  json?: unknown;
+}): Response {
+  const status = opts.status ?? (opts.ok ? 200 : 500);
+  const headers = new Map<string, string>();
+  if (opts.contentType !== undefined) {
+    headers.set("content-type", opts.contentType);
+  }
+  return {
+    ok: opts.ok,
+    status,
+    statusText: opts.statusText ?? (opts.ok ? "OK" : "Internal Server Error"),
+    headers: {
+      get: (name: string) => headers.get(name.toLowerCase()) ?? null,
+    },
+    text: async () => opts.body ?? "",
+    json: async () =>
+      opts.json !== undefined
+        ? opts.json
+        : opts.body
+          ? JSON.parse(opts.body)
+          : null,
+  } as unknown as Response;
+}
+
+describe("fetchJsonWithBearerToken", () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("returns parsed JSON on a 200 + application/json response", async () => {
+    fetchMock.mockResolvedValueOnce(
+      buildBearerResponse({
+        ok: true,
+        contentType: "application/json",
+        json: { sites: [{ id: "site-1" }] },
+      })
+    );
+    const result = await fetchJsonWithBearerToken(
+      "https://example.com/sites",
+      "tok-abc"
+    );
+    expect(result).toEqual({ sites: [{ id: "site-1" }] });
+  });
+
+  it("sends Authorization: Bearer <token> + Accept: application/json headers", async () => {
+    fetchMock.mockResolvedValueOnce(
+      buildBearerResponse({
+        ok: true,
+        contentType: "application/json",
+        json: {},
+      })
+    );
+    await fetchJsonWithBearerToken("https://example.com/x", "tok-xyz");
+    const init = fetchMock.mock.calls[0][1] as RequestInit;
+    const headers = init.headers as Record<string, string>;
+    expect(headers["Authorization"]).toBe("Bearer tok-xyz");
+    expect(headers["Accept"]).toBe("application/json");
+  });
+
+  it("hits the URL passed in (verbatim, no rewriting)", async () => {
+    fetchMock.mockResolvedValueOnce(
+      buildBearerResponse({
+        ok: true,
+        contentType: "application/json",
+        json: {},
+      })
+    );
+    await fetchJsonWithBearerToken(
+      "https://gridlogic-api.sn.tesla.services/v2/sites/list",
+      "tok"
+    );
+    const [url] = fetchMock.mock.calls[0];
+    expect(url).toBe("https://gridlogic-api.sn.tesla.services/v2/sites/list");
+  });
+
+  it("throws on non-OK response with status + statusText", async () => {
+    fetchMock.mockResolvedValueOnce(
+      buildBearerResponse({
+        ok: false,
+        status: 401,
+        statusText: "Unauthorized",
+      })
+    );
+    await expect(
+      fetchJsonWithBearerToken("https://example.com/x", "tok")
+    ).rejects.toThrow(/401 Unauthorized/);
+  });
+
+  it("includes response body in the non-OK error message when present", async () => {
+    fetchMock.mockResolvedValueOnce(
+      buildBearerResponse({
+        ok: false,
+        status: 403,
+        statusText: "Forbidden",
+        body: '{"error":"insufficient_scope"}',
+      })
+    );
+    await expect(
+      fetchJsonWithBearerToken("https://example.com/x", "tok")
+    ).rejects.toThrow(/insufficient_scope/);
+  });
+
+  it("does NOT silently retry on 5xx (single attempt)", async () => {
+    fetchMock.mockResolvedValueOnce(
+      buildBearerResponse({
+        ok: false,
+        status: 503,
+        statusText: "Service Unavailable",
+      })
+    );
+    await expect(
+      fetchJsonWithBearerToken("https://example.com/x", "tok")
+    ).rejects.toThrow(/503/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("throws on a 200 with non-JSON content-type (e.g. HTML error page)", async () => {
+    // Defends against a class of upstream regressions where a Tesla
+    // gateway returns a 200 + HTML "maintenance" page. Without this
+    // guard, response.json() throws a less-actionable "Unexpected
+    // token <" error; the explicit content-type check surfaces a
+    // clearer message with a body preview.
+    fetchMock.mockResolvedValueOnce(
+      buildBearerResponse({
+        ok: true,
+        contentType: "text/html",
+        body: "<html><body>Maintenance</body></html>",
+      })
+    );
+    await expect(
+      fetchJsonWithBearerToken("https://example.com/x", "tok")
+    ).rejects.toThrow(/Unexpected content type.*text\/html/);
+  });
+
+  it("throws on a 200 with no content-type at all", async () => {
+    fetchMock.mockResolvedValueOnce(
+      buildBearerResponse({
+        ok: true,
+        contentType: undefined,
+        body: "{}",
+      })
+    );
+    await expect(
+      fetchJsonWithBearerToken("https://example.com/x", "tok")
+    ).rejects.toThrow(/Unexpected content type/);
+  });
+
+  it("includes a truncated body preview in the wrong-content-type error", async () => {
+    // Truncated to 200 chars — verify the preview is bounded so a
+    // 50 KB error page doesn't bloat logs.
+    const longBody = "x".repeat(500);
+    fetchMock.mockResolvedValueOnce(
+      buildBearerResponse({
+        ok: true,
+        contentType: "text/plain",
+        body: longBody,
+      })
+    );
+    const promise = fetchJsonWithBearerToken("https://example.com/x", "tok");
+    await expect(promise).rejects.toThrow(/text\/plain/);
+    try {
+      await promise;
+    } catch (err) {
+      const msg = (err as Error).message;
+      // The truncated portion should appear in the message...
+      expect(msg).toContain("x".repeat(200));
+      // ...but the full 500-char body should NOT (truncation works).
+      expect(msg).not.toContain("x".repeat(300));
+    }
+  });
+
+  it("translates a timeout to '(Request timed out after N ms)' when timeoutMs is set", async () => {
+    const timeoutErr = new Error("timeout");
+    timeoutErr.name = "TimeoutError";
+    fetchMock.mockRejectedValueOnce(timeoutErr);
+    await expect(
+      fetchJsonWithBearerToken("https://example.com/x", "tok", {
+        timeoutMs: 5000,
+      })
+    ).rejects.toThrow(/Request timed out after 5000 ms/);
+  });
+
+  it("re-throws an external AbortSignal abort verbatim (caller cancellation)", async () => {
+    // When the CALLER's signal aborts (not our internal timeout), we
+    // re-throw the original error so callers that distinguish abort
+    // vs timeout can do so. The implementation checks
+    // `options.signal.aborted` to disambiguate.
+    const controller = new AbortController();
+    controller.abort();
+    const abortErr = new Error("aborted by caller");
+    abortErr.name = "AbortError";
+    fetchMock.mockRejectedValueOnce(abortErr);
+    await expect(
+      fetchJsonWithBearerToken("https://example.com/x", "tok", {
+        signal: controller.signal,
+      })
+    ).rejects.toThrow(/aborted by caller/);
+  });
+
+  it("re-throws unrelated network errors verbatim (no timeout-message rewrite)", async () => {
+    fetchMock.mockRejectedValueOnce(new Error("ECONNREFUSED"));
+    await expect(
+      fetchJsonWithBearerToken("https://example.com/x", "tok")
+    ).rejects.toThrow(/ECONNREFUSED/);
+  });
+
+  it("does not synthesize a timeout message when no timeoutMs is set", async () => {
+    // Without timeoutMs, an AbortError on the underlying fetch
+    // shouldn't be remapped — operators would chase the wrong cause.
+    const abortErr = new Error("internal abort");
+    abortErr.name = "AbortError";
+    fetchMock.mockRejectedValueOnce(abortErr);
+    await expect(
+      fetchJsonWithBearerToken("https://example.com/x", "tok")
+    ).rejects.toThrow(/internal abort/);
   });
 });
