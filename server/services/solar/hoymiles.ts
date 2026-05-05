@@ -7,6 +7,9 @@ import {
   formatIsoDate,
   shiftIsoDate,
   shiftIsoDateByYears,
+  firstDayOfMonth,
+  firstDayOfPreviousMonth,
+  lastDayOfPreviousMonth,
   safeRound,
   sumKwh,
   isNotFoundError,
@@ -54,24 +57,6 @@ function toNullableString(value: unknown): string | null {
 // ---------------------------------------------------------------------------
 // Date helpers
 // ---------------------------------------------------------------------------
-
-function firstDayOfMonth(dateIso: string): string {
-  const parsed = parseIsoDate(dateIso);
-  if (!parsed) throw new Error("Dates must be in YYYY-MM-DD format.");
-  return formatIsoDate(new Date(parsed.year, parsed.month - 1, 1));
-}
-
-function firstDayOfPreviousMonth(dateIso: string): string {
-  const parsed = parseIsoDate(dateIso);
-  if (!parsed) throw new Error("Dates must be in YYYY-MM-DD format.");
-  return formatIsoDate(new Date(parsed.year, parsed.month - 2, 1));
-}
-
-function lastDayOfPreviousMonth(dateIso: string): string {
-  const parsed = parseIsoDate(dateIso);
-  if (!parsed) throw new Error("Dates must be in YYYY-MM-DD format.");
-  return formatIsoDate(new Date(parsed.year, parsed.month - 1, 0));
-}
 
 function asDateKey(value: string | null | undefined): string | null {
   const normalized = toNullableString(value);

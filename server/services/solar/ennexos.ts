@@ -8,6 +8,9 @@ import {
   formatIsoDate,
   shiftIsoDate,
   shiftIsoDateByYears,
+  firstDayOfMonth,
+  firstDayOfPreviousMonth,
+  lastDayOfPreviousMonth,
   safeRound,
   sumKwh,
   isNotFoundError,
@@ -71,26 +74,6 @@ export type EnnexOsDeviceSnapshot = {
   isOnline: boolean | null;
   error: string | null;
 };
-
-function firstDayOfMonth(dateIso: string): string {
-  const parsed = parseIsoDate(dateIso);
-  if (!parsed) throw new Error("Dates must be in YYYY-MM-DD format.");
-  return `${parsed.year}-${String(parsed.month).padStart(2, "0")}-01`;
-}
-
-function firstDayOfPreviousMonth(dateIso: string): string {
-  const parsed = parseIsoDate(dateIso);
-  if (!parsed) throw new Error("Dates must be in YYYY-MM-DD format.");
-  const date = new Date(parsed.year, parsed.month - 2, 1);
-  return formatIsoDate(date);
-}
-
-function lastDayOfPreviousMonth(dateIso: string): string {
-  const parsed = parseIsoDate(dateIso);
-  if (!parsed) throw new Error("Dates must be in YYYY-MM-DD format.");
-  const date = new Date(parsed.year, parsed.month - 1, 0);
-  return formatIsoDate(date);
-}
 
 function asDateKey(value: string | null | undefined): string | null {
   const normalized = toNullableString(value);

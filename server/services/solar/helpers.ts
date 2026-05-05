@@ -89,6 +89,24 @@ export function shiftIsoDateByYears(dateIso: string, deltaYears: number): string
   return formatIsoDate(date);
 }
 
+export function firstDayOfMonth(dateIso: string): string {
+  const parsed = parseIsoDate(dateIso);
+  if (!parsed) throw new Error("Dates must be in YYYY-MM-DD format.");
+  return formatIsoDate(new Date(parsed.year, parsed.month - 1, 1));
+}
+
+export function firstDayOfPreviousMonth(dateIso: string): string {
+  const parsed = parseIsoDate(dateIso);
+  if (!parsed) throw new Error("Dates must be in YYYY-MM-DD format.");
+  return formatIsoDate(new Date(parsed.year, parsed.month - 2, 1));
+}
+
+export function lastDayOfPreviousMonth(dateIso: string): string {
+  const parsed = parseIsoDate(dateIso);
+  if (!parsed) throw new Error("Dates must be in YYYY-MM-DD format.");
+  return formatIsoDate(new Date(parsed.year, parsed.month - 1, 0));
+}
+
 // ---------------------------------------------------------------------------
 // Numeric helpers
 // ---------------------------------------------------------------------------
