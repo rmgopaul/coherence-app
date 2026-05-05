@@ -1222,6 +1222,9 @@ function extractMigrationPayloads(
                     toNonEmptyString(connection.password) ??
                     toNonEmptyString(metadata.password) ??
                     toNonEmptyString(integration.accessToken),
+                  meterId:
+                    toNonEmptyString(connection.meterId) ??
+                    toNonEmptyString(metadata.meterId),
                 },
                 integration.provider,
                 sourceConnectionId
@@ -1251,6 +1254,7 @@ function extractMigrationPayloads(
                 password:
                   toNonEmptyString(metadata.password) ??
                   toNonEmptyString(integration.accessToken),
+                meterId: toNonEmptyString(metadata.meterId),
               },
               integration.provider,
               "legacy"
@@ -4886,160 +4890,738 @@ const sunpowerRouter = t.router({
 });
 
 // ---------------------------------------------------------------------------
-// Task 5.4 vendor 16/16 — eGauge. Final special case: each saved
-// credential row IS a meter profile, with its own baseUrl + accessType
-// + (optional) username/password/meterId. There is no "list sites"
-// concept — the device is the credential. The Settings form puts every
-// field directly into metadata as a JSON blob (including password —
-// matches the legacy main-router shape; admins manage it through
-// Solar REC Settings → Credentials with the existing form).
+// eGauge meter reads.
 //
-// Access types:
-//   - "public"          — no credentials, public-link meters
-//   - "user_login"      — username + password
-//   - "site_login"      — username + password (legacy alias)
-//   - "portfolio_login" — username + password against egauge.net portal
+// eGauge has two valid modes. Meter mode talks directly to one meter URL.
+// Portfolio mode logs into the eGuard portal and lists every system visible
+// to that account through /eguard/data/. The Solar REC migration stores each
+// saved profile as one team credential row, so this router adapts the original
+// eGauge feature surface to team credentials rather than personal integrations.
 // ---------------------------------------------------------------------------
+
+type EgaugeAccessType =
+  | "public"
+  | "user_login"
+  | "site_login"
+  | "portfolio_login";
 
 type EgaugeTeamMetadata = {
   baseUrl: string;
-  accessType: "public" | "user_login" | "site_login" | "portfolio_login";
+  accessType: EgaugeAccessType;
   username: string | null;
   password: string | null;
   meterId: string | null;
 };
 
-function parseEgaugeTeamMetadata(
-  raw: string | null
-): EgaugeTeamMetadata | null {
-  if (!raw) return null;
+type EgaugeCredentialRow = {
+  id: string;
+  connectionName: string;
+  context: {
+    baseUrl: string;
+    accessType: EgaugeAccessType;
+    username: string | null;
+    password: string | null;
+  };
+  meterId: string | null;
+};
+
+function isEgaugeAccessType(value: unknown): value is EgaugeAccessType {
+  return (
+    value === "public" ||
+    value === "user_login" ||
+    value === "site_login" ||
+    value === "portfolio_login"
+  );
+}
+
+function looksLikeEgaugePortalUrl(value: string | null): boolean {
+  if (!value) return false;
   try {
-    const parsed = JSON.parse(raw);
-    const baseUrl =
-      typeof parsed?.baseUrl === "string" && parsed.baseUrl.trim().length > 0
-        ? parsed.baseUrl.trim()
-        : null;
-    const accessTypeRaw =
-      typeof parsed?.accessType === "string"
-        ? parsed.accessType.trim().toLowerCase()
-        : "";
-    const accessType: EgaugeTeamMetadata["accessType"] | null =
-      accessTypeRaw === "public" ||
-      accessTypeRaw === "user_login" ||
-      accessTypeRaw === "site_login" ||
-      accessTypeRaw === "portfolio_login"
-        ? (accessTypeRaw as EgaugeTeamMetadata["accessType"])
-        : null;
-    if (!baseUrl || !accessType) return null;
-    return {
-      baseUrl,
-      accessType,
-      username:
-        typeof parsed?.username === "string" &&
-        parsed.username.trim().length > 0
-          ? parsed.username.trim()
-          : null,
-      password:
-        typeof parsed?.password === "string" && parsed.password.length > 0
-          ? parsed.password
-          : null,
-      meterId:
-        typeof parsed?.meterId === "string" && parsed.meterId.trim().length > 0
-          ? parsed.meterId.trim()
-          : null,
-    };
+    const parsed = new URL(
+      /^https?:\/\//i.test(value) ? value : `https://${value}`
+    );
+    const host = parsed.hostname.toLowerCase();
+    return host === "egauge.net" || host === "www.egauge.net";
   } catch {
-    return null;
+    return false;
   }
+}
+
+function deriveEgaugeMeterIdFromUrl(value: string | null): string | null {
+  if (!value || looksLikeEgaugePortalUrl(value)) return null;
+  try {
+    const parsed = new URL(
+      /^https?:\/\//i.test(value) ? value : `https://${value}`
+    );
+    const label = parsed.hostname.split(".")[0]?.trim();
+    return label && /^[A-Za-z0-9._-]+$/.test(label) ? label : null;
+  } catch {
+    const host = value
+      .replace(/^https?:\/\//i, "")
+      .split(/[/?#]/)[0]
+      ?.trim();
+    const label = host?.split(".")[0]?.trim();
+    return label && /^[A-Za-z0-9._-]+$/.test(label) ? label : null;
+  }
+}
+
+function buildEgaugeMeterUrl(meterId: string | null): string | null {
+  if (!meterId) return null;
+  return `https://${meterId}.d.egauge.net`;
+}
+
+function parseEgaugeTeamMetadata(
+  raw: string | null,
+  accessToken?: string | null
+): EgaugeTeamMetadata | null {
+  const parsed = parseMetadataRecord(raw);
+  const explicitMeterId = toNonEmptyString(parsed.meterId);
+  const baseUrl =
+    toNonEmptyString(parsed.baseUrl) ??
+    toNonEmptyString(parsed.deviceUrl) ??
+    buildEgaugeMeterUrl(explicitMeterId);
+  if (!baseUrl) return null;
+
+  const username = toNonEmptyString(parsed.username);
+  const password =
+    toNonEmptyString(parsed.password) ?? toNonEmptyString(accessToken);
+  const explicitAccessType = toNonEmptyString(parsed.accessType)?.toLowerCase();
+  const accessType = isEgaugeAccessType(explicitAccessType)
+    ? explicitAccessType
+    : username && password && looksLikeEgaugePortalUrl(baseUrl)
+      ? "portfolio_login"
+      : username && password
+        ? "user_login"
+        : "public";
+  const meterId =
+    explicitMeterId ??
+    (accessType === "portfolio_login"
+      ? null
+      : deriveEgaugeMeterIdFromUrl(baseUrl));
+
+  return {
+    baseUrl,
+    accessType,
+    username,
+    password,
+    meterId,
+  };
+}
+
+async function loadEgaugeCredentialRows(): Promise<EgaugeCredentialRow[]> {
+  const { getSolarRecTeamCredentialsByProvider } = await import("../db");
+  const credentials = await getSolarRecTeamCredentialsByProvider("egauge");
+  const rows: EgaugeCredentialRow[] = [];
+  for (const cred of credentials) {
+    const meta = parseEgaugeTeamMetadata(cred.metadata, cred.accessToken);
+    if (!meta) continue;
+    rows.push({
+      id: cred.id,
+      connectionName:
+        toNonEmptyString(cred.connectionName) ?? `eGauge ${rows.length + 1}`,
+      context: {
+        baseUrl: meta.baseUrl,
+        accessType: meta.accessType,
+        username: meta.username,
+        password: meta.password,
+      },
+      meterId: meta.meterId,
+    });
+  }
+  return rows;
+}
+
+function selectEgaugeCredential(
+  rows: EgaugeCredentialRow[],
+  connectionId?: string | null
+): EgaugeCredentialRow | null {
+  const requested = toNonEmptyString(connectionId);
+  if (requested) return rows.find(row => row.id === requested) ?? null;
+  return rows[0] ?? null;
+}
+
+async function resolveEgaugeCredential(
+  connectionId?: string | null
+): Promise<EgaugeCredentialRow> {
+  const rows = await loadEgaugeCredentialRows();
+  const selected = selectEgaugeCredential(rows, connectionId);
+  if (!selected) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: connectionId
+        ? "Selected eGauge profile was not found."
+        : "No eGauge team credential found. An admin must add one in Solar REC Settings -> Credentials.",
+    });
+  }
+  return selected;
+}
+
+function requireCompleteEgaugeCredential(row: EgaugeCredentialRow): void {
+  if (
+    row.context.accessType !== "public" &&
+    (!row.context.username || !row.context.password)
+  ) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message:
+        "eGauge login is incomplete for the selected profile. Save username and password in Solar REC Settings.",
+    });
+  }
+}
+
+function todayIsoDate(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function buildEgaugeMissingSnapshotRow(
+  meterId: string,
+  anchorDate: string,
+  status: "Not Found" | "Error",
+  error: string
+) {
+  return {
+    meterId,
+    meterName: null,
+    siteName: null,
+    status,
+    found: false,
+    lifetimeKwh: null,
+    hourlyProductionKwh: null,
+    monthlyProductionKwh: null,
+    mtdProductionKwh: null,
+    previousCalendarMonthProductionKwh: null,
+    last12MonthsProductionKwh: null,
+    weeklyProductionKwh: null,
+    dailyProductionKwh: null,
+    yearlyProductionKwh: null,
+    anchorDate,
+    monthlyStartDate: anchorDate,
+    weeklyStartDate: anchorDate,
+    mtdStartDate: anchorDate,
+    previousCalendarMonthStartDate: anchorDate,
+    previousCalendarMonthEndDate: anchorDate,
+    last12MonthsStartDate: anchorDate,
+    group: null,
+    job: null,
+    owner: null,
+    model: null,
+    firmware: null,
+    online: null,
+    availabilityPercent: null,
+    temperatureC: null,
+    proxyHost: null,
+    error,
+  };
+}
+
+function countEgaugeRows<T extends { status: "Found" | "Not Found" | "Error" }>(
+  rows: T[]
+): { found: number; notFound: number; errored: number } {
+  return {
+    found: rows.filter(row => row.status === "Found").length,
+    notFound: rows.filter(row => row.status === "Not Found").length,
+    errored: rows.filter(row => row.status === "Error").length,
+  };
 }
 
 const egaugeRouter = t.router({
   getStatus: requirePermission("meter-reads", "read").query(async () => {
-    const { getSolarRecTeamCredentialsByProvider } = await import("../db");
-    const credentials = await getSolarRecTeamCredentialsByProvider("egauge");
-    const profiles = credentials
-      .map((cred, index) => {
-        const meta = parseEgaugeTeamMetadata(cred.metadata);
-        if (!meta) return null;
-        return {
-          credentialId: cred.id,
-          name: cred.connectionName?.trim().length
-            ? cred.connectionName.trim()
-            : `eGauge ${index + 1}`,
-          baseUrl: meta.baseUrl,
-          accessType: meta.accessType,
-          username: meta.username,
-          hasPassword: !!meta.password,
-          defaultMeterId: meta.meterId,
-        };
-      })
-      .filter((p): p is NonNullable<typeof p> => p !== null);
+    const rows = await loadEgaugeCredentialRows();
     return {
-      connected: profiles.length > 0,
-      connectionCount: profiles.length,
-      profiles,
+      connected: rows.length > 0,
+      connectionCount: rows.length,
+      activeConnectionId: rows[0]?.id ?? null,
+      profiles: rows.map(row => ({
+        id: row.id,
+        credentialId: row.id,
+        name: row.connectionName,
+        baseUrl: row.context.baseUrl,
+        accessType: row.context.accessType,
+        username: row.context.username,
+        hasPassword: Boolean(row.context.password),
+        defaultMeterId: row.meterId,
+        isPortfolio: row.context.accessType === "portfolio_login",
+      })),
     };
   }),
+
+  getSystemInfo: requirePermission("meter-reads", "read")
+    .input(z.object({ connectionId: z.string().optional() }).optional())
+    .mutation(async ({ input }) => {
+      const row = await resolveEgaugeCredential(input?.connectionId);
+      requireCompleteEgaugeCredential(row);
+      if (row.context.accessType === "portfolio_login") {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message:
+            "System Info is meter-level. Use Fetch Portfolio Systems for portfolio access.",
+        });
+      }
+      const { getEgaugeSystemInfo } = await import("../services/solar/egauge");
+      return getEgaugeSystemInfo(row.context);
+    }),
+
+  getLocalData: requirePermission("meter-reads", "read")
+    .input(z.object({ connectionId: z.string().optional() }).optional())
+    .mutation(async ({ input }) => {
+      const row = await resolveEgaugeCredential(input?.connectionId);
+      requireCompleteEgaugeCredential(row);
+      if (row.context.accessType === "portfolio_login") {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message:
+            "Local Data is meter-level. Use Fetch Portfolio Systems for portfolio access.",
+        });
+      }
+      const { getEgaugeLocalData } = await import("../services/solar/egauge");
+      return getEgaugeLocalData(row.context);
+    }),
+
+  getRegisterLatest: requirePermission("meter-reads", "read")
+    .input(
+      z
+        .object({
+          connectionId: z.string().optional(),
+          register: z.string().optional(),
+          includeRate: z.boolean().optional(),
+        })
+        .optional()
+    )
+    .mutation(async ({ input }) => {
+      const row = await resolveEgaugeCredential(input?.connectionId);
+      requireCompleteEgaugeCredential(row);
+      if (row.context.accessType === "portfolio_login") {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message:
+            "Register Latest is meter-level. Use Fetch Portfolio Systems for portfolio access.",
+        });
+      }
+      const { getEgaugeRegisterLatest } =
+        await import("../services/solar/egauge");
+      return getEgaugeRegisterLatest(row.context, {
+        register: input?.register,
+        includeRate: input?.includeRate,
+      });
+    }),
+
+  getRegisterHistory: requirePermission("meter-reads", "read")
+    .input(
+      z.object({
+        connectionId: z.string().optional(),
+        startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+        endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+        intervalMinutes: z.number().int().min(1).max(1440).optional(),
+        register: z.string().optional(),
+        includeRate: z.boolean().optional(),
+      })
+    )
+    .mutation(async ({ input }) => {
+      const row = await resolveEgaugeCredential(input.connectionId);
+      requireCompleteEgaugeCredential(row);
+      if (row.context.accessType === "portfolio_login") {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message:
+            "Register History is meter-level. Use Fetch Portfolio Systems for portfolio access.",
+        });
+      }
+      const { getEgaugeRegisterHistory } =
+        await import("../services/solar/egauge");
+      return getEgaugeRegisterHistory(row.context, {
+        startDate: input.startDate,
+        endDate: input.endDate,
+        intervalMinutes: input.intervalMinutes ?? 15,
+        register: input.register,
+        includeRate: input.includeRate,
+      });
+    }),
+
+  getPortfolioSystems: requirePermission("meter-reads", "read")
+    .input(
+      z
+        .object({
+          connectionId: z.string().optional(),
+          filter: z.string().optional(),
+          groupId: z.string().optional(),
+          anchorDate: z
+            .string()
+            .regex(/^\d{4}-\d{2}-\d{2}$/)
+            .optional(),
+        })
+        .optional()
+    )
+    .mutation(async ({ input }) => {
+      const row = await resolveEgaugeCredential(input?.connectionId);
+      requireCompleteEgaugeCredential(row);
+      if (row.context.accessType !== "portfolio_login") {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message:
+            "Switch to a Portfolio Login profile, then run Fetch Portfolio Systems.",
+        });
+      }
+      const { getEgaugePortfolioSystems } =
+        await import("../services/solar/egauge");
+      const result = await getEgaugePortfolioSystems(row.context, {
+        filter: input?.filter,
+        groupId: input?.groupId,
+        anchorDate: input?.anchorDate,
+      });
+      return {
+        connectionId: row.id,
+        connectionName: row.connectionName,
+        meterId: row.meterId,
+        ...result,
+      };
+    }),
 
   getProductionSnapshot: requirePermission("meter-reads", "edit")
     .input(
       z.object({
-        credentialId: z.string().min(1),
+        connectionId: z.string().min(1).optional(),
+        credentialId: z.string().min(1).optional(),
         meterId: z.string().min(1).optional(),
         anchorDate: z
           .string()
           .regex(/^\d{4}-\d{2}-\d{2}$/)
           .optional(),
+        filter: z.string().optional(),
+        groupId: z.string().optional(),
       })
     )
     .mutation(async ({ input }) => {
-      const { getSolarRecTeamCredentialsByProvider } = await import("../db");
-      const credentials = await getSolarRecTeamCredentialsByProvider("egauge");
-      const cred = credentials.find(c => c.id === input.credentialId);
-      if (!cred) {
-        throw new TRPCError({
-          code: "NOT_FOUND",
-          message: "eGauge credential not found.",
-        });
-      }
-      const meta = parseEgaugeTeamMetadata(cred.metadata);
-      if (!meta) {
-        throw new TRPCError({
-          code: "PRECONDITION_FAILED",
-          message:
-            "eGauge credential is missing required metadata (baseUrl + accessType).",
-        });
-      }
-      if (meta.accessType !== "public" && (!meta.username || !meta.password)) {
-        throw new TRPCError({
-          code: "PRECONDITION_FAILED",
-          message:
-            "eGauge credential requires username + password for this access type.",
-        });
-      }
-      const meterId = input.meterId?.trim() || meta.meterId;
+      const row = await resolveEgaugeCredential(
+        input.connectionId ?? input.credentialId
+      );
+      requireCompleteEgaugeCredential(row);
+      const anchorDate = input.anchorDate ?? todayIsoDate();
+      const meterId = input.meterId?.trim() || row.meterId;
       if (!meterId) {
         throw new TRPCError({
           code: "BAD_REQUEST",
           message:
-            "Provide a meter ID, or set a default meter ID on the credential.",
+            "Provide a meter ID, or set a default meter ID on the eGauge credential.",
         });
       }
-      const anchorDate =
-        input.anchorDate ?? new Date().toISOString().slice(0, 10);
+
+      if (row.context.accessType === "portfolio_login") {
+        const { getEgaugePortfolioSystems } =
+          await import("../services/solar/egauge");
+        const portfolioResult = await getEgaugePortfolioSystems(row.context, {
+          filter: input.filter,
+          groupId: input.groupId,
+          anchorDate,
+        });
+        const matched = portfolioResult.rows.find(
+          candidate =>
+            candidate.meterId.trim().toLowerCase() === meterId.toLowerCase()
+        );
+        return (
+          matched ??
+          buildEgaugeMissingSnapshotRow(
+            meterId,
+            anchorDate,
+            "Not Found",
+            `Meter ID "${meterId}" was not returned by the portfolio site list.`
+          )
+        );
+      }
+
       const { getMeterProductionSnapshot } =
         await import("../services/solar/egauge");
       return getMeterProductionSnapshot(
-        {
-          baseUrl: meta.baseUrl,
-          accessType: meta.accessType,
-          username: meta.username,
-          password: meta.password,
-        },
+        row.context,
         meterId,
-        null,
+        row.connectionName,
         anchorDate
       );
+    }),
+
+  getProductionSnapshots: requirePermission("meter-reads", "edit")
+    .input(
+      z
+        .object({
+          connectionId: z.string().min(1).optional(),
+          credentialId: z.string().min(1).optional(),
+          meterIds: z.array(z.string().min(1)).max(5000).optional(),
+          anchorDate: z
+            .string()
+            .regex(/^\d{4}-\d{2}-\d{2}$/)
+            .optional(),
+          autoFetchPortfolioIds: z.boolean().optional(),
+          filter: z.string().optional(),
+          groupId: z.string().optional(),
+        })
+        .refine(
+          value =>
+            Boolean(value.autoFetchPortfolioIds) ||
+            (value.meterIds?.length ?? 0) > 0,
+          {
+            message:
+              "Provide at least one meter ID or enable portfolio auto-fetch.",
+            path: ["meterIds"],
+          }
+        )
+    )
+    .mutation(async ({ input }) => {
+      const rows = await loadEgaugeCredentialRows();
+      if (rows.length === 0) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "No eGauge team credential available.",
+        });
+      }
+      const requested = selectEgaugeCredential(
+        rows,
+        input.connectionId ?? input.credentialId
+      );
+      if (!requested) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "Selected eGauge profile was not found.",
+        });
+      }
+      requireCompleteEgaugeCredential(requested);
+
+      const anchorDate = input.anchorDate ?? todayIsoDate();
+      const uniqueMeterIds = Array.from(
+        new Map(
+          (input.meterIds ?? [])
+            .map(id => id.trim())
+            .filter(Boolean)
+            .map(id => [id.toLowerCase(), id])
+        ).values()
+      );
+      const usePortfolioBulk =
+        requested.context.accessType === "portfolio_login" ||
+        Boolean(input.autoFetchPortfolioIds);
+
+      if (usePortfolioBulk) {
+        if (requested.context.accessType !== "portfolio_login") {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message:
+              "Portfolio auto-fetch requires the selected eGauge profile to use Portfolio Login.",
+          });
+        }
+        const { getEgaugePortfolioSystems } =
+          await import("../services/solar/egauge");
+        const portfolioResult = await getEgaugePortfolioSystems(
+          requested.context,
+          {
+            filter: input.filter,
+            groupId: input.groupId,
+            anchorDate,
+          }
+        );
+        const byMeterId = new Map(
+          portfolioResult.rows.map(row => [
+            row.meterId.trim().toLowerCase(),
+            row,
+          ])
+        );
+        const resultRows =
+          uniqueMeterIds.length > 0
+            ? uniqueMeterIds.map(meterId => {
+                const matched = byMeterId.get(meterId.toLowerCase());
+                return (
+                  matched ??
+                  buildEgaugeMissingSnapshotRow(
+                    meterId,
+                    anchorDate,
+                    "Not Found",
+                    `Meter ID "${meterId}" was not returned by the portfolio site list.`
+                  )
+                );
+              })
+            : portfolioResult.rows;
+        const counts = countEgaugeRows(resultRows);
+        return {
+          total: resultRows.length,
+          ...counts,
+          source: "portfolio" as const,
+          connectionId: requested.id,
+          connectionName: requested.connectionName,
+          meterIdsUsed: resultRows.map(row => row.meterId),
+          rows: resultRows,
+        };
+      }
+
+      if (uniqueMeterIds.length === 0) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Provide at least one meter ID.",
+        });
+      }
+
+      const nonPortfolioByMeterId = new Map(
+        rows
+          .filter(
+            row => row.context.accessType !== "portfolio_login" && row.meterId
+          )
+          .map(row => [row.meterId!.toLowerCase(), row])
+      );
+      const { getMeterProductionSnapshot } =
+        await import("../services/solar/egauge");
+      const { mapWithConcurrency } =
+        await import("../services/core/concurrency");
+      const resultRows = await mapWithConcurrency(
+        uniqueMeterIds,
+        4,
+        async meterId => {
+          const row = nonPortfolioByMeterId.get(meterId.toLowerCase());
+          if (!row) {
+            return buildEgaugeMissingSnapshotRow(
+              meterId,
+              anchorDate,
+              "Not Found",
+              `No saved eGauge meter profile was found for meter ID "${meterId}".`
+            );
+          }
+          requireCompleteEgaugeCredential(row);
+          const snapshot = await getMeterProductionSnapshot(
+            row.context,
+            meterId,
+            row.connectionName,
+            anchorDate
+          );
+          return {
+            ...snapshot,
+            siteName: null,
+            group: null,
+            job: null,
+            owner: null,
+            model: null,
+            firmware: null,
+            online: null,
+            availabilityPercent: null,
+            temperatureC: null,
+            proxyHost: null,
+            monthlyProductionKwh: null,
+            mtdProductionKwh: null,
+            previousCalendarMonthProductionKwh: null,
+            last12MonthsProductionKwh: null,
+            weeklyProductionKwh: null,
+            dailyProductionKwh: null,
+            yearlyProductionKwh: null,
+            hourlyProductionKwh: null,
+          };
+        }
+      );
+      const counts = countEgaugeRows(resultRows);
+      return {
+        total: resultRows.length,
+        ...counts,
+        source: "saved_connections" as const,
+        meterIdsUsed: uniqueMeterIds,
+        rows: resultRows,
+      };
+    }),
+
+  getAllPortfolioSnapshots: requirePermission("meter-reads", "edit")
+    .input(
+      z
+        .object({
+          filter: z.string().optional(),
+          groupId: z.string().optional(),
+          anchorDate: z
+            .string()
+            .regex(/^\d{4}-\d{2}-\d{2}$/)
+            .optional(),
+        })
+        .optional()
+    )
+    .mutation(async ({ input }) => {
+      const rows = await loadEgaugeCredentialRows();
+      const portfolioRows = rows.filter(
+        row =>
+          row.context.accessType === "portfolio_login" &&
+          row.context.username &&
+          row.context.password
+      );
+      if (portfolioRows.length === 0) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message:
+            "No Portfolio Login eGauge profiles found. Add one in Solar REC Settings first.",
+        });
+      }
+
+      const { getEgaugePortfolioSystems } =
+        await import("../services/solar/egauge");
+      const seenMeterIds = new Set<string>();
+      const mergedRows: Array<
+        Record<string, unknown> & { status: "Found" | "Not Found" | "Error" }
+      > = [];
+      const portfolioResults: Array<{
+        connectionId: string;
+        connectionName: string;
+        username: string | null;
+        total: number;
+        found: number;
+        error: string | null;
+      }> = [];
+
+      for (const row of portfolioRows) {
+        try {
+          const result = await getEgaugePortfolioSystems(row.context, {
+            filter: input?.filter,
+            groupId: input?.groupId,
+            anchorDate: input?.anchorDate,
+          });
+          portfolioResults.push({
+            connectionId: row.id,
+            connectionName: row.connectionName,
+            username: row.context.username,
+            total: result.total,
+            found: result.found,
+            error: null,
+          });
+          for (const snapshot of result.rows) {
+            const key = snapshot.meterId.trim().toLowerCase();
+            if (!key || seenMeterIds.has(key)) continue;
+            seenMeterIds.add(key);
+            mergedRows.push({
+              ...snapshot,
+              portfolioAccount: row.context.username,
+              portfolioConnectionId: row.id,
+              portfolioConnectionName: row.connectionName,
+            });
+          }
+        } catch (err) {
+          portfolioResults.push({
+            connectionId: row.id,
+            connectionName: row.connectionName,
+            username: row.context.username,
+            total: 0,
+            found: 0,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+
+      if (
+        mergedRows.length === 0 &&
+        portfolioResults.length > 0 &&
+        portfolioResults.every(result => result.error)
+      ) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `All eGauge portfolio snapshots failed: ${portfolioResults
+            .map(result => `${result.connectionName}: ${result.error}`)
+            .join(" | ")}`,
+        });
+      }
+
+      const counts = countEgaugeRows(mergedRows);
+      return {
+        portfolioCount: portfolioRows.length,
+        portfolioResults,
+        total: mergedRows.length,
+        ...counts,
+        rows: mergedRows,
+      };
     }),
 });
 
