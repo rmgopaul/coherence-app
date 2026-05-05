@@ -3379,3 +3379,24 @@ export async function getTeslaPowerhubGroupProductionMetricsCached(
   });
   return result;
 }
+
+// ────────────────────────────────────────────────────────────────────
+// Test surface — internal pure helpers exported for unit-test access
+// without polluting the production import surface. Concern #1 from
+// the PRs 366-383 review: vendor-restoration PRs (#368, #371, #373)
+// shipped without adapter-level vitest specs. Tests against this
+// surface form the first slice of that coverage gap. Network-bound
+// integration paths (`getTeslaPowerhubProductionMetrics`,
+// `getTeslaPowerhubAccessibleGroups`, `listTeslaPowerhubSites`) are
+// follow-up PRs that mock fetch.
+// ────────────────────────────────────────────────────────────────────
+export const __TEST_ONLY__ = {
+  normalizeTimeoutMs,
+  isAbortOrTimeoutError,
+  buildBasicAuth,
+  parseJsonBody,
+  formatPayloadPreview,
+  parseTokenPayload,
+  parseTimestampMs,
+  isLikelySiteIdKey,
+};
