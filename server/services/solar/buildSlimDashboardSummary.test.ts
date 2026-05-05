@@ -42,9 +42,10 @@ vi.mock("./buildFoundationArtifact", async () => {
 });
 
 vi.mock("./foundationRunner", async () => {
-  const actual = await vi.importActual<typeof import("./foundationRunner")>(
-    "./foundationRunner"
-  );
+  const actual =
+    await vi.importActual<typeof import("./foundationRunner")>(
+      "./foundationRunner"
+    );
   return {
     ...actual,
     getOrBuildFoundation: runnerMocks.getOrBuildFoundation,
@@ -104,12 +105,12 @@ function makeFoundation(
   // fixtures that pretend otherwise model a state production
   // can't reach. PR #334 follow-up item 4 (option B, 2026-05-02).
   const part2 = systemRecords
-    .filter((s) => s.isPart2Verified && !s.isTerminated)
-    .map((s) => s.csgId);
+    .filter(s => s.isPart2Verified && !s.isTerminated)
+    .map(s => s.csgId);
   const reporting = systemRecords
-    .filter((s) => s.isReporting && !s.isTerminated)
-    .map((s) => s.csgId);
-  const terminated = systemRecords.filter((s) => s.isTerminated).length;
+    .filter(s => s.isReporting && !s.isTerminated)
+    .map(s => s.csgId);
+  const terminated = systemRecords.filter(s => s.isTerminated).length;
   const totalNonTerminated = systemRecords.length - terminated;
   return {
     schemaVersion: 1,
@@ -118,7 +119,10 @@ function makeFoundation(
     builtAt: new Date(0).toISOString(),
     reportingAnchorDateIso: "2026-04-01",
     inputVersions: {
-      solarApplications: { batchId: "solar-batch", rowCount: systemRecords.length },
+      solarApplications: {
+        batchId: "solar-batch",
+        rowCount: systemRecords.length,
+      },
       abpReport: { batchId: "abp-batch", rowCount: 4 },
       generationEntry: { batchId: null, rowCount: 0 },
       accountSolarGeneration: { batchId: null, rowCount: 0 },
@@ -147,7 +151,7 @@ function makeFoundation(
       part2Verified: part2.length,
       reporting: reporting.length,
       part2VerifiedAndReporting: systemRecords.filter(
-        (s) => s.isPart2Verified && s.isReporting && !s.isTerminated
+        s => s.isPart2Verified && s.isReporting && !s.isTerminated
       ).length,
     },
     integrityWarnings: [],
@@ -176,6 +180,7 @@ type SolarRow = {
   installedKwAc: number | null;
   installedKwDc: number | null;
   totalContractAmount: number | null;
+  rawRow?: string | null;
 };
 
 type AbpRow = {
@@ -187,10 +192,7 @@ type AbpRow = {
   part2AppVerificationDate: string | null;
 };
 
-function setupStreamMock(opts: {
-  solarRows?: SolarRow[];
-  abpRows?: AbpRow[];
-}) {
+function setupStreamMock(opts: { solarRows?: SolarRow[]; abpRows?: AbpRow[] }) {
   foundationMocks.streamRowsByPage.mockImplementation(
     async (
       _scopeId: string,
@@ -274,10 +276,34 @@ describe("getOrBuildSlimDashboardSummary", () => {
     });
     setupStreamMock({
       solarRows: [
-        { id: "1", systemId: "CSG-1", installedKwAc: 8, installedKwDc: null, totalContractAmount: 100 },
-        { id: "2", systemId: "CSG-2", installedKwAc: 8, installedKwDc: null, totalContractAmount: 100 },
-        { id: "3", systemId: "CSG-3", installedKwAc: 8, installedKwDc: null, totalContractAmount: 100 },
-        { id: "4", systemId: "CSG-4", installedKwAc: 8, installedKwDc: null, totalContractAmount: 100 },
+        {
+          id: "1",
+          systemId: "CSG-1",
+          installedKwAc: 8,
+          installedKwDc: null,
+          totalContractAmount: 100,
+        },
+        {
+          id: "2",
+          systemId: "CSG-2",
+          installedKwAc: 8,
+          installedKwDc: null,
+          totalContractAmount: 100,
+        },
+        {
+          id: "3",
+          systemId: "CSG-3",
+          installedKwAc: 8,
+          installedKwDc: null,
+          totalContractAmount: 100,
+        },
+        {
+          id: "4",
+          systemId: "CSG-4",
+          installedKwAc: 8,
+          installedKwDc: null,
+          totalContractAmount: 100,
+        },
       ],
     });
 
@@ -286,7 +312,7 @@ describe("getOrBuildSlimDashboardSummary", () => {
     expect(result.reportingPercent).toBe(50);
     expect(result.contractedValueReportingPercent).toBe(50);
     expect(
-      result.sizeBreakdownRows.find((r) => r.bucket === "<=10 kW AC")!
+      result.sizeBreakdownRows.find(r => r.bucket === "<=10 kW AC")!
         .reportingPercent
     ).toBe(50);
   });
@@ -303,9 +329,21 @@ describe("getOrBuildSlimDashboardSummary", () => {
     setupStreamMock({
       solarRows: [
         // First row wins — its values are what slim aggregates.
-        { id: "1", systemId: "CSG-DUP", installedKwAc: 8, installedKwDc: 10, totalContractAmount: 100 },
+        {
+          id: "1",
+          systemId: "CSG-DUP",
+          installedKwAc: 8,
+          installedKwDc: 10,
+          totalContractAmount: 100,
+        },
         // Second row is a duplicate — must be skipped entirely.
-        { id: "2", systemId: "CSG-DUP", installedKwAc: 999, installedKwDc: 999, totalContractAmount: 99999 },
+        {
+          id: "2",
+          systemId: "CSG-DUP",
+          installedKwAc: 999,
+          installedKwDc: 999,
+          totalContractAmount: 99999,
+        },
       ],
     });
 
@@ -322,6 +360,41 @@ describe("getOrBuildSlimDashboardSummary", () => {
     expect(result.withValueDataCount).toBe(1);
   });
 
+  it("falls back to Solar Applications rawRow aliases when typed size/value columns are null", async () => {
+    const systems = [makeCanonicalSystem("CSG-RAW", { isReporting: true })];
+    runnerMocks.getOrBuildFoundation.mockResolvedValue({
+      payload: makeFoundation(systems),
+      fromCache: false,
+      fromInflight: false,
+      inputVersionHash: HASH,
+    });
+    setupStreamMock({
+      solarRows: [
+        {
+          id: "1",
+          systemId: "CSG-RAW",
+          installedKwAc: null,
+          installedKwDc: null,
+          totalContractAmount: null,
+          rawRow: JSON.stringify({
+            installed_system_size_kw_ac: "15",
+            installed_system_size_kw_dc: "18.4",
+            total_contract_amount: "$25,664.73",
+          }),
+        },
+      ],
+    });
+
+    const { result } = await getOrBuildSlimDashboardSummary(SCOPE);
+
+    expect(result.largeSystems).toBe(1);
+    expect(result.unknownSizeSystems).toBe(0);
+    expect(result.cumulativeKwAcPart2).toBe(15);
+    expect(result.cumulativeKwDcPart2).toBe(18.4);
+    expect(result.totalContractedValue).toBe(25664.73);
+    expect(result.contractedValueReporting).toBe(25664.73);
+  });
+
   it("computes ownership tile breakdown over Part-II-eligible non-terminated systems; terminated fields stay 0 per slim contract (PR #334 follow-up item 4 option B)", async () => {
     // The foundation builder excludes terminated systems from
     // `part2EligibleCsgIds` even when `isPart2Verified` is true.
@@ -331,17 +404,41 @@ describe("getOrBuildSlimDashboardSummary", () => {
     // separately; the UI must render an explicit "—" placeholder
     // until heavy loads.
     const systems = [
-      makeCanonicalSystem("CSG-1", { isReporting: true, ownershipStatus: "transferred" }),
-      makeCanonicalSystem("CSG-2", { isReporting: true, ownershipStatus: "transferred" }),
-      makeCanonicalSystem("CSG-3", { isReporting: true, ownershipStatus: "active" }),
-      makeCanonicalSystem("CSG-4", { isReporting: false, ownershipStatus: "transferred" }),
+      makeCanonicalSystem("CSG-1", {
+        isReporting: true,
+        ownershipStatus: "transferred",
+      }),
+      makeCanonicalSystem("CSG-2", {
+        isReporting: true,
+        ownershipStatus: "transferred",
+      }),
+      makeCanonicalSystem("CSG-3", {
+        isReporting: true,
+        ownershipStatus: "active",
+      }),
+      makeCanonicalSystem("CSG-4", {
+        isReporting: false,
+        ownershipStatus: "transferred",
+      }),
       // CSG-5 / CSG-6 are terminated. Test fixture's makeFoundation
       // mirrors the production rule: terminated ⇒ excluded from
       // part2EligibleCsgIds. They count toward the portfolio
       // `terminatedSystems` field instead.
-      makeCanonicalSystem("CSG-5", { isTerminated: true, isReporting: true, ownershipStatus: "terminated" }),
-      makeCanonicalSystem("CSG-6", { isTerminated: true, isReporting: false, ownershipStatus: "terminated" }),
-      makeCanonicalSystem("CSG-7", { isPart2Verified: false, isReporting: true, ownershipStatus: "active" }),
+      makeCanonicalSystem("CSG-5", {
+        isTerminated: true,
+        isReporting: true,
+        ownershipStatus: "terminated",
+      }),
+      makeCanonicalSystem("CSG-6", {
+        isTerminated: true,
+        isReporting: false,
+        ownershipStatus: "terminated",
+      }),
+      makeCanonicalSystem("CSG-7", {
+        isPart2Verified: false,
+        isReporting: true,
+        ownershipStatus: "active",
+      }),
     ];
     runnerMocks.getOrBuildFoundation.mockResolvedValue({
       payload: makeFoundation(systems),
@@ -359,9 +456,7 @@ describe("getOrBuildSlimDashboardSummary", () => {
     // Terminated fields are NOT in `SlimOwnershipOverview` —
     // PR #337 follow-up item 6 dropped the always-0 placeholders
     // so consumers can no longer accidentally read them.
-    expect(
-      Object.keys(result.ownershipOverview).sort()
-    ).toEqual([
+    expect(Object.keys(result.ownershipOverview).sort()).toEqual([
       "notReportingOwnershipTotal",
       "notTransferredNotReporting",
       "notTransferredReporting",
@@ -387,9 +482,27 @@ describe("getOrBuildSlimDashboardSummary", () => {
     });
     setupStreamMock({
       solarRows: [
-        { id: "1", systemId: "CSG-A", installedKwAc: 8, installedKwDc: 10, totalContractAmount: 100 },
-        { id: "2", systemId: "CSG-B", installedKwAc: 25, installedKwDc: 30, totalContractAmount: 200 },
-        { id: "3", systemId: "CSG-OUT", installedKwAc: 999, installedKwDc: 999, totalContractAmount: 9999 },
+        {
+          id: "1",
+          systemId: "CSG-A",
+          installedKwAc: 8,
+          installedKwDc: 10,
+          totalContractAmount: 100,
+        },
+        {
+          id: "2",
+          systemId: "CSG-B",
+          installedKwAc: 25,
+          installedKwDc: 30,
+          totalContractAmount: 200,
+        },
+        {
+          id: "3",
+          systemId: "CSG-OUT",
+          installedKwAc: 999,
+          installedKwDc: 999,
+          totalContractAmount: 9999,
+        },
       ],
     });
 
@@ -416,8 +529,20 @@ describe("getOrBuildSlimDashboardSummary", () => {
       solarRows: [
         // All Part-II rows have null DC; UI must distinguish "no
         // data" from "real zero."
-        { id: "1", systemId: "CSG-A", installedKwAc: 8, installedKwDc: null, totalContractAmount: 100 },
-        { id: "2", systemId: "CSG-B", installedKwAc: 9, installedKwDc: null, totalContractAmount: 200 },
+        {
+          id: "1",
+          systemId: "CSG-A",
+          installedKwAc: 8,
+          installedKwDc: null,
+          totalContractAmount: 100,
+        },
+        {
+          id: "2",
+          systemId: "CSG-B",
+          installedKwAc: 9,
+          installedKwDc: null,
+          totalContractAmount: 200,
+        },
       ],
     });
 
@@ -443,16 +568,42 @@ describe("getOrBuildSlimDashboardSummary", () => {
     });
     setupStreamMock({
       solarRows: [
-        { id: "1", systemId: "CSG-S-R", installedKwAc: 8, installedKwDc: null, totalContractAmount: 100 },
-        { id: "2", systemId: "CSG-S-N", installedKwAc: 9, installedKwDc: null, totalContractAmount: 200 },
-        { id: "3", systemId: "CSG-L-R", installedKwAc: 50, installedKwDc: null, totalContractAmount: 1000 },
-        { id: "4", systemId: "CSG-U-N", installedKwAc: null, installedKwDc: null, totalContractAmount: 50 },
+        {
+          id: "1",
+          systemId: "CSG-S-R",
+          installedKwAc: 8,
+          installedKwDc: null,
+          totalContractAmount: 100,
+        },
+        {
+          id: "2",
+          systemId: "CSG-S-N",
+          installedKwAc: 9,
+          installedKwDc: null,
+          totalContractAmount: 200,
+        },
+        {
+          id: "3",
+          systemId: "CSG-L-R",
+          installedKwAc: 50,
+          installedKwDc: null,
+          totalContractAmount: 1000,
+        },
+        {
+          id: "4",
+          systemId: "CSG-U-N",
+          installedKwAc: null,
+          installedKwDc: null,
+          totalContractAmount: 50,
+        },
       ],
     });
 
     const { result } = await getOrBuildSlimDashboardSummary(SCOPE);
 
-    const small = result.sizeBreakdownRows.find((r) => r.bucket === "<=10 kW AC")!;
+    const small = result.sizeBreakdownRows.find(
+      r => r.bucket === "<=10 kW AC"
+    )!;
     expect(small.total).toBe(2);
     expect(small.reporting).toBe(1);
     expect(small.notReporting).toBe(1);
@@ -485,8 +636,20 @@ describe("getOrBuildSlimDashboardSummary", () => {
     });
     setupStreamMock({
       solarRows: [
-        { id: "1", systemId: "CSG-1", installedKwAc: 8, installedKwDc: null, totalContractAmount: 100 },
-        { id: "2", systemId: "CSG-2", installedKwAc: 8, installedKwDc: null, totalContractAmount: 200 },
+        {
+          id: "1",
+          systemId: "CSG-1",
+          installedKwAc: 8,
+          installedKwDc: null,
+          totalContractAmount: 100,
+        },
+        {
+          id: "2",
+          systemId: "CSG-2",
+          installedKwAc: 8,
+          installedKwDc: null,
+          totalContractAmount: 200,
+        },
       ],
       abpRows: [
         // Two ABP rows for the same project (same applicationId).
@@ -517,7 +680,7 @@ describe("getOrBuildSlimDashboardSummary", () => {
     // because the matched system is transferred + reporting.
     expect(result.changeOwnership.summary.total).toBe(1);
     const transferredReporting = result.changeOwnership.summary.counts.find(
-      (c) => c.status === "Transferred and Reporting"
+      c => c.status === "Transferred and Reporting"
     )!;
     expect(transferredReporting.count).toBe(1);
   });
@@ -586,14 +749,14 @@ describe("getOrBuildSlimDashboardSummary", () => {
     // Ownership classification.
     expect(result.changeOwnership.summary.total).toBe(0);
     const terminated = result.changeOwnership.summary.counts.find(
-      (c) => c.status === "Terminated"
+      c => c.status === "Terminated"
     )!;
     expect(terminated.count).toBe(0);
     // Status-order contract preserved (5 statuses, virtual
     // Terminated bucket present).
-    expect(
-      result.changeOwnership.summary.counts.map((c) => c.status)
-    ).toEqual(CHANGE_OWNERSHIP_STATUS_ORDER);
+    expect(result.changeOwnership.summary.counts.map(c => c.status)).toEqual(
+      CHANGE_OWNERSHIP_STATUS_ORDER
+    );
     // Portfolio terminated count surfaces correctly.
     expect(result.terminatedSystems).toBe(2);
   });
@@ -671,10 +834,10 @@ describe("getOrBuildSlimDashboardSummary", () => {
     const { result } = await getOrBuildSlimDashboardSummary(SCOPE);
 
     const reporting = result.changeOwnership.ownershipStackedChartRows.find(
-      (r) => r.label === "Reporting"
+      r => r.label === "Reporting"
     )!;
     const notReporting = result.changeOwnership.ownershipStackedChartRows.find(
-      (r) => r.label === "Not Reporting"
+      r => r.label === "Not Reporting"
     )!;
     // Active matched project → notTransferred; Transferred →
     // transferred; Change-of-Ownership → changeOwnership; Terminated
@@ -729,19 +892,29 @@ describe("getOrBuildSlimDashboardSummary", () => {
     });
 
     const { result } = await getOrBuildSlimDashboardSummary(SCOPE);
-    expect(result.changeOwnership.cooNotTransferredNotReportingCurrentCount).toBe(1);
+    expect(
+      result.changeOwnership.cooNotTransferredNotReportingCurrentCount
+    ).toBe(1);
   });
 
   it("does NOT include high-cardinality fields in the slim shape", async () => {
     runnerMocks.getOrBuildFoundation.mockResolvedValue({
-      payload: makeFoundation([makeCanonicalSystem("CSG-1", { isReporting: true })]),
+      payload: makeFoundation([
+        makeCanonicalSystem("CSG-1", { isReporting: true }),
+      ]),
       fromCache: false,
       fromInflight: false,
       inputVersionHash: HASH,
     });
     setupStreamMock({
       solarRows: [
-        { id: "1", systemId: "CSG-1", installedKwAc: 5, installedKwDc: null, totalContractAmount: 100 },
+        {
+          id: "1",
+          systemId: "CSG-1",
+          installedKwAc: 5,
+          installedKwDc: null,
+          totalContractAmount: 100,
+        },
       ],
     });
 
@@ -821,8 +994,10 @@ describe("getOrBuildSlimDashboardSummary", () => {
     expect(foundationMocks.streamRowsByPage).not.toHaveBeenCalled();
   });
 
-  it("uses runner version v6 (post terminated-fields removal — PR #337 follow-up item 6)", () => {
-    expect(SLIM_DASHBOARD_SUMMARY_RUNNER_VERSION).toBe("slim-dashboard-summary-v6");
+  it("uses runner version v7 (raw Solar Applications size/value fallback)", () => {
+    expect(SLIM_DASHBOARD_SUMMARY_RUNNER_VERSION).toBe(
+      "slim-dashboard-summary-v7"
+    );
   });
 
   it("accepts Excel-serial part2AppVerificationDate (parity with foundation eligibility — PR #334 follow-up item 3)", async () => {
@@ -878,7 +1053,7 @@ describe("getOrBuildSlimDashboardSummary", () => {
     expect(result.part2VerifiedAbpRowsCount).toBe(1);
     expect(result.changeOwnership.summary.total).toBe(1);
     const transferredReporting = result.changeOwnership.summary.counts.find(
-      (c) => c.status === "Transferred and Reporting"
+      c => c.status === "Transferred and Reporting"
     )!;
     expect(transferredReporting.count).toBe(1);
   });
@@ -978,7 +1153,7 @@ describe("getOrBuildSlimDashboardSummary", () => {
     // No stacked-chart contribution either.
     const reportingChart =
       result.changeOwnership.ownershipStackedChartRows.find(
-        (r) => r.label === "Reporting"
+        r => r.label === "Reporting"
       )!;
     expect(reportingChart.transferred).toBe(0);
     expect(reportingChart.notTransferred).toBe(0);
@@ -1090,11 +1265,11 @@ describe("getOrBuildSlimDashboardSummary", () => {
     // Transferred when both are present in the matched eligible set).
     expect(result.changeOwnership.summary.total).toBe(1);
     const cooReporting = result.changeOwnership.summary.counts.find(
-      (c) => c.status === "Change of Ownership - Not Transferred and Reporting"
+      c => c.status === "Change of Ownership - Not Transferred and Reporting"
     )!;
     expect(cooReporting.count).toBe(1);
     const xferReporting = result.changeOwnership.summary.counts.find(
-      (c) => c.status === "Transferred and Reporting"
+      c => c.status === "Transferred and Reporting"
     )!;
     // Single-map bug would have classified this as Transferred.
     expect(xferReporting.count).toBe(0);
@@ -1152,7 +1327,7 @@ describe("getOrBuildSlimDashboardSummary", () => {
 
     // Status: Change of Ownership reporting variant.
     const cooReporting = result.changeOwnership.summary.counts.find(
-      (c) => c.status === "Change of Ownership - Not Transferred and Reporting"
+      c => c.status === "Change of Ownership - Not Transferred and Reporting"
     )!;
     expect(cooReporting.count).toBe(1);
     // Reporting state derived from per-project flag, not status text.
@@ -1227,9 +1402,15 @@ describe("buildSlimDashboardSummary source structure", () => {
 
   it("does not import the heavy upstream aggregators", () => {
     const source = readSourceCodeOnly();
-    expect(source).not.toMatch(/from\s+["'][^"']*buildOverviewSummaryAggregates/);
-    expect(source).not.toMatch(/from\s+["'][^"']*buildOfflineMonitoringAggregates/);
-    expect(source).not.toMatch(/from\s+["'][^"']*buildChangeOwnershipAggregates/);
+    expect(source).not.toMatch(
+      /from\s+["'][^"']*buildOverviewSummaryAggregates/
+    );
+    expect(source).not.toMatch(
+      /from\s+["'][^"']*buildOfflineMonitoringAggregates/
+    );
+    expect(source).not.toMatch(
+      /from\s+["'][^"']*buildChangeOwnershipAggregates/
+    );
     expect(source).not.toMatch(/from\s+["'][^"']*buildSystemSnapshot/);
   });
 
@@ -1250,14 +1431,18 @@ describe("buildSlimDashboardSummary source structure", () => {
 
   it("uses toPercentValue for all percent fields (no raw / division)", () => {
     const source = readSourceCodeOnly();
-    expect(source).toMatch(/import\s+\{[^}]*toPercentValue[^}]*\}\s+from\s+["']\.\/aggregatorHelpers["']/);
+    expect(source).toMatch(
+      /import\s+\{[^}]*toPercentValue[^}]*\}\s+from\s+["']\.\/aggregatorHelpers["']/
+    );
     // No naked ratio assignment to a *Percent field. Match patterns
     // like `xPercent = a / b` or `xPercent: a / b`.
-    expect(source).not.toMatch(/[A-Za-z]+Percent\s*[=:]\s*[A-Za-z_.[\]]+\s*\/\s*[A-Za-z_.[\]]+/);
+    expect(source).not.toMatch(
+      /[A-Za-z]+Percent\s*[=:]\s*[A-Za-z_.[\]]+\s*\/\s*[A-Za-z_.[\]]+/
+    );
   });
 });
 
 /** Type-only assertion the slim shape carries the discriminated kind. */
 type _AssertSlimKind = (s: SlimDashboardSummary) => "slim";
-const _kindFn: _AssertSlimKind = (s) => s.kind;
+const _kindFn: _AssertSlimKind = s => s.kind;
 void _kindFn;
