@@ -395,6 +395,20 @@ describe("ACCOUNT_SOLAR_GENERATION_PARSER", () => {
     expect(out!.monthOfGeneration).toBe("2026-04");
     expect(out!.lastMeterReadKwh).toBe("12345");
   });
+
+  it("parses the CSG portal kWh/Btu meter-read header", () => {
+    const out = ACCOUNT_SOLAR_GENERATION_PARSER.parseRow(
+      {
+        "GATS Gen ID": "GEN-2",
+        "Facility Name": "Site C",
+        "Month of Generation": "03/01/2026",
+        "Last Meter Read (kWh/Btu)": "68,783",
+      },
+      baseCtx
+    );
+
+    expect(out!.lastMeterReadKwh).toBe("68,783");
+  });
 });
 
 describe("CONVERTED_READS_PARSER", () => {

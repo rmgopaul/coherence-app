@@ -48,7 +48,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { and, asc, eq, gt } from "drizzle-orm";
+import { and, asc, eq, gt, sql } from "drizzle-orm";
 import {
   srDsAbpCsgSystemMapping,
   srDsAbpReport,
@@ -1261,6 +1261,27 @@ export async function buildFoundationArtifact(
     contractedDate: string | null;
   };
 
+  const accountSolarGenerationLastMeterReadKwh = sql<string | null>`
+    CASE
+      WHEN ${srDsAccountSolarGeneration.lastMeterReadKwh} IS NOT NULL
+        AND TRIM(${srDsAccountSolarGeneration.lastMeterReadKwh}) <> ''
+        THEN ${srDsAccountSolarGeneration.lastMeterReadKwh}
+      WHEN ${srDsAccountSolarGeneration.rawRow} IS NULL
+        OR JSON_VALID(${srDsAccountSolarGeneration.rawRow}) = 0
+        THEN ${srDsAccountSolarGeneration.lastMeterReadKwh}
+      ELSE COALESCE(
+        NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT(${srDsAccountSolarGeneration.rawRow}, '$."lastMeterReadKwh"'))), ''),
+        NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT(${srDsAccountSolarGeneration.rawRow}, '$."Last Meter Read (kWh)"'))), ''),
+        NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT(${srDsAccountSolarGeneration.rawRow}, '$."Last Meter Read (kWh/Btu)"'))), ''),
+        NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT(${srDsAccountSolarGeneration.rawRow}, '$."Last Meter Read (kW)"'))), ''),
+        NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT(${srDsAccountSolarGeneration.rawRow}, '$."Last Meter Read"'))), ''),
+        NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT(${srDsAccountSolarGeneration.rawRow}, '$."Last Meter Read kWh"'))), ''),
+        NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT(${srDsAccountSolarGeneration.rawRow}, '$."Meter Read kWh"'))), ''),
+        ${srDsAccountSolarGeneration.lastMeterReadKwh}
+      )
+    END
+  `;
+
   // Sequential loads, NOT Promise.all. Parallel loads ballooned peak
   // heap (sum of all dataset arrays held simultaneously) and triggered
   // OOM crashes on prod-size scopes. Sequential keeps peak at the
@@ -1412,7 +1433,7 @@ export async function buildFoundationArtifact(
         gatsGenId: srDsAccountSolarGeneration.gatsGenId,
         monthOfGeneration: srDsAccountSolarGeneration.monthOfGeneration,
         lastMeterReadDate: srDsAccountSolarGeneration.lastMeterReadDate,
-        lastMeterReadKwh: srDsAccountSolarGeneration.lastMeterReadKwh,
+        lastMeterReadKwh: accountSolarGenerationLastMeterReadKwh,
       },
       row => {
         const key = (row.gatsGenId ?? "").trim();

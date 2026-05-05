@@ -102,8 +102,15 @@ export const FOUNDATION_ARTIFACT_TYPE = "foundation-v1" as const;
  * `zillowData.last_price_action_date`, with date normalization before
  * sold-vs-contracted comparisons. Cached v6 artifacts can show zero
  * change-of-ownership systems despite populated Zillow sale events.
+ *
+ * v8 (2026-05-05) — Account Solar Generation reporting now recovers
+ * old rows whose typed `lastMeterReadKwh` column is blank but whose
+ * original portal export value is still present in `rawRow` under
+ * headers such as `Last Meter Read (kWh/Btu)`. Cached v7 artifacts
+ * can undercount reporting after append dedupe skips an already-
+ * present row that still has a blank typed meter-read value.
  */
-export const FOUNDATION_DEFINITION_VERSION = 7;
+export const FOUNDATION_DEFINITION_VERSION = 8;
 
 /**
  * `_runnerVersion` shipped on every response that surfaces
