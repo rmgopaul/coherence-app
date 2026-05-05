@@ -102,6 +102,16 @@ type HoymilesTokenState = {
 };
 
 const hoymilesTokenCache = new Map<string, HoymilesTokenState>();
+const HOYMILES_DEBUG = process.env.HOYMILES_DEBUG === "1";
+
+function debugHoymiles(message: string, meta?: Record<string, unknown>): void {
+  if (!HOYMILES_DEBUG) return;
+  if (meta) {
+    console.debug(`[Hoymiles] ${message}`, meta);
+    return;
+  }
+  console.debug(`[Hoymiles] ${message}`);
+}
 
 function getTokenCacheKey(context: HoymilesApiContext): string {
   return `${context.username.trim()}::${normalizeBaseUrl(context.baseUrl, HOYMILES_DEFAULT_BASE_URL)}`;
@@ -112,7 +122,10 @@ function extractHoymilesToken(json: Record<string, unknown>): string | null {
   return toNullableString(data.token ?? data.access_token ?? json.token);
 }
 
-function hoymilesLoginError(json: Record<string, unknown>, fallbackMsg: string): Error {
+function hoymilesLoginError(
+  json: Record<string, unknown>,
+  fallbackMsg: string
+): Error {
   const status = toNullableNumber(json.status ?? json.code);
   const msg = toNullableString(json.message ?? json.msg);
   return new Error(
@@ -154,17 +167,25 @@ async function getHoymilesToken(context: HoymilesApiContext): Promise<string> {
     });
 
     const responseText = await response.text();
-    console.log(`[Hoymiles] MD5 login response (${response.status}): ${responseText.slice(0, 300)}`);
+    debugHoymiles("MD5 login response received", {
+      status: response.status,
+      responseLength: responseText.length,
+    });
 
     if (response.ok) {
       const json = asRecord(JSON.parse(responseText));
       const token = extractHoymilesToken(json);
       if (token) {
-        console.log(`[Hoymiles] MD5 login succeeded for ${username}, token: ${token.slice(0, 20)}...`);
-        hoymilesTokenCache.set(cacheKey, { token, expiresAt: Date.now() + 30 * 60 * 1000 });
+        debugHoymiles("MD5 login succeeded");
+        hoymilesTokenCache.set(cacheKey, {
+          token,
+          expiresAt: Date.now() + 30 * 60 * 1000,
+        });
         return token;
       }
-      console.log(`[Hoymiles] MD5 login response OK but no token found. Keys: ${Object.keys(json).join(", ")}`);
+      debugHoymiles("MD5 login response OK but no token found", {
+        keys: Object.keys(json),
+      });
       // Token not in response — fall through to next strategy
     }
   } catch {
@@ -185,13 +206,18 @@ async function getHoymilesToken(context: HoymilesApiContext): Promise<string> {
 
     if (!response.ok) {
       const errorText = await response.text().catch(() => "");
-      throw new Error(`Hoymiles login failed (${response.status})${errorText ? `: ${errorText}` : ""}`);
+      throw new Error(
+        `Hoymiles login failed (${response.status})${errorText ? `: ${errorText}` : ""}`
+      );
     }
 
     const json = asRecord(await response.json());
     const token = extractHoymilesToken(json);
     if (token) {
-      hoymilesTokenCache.set(cacheKey, { token, expiresAt: Date.now() + 30 * 60 * 1000 });
+      hoymilesTokenCache.set(cacheKey, {
+        token,
+        expiresAt: Date.now() + 30 * 60 * 1000,
+      });
       return token;
     }
 
@@ -237,7 +263,10 @@ async function postHoymilesJson(
   }
 
   const responseText = await response.text();
-  console.log(`[Hoymiles] ${path} response (${responseText.length} chars): ${responseText.slice(0, 500)}`);
+  debugHoymiles("API response received", {
+    path,
+    responseLength: responseText.length,
+  });
 
   let json: Record<string, unknown>;
   try {
@@ -249,18 +278,34 @@ async function postHoymilesJson(
   // Hoymiles wraps responses: { status: "0", message: "...", data: {...} }
   // Status can be "0", 0, "success", or missing — all are OK
   const statusVal = json.status;
-  const isErrorStatus = statusVal !== undefined
-    && statusVal !== "0" && statusVal !== 0
-    && statusVal !== "success" && statusVal !== "ok"
-    && statusVal !== true;
+  const isErrorStatus =
+    statusVal !== undefined &&
+    statusVal !== "0" &&
+    statusVal !== 0 &&
+    statusVal !== "success" &&
+    statusVal !== "ok" &&
+    statusVal !== true;
   if (isErrorStatus) {
-    const msg = toNullableString(json.message ?? json.msg) ?? "Unknown Hoymiles API error";
-    console.log(`[Hoymiles] API error status for ${path}: status=${JSON.stringify(statusVal)}, msg=${msg}`);
+    const msg =
+      toNullableString(json.message ?? json.msg) ??
+      "Unknown Hoymiles API error";
+    debugHoymiles("API response reported error status", {
+      path,
+      status: statusVal,
+      message: msg,
+    });
     throw new Error(`Hoymiles API error (${path}): ${msg}`);
   }
 
   const result = json.data ?? json;
-  console.log(`[Hoymiles] ${path} returning data type: ${typeof result}, keys: ${result && typeof result === "object" ? Object.keys(result as Record<string, unknown>).join(", ") : "N/A"}`);
+  debugHoymiles("API response parsed", {
+    path,
+    resultType: typeof result,
+    keys:
+      result && typeof result === "object"
+        ? Object.keys(result as Record<string, unknown>)
+        : [],
+  });
   return result;
 }
 
@@ -273,7 +318,8 @@ export function extractStations(payload: unknown): HoymilesStation[] {
 
   // root.page can be a number (e.g. 1) — only treat it as a record if it's actually an object
   const pageValue = root.page;
-  const page = (pageValue && typeof pageValue === "object") ? asRecord(pageValue) : null;
+  const page =
+    pageValue && typeof pageValue === "object" ? asRecord(pageValue) : null;
 
   // Try multiple paths to find the station array
   const candidateArray =
@@ -282,18 +328,29 @@ export function extractStations(payload: unknown): HoymilesStation[] {
     root.list ??
     root.stations ??
     root.data ??
-    (page?.list) ??
-    (page?.data);
+    page?.list ??
+    page?.data;
 
   const rows = asRecordArray(candidateArray);
-  const items = rows.length > 0 ? rows : Array.isArray(payload) ? asRecordArray(payload) : [];
+  const items =
+    rows.length > 0
+      ? rows
+      : Array.isArray(payload)
+        ? asRecordArray(payload)
+        : [];
 
-  console.log(`[Hoymiles extractStations] root keys: ${Object.keys(root).join(", ")}, page type: ${typeof pageValue}, rows found: ${rows.length}, items: ${items.length}`);
+  debugHoymiles("extractStations candidates", {
+    rootKeys: Object.keys(root),
+    pageType: typeof pageValue,
+    rowsFound: rows.length,
+    items: items.length,
+  });
 
   if (items.length > 0 && items.length <= 3) {
-    // Log a sample for debugging
-    console.log(`[Hoymiles extractStations] sample row keys: ${Object.keys(items[0]).join(", ")}`);
-    console.log(`[Hoymiles extractStations] sample row.id: ${JSON.stringify(items[0].id)} (type: ${typeof items[0].id})`);
+    debugHoymiles("extractStations sample row", {
+      keys: Object.keys(items[0]),
+      idType: typeof items[0].id,
+    });
   }
 
   const output: HoymilesStation[] = [];
@@ -308,17 +365,24 @@ export function extractStations(payload: unknown): HoymilesStation[] {
 
     output.push({
       stationId,
-      name: toNullableString(row.station_name ?? row.name ?? row.stationName) ?? `Station ${stationId}`,
-      capacity: toNullableNumber(row.capacity ?? row.capacitor ?? row.installed_capacity ?? row.plant_power),
+      name:
+        toNullableString(row.station_name ?? row.name ?? row.stationName) ??
+        `Station ${stationId}`,
+      capacity: toNullableNumber(
+        row.capacity ??
+          row.capacitor ??
+          row.installed_capacity ??
+          row.plant_power
+      ),
       address: toNullableString(row.address ?? row.location),
       status: toNullableString(row.status ?? row.connect_status),
     });
   }
 
   if (skippedNoId > 0) {
-    console.log(`[Hoymiles extractStations] WARNING: skipped ${skippedNoId} rows with no id`);
+    debugHoymiles("extractStations skipped rows with no id", { skippedNoId });
   }
-  console.log(`[Hoymiles extractStations] → ${output.length} stations extracted`);
+  debugHoymiles("extractStations completed", { stationCount: output.length });
 
   return output;
 }
@@ -331,7 +395,7 @@ export async function listStations(context: HoymilesApiContext): Promise<{
   stations: HoymilesStation[];
   raw: unknown;
 }> {
-  console.log(`[Hoymiles] listStations called for user: ${context.username}`);
+  debugHoymiles("listStations called");
   const PAGE_SIZE = 100;
   const MAX_PAGES = 50; // safety limit
   const allStations: HoymilesStation[] = [];
@@ -348,7 +412,10 @@ export async function listStations(context: HoymilesApiContext): Promise<{
       );
       allRaw.push(raw);
       const pageStations = extractStations(raw);
-      console.log(`[Hoymiles] select_by_page (page ${page}) → ${pageStations.length} stations`);
+      debugHoymiles("select_by_page succeeded", {
+        page,
+        stationCount: pageStations.length,
+      });
       allStations.push(...pageStations);
 
       // Check if there are more pages
@@ -359,13 +426,21 @@ export async function listStations(context: HoymilesApiContext): Promise<{
       page += 1;
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err));
-      console.log(`[Hoymiles] select_by_page failed on page ${page}: ${lastError.message}`);
+      debugHoymiles("select_by_page failed", {
+        page,
+        error: lastError.message,
+      });
 
       // If first page fails with auth error, clear cache and retry once
       if (page === 1 && allRaw.length === 0) {
-        const isAuthError = lastError.message.includes("401") || lastError.message.includes("403") || lastError.message.includes("authentication");
+        const isAuthError =
+          lastError.message.includes("401") ||
+          lastError.message.includes("403") ||
+          lastError.message.includes("authentication");
         if (isAuthError) {
-          console.log(`[Hoymiles] Auth error on first page, clearing token cache and retrying...`);
+          debugHoymiles(
+            "Auth error on first page; clearing token cache and retrying"
+          );
           hoymilesTokenCache.delete(getTokenCacheKey(context));
           try {
             const retryRaw = await postHoymilesJson(
@@ -375,10 +450,15 @@ export async function listStations(context: HoymilesApiContext): Promise<{
             );
             allRaw.push(retryRaw);
             const retryStations = extractStations(retryRaw);
-            console.log(`[Hoymiles] Retry succeeded → ${retryStations.length} stations`);
+            debugHoymiles("Retry succeeded", {
+              stationCount: retryStations.length,
+            });
             allStations.push(...retryStations);
           } catch (retryErr) {
-            console.log(`[Hoymiles] Retry also failed: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`);
+            debugHoymiles("Retry failed", {
+              error:
+                retryErr instanceof Error ? retryErr.message : String(retryErr),
+            });
           }
         }
       }
@@ -388,16 +468,20 @@ export async function listStations(context: HoymilesApiContext): Promise<{
 
   // Deduplicate by stationId
   const seen = new Set<string>();
-  const deduped = allStations.filter((s) => {
+  const deduped = allStations.filter(s => {
     if (seen.has(s.stationId)) return false;
     seen.add(s.stationId);
     return true;
   });
 
-  console.log(`[Hoymiles] Total: ${deduped.length} unique stations across ${page} page(s)`);
+  debugHoymiles("listStations completed", {
+    stationCount: deduped.length,
+    pagesChecked: page,
+  });
 
   // Always return raw data for diagnostics, even if 0 stations were extracted
-  const rawResult = allRaw.length === 0 ? null : allRaw.length === 1 ? allRaw[0] : allRaw;
+  const rawResult =
+    allRaw.length === 0 ? null : allRaw.length === 1 ? allRaw[0] : allRaw;
 
   // If we got 0 stations but also had an error AND no raw data, throw
   if (deduped.length === 0 && lastError && allRaw.length === 0) {
@@ -424,9 +508,13 @@ export async function getStationRealData(
   context: HoymilesApiContext,
   stationId: string
 ): Promise<unknown> {
-  return postHoymilesJson("/pvm-data/api/0/station/data/count_station_real_data", context, {
-    sid: Number(stationId) || stationId,
-  });
+  return postHoymilesJson(
+    "/pvm-data/api/0/station/data/count_station_real_data",
+    context,
+    {
+      sid: Number(stationId) || stationId,
+    }
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -484,7 +572,12 @@ async function getDailyEnergyHistory(
         record.energy ?? record.eq_total ?? record.production ?? record.value
       );
       const kwh = toKwh(rawValue, "Wh");
-      if (dateKey && kwh !== null && dateKey >= startDate && dateKey <= endDate) {
+      if (
+        dateKey &&
+        kwh !== null &&
+        dateKey >= startDate &&
+        dateKey <= endDate
+      ) {
         points.push({ dateKey, kwh: safeRound(kwh)! });
       }
     }
@@ -524,10 +617,18 @@ export async function getStationProductionSnapshot(
     const realData = asRecord(realDataPayload);
 
     // Energy values from count_station_real_data are in Wh.
-    const lifetimeKwh = safeRound(toKwh(toNullableNumber(realData.total_eq), "Wh"));
-    const dailyProductionKwh = safeRound(toKwh(toNullableNumber(realData.today_eq), "Wh"));
-    const monthlyProductionKwh = safeRound(toKwh(toNullableNumber(realData.month_eq), "Wh"));
-    const last12MonthsProductionKwh = safeRound(toKwh(toNullableNumber(realData.year_eq), "Wh"));
+    const lifetimeKwh = safeRound(
+      toKwh(toNullableNumber(realData.total_eq), "Wh")
+    );
+    const dailyProductionKwh = safeRound(
+      toKwh(toNullableNumber(realData.today_eq), "Wh")
+    );
+    const monthlyProductionKwh = safeRound(
+      toKwh(toNullableNumber(realData.month_eq), "Wh")
+    );
+    const last12MonthsProductionKwh = safeRound(
+      toKwh(toNullableNumber(realData.year_eq), "Wh")
+    );
 
     return {
       stationId,
