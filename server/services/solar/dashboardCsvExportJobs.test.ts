@@ -328,9 +328,11 @@ const OTHER_SCOPE = "scope-B";
 
 beforeEach(() => {
   fakeReset();
+  __TEST_ONLY__.resetRunnerSchedulerState();
 });
 
 afterEach(() => {
+  __TEST_ONLY__.resetRunnerSchedulerState();
   vi.clearAllMocks();
 });
 
@@ -399,6 +401,7 @@ describe("dashboardCsvExportJobs — start (DB-backed)", () => {
     expect(scheduledRunner).not.toBeNull();
     expect(ranFor).toHaveLength(0);
     scheduledRunner!();
+    await Promise.resolve();
     await Promise.resolve();
     expect(ranFor).toHaveLength(1);
   });
@@ -701,6 +704,31 @@ describe("dashboardCsvExportJobs — Codex P1: queued-job resume on status read"
     expect(fakeFindById(id)?.status).toBe("succeeded");
   });
 
+  it("dedupes repeated queued status polls before the local runner drains", async () => {
+    const id = "qjob-dedupe";
+    const dbHelpers = await import("../../db/dashboardCsvExportJobs");
+    await dbHelpers.insertDashboardCsvExportJob({
+      id,
+      scopeId: SCOPE,
+      input: { exportType: "ownershipTile", tile: "reporting" },
+      status: "queued",
+      runnerVersion: DASHBOARD_CSV_EXPORT_RUNNER_VERSION,
+    });
+
+    const [first, second, third] = await Promise.all([
+      getCsvExportJobStatus(SCOPE, id),
+      getCsvExportJobStatus(SCOPE, id),
+      getCsvExportJobStatus(SCOPE, id),
+    ]);
+
+    expect(first?.status).toBe("queued");
+    expect(second?.status).toBe("queued");
+    expect(third?.status).toBe("queued");
+    const state = __TEST_ONLY__.getRunnerSchedulerState();
+    expect(state.pendingJobIds).toEqual([id]);
+    expect(state.pendingJobIdSet).toEqual([id]);
+  });
+
   it("does not schedule a runner when the row is already running", async () => {
     const dbHelpers = await import("../../db/dashboardCsvExportJobs");
     await dbHelpers.insertDashboardCsvExportJob({
@@ -882,6 +910,41 @@ describe("dashboardCsvExportJobs — Codex P2: lost-claim success path cleans st
         typeof args[0] === "string" && args[0].includes("lost-after-put")
       )
     ).toBe(true);
+  });
+
+  it("calls storageDelete when success completion throws after storagePut", async () => {
+    const storageMod = await import("../../storage");
+    const storageDelete = storageMod.storageDelete as unknown as ReturnType<
+      typeof vi.fn
+    >;
+    storageDelete.mockClear();
+    const dbHelpers = await import("../../db/dashboardCsvExportJobs");
+    const completeSuccess =
+      dbHelpers.completeDashboardCsvExportJobSuccess as unknown as ReturnType<
+        typeof vi.fn
+      >;
+
+    await dbHelpers.insertDashboardCsvExportJob({
+      id: "completion-throws-after-put",
+      scopeId: SCOPE,
+      input: { exportType: "ownershipTile", tile: "reporting" },
+      status: "queued",
+      runnerVersion: DASHBOARD_CSV_EXPORT_RUNNER_VERSION,
+    });
+    completeSuccess.mockImplementationOnce(async () => {
+      throw new Error("completion DB unavailable");
+    });
+
+    await runCsvExportJob("completion-throws-after-put");
+
+    const calls = storageDelete.mock.calls;
+    expect(
+      calls.some((args) =>
+        typeof args[0] === "string" &&
+        args[0].includes("completion-throws-after-put")
+      )
+    ).toBe(true);
+    expect(fakeFindById("completion-throws-after-put")?.status).toBe("failed");
   });
 });
 

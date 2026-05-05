@@ -103,6 +103,19 @@ const STALE_CLAIM_MS = 5 * 60 * 1000; // 5 minutes
  */
 const HEARTBEAT_INTERVAL_MS = 30 * 1000; // 30 seconds
 
+/**
+ * Process-local runner queue. The DB claim is still the source of
+ * truth for cross-process ownership, but this queue prevents one
+ * process from scheduling unbounded duplicate runner attempts for
+ * the same queued row when several status polls arrive before the
+ * first setImmediate fires.
+ */
+const MAX_LOCAL_RUNNERS = 2;
+const pendingRunnerJobIds: string[] = [];
+const pendingRunnerJobIdSet = new Set<string>();
+const activeRunnerJobIds = new Set<string>();
+let runnerDrainScheduled = false;
+
 export type DashboardCsvExportInput =
   | { exportType: "ownershipTile"; tile: OwnershipTileKey }
   | { exportType: "changeOwnershipTile"; status: ChangeOwnershipStatus };
@@ -208,21 +221,7 @@ export async function startCsvExportJob(
     status: "queued",
     runnerVersion: DASHBOARD_CSV_EXPORT_RUNNER_VERSION,
   });
-  scheduler(() => {
-    runner(jobId).catch((err) => {
-      // The runner already captures errors atomically; a throw
-      // here means the runner itself is broken (programming
-      // error, not aggregator/storage failure). Log loud — the
-      // row will eventually be marked stale by
-      // `failStaleDashboardCsvExportJobs` and the client poll
-      // resolves on the failed transition.
-      console.error(
-        `${METRIC_PREFIX} runner threw for jobId=${jobId}: ${
-          err instanceof Error ? err.message : String(err)
-        }`
-      );
-    });
-  });
+  scheduleCsvExportRunner(jobId, runner, scheduler);
   return { jobId };
 }
 
@@ -260,19 +259,7 @@ export async function getCsvExportJobStatus(
   const row = await getDashboardCsvExportJob(scopeId, jobId);
   if (!row) return null;
   if (row.status === "queued") {
-    // Idempotent: claim semantics ensure only one runner actually
-    // executes per row. Use setImmediate so this status read
-    // returns promptly without waiting for the worker.
-    setImmediate(() => {
-      runCsvExportJob(jobId).catch((err) => {
-        console.error(
-          `${METRIC_PREFIX} resume-from-status runner threw for ` +
-            `jobId=${jobId}: ${
-              err instanceof Error ? err.message : String(err)
-            }`
-        );
-      });
-    });
+    scheduleCsvExportRunner(jobId);
   }
   return buildSnapshot(row);
 }
@@ -288,8 +275,8 @@ export async function getCsvExportJobStatus(
  *     for the same `queued` row, only one's UPDATE matches.
  *   - Completion UPDATEs predicate on `claimedBy = ours`. If a
  *     stale-claim sweep flipped our row to `failed` while we
- *     were in flight, our completion UPDATE no-ops and the
- *     storage write becomes orphaned (cleaned up at TTL).
+ *     were in flight, our completion UPDATE no-ops and any
+ *     uploaded artifact is immediately deleted best-effort.
  *
  * Errors are captured into the row's `errorMessage`; this
  * function does NOT throw under any expected control flow.
@@ -376,6 +363,9 @@ export async function runCsvExportJob(jobId: string): Promise<void> {
   // is also fire-and-forget).
   if (typeof heartbeat.unref === "function") heartbeat.unref();
 
+  let uploadedKey: string | null = null;
+  let completionRecorded = false;
+
   try {
     const built = await buildExport(input, row.scopeId);
     if (built.rowCount === 0) {
@@ -413,6 +403,7 @@ export async function runCsvExportJob(jobId: string): Promise<void> {
       );
     }
     await storagePut(key, built.csv, "text/csv; charset=utf-8");
+    uploadedKey = key;
     const { url } = await storageGet(key);
     const ok = await completeDashboardCsvExportJobSuccess(
       row.scopeId,
@@ -433,21 +424,11 @@ export async function runCsvExportJob(jobId: string): Promise<void> {
       // null for fileName=null). Without immediate cleanup the
       // artifact is genuinely orphaned. Best-effort delete here;
       // log + swallow if it fails.
-      try {
-        await storageDelete(key);
-      } catch (deleteErr) {
-        console.warn(
-          `${METRIC_PREFIX} cleanup storageDelete failed for orphaned ` +
-            `lost-claim artifact jobId=${jobId} key=${key}: ${
-              deleteErr instanceof Error
-                ? deleteErr.message
-                : String(deleteErr)
-            }`
-        );
-      }
+      await cleanupUploadedArtifact(jobId, key, "lost-claim");
       metric.fail(new Error("lost claim before completion (success path)"));
       return;
     }
+    completionRecorded = true;
     metric.finish({
       rowCount: built.rowCount,
       csvBytes: Buffer.byteLength(built.csv, "utf8"),
@@ -455,6 +436,9 @@ export async function runCsvExportJob(jobId: string): Promise<void> {
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    if (uploadedKey && !completionRecorded) {
+      await cleanupUploadedArtifact(jobId, uploadedKey, "post-upload-error");
+    }
     if (!claimLost) {
       await completeDashboardCsvExportJobFailure(
         row.scopeId,
@@ -472,6 +456,87 @@ export async function runCsvExportJob(jobId: string): Promise<void> {
 // ─────────────────────────────────────────────────────────────────────
 // Internal helpers
 // ─────────────────────────────────────────────────────────────────────
+
+function scheduleCsvExportRunner(
+  jobId: string,
+  runner: (jobId: string) => Promise<void> = runCsvExportJob,
+  scheduler: (cb: () => void) => void = (cb) => setImmediate(cb)
+): boolean {
+  if (pendingRunnerJobIdSet.has(jobId) || activeRunnerJobIds.has(jobId)) {
+    return false;
+  }
+  pendingRunnerJobIdSet.add(jobId);
+  pendingRunnerJobIds.push(jobId);
+  if (!runnerDrainScheduled) {
+    runnerDrainScheduled = true;
+    scheduler(() => drainScheduledRunnerQueue(runner, scheduler));
+  }
+  return true;
+}
+
+function drainScheduledRunnerQueue(
+  runner: (jobId: string) => Promise<void> = runCsvExportJob,
+  scheduler: (cb: () => void) => void = (cb) => setImmediate(cb)
+): void {
+  runnerDrainScheduled = false;
+  while (
+    activeRunnerJobIds.size < MAX_LOCAL_RUNNERS &&
+    pendingRunnerJobIds.length > 0
+  ) {
+    const nextJobId = pendingRunnerJobIds.shift();
+    if (!nextJobId) continue;
+    pendingRunnerJobIdSet.delete(nextJobId);
+    if (activeRunnerJobIds.has(nextJobId)) continue;
+    activeRunnerJobIds.add(nextJobId);
+    Promise.resolve()
+      .then(() => runner(nextJobId))
+      .catch((err) => {
+        console.error(
+          `${METRIC_PREFIX} runner threw for jobId=${nextJobId}: ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        );
+      })
+      .finally(() => {
+        activeRunnerJobIds.delete(nextJobId);
+        if (pendingRunnerJobIds.length > 0) {
+          scheduleRunnerDrain(scheduler, runner);
+        }
+      });
+  }
+  if (
+    pendingRunnerJobIds.length > 0 &&
+    activeRunnerJobIds.size < MAX_LOCAL_RUNNERS
+  ) {
+    scheduleRunnerDrain(scheduler, runner);
+  }
+}
+
+function scheduleRunnerDrain(
+  scheduler: (cb: () => void) => void,
+  runner: (jobId: string) => Promise<void>
+): void {
+  if (runnerDrainScheduled) return;
+  runnerDrainScheduled = true;
+  scheduler(() => drainScheduledRunnerQueue(runner, scheduler));
+}
+
+async function cleanupUploadedArtifact(
+  jobId: string,
+  key: string,
+  reason: string
+): Promise<void> {
+  try {
+    await storageDelete(key);
+  } catch (deleteErr) {
+    console.warn(
+      `${METRIC_PREFIX} cleanup storageDelete failed for orphaned ` +
+        `${reason} artifact jobId=${jobId} key=${key}: ${
+          deleteErr instanceof Error ? deleteErr.message : String(deleteErr)
+        }`
+    );
+  }
+}
 
 /**
  * Lookup helper that doesn't require the caller to know the
@@ -619,7 +684,21 @@ export const __TEST_ONLY__ = {
   getClaimId,
   parseInputJson,
   storageKeyForJob,
+  scheduleCsvExportRunner,
+  getRunnerSchedulerState: () => ({
+    pendingJobIds: [...pendingRunnerJobIds],
+    pendingJobIdSet: Array.from(pendingRunnerJobIdSet),
+    activeJobIds: Array.from(activeRunnerJobIds),
+    runnerDrainScheduled,
+  }),
+  resetRunnerSchedulerState: () => {
+    pendingRunnerJobIds.length = 0;
+    pendingRunnerJobIdSet.clear();
+    activeRunnerJobIds.clear();
+    runnerDrainScheduled = false;
+  },
   JOB_TTL_MS,
   STALE_CLAIM_MS,
   HEARTBEAT_INTERVAL_MS,
+  MAX_LOCAL_RUNNERS,
 };
