@@ -97,7 +97,8 @@ type AppendRowChecker = (
 type BatchRowCloner = (
   scopeId: string,
   fromBatchId: string,
-  toBatchId: string
+  toBatchId: string,
+  options?: AppendPreparationOptions
 ) => Promise<number>;
 
 type BatchRowDeleter = (batchId: string) => Promise<number>;
@@ -105,6 +106,23 @@ type BatchRowDeleter = (batchId: string) => Promise<number>;
 export type PersistDatasetRowsOptions = {
   onProgress?: (inserted: number, total: number) => void;
 };
+
+export type AppendPreparationProgress = {
+  processedRows: number;
+};
+
+export type AppendPreparationOptions = {
+  onProgress?: (progress: AppendPreparationProgress) => void | Promise<void>;
+};
+
+const APPEND_PREP_PAGE_SIZE = 25_000;
+
+function extractExecuteRows<TRow>(result: unknown): TRow[] {
+  if (Array.isArray(result) && Array.isArray(result[0])) {
+    return result[0] as TRow[];
+  }
+  return [];
+}
 
 /** Execute inserts in chunks. Returns the number of rows persisted. */
 async function chunkedInsert<TRow>(
@@ -1027,43 +1045,80 @@ const convertedReadsRowExists: AppendRowChecker = async (
 const cloneConvertedReadsBatch: BatchRowCloner = async (
   scopeId,
   fromBatchId,
-  toBatchId
+  toBatchId,
+  options
 ) => {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
-  const result = await withDbRetry("clone converted reads batch", () =>
-    db.execute(sql`
-      INSERT INTO srDsConvertedReads (
-        id,
-        scopeId,
-        batchId,
-        monitoring,
-        monitoringSystemId,
-        monitoringSystemName,
-        lifetimeMeterReadWh,
-        readDate,
-        rawRow,
-        createdAt
-      )
-      SELECT
-        REPLACE(UUID(), '-', ''),
-        ${scopeId},
-        ${toBatchId},
-        monitoring,
-        monitoringSystemId,
-        monitoringSystemName,
-        lifetimeMeterReadWh,
-        readDate,
-        rawRow,
-        CURRENT_TIMESTAMP
-      FROM srDsConvertedReads
-      WHERE scopeId = ${scopeId}
-        AND batchId = ${fromBatchId}
-    `)
-  );
+  let cursor: string | null = null;
+  let cloned = 0;
 
-  return getDbExecuteAffectedRows(result);
+  for (;;) {
+    const cursorClause: ReturnType<typeof sql> = cursor
+      ? sql`AND id > ${cursor}`
+      : sql``;
+    const idResult: unknown = await withDbRetry(
+      "page converted reads clone ids",
+      () => db.execute(sql`
+        SELECT id
+        FROM srDsConvertedReads
+        WHERE scopeId = ${scopeId}
+          AND batchId = ${fromBatchId}
+          ${cursorClause}
+        ORDER BY id
+        LIMIT ${APPEND_PREP_PAGE_SIZE}
+      `)
+    );
+    const idRows: Array<{ id: string }> = extractExecuteRows<{ id: string }>(
+      idResult
+    );
+    if (idRows.length === 0) break;
+
+    const chunkEndId: string = String(idRows[idRows.length - 1]!.id);
+    const lowerBound: ReturnType<typeof sql> = cursor
+      ? sql`AND id > ${cursor}`
+      : sql``;
+    const result = await withDbRetry("clone converted reads batch page", () =>
+      db.execute(sql`
+        INSERT INTO srDsConvertedReads (
+          id,
+          scopeId,
+          batchId,
+          monitoring,
+          monitoringSystemId,
+          monitoringSystemName,
+          lifetimeMeterReadWh,
+          readDate,
+          rawRow,
+          createdAt
+        )
+        SELECT
+          REPLACE(UUID(), '-', ''),
+          ${scopeId},
+          ${toBatchId},
+          monitoring,
+          monitoringSystemId,
+          monitoringSystemName,
+          lifetimeMeterReadWh,
+          readDate,
+          rawRow,
+          CURRENT_TIMESTAMP
+        FROM srDsConvertedReads
+        WHERE scopeId = ${scopeId}
+          AND batchId = ${fromBatchId}
+          ${lowerBound}
+          AND id <= ${chunkEndId}
+      `)
+    );
+
+    cloned += getDbExecuteAffectedRows(result);
+    cursor = chunkEndId;
+    await options?.onProgress?.({ processedRows: cloned });
+    if (idRows.length < APPEND_PREP_PAGE_SIZE) break;
+  }
+
+  return cloned;
 };
 
 const APPEND_ROW_CHECKERS: Record<string, AppendRowChecker> = {
@@ -1129,11 +1184,12 @@ export async function cloneDatasetBatchRows(
   scopeId: string,
   fromBatchId: string,
   toBatchId: string,
-  datasetKey: string
+  datasetKey: string,
+  options?: AppendPreparationOptions
 ): Promise<number> {
   const cloner = BATCH_CLONERS[datasetKey];
   if (!cloner) return 0;
-  return cloner(scopeId, fromBatchId, toBatchId);
+  return cloner(scopeId, fromBatchId, toBatchId, options);
 }
 
 export async function deleteDatasetBatchRows(
@@ -1286,74 +1342,121 @@ function typedRowKey(datasetKey: string, row: Record<string, unknown>): string {
 export async function loadExistingRowKeys(
   scopeId: string,
   batchId: string,
-  datasetKey: string
+  datasetKey: string,
+  options?: AppendPreparationOptions
 ): Promise<Set<string>> {
   const db = await getDb();
   if (!db) return new Set();
 
   if (datasetKey === "accountSolarGeneration") {
-    const rows = (await withDbRetry("load account solar generation keys", () =>
-      db
-        .select({
-          gatsGenId: srDsAccountSolarGeneration.gatsGenId,
-          facilityName: srDsAccountSolarGeneration.facilityName,
-          monthOfGeneration: srDsAccountSolarGeneration.monthOfGeneration,
-          lastMeterReadDate: srDsAccountSolarGeneration.lastMeterReadDate,
-          lastMeterReadKwh: srDsAccountSolarGeneration.lastMeterReadKwh,
-        })
-        .from(srDsAccountSolarGeneration)
-        .where(
-          sql`${srDsAccountSolarGeneration.scopeId} = ${scopeId}
-              AND ${srDsAccountSolarGeneration.batchId} = ${batchId}`
-        )
-    )) as Array<Record<string, unknown>>;
-    const set = new Set<string>();
-    for (const row of rows) set.add(typedRowKey(datasetKey, row));
-    return set;
+    return loadExistingRowKeysByPage(datasetKey, async cursor => {
+      const cursorClause = cursor ? sql`AND id > ${cursor}` : sql``;
+      const result = await withDbRetry(
+        "load account solar generation keys page",
+        () =>
+          db.execute(sql`
+            SELECT
+              id,
+              gatsGenId,
+              facilityName,
+              monthOfGeneration,
+              lastMeterReadDate,
+              lastMeterReadKwh
+            FROM srDsAccountSolarGeneration
+            WHERE scopeId = ${scopeId}
+              AND batchId = ${batchId}
+              ${cursorClause}
+            ORDER BY id
+            LIMIT ${APPEND_PREP_PAGE_SIZE}
+          `)
+      );
+      return extractExecuteRows<Record<string, unknown> & { id: string }>(
+        result
+      );
+    }, options);
   }
 
   if (datasetKey === "transferHistory") {
-    const rows = (await withDbRetry("load transfer history keys", () =>
-      db
-        .select({
-          transactionId: srDsTransferHistory.transactionId,
-          unitId: srDsTransferHistory.unitId,
-          transferCompletionDate: srDsTransferHistory.transferCompletionDate,
-          quantity: srDsTransferHistory.quantity,
-        })
-        .from(srDsTransferHistory)
-        .where(
-          sql`${srDsTransferHistory.scopeId} = ${scopeId}
-            AND ${srDsTransferHistory.batchId} = ${batchId}`
-        )
-    )) as Array<Record<string, unknown>>;
-    const set = new Set<string>();
-    for (const row of rows) set.add(typedRowKey(datasetKey, row));
-    return set;
+    return loadExistingRowKeysByPage(datasetKey, async cursor => {
+      const cursorClause = cursor ? sql`AND id > ${cursor}` : sql``;
+      const result = await withDbRetry("load transfer history keys page", () =>
+        db.execute(sql`
+          SELECT
+            id,
+            transactionId,
+            unitId,
+            transferCompletionDate,
+            quantity
+          FROM srDsTransferHistory
+          WHERE scopeId = ${scopeId}
+            AND batchId = ${batchId}
+            ${cursorClause}
+          ORDER BY id
+          LIMIT ${APPEND_PREP_PAGE_SIZE}
+        `)
+      );
+      return extractExecuteRows<Record<string, unknown> & { id: string }>(
+        result
+      );
+    }, options);
   }
 
   if (datasetKey === "convertedReads") {
-    const rows = (await withDbRetry("load converted reads keys", () =>
-      db
-        .select({
-          monitoring: srDsConvertedReads.monitoring,
-          monitoringSystemId: srDsConvertedReads.monitoringSystemId,
-          monitoringSystemName: srDsConvertedReads.monitoringSystemName,
-          lifetimeMeterReadWh: srDsConvertedReads.lifetimeMeterReadWh,
-          readDate: srDsConvertedReads.readDate,
-        })
-        .from(srDsConvertedReads)
-        .where(
-          sql`${srDsConvertedReads.scopeId} = ${scopeId}
-            AND ${srDsConvertedReads.batchId} = ${batchId}`
-        )
-    )) as Array<Record<string, unknown>>;
-    const set = new Set<string>();
-    for (const row of rows) set.add(typedRowKey(datasetKey, row));
-    return set;
+    return loadExistingRowKeysByPage(datasetKey, async cursor => {
+      const cursorClause = cursor ? sql`AND id > ${cursor}` : sql``;
+      const result = await withDbRetry("load converted reads keys page", () =>
+        db.execute(sql`
+          SELECT
+            id,
+            monitoring,
+            monitoringSystemId,
+            monitoringSystemName,
+            lifetimeMeterReadWh,
+            readDate
+          FROM srDsConvertedReads
+          WHERE scopeId = ${scopeId}
+            AND batchId = ${batchId}
+            ${cursorClause}
+          ORDER BY id
+          LIMIT ${APPEND_PREP_PAGE_SIZE}
+        `)
+      );
+      return extractExecuteRows<Record<string, unknown> & { id: string }>(
+        result
+      );
+    }, options);
   }
 
   return new Set();
+}
+
+async function loadExistingRowKeysByPage(
+  datasetKey: string,
+  loadPage: (
+    cursor: string | null
+  ) => Promise<Array<Record<string, unknown> & { id: string }>>,
+  options?: AppendPreparationOptions
+): Promise<Set<string>> {
+  const set = new Set<string>();
+  let cursor: string | null = null;
+  let processedRows = 0;
+
+  for (;;) {
+    const rows = await loadPage(cursor);
+    if (rows.length === 0) break;
+
+    for (const row of rows) {
+      set.add(typedRowKey(datasetKey, row));
+    }
+
+    processedRows += rows.length;
+    cursor = String(rows[rows.length - 1]!.id);
+    await options?.onProgress?.({ processedRows });
+
+    if (rows.length < APPEND_PREP_PAGE_SIZE) break;
+  }
+
+  return set;
 }
 
 /**

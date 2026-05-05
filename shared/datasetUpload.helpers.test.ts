@@ -60,6 +60,7 @@ describe("isUploadStatus / isTerminalUploadStatus", () => {
     expect(isTerminalUploadStatus("queued")).toBe(false);
     expect(isTerminalUploadStatus("uploading")).toBe(false);
     expect(isTerminalUploadStatus("parsing")).toBe(false);
+    expect(isTerminalUploadStatus("preparing")).toBe(false);
     expect(isTerminalUploadStatus("writing")).toBe(false);
   });
 });
@@ -73,9 +74,14 @@ describe("isValidUploadStatusTransition", () => {
     expect(isValidUploadStatusTransition("uploading", "parsing")).toBe(true);
   });
 
-  it("parsing → writing OR done", () => {
+  it("parsing → preparing OR writing OR done", () => {
+    expect(isValidUploadStatusTransition("parsing", "preparing")).toBe(true);
     expect(isValidUploadStatusTransition("parsing", "writing")).toBe(true);
     expect(isValidUploadStatusTransition("parsing", "done")).toBe(true);
+  });
+
+  it("preparing → writing", () => {
+    expect(isValidUploadStatusTransition("preparing", "writing")).toBe(true);
   });
 
   it("writing → done", () => {
@@ -86,12 +92,14 @@ describe("isValidUploadStatusTransition", () => {
     expect(isValidUploadStatusTransition("queued", "failed")).toBe(true);
     expect(isValidUploadStatusTransition("uploading", "failed")).toBe(true);
     expect(isValidUploadStatusTransition("parsing", "failed")).toBe(true);
+    expect(isValidUploadStatusTransition("preparing", "failed")).toBe(true);
     expect(isValidUploadStatusTransition("writing", "failed")).toBe(true);
   });
 
   it("rejects backwards transitions", () => {
     expect(isValidUploadStatusTransition("uploading", "queued")).toBe(false);
     expect(isValidUploadStatusTransition("parsing", "uploading")).toBe(false);
+    expect(isValidUploadStatusTransition("preparing", "parsing")).toBe(false);
     expect(isValidUploadStatusTransition("writing", "parsing")).toBe(false);
   });
 
@@ -99,6 +107,8 @@ describe("isValidUploadStatusTransition", () => {
     expect(isValidUploadStatusTransition("queued", "parsing")).toBe(false);
     expect(isValidUploadStatusTransition("queued", "writing")).toBe(false);
     expect(isValidUploadStatusTransition("queued", "done")).toBe(false);
+    expect(isValidUploadStatusTransition("queued", "preparing")).toBe(false);
+    expect(isValidUploadStatusTransition("uploading", "preparing")).toBe(false);
     expect(isValidUploadStatusTransition("uploading", "writing")).toBe(false);
     expect(isValidUploadStatusTransition("uploading", "done")).toBe(false);
   });
@@ -289,6 +299,27 @@ describe("formatUploadProgress", () => {
     expect(view.stageLabel).toBe("Writing rows");
     expect(view.pct).toBe(0.6);
     expect(view.detailLabel).toBe("600 of 1,000 rows");
+  });
+
+  it("formats the append preparation stage with a clear non-row detail", () => {
+    const view = formatUploadProgress(
+      {
+        status: "preparing",
+        totalRows: null,
+        rowsParsed: 0,
+        rowsWritten: 0,
+        uploadedChunks: 5,
+        totalChunks: 5,
+        startedAt: new Date(NOW.getTime() - 5_000),
+        completedAt: null,
+        errorMessage: null,
+      },
+      NOW
+    );
+    expect(view.stageLabel).toBe("Preparing append");
+    expect(view.pct).toBe(0);
+    expect(view.detailLabel).toContain("Copying prior rows");
+    expect(view.estimatedRemainingMs).toBeNull();
   });
 
   it("done is 100% with totalRows in the detail", () => {

@@ -165,7 +165,8 @@ export function defaultMergeStrategyForDataset(
  *
  *   queued    — row created, no chunks yet
  *   uploading — chunks streaming in (clients call uploadChunk)
- *   parsing   — runner has reassembled the file and is reading rows
+ *   parsing   — runner has reassembled the file and is preparing to read rows
+ *   preparing — append-mode runner is copying prior rows / loading dedupe keys
  *   writing   — runner is batch-inserting into srDs* (overlap with
  *               parsing for streaming inserts)
  *   done      — completedAt stamped; batchId is now the active
@@ -176,6 +177,7 @@ export const UPLOAD_STATUSES = [
   "queued",
   "uploading",
   "parsing",
+  "preparing",
   "writing",
   "done",
   "failed",
@@ -201,7 +203,8 @@ export function isTerminalUploadStatus(status: string): boolean {
  *
  *   queued    → uploading | failed
  *   uploading → parsing   | failed
- *   parsing   → writing   | failed | done    (small files skip writing-as-distinct-phase)
+ *   parsing   → preparing | writing | failed | done
+ *   preparing → writing   | failed
  *   writing   → done      | failed
  *
  * Terminal statuses (`done` / `failed`) are absorbing — the runner
@@ -222,7 +225,9 @@ export function isValidUploadStatusTransition(
     case "uploading":
       return to === "parsing";
     case "parsing":
-      return to === "writing" || to === "done";
+      return to === "preparing" || to === "writing" || to === "done";
+    case "preparing":
+      return to === "writing";
     case "writing":
       return to === "done";
     default:
@@ -264,6 +269,7 @@ const STAGE_LABELS: Record<string, string> = {
   queued: "Queued",
   uploading: "Uploading",
   parsing: "Parsing",
+  preparing: "Preparing append",
   writing: "Writing rows",
   done: "Done",
   failed: "Failed",
@@ -321,6 +327,16 @@ export function formatUploadProgress(
         { observed, total, startedAt: job.startedAt },
         now
       ),
+      isTerminal,
+    };
+  }
+
+  if (job.status === "preparing") {
+    return {
+      stageLabel,
+      pct: 0,
+      detailLabel: "Copying prior rows and checking duplicates",
+      estimatedRemainingMs: null,
       isTerminal,
     };
   }

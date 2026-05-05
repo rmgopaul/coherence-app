@@ -32,6 +32,7 @@ import {
   listDatasetUploadJobs,
   recordDatasetUploadJobError,
   sweepStaleDatasetUploadJobs,
+  touchDatasetUploadJob,
   updateDatasetUploadJob,
 } from "./datasetUploadJobs";
 
@@ -468,5 +469,22 @@ describe("sweepStaleDatasetUploadJobs", () => {
     mocks.getDb.mockResolvedValue(null);
     const swept = await sweepStaleDatasetUploadJobs(60 * 1000);
     expect(swept).toBe(0);
+  });
+});
+
+describe("touchDatasetUploadJob", () => {
+  it("bumps updatedAt without changing counters or status", async () => {
+    const stub = makeDbStub({ updateAffected: 1 });
+    mocks.getDb.mockResolvedValue(stub);
+
+    const ok = await touchDatasetUploadJob("scope-1", "job-1");
+    expect(ok).toBe(true);
+
+    const update = stub.calls.find((c) => c.kind === "update");
+    expect(update?.setValue?.updatedAt).toBeInstanceOf(Date);
+    expect(update?.setValue).not.toHaveProperty("status");
+    expect(update?.setValue).not.toHaveProperty("rowsParsed");
+    expect(update?.setValue).not.toHaveProperty("rowsWritten");
+    expect(update?.whereCalled).toBe(1);
   });
 });
