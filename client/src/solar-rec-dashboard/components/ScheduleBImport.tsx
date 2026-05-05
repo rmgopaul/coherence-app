@@ -136,6 +136,12 @@ export type ScheduleBImportProps = {
    */
   onApplyComplete: () => Promise<void> | void;
   /**
+   * Called after Schedule B or fallback CSV mutations update server
+   * datasets so the parent can invalidate shared server aggregates
+   * (Delivery Tracker, Forecast, REC Performance Eval, Annual Review).
+   */
+  onServerDataChanged?: () => Promise<void> | void;
+  /**
    * Server-driven row count of the active `deliveryScheduleBase`
    * dataset (from `getDatasetSummariesAll`). Null while the
    * summaries query is loading or no batch is active. Used only
@@ -167,6 +173,7 @@ const AUTO_APPLY_MIN_INTERVAL_MS = 30_000;
 export function ScheduleBImport({
   transferDeliveryLookup,
   onApplyComplete,
+  onServerDataChanged,
   existingDeliveryScheduleRowCount,
   onClearAppliedSchedule,
 }: ScheduleBImportProps) {
@@ -202,6 +209,20 @@ export function ScheduleBImport({
     totalRows: number;
     at: number;
   } | null>(null);
+  const notifyServerDataChanged = useCallback(
+    async (context: string) => {
+      if (!onServerDataChanged) return;
+      try {
+        await onServerDataChanged();
+      } catch (error) {
+        console.warn(
+          `[ScheduleBImport] shared dataset invalidation failed after ${context}`,
+          error
+        );
+      }
+    },
+    [onServerDataChanged]
+  );
   // apply-track-v1: persistent panel showing the last apply's
   // breakdown + the list of files whose tracking ID was already in
   // the delivery dataset. This replaces the easy-to-miss toast with
@@ -563,6 +584,7 @@ export function ScheduleBImport({
           lastAppliedAt: Date.now(),
         });
         if (serverResult) {
+          await notifyServerDataChanged("auto-apply");
           setLastServerApply({
             incoming: serverResult.incoming,
             inserted: serverResult.inserted,
@@ -587,6 +609,7 @@ export function ScheduleBImport({
     scheduleBStatusQuery.data?.job?.status,
     scheduleBStatusQuery.data?.job?.id,
     applyScheduleBToDeliveryObligations,
+    notifyServerDataChanged,
   ]);
 
   // contract-id-mapping-v1: onChange is now a LOCAL-ONLY state update.
@@ -626,6 +649,7 @@ export function ScheduleBImport({
       const result = await applyScheduleBContractIdMapping.mutateAsync({
         mappingText: contractIdMappingText,
       });
+      await notifyServerDataChanged("contract-id mapping");
       if (onApplyComplete) {
         try {
           await onApplyComplete();
@@ -657,6 +681,7 @@ export function ScheduleBImport({
   }, [
     contractIdMappingText,
     applyScheduleBContractIdMapping,
+    notifyServerDataChanged,
     onApplyComplete,
   ]);
 
@@ -962,6 +987,7 @@ export function ScheduleBImport({
           "Applied on server but failed to reload the local dataset. Refresh the page to see the latest state."
         );
       }
+      await notifyServerDataChanged("manual apply");
 
       if (serverResult.incoming === 0) {
         setApplyBlockedReason(
@@ -1019,6 +1045,7 @@ export function ScheduleBImport({
   }, [
     scheduleBResults,
     onApplyComplete,
+    notifyServerDataChanged,
     scheduleBStatusQuery,
     scheduleBResultsQuery,
     applyScheduleBToDeliveryObligations,
@@ -1458,6 +1485,7 @@ export function ScheduleBImport({
                     totalRows: result.totalRows,
                     checkpoint: result._checkpoint,
                   });
+                  await notifyServerDataChanged("manual CSV upload");
                   toast.success(
                     `Inserted ${formatNumber(result.inserted)} of ${formatNumber(
                       result.receivedRows

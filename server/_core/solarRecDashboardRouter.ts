@@ -269,7 +269,6 @@ import {
   parseChunkPointerPayload,
   parseScheduleBRemoteSourceManifest,
   parseCsvText,
-  buildCsvText,
   parseRemoteCsvDataset,
   cleanScheduleBCell,
   loadDeliveryScheduleBaseDataset,
@@ -287,6 +286,73 @@ import {
   SCHEDULE_B_UPLOAD_CHUNK_BASE64_LIMIT,
 } from "../routers/helpers";
 import type { ParsedRemoteCsvDataset } from "../routers/helpers";
+import {
+  persistDeliveryScheduleBaseCanonical,
+  type DeliveryScheduleBaseRow,
+} from "../services/solar/deliveryScheduleBasePersistence";
+
+function stringifyDeliveryScheduleRows(
+  rows: Array<Record<string, string | undefined>>
+): DeliveryScheduleBaseRow[] {
+  return rows.map((row) =>
+    Object.fromEntries(
+      Object.entries(row).map(([key, value]) => [key, String(value ?? "")])
+    )
+  );
+}
+
+function inferDeliveryScheduleHeaders(
+  rows: readonly DeliveryScheduleBaseRow[]
+): string[] {
+  const headers: string[] = ["tracking_system_ref_id"];
+  const seen = new Set(headers);
+  for (const row of rows) {
+    for (const key of Object.keys(row)) {
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      headers.push(key);
+    }
+  }
+  return headers;
+}
+
+async function loadCanonicalDeliveryScheduleBaseDataset(
+  scopeId: string,
+  userId: number
+): Promise<ParsedRemoteCsvDataset> {
+  const { getActiveBatchForDataset } = await import("../db");
+  const activeBatch = await getActiveBatchForDataset(
+    scopeId,
+    "deliveryScheduleBase"
+  );
+  if (activeBatch?.id) {
+    const { loadDatasetRows } = await import(
+      "../services/solar/buildSystemSnapshot"
+    );
+    const rows = stringifyDeliveryScheduleRows(
+      await loadDatasetRows(scopeId, activeBatch.id, srDsDeliverySchedule)
+    );
+    const expectedRows = Number(activeBatch.rowCount ?? 0);
+    if (expectedRows > 0 && rows.length === 0) {
+      throw new Error(
+        `Active deliveryScheduleBase batch ${activeBatch.id} reports ${expectedRows} row(s), but srDsDeliverySchedule returned 0. Aborting to avoid overwriting the canonical row table with stale cloud data.`
+      );
+    }
+    return {
+      fileName: `deliveryScheduleBase-${activeBatch.id}.csv`,
+      uploadedAt:
+        activeBatch.completedAt?.toISOString() ??
+        activeBatch.createdAt?.toISOString() ??
+        new Date().toISOString(),
+      headers: inferDeliveryScheduleHeaders(rows),
+      rows,
+    };
+  }
+
+  return loadDeliveryScheduleBaseDataset((key) =>
+    getSolarRecDashboardPayload(userId, `dataset:${key}`)
+  );
+}
 
 export const solarRecDashboardRouter = t.router({
   /**
@@ -967,6 +1033,90 @@ export const solarRecDashboardRouter = t.router({
         verdict: { state: verdict, explanation },
       };
     }),
+  /**
+   * One-time production repair for legacy Schedule B blobs.
+   *
+   * If `debugDatasetPersistenceRaw({ datasetKey:"deliveryScheduleBase" })`
+   * reports `storage-only`, this mutation ingests the current cloud
+   * Schedule B CSV into `srDsDeliverySchedule` and activates the new
+   * batch. It does not invent data; it only promotes the existing
+   * compatibility blob into the canonical row-table layer.
+   */
+  backfillDeliveryScheduleBaseFromCloud: dashboardProcedure(
+    "solar-rec-dashboard",
+    "admin"
+  )
+    .input(z.object({ force: z.boolean().optional() }).optional())
+    .mutation(async ({ ctx, input }) => {
+      const { getActiveBatchForDataset } = await import("../db");
+      const activeBatch = await getActiveBatchForDataset(
+        ctx.scopeId,
+        "deliveryScheduleBase"
+      );
+      if (activeBatch && !input?.force) {
+        return {
+          success: true,
+          skipped: true,
+          reason: "active-batch-exists" as const,
+          activeBatchId: activeBatch.id,
+          rowCount: activeBatch.rowCount ?? null,
+          _checkpoint: "delivery-schedule-base-cloud-backfill-v1" as const,
+          _runnerVersion: null,
+        };
+      }
+
+      const storageUserId = await resolveDatasetUserId(
+        "deliveryScheduleBase",
+        ctx.userId
+      );
+      const existingDataset = await loadDeliveryScheduleBaseDataset((key) =>
+        getSolarRecDashboardPayload(storageUserId, `dataset:${key}`)
+      );
+      if (existingDataset.rows.length === 0) {
+        return {
+          success: false,
+          skipped: true,
+          reason: "no-cloud-rows" as const,
+          activeBatchId: activeBatch?.id ?? null,
+          rowCount: 0,
+          _checkpoint: "delivery-schedule-base-cloud-backfill-v1" as const,
+          _runnerVersion: null,
+        };
+      }
+
+      const { key: storageKey } = await buildDashboardStorageKeys(
+        storageUserId,
+        "datasets/deliveryScheduleBase.json"
+      );
+      const persistence = await persistDeliveryScheduleBaseCanonical({
+        scopeId: ctx.scopeId,
+        userId: storageUserId,
+        storagePath: storageKey,
+        fileName: existingDataset.fileName || "deliveryScheduleBase-backfill.csv",
+        uploadedAt: new Date().toISOString(),
+        headers: existingDataset.headers,
+        rows: existingDataset.rows,
+      });
+
+      return {
+        success: true,
+        skipped: false,
+        reason: "backfilled" as const,
+        _checkpoint: "delivery-schedule-base-cloud-backfill-v1" as const,
+        _runnerVersion: persistence._runnerVersion,
+        previousActiveBatchId: activeBatch?.id ?? null,
+        batchId: persistence.batchId,
+        rowCount: persistence.rowCount,
+        rowTableStatus: persistence.rowTableStatus,
+        rowTableErrors: persistence.rowTableErrors,
+        persistedToDatabase: persistence.persistedToDatabase,
+        storageSynced: persistence.storageSynced,
+        persistError: persistence.persistError,
+        storageError: persistence.storageError,
+        syncStateUpdated: persistence.syncStateUpdated,
+        syncStateError: persistence.syncStateError,
+      };
+    }),
   saveDataset: dashboardProcedure("solar-rec-dashboard", "edit")
     .input(
       z.object({
@@ -1551,13 +1701,12 @@ export const solarRecDashboardRouter = t.router({
         return merged;
       };
 
-      // deliveryScheduleBase is loaded via the shared helper — every
-      // other dataset (transferHistory, etc.) still uses the local
-      // loadDatasetPayloadByKey below because those have
-      // procedure-specific handling around them.
-      const existingDataset = await loadDeliveryScheduleBaseDataset(
-        (key) =>
-          getSolarRecDashboardPayload(ctx.userId, `dataset:${key}`)
+      // deliveryScheduleBase is row-table canonical. Fall back to the
+      // legacy cloud blob only when no active srDs batch exists yet
+      // (the production repair/backfill path uses that same fallback).
+      const existingDataset = await loadCanonicalDeliveryScheduleBaseDataset(
+        ctx.scopeId,
+        ctx.userId
       );
 
       const contractIdByTrackingId = new Map<string, string>();
@@ -1743,62 +1892,43 @@ export const solarRecDashboardRouter = t.router({
       mergedRows.forEach((row) => Object.keys(row).forEach(pushHeader));
 
       const uploadedAt = new Date().toISOString();
-      const finalPayload = JSON.stringify({
-        fileName: existingDataset.fileName || "Schedule B Import",
-        uploadedAt,
-        headers: mergedHeaders,
-        csvText: buildCsvText(mergedHeaders, mergedRows),
-      });
-
-      let persistedToDatabase = false;
-      try {
-        persistedToDatabase = await saveSolarRecDashboardPayload(
-          ctx.userId,
-          "dataset:deliveryScheduleBase",
-          finalPayload
-        );
-      } catch {
-        persistedToDatabase = false;
-      }
-
       const { key: storageKey } = await buildDashboardStorageKeys(
         ctx.userId,
         "datasets/deliveryScheduleBase.json"
       );
-      let storageSynced = false;
-      try {
-        await storagePut(storageKey, finalPayload, "application/json");
-        storageSynced = true;
-      } catch (storageError) {
-        if (!persistedToDatabase) {
-          throw storageError;
-        }
-      }
+      const persistence = await persistDeliveryScheduleBaseCanonical({
+        scopeId: ctx.scopeId,
+        userId: ctx.userId,
+        storagePath: storageKey,
+        fileName: existingDataset.fileName || "Schedule B Import",
+        uploadedAt,
+        headers: mergedHeaders,
+        rows: mergedRows,
+      });
 
       // Mark the consumed result rows as applied so the Apply
       // counter drops to 0 (or to whatever genuinely-new results
       // have since landed). Only run if at least one persistence
-      // path succeeded — otherwise we'd "forget" that these rows
-      // still need to be applied. Non-fatal: swallow errors so a
-      // successful merge still returns success to the client.
+      // path succeeded — row-table activation is the canonical
+      // success signal now. Non-fatal: swallow errors so a successful
+      // merge still returns success to the client.
       let markedAppliedCount = 0;
-      if (persistedToDatabase || storageSynced) {
-        try {
-          markedAppliedCount = await markScheduleBImportResultsApplied(
-            job.id,
-            appliedFileNames
-          );
-        } catch (markErr) {
-          console.error(
-            `[applyScheduleBToDeliveryObligations] failed to mark rows applied for job ${job.id}:`,
-            markErr
-          );
-        }
+      try {
+        markedAppliedCount = await markScheduleBImportResultsApplied(
+          job.id,
+          appliedFileNames
+        );
+      } catch (markErr) {
+        console.error(
+          `[applyScheduleBToDeliveryObligations] failed to mark rows applied for job ${job.id}:`,
+          markErr
+        );
       }
 
       return {
         success: true,
         _checkpoint: "apply-track-v1" as const,
+        _runnerVersion: persistence._runnerVersion,
         jobId: job.id,
         incoming: incomingRows.length,
         inserted,
@@ -1806,8 +1936,16 @@ export const solarRecDashboardRouter = t.router({
         unchanged,
         errors: conversionErrors,
         totalRows: mergedRows.length,
-        persistedToDatabase,
-        storageSynced,
+        batchId: persistence.batchId,
+        rowCount: persistence.rowCount,
+        rowTableStatus: persistence.rowTableStatus,
+        rowTableErrors: persistence.rowTableErrors,
+        persistedToDatabase: persistence.persistedToDatabase,
+        storageSynced: persistence.storageSynced,
+        persistError: persistence.persistError,
+        storageError: persistence.storageError,
+        syncStateUpdated: persistence.syncStateUpdated,
+        syncStateError: persistence.syncStateError,
         appliedFileNames,
         alreadyInDatabaseFileNames,
         markedAppliedCount,
@@ -1826,9 +1964,9 @@ export const solarRecDashboardRouter = t.router({
    *   - Rows whose tracking_system_ref_id already exists in
    *     deliveryScheduleBase are SKIPPED (Schedule B scrape wins).
    *   - Rows with a blank tracking_system_ref_id are SKIPPED.
-   *   - New rows are APPENDED to the existing dataset and persisted via
-   *     the same DB + S3 two-sink pattern used by
-   *     applyScheduleBToDeliveryObligations.
+   *   - New rows are APPENDED to the existing dataset and persisted
+   *     through the canonical srDs row-table writer. The legacy DB +
+   *     S3 JSON blob is still written as a compatibility copy.
    *   - Schedule B re-applies will naturally overwrite CSV rows because
    *     mergeDeliveryRows(existing, incoming) uses
    *     { ...existing, ...incoming } — no merge-flow change needed.
@@ -1851,9 +1989,9 @@ export const solarRecDashboardRouter = t.router({
         );
       }
 
-      const existingDataset = await loadDeliveryScheduleBaseDataset(
-        (key) =>
-          getSolarRecDashboardPayload(ctx.userId, `dataset:${key}`)
+      const existingDataset = await loadCanonicalDeliveryScheduleBaseDataset(
+        ctx.scopeId,
+        ctx.userId
       );
 
       // Build a Set of keys already in the dataset — keys match
@@ -1899,68 +2037,48 @@ export const solarRecDashboardRouter = t.router({
       const mergedRows = [...existingDataset.rows, ...insertedRows];
 
       const uploadedAt = new Date().toISOString();
-      const finalPayload = JSON.stringify({
+      const { key: storageKey } = await buildDashboardStorageKeys(
+        ctx.userId,
+        "datasets/deliveryScheduleBase.json"
+      );
+      const persistence = await persistDeliveryScheduleBaseCanonical({
+        scopeId: ctx.scopeId,
+        userId: ctx.userId,
+        storagePath: storageKey,
         fileName:
           input.fileName?.trim() ||
           existingDataset.fileName ||
           "Delivery Schedule CSV",
         uploadedAt,
         headers: mergedHeaders,
-        csvText: buildCsvText(mergedHeaders, mergedRows),
+        rows: mergedRows,
       });
-
-      let persistedToDatabase = false;
-      try {
-        persistedToDatabase = await saveSolarRecDashboardPayload(
-          ctx.userId,
-          "dataset:deliveryScheduleBase",
-          finalPayload
-        );
-      } catch (dbError) {
-        // Non-fatal: fall back to S3. Log so a DB outage is visible in
-        // server logs instead of a silent success that lies about
-        // persistence state.
-        console.error(
-          `[uploadDeliveryScheduleCsv] DB persist failed for user ${ctx.userId}:`,
-          dbError
-        );
-        persistedToDatabase = false;
-      }
-
-      const { key: storageKey } = await buildDashboardStorageKeys(
-        ctx.userId,
-        "datasets/deliveryScheduleBase.json"
-      );
-      let storageSynced = false;
-      try {
-        await storagePut(storageKey, finalPayload, "application/json");
-        storageSynced = true;
-      } catch (storageError) {
-        if (!persistedToDatabase) {
-          throw storageError;
-        }
-        console.error(
-          `[uploadDeliveryScheduleCsv] S3 sync failed for user ${ctx.userId} (DB persist OK):`,
-          storageError
-        );
-      }
 
       return {
         success: true,
         _checkpoint: "csv-upload-v1" as const,
+        _runnerVersion: persistence._runnerVersion,
         receivedRows: parsed.rows.length,
         inserted: insertedRows.length,
         skippedAlreadyPresent,
         skippedBlankKey,
         totalRows: mergedRows.length,
-        persistedToDatabase,
-        storageSynced,
+        batchId: persistence.batchId,
+        rowCount: persistence.rowCount,
+        rowTableStatus: persistence.rowTableStatus,
+        rowTableErrors: persistence.rowTableErrors,
+        persistedToDatabase: persistence.persistedToDatabase,
+        storageSynced: persistence.storageSynced,
+        persistError: persistence.persistError,
+        storageError: persistence.storageError,
+        syncStateUpdated: persistence.syncStateUpdated,
+        syncStateError: persistence.syncStateError,
       };
     }),
   /**
    * contract-id-mapping-v1: persist a GATS ID → Contract ID mapping
    * server-side and patch utility_contract_number across the
-   * deliveryScheduleBase rows in cloud storage.
+   * canonical deliveryScheduleBase rows.
    *
    * Previously the client-side handleContractIdMappingChange path
    * patched local state and relied on the deprecated onApply merge
@@ -1972,13 +2090,15 @@ export const solarRecDashboardRouter = t.router({
    *      hydrates on next mount via getScheduleBContractIdMapping).
    *   2. Parses the text into a Map<gatsId, contractId> (same
    *      grammar as client/src/lib/scheduleBScanner.ts::parseContractIdMapping).
-   *   3. Loads the current cloud deliveryScheduleBase payload via
-   *      the same loadDatasetPayloadByKey helper that
-   *      applyScheduleBToDeliveryObligations uses.
+   *   3. Loads the current canonical deliveryScheduleBase rows,
+   *      preferring the active srDs batch and falling back to legacy
+   *      cloud storage only when no active batch exists yet.
    *   4. Iterates rows and patches utility_contract_number wherever
    *      tracking_system_ref_id (uppercased) has a mapping entry.
-   *   5. Writes the patched dataset back to cloud (DB + S3) using
-   *      the same flat {fileName,uploadedAt,headers,csvText} shape.
+   *   5. Writes the patched dataset back to the active row-table
+   *      batch, then writes the legacy flat
+   *      {fileName,uploadedAt,headers,csvText} shape as a derived
+   *      compatibility copy.
    *   6. Returns counts + checkpoint so the client can display a
    *      "Last mapping: X patched, Y unchanged" panel and so
    *      onApplyComplete can reload the dataset from cloud.
@@ -2028,40 +2148,14 @@ export const solarRecDashboardRouter = t.router({
         };
       }
 
-      // ── Step 3: Load the current cloud deliveryScheduleBase.
-      //    Reuses the exact same inline helper as
-      //    applyScheduleBToDeliveryObligations to handle both flat
-      //    and source-manifest payload shapes.
-      const loadDatasetPayloadByKey = async (
-        key: string
-      ): Promise<string | null> => {
-        const basePayload = await getSolarRecDashboardPayload(
-          ctx.userId,
-          `dataset:${key}`
-        );
-        if (!basePayload) return null;
-        const chunkKeys = parseChunkPointerPayload(basePayload);
-        if (!chunkKeys || chunkKeys.length === 0) {
-          return basePayload;
-        }
-        let merged = "";
-        for (const chunkKey of chunkKeys) {
-          const chunk = await getSolarRecDashboardPayload(
-            ctx.userId,
-            `dataset:${chunkKey}`
-          );
-          if (typeof chunk !== "string") {
-            return null;
-          }
-          merged += chunk;
-        }
-        return merged;
-      };
-
-      const existingPayload = await loadDatasetPayloadByKey(
-        "deliveryScheduleBase"
+      // ── Step 3: Load the current canonical deliveryScheduleBase.
+      //    Prefer the active srDs row-table batch; fall back to the
+      //    legacy cloud blob only when no active batch exists yet.
+      const existingDataset = await loadCanonicalDeliveryScheduleBaseDataset(
+        ctx.scopeId,
+        ctx.userId
       );
-      if (!existingPayload) {
+      if (existingDataset.rows.length === 0) {
         // No dataset yet. Text is saved, but there's nothing to
         // patch. Return early so the client doesn't trigger a
         // cloud reload that would show 0 rows.
@@ -2071,42 +2165,11 @@ export const solarRecDashboardRouter = t.router({
           patched: 0,
           unchanged: 0,
           totalRows: 0,
+          batchId: null,
+          rowCount: 0,
+          _runnerVersion: null,
           mappingTextSaved: true,
         };
-      }
-
-      let existingDataset: ParsedRemoteCsvDataset = {
-        fileName: "Schedule B Import",
-        uploadedAt: new Date().toISOString(),
-        headers: [],
-        rows: [],
-      };
-
-      const sourceManifest =
-        parseScheduleBRemoteSourceManifest(existingPayload);
-      if (sourceManifest && sourceManifest.length > 0) {
-        const latestSource = sourceManifest[sourceManifest.length - 1];
-        const sourcePayload = await loadDatasetPayloadByKey(
-          latestSource.storageKey
-        );
-        if (sourcePayload) {
-          const decoded =
-            latestSource.encoding === "base64"
-              ? Buffer.from(sourcePayload, "base64").toString("utf8")
-              : sourcePayload;
-          const parsedCsv = parseCsvText(decoded);
-          existingDataset = {
-            fileName: "Schedule B Import",
-            uploadedAt: new Date().toISOString(),
-            headers: parsedCsv.headers,
-            rows: parsedCsv.rows,
-          };
-        }
-      } else {
-        const parsed = parseRemoteCsvDataset(existingPayload);
-        if (parsed) {
-          existingDataset = parsed;
-        }
       }
 
       // ── Step 4: Patch utility_contract_number on matching rows.
@@ -2153,48 +2216,40 @@ export const solarRecDashboardRouter = t.router({
       pushHeader("utility_contract_number");
       patchedRows.forEach((row) => Object.keys(row).forEach(pushHeader));
 
-      // ── Step 5: Write back to cloud (DB + S3).
+      // ── Step 5: Write back to the canonical row table, then write
+      //    the legacy cloud JSON as a derived compatibility copy.
       const uploadedAt = new Date().toISOString();
-      const finalPayload = JSON.stringify({
-        fileName: existingDataset.fileName || "Schedule B Import",
-        uploadedAt,
-        headers: mergedHeaders,
-        csvText: buildCsvText(mergedHeaders, patchedRows),
-      });
-
-      let persistedToDatabase = false;
-      try {
-        persistedToDatabase = await saveSolarRecDashboardPayload(
-          ctx.userId,
-          "dataset:deliveryScheduleBase",
-          finalPayload
-        );
-      } catch {
-        persistedToDatabase = false;
-      }
-
       const { key: storageKey } = await buildDashboardStorageKeys(
         ctx.userId,
         "datasets/deliveryScheduleBase.json"
       );
-      let storageSynced = false;
-      try {
-        await storagePut(storageKey, finalPayload, "application/json");
-        storageSynced = true;
-      } catch (storageError) {
-        if (!persistedToDatabase) {
-          throw storageError;
-        }
-      }
+      const persistence = await persistDeliveryScheduleBaseCanonical({
+        scopeId: ctx.scopeId,
+        userId: ctx.userId,
+        storagePath: storageKey,
+        fileName: existingDataset.fileName || "Schedule B Import",
+        uploadedAt,
+        headers: mergedHeaders,
+        rows: patchedRows,
+      });
 
       return {
         _checkpoint: "contract-id-mapping-v1" as const,
+        _runnerVersion: persistence._runnerVersion,
         mappingSize: mapping.size,
         patched,
         unchanged,
         totalRows: patchedRows.length,
-        persistedToDatabase,
-        storageSynced,
+        batchId: persistence.batchId,
+        rowCount: persistence.rowCount,
+        rowTableStatus: persistence.rowTableStatus,
+        rowTableErrors: persistence.rowTableErrors,
+        persistedToDatabase: persistence.persistedToDatabase,
+        storageSynced: persistence.storageSynced,
+        persistError: persistence.persistError,
+        storageError: persistence.storageError,
+        syncStateUpdated: persistence.syncStateUpdated,
+        syncStateError: persistence.syncStateError,
         mappingTextSaved: true,
       };
     }),
@@ -2959,13 +3014,12 @@ export const solarRecDashboardRouter = t.router({
    * remaining RECs in the current energy year via
    * `calculateExpectedWhForRange`.
    *
-   * Cache key bundles 5 active batch IDs (deliveryScheduleBase,
-   * annualProductionEstimates, generationEntry,
-   * accountSolarGeneration, abpReport) + the current energy year
-   * label, so May 1 boundary crossings invalidate the cache
-   * automatically without any clock-skew handling. Wire payload is
-   * tiny (~7.5 KB on a typical portfolio: ~50 contract rows × 10
-   * numeric fields).
+   * Cache key bundles the active batch IDs for deliveryScheduleBase,
+   * transferHistory, annualProductionEstimates, generationEntry,
+   * accountSolarGeneration, and abpReport, plus the current energy
+   * year label, so May 1 boundary crossings and delivered-history
+   * uploads both invalidate the cache. Wire payload is tiny (~7.5 KB
+   * on a typical portfolio: ~50 contract rows × 10 numeric fields).
    */
   getDashboardForecast: dashboardProcedure(
     "solar-rec-dashboard",

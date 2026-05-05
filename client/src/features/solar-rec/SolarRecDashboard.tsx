@@ -1676,6 +1676,35 @@ export default function SolarRecDashboard() {
   const CORE_DATASET_SYNC_POLL_TIMEOUT_MS = 10 * 60 * 1000;
   const CORE_DATASET_SYNC_POLL_INTERVAL_MS = 2000;
 
+  const invalidateSharedDatasetConsumers = useCallback(
+    async (sid: string) => {
+      await Promise.all([
+        solarRecTrpcUtils.solarRecDashboard.getDatasetSummariesAll.invalidate(),
+        solarRecTrpcUtils.solarRecDashboard.getDatasetCloudStatuses.invalidate({
+          keys: allDatasetKeys,
+        }),
+        solarRecTrpcUtils.solarRecDashboard.getActiveDatasetVersions.invalidate({
+          scopeId: sid,
+        }),
+        solarRecTrpcUtils.solarRecDashboard.getSystemSnapshot.invalidate({
+          scopeId: sid,
+        }),
+        solarRecTrpcUtils.solarRecDashboard.getSystemSnapshotHash.invalidate({
+          scopeId: sid,
+        }),
+        solarRecTrpcUtils.solarRecDashboard.getTransferDeliveryLookup.invalidate({
+          scopeId: sid,
+        }),
+        solarRecTrpcUtils.solarRecDashboard.getDashboardDeliveryTrackerAggregates.invalidate(),
+        solarRecTrpcUtils.solarRecDashboard.getDashboardContractVintageAggregates.invalidate(),
+        solarRecTrpcUtils.solarRecDashboard.getDashboardPerformanceSourceRows.invalidate(),
+        solarRecTrpcUtils.solarRecDashboard.getDashboardForecast.invalidate(),
+        solarRecTrpcUtils.solarRecDashboard.listDatasetUploadJobs.invalidate(),
+      ]);
+    },
+    [allDatasetKeys, solarRecTrpcUtils]
+  );
+
   const finishCoreDatasetSync = useCallback(
     async (
       key: DatasetKey,
@@ -1714,12 +1743,7 @@ export default function SolarRecDashboard() {
           jobId,
           updatedAt: Date.now(),
         });
-        await Promise.all([
-          solarRecTrpcUtils.solarRecDashboard.getSystemSnapshot.invalidate({ scopeId: sid }),
-          solarRecTrpcUtils.solarRecDashboard.getTransferDeliveryLookup.invalidate({ scopeId: sid }),
-          solarRecTrpcUtils.solarRecDashboard.getActiveDatasetVersions.invalidate({ scopeId: sid }),
-          solarRecTrpcUtils.solarRecDashboard.getSystemSnapshotHash.invalidate({ scopeId: sid }),
-        ]);
+        await invalidateSharedDatasetConsumers(sid);
         window.setTimeout(() => {
           setDatasetSyncProgressState(key, undefined);
         }, 1500);
@@ -1731,19 +1755,18 @@ export default function SolarRecDashboard() {
       // Best effort: the in-memory job registry may have been lost after
       // a restart even though the underlying batch already activated.
       if (sid) {
-        await Promise.all([
-          solarRecTrpcUtils.solarRecDashboard.getSystemSnapshot.invalidate({ scopeId: sid }),
-          solarRecTrpcUtils.solarRecDashboard.getTransferDeliveryLookup.invalidate({ scopeId: sid }),
-          solarRecTrpcUtils.solarRecDashboard.getActiveDatasetVersions.invalidate({ scopeId: sid }),
-          solarRecTrpcUtils.solarRecDashboard.getSystemSnapshotHash.invalidate({ scopeId: sid }),
-        ]);
+        await invalidateSharedDatasetConsumers(sid);
       }
       // eslint-disable-next-line no-console
       console.error(
         `[solar-rec] srDs sync for ${key} became unknown before completion; progress UI cleared without marking success.`
       );
     },
-    [setDatasetSyncProgressState, trpcUtils]
+    [
+      invalidateSharedDatasetConsumers,
+      setDatasetSyncProgressState,
+      trpcUtils,
+    ]
   );
 
   /**
@@ -1764,9 +1787,9 @@ export default function SolarRecDashboard() {
    * same (scope, datasetKey) return the same jobId and launch one
    * ingest.
    *
-   * The invalidation list is inlined rather than going through the
-   * invalidateServerDerivedSolarData helper so this callback can
-   * live above that helper's declaration without a TDZ.
+   * `finishCoreDatasetSync` delegates to the shared invalidation
+   * helper so upload success and Schedule B changes refresh the same
+   * downstream server aggregates.
    */
   const triggerCoreDatasetSrDsSync = useCallback(
     (key: string) => {
@@ -2290,13 +2313,8 @@ export default function SolarRecDashboard() {
 
   const invalidateServerDerivedSolarData = useCallback(async () => {
     if (!scopeId) return;
-    await Promise.all([
-      solarRecTrpcUtils.solarRecDashboard.getSystemSnapshot.invalidate({ scopeId }),
-      solarRecTrpcUtils.solarRecDashboard.getTransferDeliveryLookup.invalidate({ scopeId }),
-      solarRecTrpcUtils.solarRecDashboard.getActiveDatasetVersions.invalidate({ scopeId }),
-      solarRecTrpcUtils.solarRecDashboard.getSystemSnapshotHash.invalidate({ scopeId }),
-    ]);
-  }, [scopeId, trpcUtils]);
+    await invalidateSharedDatasetConsumers(scopeId);
+  }, [invalidateSharedDatasetConsumers, scopeId]);
 
   const pollCoreDatasetSyncJob = useCallback(
     async (key: DatasetKey, jobId: string) => {
@@ -6308,6 +6326,7 @@ const aiDataContext = useMemo(() => {
                           );
                         }
                       }}
+                      onServerDataChanged={invalidateServerDerivedSolarData}
                     />
                   </>
                 }
@@ -6662,13 +6681,11 @@ const aiDataContext = useMemo(() => {
                             // counts + snapshot in automatically.
                             // `getDataset` is a mutation (the
                             // chunked-CSV reader) so it isn't
-                            // invalidatable; the queries below are
-                            // what the dashboard actually reads to
-                            // hydrate row counts + system records.
-                            void solarRecTrpcUtils.solarRecDashboard.getDatasetSummariesAll.invalidate();
-                            void solarRecTrpcUtils.solarRecDashboard.getSystemSnapshot.invalidate();
-                            void solarRecTrpcUtils.solarRecDashboard.getDatasetCloudStatuses.invalidate();
-                            void solarRecTrpcUtils.solarRecDashboard.listDatasetUploadJobs.invalidate();
+                            // invalidatable; the central helper
+                            // refreshes the row counts, active
+                            // versions, system snapshot, transfer
+                            // lookup, and tab aggregates.
+                            void invalidateServerDerivedSolarData();
                           }}
                         />
                         {dataset ? (
