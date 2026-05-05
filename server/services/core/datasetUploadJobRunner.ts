@@ -43,6 +43,8 @@ import { streamCsvRowsFromFile } from "./csvStreamParser";
 import {
   buildAppendRowKey,
   cloneDatasetBatchRows,
+  compactAccountSolarGenerationLatestMeterReads,
+  deleteDatasetBatchRows,
   loadExistingRowKeys,
 } from "../solar/datasetRowPersistence";
 import {
@@ -172,6 +174,7 @@ export async function runDatasetUploadJob(
   let totalRowsParsed = 0;
   let totalRowsWritten = 0;
   let totalErrorCount = 0;
+  let batchActivated = false;
 
   try {
     // Phase 5e step 4 PR-D follow-up (2026-04-30) — stream the CSV
@@ -203,7 +206,10 @@ export async function runDatasetUploadJob(
     let dedupedCount = 0;
 
     if (mergeStrategy === "append") {
-      const activeBatch = await getActiveBatchForDataset(scopeId, job.datasetKey);
+      const activeBatch = await getActiveBatchForDataset(
+        scopeId,
+        job.datasetKey
+      );
       priorActiveBatchId = activeBatch?.id ?? null;
     }
 
@@ -351,25 +357,48 @@ export async function runDatasetUploadJob(
       totalRows: totalRowsParsed,
     });
 
+    // Account Solar Generation keeps the newest read for a system+meter.
+    // Compact after all append rows are present but before activation so
+    // historical duplicates cloned from the prior active batch are repaired
+    // in the new active version.
+    let finalRowCount = clonedRowCount + totalRowsWritten;
+    let compactedDeletedRows = 0;
+    if (job.datasetKey === "accountSolarGeneration" && batchId) {
+      const compacted = await compactAccountSolarGenerationLatestMeterReads(
+        scopeId,
+        batchId,
+        { onProgress: heartbeat }
+      );
+      finalRowCount = compacted.rowCount;
+      compactedDeletedRows = compacted.deletedRows;
+    }
+
     // Activate the new batch as the dataset's source of truth. For
     // append mode the rowCount is `clonedRowCount + totalRowsWritten`
-    // because the new batch contains every prior row PLUS the
-    // newly-inserted ones; for replace mode `clonedRowCount` is 0.
-    const finalRowCount = clonedRowCount + totalRowsWritten;
+    // minus any dataset-specific compaction because the new batch
+    // contains every retained prior row PLUS the newly-inserted ones;
+    // for replace mode `clonedRowCount` is 0.
     await activateDatasetVersion(scopeId, job.datasetKey, batchId, {
       rowCount: finalRowCount,
       completedAt: new Date(),
     });
+    batchActivated = true;
 
     // Diagnostic-only logging — the job row already carries
     // `rowsWritten` and `totalRows`, but the dedup count is otherwise
     // invisible. Surface it on stdout in case a confused user reports
     // "I uploaded 1000 rows but only 200 landed."
-    if (mergeStrategy === "append" && (clonedRowCount > 0 || dedupedCount > 0)) {
+    if (
+      mergeStrategy === "append" &&
+      (clonedRowCount > 0 || dedupedCount > 0)
+    ) {
       // eslint-disable-next-line no-console
       console.info(
         `[runDatasetUploadJob] ${job.datasetKey} append: cloned ${clonedRowCount} prior, ` +
           `inserted ${totalRowsWritten} new, deduped ${dedupedCount} duplicates ` +
+          (compactedDeletedRows > 0
+            ? `compacted ${compactedDeletedRows} older meter reads, `
+            : "") +
           `-> batch ${batchId} now has ${finalRowCount} rows total.`
       );
     }
@@ -393,11 +422,8 @@ export async function runDatasetUploadJob(
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     await failJob(scopeId, jobId, currentStatus, message);
-    if (batchId) {
-      await updateImportBatchStatus(batchId, "failed", {
-        error: message,
-        completedAt: new Date(),
-      });
+    if (batchId && !batchActivated) {
+      await cleanupFailedUploadBatch(job.datasetKey, batchId, message);
     }
     throw err;
   }
@@ -437,6 +463,27 @@ async function failJob(
   });
 }
 
+async function cleanupFailedUploadBatch(
+  datasetKey: string,
+  batchId: string,
+  message: string
+): Promise<void> {
+  try {
+    await deleteDatasetBatchRows(datasetKey, batchId);
+  } catch (cleanupError) {
+    // eslint-disable-next-line no-console
+    console.error(
+      `[runDatasetUploadJob] failed to purge rows for failed ${datasetKey} batch ${batchId}`,
+      cleanupError
+    );
+  }
+
+  await updateImportBatchStatus(batchId, "failed", {
+    error: message,
+    completedAt: new Date(),
+  });
+}
+
 /**
  * Generic batch insert. The parser narrows the row shape; here we
  * just hand drizzle a table reference + values. The `as never` is
@@ -452,8 +499,6 @@ async function insertParsedRows(
   const db = await getDb();
   if (!db) return;
   await withDbRetry("insert dataset upload rows", async () => {
-    await db
-      .insert(parser.table as never)
-      .values(rows as never);
+    await db.insert(parser.table as never).values(rows as never);
   });
 }
