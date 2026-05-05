@@ -301,6 +301,7 @@ describe("parseArgs", () => {
     expect(opts.dryRun).toBe(false);
     expect(opts.scopeId).toBeNull();
     expect(opts.datasetKey).toBeNull();
+    expect(opts.batchId).toBeNull();
     expect(opts.pageSize).toBe(500);
   });
 
@@ -314,6 +315,30 @@ describe("parseArgs", () => {
 
   it("parses --dataset <key>", () => {
     expect(parseArgs(["--dataset", "abpReport"]).datasetKey).toBe("abpReport");
+  });
+
+  it("parses --batch <batchId>", () => {
+    // Targeted backfill: limit to one import batch (typically the
+    // active one read by slim summary + dashboard tabs). Lets a
+    // multi-hour scan over 273k+ rows shrink to a 10-50 min run on
+    // the active 32k.
+    expect(parseArgs(["--batch", "abc123"]).batchId).toBe("abc123");
+  });
+
+  it("composes --scope + --batch + --dataset together", () => {
+    // Realistic operator invocation: pin the backfill to the
+    // active batch of one dataset in one scope.
+    const opts = parseArgs([
+      "--scope",
+      "scope-user-1",
+      "--dataset",
+      "solarApplications",
+      "--batch",
+      "active-batch-id",
+    ]);
+    expect(opts.scopeId).toBe("scope-user-1");
+    expect(opts.datasetKey).toBe("solarApplications");
+    expect(opts.batchId).toBe("active-batch-id");
   });
 
   it("parses --page-size <n>", () => {
