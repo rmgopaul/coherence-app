@@ -3381,14 +3381,26 @@ export async function getTeslaPowerhubGroupProductionMetricsCached(
 }
 
 // ────────────────────────────────────────────────────────────────────
-// Test surface — internal pure helpers exported for unit-test access
-// without polluting the production import surface. Concern #1 from
-// the PRs 366-383 review: vendor-restoration PRs (#368, #371, #373)
-// shipped without adapter-level vitest specs. Tests against this
-// surface form the first slice of that coverage gap. Network-bound
-// integration paths (`getTeslaPowerhubProductionMetrics`,
-// `getTeslaPowerhubAccessibleGroups`, `listTeslaPowerhubSites`) are
-// follow-up PRs that mock fetch.
+// Test surface — internal pure helpers + ONE network-bound integration
+// path exported for unit-test access without polluting the production
+// import surface. Concern #1 from the PRs 366-383 review: vendor-
+// restoration PRs (#368, #371, #373) shipped without adapter-level
+// vitest specs. Tests against this surface form the first slices of
+// that coverage gap.
+//
+// Slice 1 (#389): pure helpers below the divider.
+// Slice 3 (this PR): adds `requestClientCredentialsToken` — the
+//   token-fetch path. It's the simplest network-bound entry (single
+//   fetch, 4 distinct outcomes: 200 / non-2xx / timeout / network
+//   error), so it's the natural place to establish the fetch-mock
+//   pattern (`vi.stubGlobal("fetch", ...)`) for solar adapters
+//   before tackling the multi-fetch site-discovery + telemetry paths.
+//
+// Still to come: site discovery (`listTeslaPowerhubSites` →
+// `requestClientCredentialsToken` then iterates through
+// `buildSiteDiscoveryCandidateUrls`); telemetry windows
+// (`getTeslaPowerhubProductionMetrics` →
+// `fetchTelemetryWindowTotals`).
 // ────────────────────────────────────────────────────────────────────
 export const __TEST_ONLY__ = {
   normalizeTimeoutMs,
@@ -3399,4 +3411,5 @@ export const __TEST_ONLY__ = {
   parseTokenPayload,
   parseTimestampMs,
   isLikelySiteIdKey,
+  requestClientCredentialsToken,
 };
