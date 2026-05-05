@@ -623,8 +623,9 @@ describe("dashboardCsvExportJobs — sweepStaleAndPruned", () => {
       Date.now() - __TEST_ONLY__.JOB_TTL_MS - 60_000
     );
     row.fileName = "ownership-status-reporting-20260401120000.csv";
+    row.claimedBy = "pid-1-host-a-aaaaaaaa";
     row.artifactUrl =
-      "/_local_uploads/solar-rec-dashboard/scope-A/exports/abc-ownership-status-reporting-20260401120000.csv";
+      "/_local_uploads/solar-rec-dashboard/scope-A/exports/ttl-test-id-pid-1-host-a-aaaaaaaa-ownership-status-reporting-20260401120000.csv";
 
     await __TEST_ONLY__.sweepStaleAndPruned();
     await Promise.resolve(); // let the fire-and-forget storageDelete settle
@@ -654,17 +655,50 @@ describe("dashboardCsvExportJobs — sweepStaleAndPruned", () => {
 });
 
 describe("dashboardCsvExportJobs — runner version + claim id", () => {
-  it("exports the v3-heartbeat runner version (revs from v2)", () => {
+  it("exports the v4 claim-scoped artifact runner version", () => {
     expect(DASHBOARD_CSV_EXPORT_RUNNER_VERSION).toBe(
-      "dashboard-csv-export-jobs-v3-heartbeat"
+      "dashboard-csv-export-jobs-v4-claim-scoped-artifacts"
     );
   });
 
   it("claim id includes pid + host + suffix", () => {
     const id = __TEST_ONLY__.getClaimId();
     expect(id).toMatch(/^pid-\d+-host-.+-[0-9a-f]{8}$/);
-    // Stable across calls within the same process.
-    expect(__TEST_ONLY__.getClaimId()).toBe(id);
+    // Unique per runner attempt so late cleanup for a timed-out
+    // attempt cannot delete a retry's artifact.
+    expect(__TEST_ONLY__.getClaimId()).not.toBe(id);
+  });
+
+  it("uses claim-scoped storage keys for v4 artifacts and legacy keys for older rows", () => {
+    expect(
+      __TEST_ONLY__.storageKeyForJob(
+        "job-1",
+        SCOPE,
+        "export.csv",
+        "pid-1-host-a-aaaaaaaa",
+        DASHBOARD_CSV_EXPORT_RUNNER_VERSION
+      )
+    ).toBe(
+      "solar-rec-dashboard/scope-A/exports/job-1-pid-1-host-a-aaaaaaaa-export.csv"
+    );
+    expect(
+      __TEST_ONLY__.storageKeyForJob(
+        "job-1",
+        SCOPE,
+        "export.csv",
+        null,
+        DASHBOARD_CSV_EXPORT_RUNNER_VERSION
+      )
+    ).toBeNull();
+    expect(
+      __TEST_ONLY__.storageKeyForJob(
+        "job-1",
+        SCOPE,
+        "export.csv",
+        "pid-1-host-a-aaaaaaaa",
+        "dashboard-csv-export-jobs-v3-heartbeat"
+      )
+    ).toBe("solar-rec-dashboard/scope-A/exports/job-1-export.csv");
   });
 });
 
@@ -915,8 +949,9 @@ describe("dashboardCsvExportJobs — Codex P1: heartbeat keeps healthy long jobs
     expect(refreshed).toBe(false);
   });
 
-  it("fails and releases a hung export at the hard runner deadline", async () => {
+  it("fails a hung export and drains the next queued runner at the hard deadline", async () => {
     vi.useFakeTimers();
+    __TEST_ONLY__.setMaxLocalRunnersForTest(1);
     const overviewMod = await import("./buildOverviewSummaryAggregates");
     const getOverview =
       overviewMod.getOrBuildOverviewSummary as unknown as ReturnType<
@@ -926,23 +961,46 @@ describe("dashboardCsvExportJobs — Codex P1: heartbeat keeps healthy long jobs
       () => new Promise(() => undefined)
     );
 
-    let scheduledDrain: (() => void) | null = null;
+    const scheduledDrains: Array<() => void> = [];
+    const scheduler = (cb: () => void) => {
+      scheduledDrains.push(cb);
+    };
     const { jobId } = await startCsvExportJob(
       SCOPE,
       { exportType: "ownershipTile", tile: "reporting" },
       runCsvExportJob,
-      (cb) => {
-        scheduledDrain = cb;
-      }
+      scheduler
     );
 
-    expect(scheduledDrain).not.toBeNull();
-    scheduledDrain!();
+    expect(scheduledDrains).toHaveLength(1);
+    scheduledDrains.shift()!();
     expect(__TEST_ONLY__.getRunnerSchedulerState().activeJobIds).toEqual([
       jobId,
     ]);
     await flushMicrotasks();
     expect(fakeFindById(jobId)?.status).toBe("running");
+
+    let drainedJobId: string | null = null;
+    const { jobId: waitingJobId } = await startCsvExportJob(
+      SCOPE,
+      { exportType: "ownershipTile", tile: "notReporting" },
+      async (id) => {
+        drainedJobId = id;
+      },
+      scheduler
+    );
+    expect(__TEST_ONLY__.getRunnerSchedulerState().pendingJobIds).toEqual([
+      waitingJobId,
+    ]);
+    expect(scheduledDrains).toHaveLength(1);
+    // Drain attempt while the local runner slot is full. The
+    // waiting job should remain pending until the timed-out
+    // active runner releases the slot.
+    scheduledDrains.shift()!();
+    expect(__TEST_ONLY__.getRunnerSchedulerState().pendingJobIds).toEqual([
+      waitingJobId,
+    ]);
+    expect(drainedJobId).toBeNull();
 
     await vi.advanceTimersByTimeAsync(__TEST_ONLY__.EXPORT_RUNNER_TIMEOUT_MS);
     await flushMicrotasks();
@@ -951,6 +1009,11 @@ describe("dashboardCsvExportJobs — Codex P1: heartbeat keeps healthy long jobs
     expect(row?.status).toBe("failed");
     expect(row?.errorMessage).toContain("exceeded hard runtime limit");
     expect(__TEST_ONLY__.getRunnerSchedulerState().activeJobIds).toEqual([]);
+    expect(scheduledDrains).toHaveLength(1);
+    scheduledDrains.shift()!();
+    await flushMicrotasks();
+    expect(drainedJobId).toBe(waitingJobId);
+    expect(__TEST_ONLY__.getRunnerSchedulerState().pendingJobIds).toEqual([]);
   });
 });
 
