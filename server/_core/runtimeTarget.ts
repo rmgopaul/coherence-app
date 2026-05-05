@@ -84,3 +84,57 @@ export function shouldMutateProdState(
   if (detectRuntimeTarget(env) === "test") return false;
   return allowsLocalProdWrites(env);
 }
+
+/**
+ * In-tick safety net for prod-mutating scheduler callbacks
+ * (Concern #4 PR-3, defense in depth).
+ *
+ * Returns `true` if the tick may proceed; returns `false` (after
+ * logging once per scheduler-name per process) if the tick should
+ * short-circuit because this process is not authorised to mutate
+ * prod state.
+ *
+ * The boot-time gate in `startServer()` (PR-2) already prevents
+ * the schedulers from being registered at all on local-dev
+ * without `ALLOW_LOCAL_TO_PROD_WRITES`. This per-tick guard is
+ * the second layer: even if a future PR accidentally registers a
+ * scheduler outside the boot-time gate, the tick callback will
+ * still short-circuit. Each scheduler-name logs at most once per
+ * process to keep log volume bounded for chatty schedulers (e.g.
+ * the dataset-upload sweeper firing every 5 min).
+ *
+ * Usage:
+ *   async function tick(...) {
+ *     if (!schedulerTickAllowed("monitoring-batch")) return;
+ *     // ...mutations
+ *   }
+ */
+const _schedulerSkipLogged = new Set<string>();
+
+export function schedulerTickAllowed(
+  schedulerName: string,
+  env: RuntimeEnv = process.env
+): boolean {
+  if (shouldMutateProdState(env)) return true;
+  if (!_schedulerSkipLogged.has(schedulerName)) {
+    _schedulerSkipLogged.add(schedulerName);
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[runtimeTarget] In-tick safety net engaged for scheduler ` +
+        `'${schedulerName}' — process is not in hosted-prod and ` +
+        `ALLOW_LOCAL_TO_PROD_WRITES is not set. Skipping this tick ` +
+        `(and any future ticks). Logged once per process.`
+    );
+  }
+  return false;
+}
+
+/**
+ * Test-only: reset the per-scheduler logged-once memo. Lets each
+ * test assert its own log line without leaking state across the
+ * suite. Not exported from the public surface (callers shouldn't
+ * need this in production).
+ */
+export function __resetSchedulerSkipLoggedForTests(): void {
+  _schedulerSkipLogged.clear();
+}

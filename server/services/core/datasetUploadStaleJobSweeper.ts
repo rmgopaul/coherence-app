@@ -25,6 +25,7 @@
  *                                    (boot sweep still runs).
  */
 import { sweepStaleDatasetUploadJobs } from "../../db/datasetUploadJobs";
+import { schedulerTickAllowed } from "../../_core/runtimeTarget";
 
 const DEFAULT_STALE_AFTER_MS = 10 * 60 * 1000; // 10 min
 const DEFAULT_SWEEP_INTERVAL_MS = 5 * 60 * 1000; // 5 min
@@ -41,6 +42,12 @@ function readEnvNumber(name: string, fallback: number): number {
 }
 
 async function runSweep(staleAfterMs: number): Promise<void> {
+  // Concern #4 PR-3 in-tick safety net — see monitoringScheduler.ts
+  // for rationale. The sweeper is the chattiest of the three
+  // (every 5 min by default), so the once-per-process log inside
+  // `schedulerTickAllowed` is especially important here to avoid
+  // 288 log lines/day if the gate is hit.
+  if (!schedulerTickAllowed("dataset-upload-stale-sweeper")) return;
   // Re-entrancy guard: if a previous sweep is still in flight when
   // the timer fires (e.g. DB is slow), skip the new tick rather
   // than stack mutations.
