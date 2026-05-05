@@ -1736,10 +1736,11 @@ export const dashboardCsvExportJobs = mysqlTable(
     // Failure field (populated on failed). Mirrors the existing
     // `errorMessage` convention from `datasetUploadJobs`.
     errorMessage: text("errorMessage"),
-    // Cross-process claim fields. PR-B's runner sets `claimedBy`
-    // to a stable process identifier (e.g. `pid-${pid}-host-${hostname}`)
-    // before transitioning queued → running, and refreshes
-    // `claimedAt` periodically as a liveness heartbeat. A
+    // Cross-process claim fields. The runner sets `claimedBy`
+    // to a per-attempt identifier that includes process metadata
+    // (e.g. `pid-${pid}-host-${hostname}-${suffix}`) before
+    // transitioning queued → running, and refreshes `claimedAt`
+    // periodically as a liveness heartbeat. A
     // separate sweeper (or the next-claimer's start path) treats
     // a stale `claimedAt` as evidence the prior process died and
     // re-claims the row. PR-A reserves the columns but does not
