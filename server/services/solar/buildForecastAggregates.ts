@@ -259,6 +259,7 @@ export function buildForecastAggregates(
 
 const FORECAST_DEPS = [
   "deliveryScheduleBase",
+  "transferHistory",
   "annualProductionEstimates",
   "generationEntry",
   "accountSolarGeneration",
@@ -267,7 +268,12 @@ const FORECAST_DEPS = [
 
 const FORECAST_ARTIFACT_TYPE = "forecast";
 
-export const FORECAST_RUNNER_VERSION = "phase-5d-pr2-forecast@3";
+export const FORECAST_RUNNER_VERSION = "phase-5d-pr2-forecast@4";
+// 2026-05-05 (@4): include transferHistory in the input hash.
+// Forecast reads delivered REC history through
+// `buildTransferDeliveryLookupForScope`, so transfer uploads must
+// invalidate this cache even when every other Forecast dependency is
+// unchanged.
 // 2026-04-29 (@3): consolidated this file's private
 // `buildPerformanceSourceRows` with the shared module at
 // `server/services/solar/buildPerformanceSourceRows.ts`. Output is
@@ -280,8 +286,9 @@ export const FORECAST_RUNNER_VERSION = "phase-5d-pr2-forecast@3";
 // Cache invalidation forces recompute against the corrected
 // helper.
 
-interface ForecastBatchIds {
+export interface ForecastBatchIds {
   deliveryScheduleBaseBatchId: string | null;
+  transferHistoryBatchId: string | null;
   annualProductionBatchId: string | null;
   generationEntryBatchId: string | null;
   accountSolarGenerationBatchId: string | null;
@@ -299,6 +306,7 @@ async function resolveForecastBatchIds(
     versions.find((v) => v.datasetKey === key)?.batchId ?? null;
   return {
     deliveryScheduleBaseBatchId: find("deliveryScheduleBase"),
+    transferHistoryBatchId: find("transferHistory"),
     annualProductionBatchId: find("annualProductionEstimates"),
     generationEntryBatchId: find("generationEntry"),
     accountSolarGenerationBatchId: find("accountSolarGeneration"),
@@ -314,6 +322,7 @@ function computeForecastInputHash(
     .update(
       [
         `deliveryScheduleBase:${batchIds.deliveryScheduleBaseBatchId ?? ""}`,
+        `transferHistory:${batchIds.transferHistoryBatchId ?? ""}`,
         `annualProductionEstimates:${batchIds.annualProductionBatchId ?? ""}`,
         `generationEntry:${batchIds.generationEntryBatchId ?? ""}`,
         `accountSolarGeneration:${batchIds.accountSolarGenerationBatchId ?? ""}`,
@@ -325,6 +334,10 @@ function computeForecastInputHash(
     .digest("hex")
     .slice(0, 16);
 }
+
+export const __forecastAggregatesTest = {
+  computeForecastInputHash,
+};
 
 /**
  * Public entrypoint for the Forecast tab's tRPC query. Returns the
