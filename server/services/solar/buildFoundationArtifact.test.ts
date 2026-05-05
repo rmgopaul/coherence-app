@@ -10,7 +10,10 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { DATASET_KEYS, type DatasetKey } from "../../../shared/datasetUpload.helpers";
+import {
+  DATASET_KEYS,
+  type DatasetKey,
+} from "../../../shared/datasetUpload.helpers";
 import {
   FOUNDATION_DEFINITION_VERSION,
   type FoundationArtifactPayload,
@@ -21,6 +24,7 @@ import {
 } from "./aggregatorHelpers";
 import {
   buildFoundationFromInputs,
+  extractZillowFromRawRow,
   parseFoundationDateIso,
   parseFoundationKwh,
   type FoundationAbpCsgMappingInput,
@@ -38,7 +42,7 @@ function makeInputVersions(
   populatedKeys: DatasetKey[] = ["solarApplications"]
 ): FoundationBuilderInputs["inputVersions"] {
   return Object.fromEntries(
-    DATASET_KEYS.map((k) => [
+    DATASET_KEYS.map(k => [
       k,
       populatedKeys.includes(k)
         ? { batchId: `batch-${k}`, rowCount: 1 }
@@ -148,7 +152,9 @@ describe("isPart2BlockingStatus", () => {
     expect(isPart2BlockingStatus("rejected")).toBe(true);
     expect(isPart2BlockingStatus("Rejected")).toBe(true);
     expect(isPart2BlockingStatus("REJECTED")).toBe(true);
-    expect(isPart2BlockingStatus("Application Rejected by Reviewer")).toBe(true);
+    expect(isPart2BlockingStatus("Application Rejected by Reviewer")).toBe(
+      true
+    );
   });
 
   it("blocks cancelled status (both spellings)", () => {
@@ -169,9 +175,9 @@ describe("isPart2BlockingStatus", () => {
     expect(
       isPart2BlockingStatus("Active | Rejected at Part 2 | In Review")
     ).toBe(true);
-    expect(
-      isPart2BlockingStatus("Approved | Active | Cancelled by user")
-    ).toBe(true);
+    expect(isPart2BlockingStatus("Approved | Active | Cancelled by user")).toBe(
+      true
+    );
   });
 
   it("does NOT block valid statuses", () => {
@@ -363,7 +369,9 @@ describe("buildFoundationFromInputs — happy path", () => {
       FIXED_BUILT_AT
     );
     expect(payload.canonicalSystemsByCsgId["CSG-1"].isTerminated).toBe(true);
-    expect(payload.canonicalSystemsByCsgId["CSG-1"].isPart2Verified).toBe(false);
+    expect(payload.canonicalSystemsByCsgId["CSG-1"].isPart2Verified).toBe(
+      false
+    );
     expect(payload.summaryCounts.part2Verified).toBe(0);
   });
 
@@ -388,8 +396,12 @@ describe("buildFoundationFromInputs — happy path", () => {
       }),
       FIXED_BUILT_AT
     );
-    expect(payload.canonicalSystemsByCsgId["CSG-1"].isPart2Verified).toBe(false);
-    expect(payload.canonicalSystemsByCsgId["CSG-2"].isPart2Verified).toBe(false);
+    expect(payload.canonicalSystemsByCsgId["CSG-1"].isPart2Verified).toBe(
+      false
+    );
+    expect(payload.canonicalSystemsByCsgId["CSG-2"].isPart2Verified).toBe(
+      false
+    );
     expect(payload.canonicalSystemsByCsgId["CSG-3"].isPart2Verified).toBe(true);
     expect(payload.part2EligibleCsgIds).toEqual(["CSG-3"]);
     expect(payload.summaryCounts.part2Verified).toBe(1);
@@ -465,9 +477,7 @@ describe("buildFoundationFromInputs — ABP dedupe-by-ABP-ID (Phase 2.4)", () =>
     expect(payload.summaryCounts.part2Verified).toBe(1);
     expect(payload.part2EligibleCsgIds).toEqual(["CSG-1"]);
     expect(
-      payload.integrityWarnings.find(
-        (w) => w.code === "DUPLICATE_ABP_REPORT_ROW"
-      )
+      payload.integrityWarnings.find(w => w.code === "DUPLICATE_ABP_REPORT_ROW")
     ).toEqual({
       code: "DUPLICATE_ABP_REPORT_ROW",
       abpId: "ABP-1",
@@ -528,7 +538,7 @@ describe("buildFoundationFromInputs — ABP dedupe-by-ABP-ID (Phase 2.4)", () =>
     expect(payload.summaryCounts.totalSystems).toBe(100);
     expect(
       payload.integrityWarnings.filter(
-        (w) => w.code === "DUPLICATE_ABP_REPORT_ROW"
+        w => w.code === "DUPLICATE_ABP_REPORT_ROW"
       ).length
     ).toBe(20);
   });
@@ -549,7 +559,7 @@ describe("buildFoundationFromInputs — ABP dedupe-by-ABP-ID (Phase 2.4)", () =>
       FIXED_BUILT_AT
     );
     const dupe = payload.integrityWarnings.find(
-      (w) => w.code === "ABP_ID_MAPS_TO_MULTIPLE_CSG_IDS"
+      w => w.code === "ABP_ID_MAPS_TO_MULTIPLE_CSG_IDS"
     );
     expect(dupe).toBeDefined();
     expect(dupe).toEqual({
@@ -582,7 +592,7 @@ describe("buildFoundationFromInputs — ABP dedupe-by-ABP-ID (Phase 2.4)", () =>
       FIXED_BUILT_AT
     );
     const dupe = payload.integrityWarnings.find(
-      (w) => w.code === "CSG_ID_MAPS_TO_MULTIPLE_ABP_IDS"
+      w => w.code === "CSG_ID_MAPS_TO_MULTIPLE_ABP_IDS"
     );
     expect(dupe).toEqual({
       code: "CSG_ID_MAPS_TO_MULTIPLE_ABP_IDS",
@@ -636,7 +646,7 @@ describe("buildFoundationFromInputs — ABP dedupe-by-ABP-ID (Phase 2.4)", () =>
     );
     expect(
       payload.integrityWarnings.find(
-        (w) => w.code === "SOLAR_APPLICATION_MISSING_CSG_ID"
+        w => w.code === "SOLAR_APPLICATION_MISSING_CSG_ID"
       )
     ).toEqual({
       code: "SOLAR_APPLICATION_MISSING_CSG_ID",
@@ -702,7 +712,7 @@ describe("buildFoundationFromInputs — invariants pass on all generated payload
     expect(payload.summaryCounts.part2Verified).toBe(2);
     expect(payload.part2EligibleCsgIds).toEqual(["CSG-A", "CSG-C"]);
     // Warnings present: duplicate ABP, multi-ABP CSG, unmatched.
-    const codes = payload.integrityWarnings.map((w) => w.code).sort();
+    const codes = payload.integrityWarnings.map(w => w.code).sort();
     expect(codes).toEqual([
       "CSG_ID_MAPS_TO_MULTIPLE_ABP_IDS",
       "DUPLICATE_ABP_REPORT_ROW",
@@ -720,6 +730,20 @@ describe("buildFoundationFromInputs — reporting anchor (Phase 2.7)", () => {
     expect(parseFoundationDateIso("03/01/2026")).toBe("2026-03-01");
     expect(parseFoundationDateIso("04/14/2026")).toBe("2026-04-14");
     expect(parseFoundationKwh("85,478")).toBe(85478);
+  });
+
+  it("extracts Zillow sale event/date from active Solar Applications raw headers", () => {
+    expect(
+      extractZillowFromRawRow(
+        JSON.stringify({
+          "zillowData.last_price_action_event": "Sold",
+          "zillowData.last_price_action_date": "2024-10-25 00:00:00",
+        })
+      )
+    ).toEqual({
+      zillowStatus: "Sold",
+      zillowSoldDate: "2024-10-25",
+    });
   });
 
   it("uses slash-format GATS dates for reporting-window math", () => {
@@ -870,8 +894,12 @@ describe("buildFoundationFromInputs — reporting anchor (Phase 2.7)", () => {
       FIXED_BUILT_AT
     );
     expect(payload.reportingAnchorDateIso).toBe("2024-04-01");
-    expect(payload.canonicalSystemsByCsgId["CSG-EARLY"].isReporting).toBe(false);
-    expect(payload.canonicalSystemsByCsgId["CSG-ANCHOR"].isReporting).toBe(true);
+    expect(payload.canonicalSystemsByCsgId["CSG-EARLY"].isReporting).toBe(
+      false
+    );
+    expect(payload.canonicalSystemsByCsgId["CSG-ANCHOR"].isReporting).toBe(
+      true
+    );
   });
 
   it("reading at windowStart is included (closed lower bound)", () => {
@@ -987,7 +1015,8 @@ describe("buildFoundationFromInputs — ownership status (Phase 2.7)", () => {
         solarApplications: [
           makeSolar("CSG-1", {
             trackingSystemRefId: "TR-1",
-            // Terminated wins even if a transferHistory match exists.
+            // Terminated wins even if legacy callers still pass
+            // transfer-history unit IDs.
             contractType: "IL ABP - Terminated",
           }),
         ],
@@ -1000,7 +1029,7 @@ describe("buildFoundationFromInputs — ownership status (Phase 2.7)", () => {
     );
   });
 
-  it("transferHistory row linked via unitId flips ownershipStatus to transferred", () => {
+  it("transferHistory unitId matches do not mark systems as ownership-transferred", () => {
     const payload = buildFoundationFromInputs(
       makeInputs({
         solarApplications: [
@@ -1011,7 +1040,7 @@ describe("buildFoundationFromInputs — ownership status (Phase 2.7)", () => {
       FIXED_BUILT_AT
     );
     expect(payload.canonicalSystemsByCsgId["CSG-1"].ownershipStatus).toBe(
-      "transferred"
+      "active"
     );
   });
 
@@ -1029,7 +1058,7 @@ describe("buildFoundationFromInputs — ownership status (Phase 2.7)", () => {
     );
   });
 
-  it("Zillow sold > contracted → ownershipStatus=change-of-ownership", () => {
+  it("Zillow sold > slash-format contracted → ownershipStatus=change-of-ownership", () => {
     const payload = buildFoundationFromInputs(
       makeInputs({
         solarApplications: [
@@ -1039,7 +1068,7 @@ describe("buildFoundationFromInputs — ownership status (Phase 2.7)", () => {
             zillowSoldDate: "2024-03-01",
           }),
         ],
-        contractedDate: [makeContractedDate("CSG-1", "2022-01-15")],
+        contractedDate: [makeContractedDate("CSG-1", "11/12/20")],
       }),
       FIXED_BUILT_AT
     );
@@ -1205,7 +1234,7 @@ describe("buildFoundationFromInputs — trackingRef collision (Phase 2.7 follow-
       FIXED_BUILT_AT
     );
     const collision = payload.integrityWarnings.find(
-      (w) => w.code === "TRACKING_REF_COLLISION"
+      w => w.code === "TRACKING_REF_COLLISION"
     );
     expect(collision).toEqual({
       code: "TRACKING_REF_COLLISION",
@@ -1243,7 +1272,7 @@ describe("buildFoundationFromInputs — trackingRef collision (Phase 2.7 follow-
       FIXED_BUILT_AT
     );
     expect(
-      payload.integrityWarnings.find((w) => w.code === "TRACKING_REF_COLLISION")
+      payload.integrityWarnings.find(w => w.code === "TRACKING_REF_COLLISION")
     ).toBeUndefined();
   });
 
@@ -1261,7 +1290,7 @@ describe("buildFoundationFromInputs — trackingRef collision (Phase 2.7 follow-
       FIXED_BUILT_AT
     );
     expect(
-      payload.integrityWarnings.find((w) => w.code === "TRACKING_REF_COLLISION")
+      payload.integrityWarnings.find(w => w.code === "TRACKING_REF_COLLISION")
     ).toBeUndefined();
   });
 });
