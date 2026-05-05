@@ -354,6 +354,12 @@ async function startAndRun(
   return jobId;
 }
 
+async function flushMicrotasks(times = 32): Promise<void> {
+  for (let i = 0; i < times; i += 1) {
+    await Promise.resolve();
+  }
+}
+
 describe("dashboardCsvExportJobs — start (DB-backed)", () => {
   it("returns a unique 32-hex-char jobId per call", async () => {
     const a = await startCsvExportJob(
@@ -919,20 +925,29 @@ describe("dashboardCsvExportJobs — Codex P1: heartbeat keeps healthy long jobs
     getOverview.mockImplementationOnce(
       () => new Promise(() => undefined)
     );
-    const dbHelpers = await import("../../db/dashboardCsvExportJobs");
-    await dbHelpers.insertDashboardCsvExportJob({
-      id: "hung-export",
-      scopeId: SCOPE,
-      input: { exportType: "ownershipTile", tile: "reporting" },
-      status: "queued",
-      runnerVersion: DASHBOARD_CSV_EXPORT_RUNNER_VERSION,
-    });
 
-    const runPromise = runCsvExportJob("hung-export");
+    let scheduledDrain: (() => void) | null = null;
+    const { jobId } = await startCsvExportJob(
+      SCOPE,
+      { exportType: "ownershipTile", tile: "reporting" },
+      runCsvExportJob,
+      (cb) => {
+        scheduledDrain = cb;
+      }
+    );
+
+    expect(scheduledDrain).not.toBeNull();
+    scheduledDrain!();
+    expect(__TEST_ONLY__.getRunnerSchedulerState().activeJobIds).toEqual([
+      jobId,
+    ]);
+    await flushMicrotasks();
+    expect(fakeFindById(jobId)?.status).toBe("running");
+
     await vi.advanceTimersByTimeAsync(__TEST_ONLY__.EXPORT_RUNNER_TIMEOUT_MS);
-    await runPromise;
+    await flushMicrotasks();
 
-    const row = fakeFindById("hung-export");
+    const row = fakeFindById(jobId);
     expect(row?.status).toBe("failed");
     expect(row?.errorMessage).toContain("exceeded hard runtime limit");
     expect(__TEST_ONLY__.getRunnerSchedulerState().activeJobIds).toEqual([]);
@@ -1009,6 +1024,107 @@ describe("dashboardCsvExportJobs — Codex P2: lost-claim success path cleans st
       )
     ).toBe(true);
     expect(fakeFindById("completion-throws-after-put")?.status).toBe("failed");
+  });
+
+  it("cleans a late storagePut artifact when the upload resolves after runner timeout", async () => {
+    vi.useFakeTimers();
+    const storageMod = await import("../../storage");
+    const storagePut = storageMod.storagePut as unknown as ReturnType<
+      typeof vi.fn
+    >;
+    const storageDelete = storageMod.storageDelete as unknown as ReturnType<
+      typeof vi.fn
+    >;
+    storageDelete.mockClear();
+    let resolveStoragePut: ((value: { key: string; url: string }) => void) | null =
+      null;
+    storagePut.mockImplementationOnce(
+      (key: string) =>
+        new Promise((resolve) => {
+          resolveStoragePut = () =>
+            resolve({
+              key,
+              url: `/_local_uploads/${key}`,
+            });
+        })
+    );
+    const dbHelpers = await import("../../db/dashboardCsvExportJobs");
+    await dbHelpers.insertDashboardCsvExportJob({
+      id: "late-put-timeout",
+      scopeId: SCOPE,
+      input: { exportType: "ownershipTile", tile: "reporting" },
+      status: "queued",
+      runnerVersion: DASHBOARD_CSV_EXPORT_RUNNER_VERSION,
+    });
+
+    const runPromise = runCsvExportJob("late-put-timeout");
+    await flushMicrotasks();
+    expect(resolveStoragePut).not.toBeNull();
+    await vi.advanceTimersByTimeAsync(__TEST_ONLY__.EXPORT_RUNNER_TIMEOUT_MS);
+    await runPromise;
+    expect(fakeFindById("late-put-timeout")?.status).toBe("failed");
+    expect(storageDelete).not.toHaveBeenCalled();
+
+    resolveStoragePut!({
+      key: "unused",
+      url: "/unused",
+    });
+    await flushMicrotasks();
+    expect(
+      storageDelete.mock.calls.some(
+        (args) =>
+          typeof args[0] === "string" &&
+          args[0].includes("late-put-timeout")
+      )
+    ).toBe(true);
+  });
+
+  it("cleans a completed upload when success completion times out then reports lost claim", async () => {
+    vi.useFakeTimers();
+    const storageMod = await import("../../storage");
+    const storageDelete = storageMod.storageDelete as unknown as ReturnType<
+      typeof vi.fn
+    >;
+    storageDelete.mockClear();
+    const dbHelpers = await import("../../db/dashboardCsvExportJobs");
+    const completeSuccess =
+      dbHelpers.completeDashboardCsvExportJobSuccess as unknown as ReturnType<
+        typeof vi.fn
+      >;
+    let resolveComplete:
+      | ((value: boolean | PromiseLike<boolean>) => void)
+      | null = null;
+    completeSuccess.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveComplete = resolve;
+        })
+    );
+    await dbHelpers.insertDashboardCsvExportJob({
+      id: "late-complete-timeout",
+      scopeId: SCOPE,
+      input: { exportType: "ownershipTile", tile: "reporting" },
+      status: "queued",
+      runnerVersion: DASHBOARD_CSV_EXPORT_RUNNER_VERSION,
+    });
+
+    const runPromise = runCsvExportJob("late-complete-timeout");
+    await flushMicrotasks();
+    expect(resolveComplete).not.toBeNull();
+    await vi.advanceTimersByTimeAsync(__TEST_ONLY__.EXPORT_RUNNER_TIMEOUT_MS);
+    await runPromise;
+    expect(fakeFindById("late-complete-timeout")?.status).toBe("running");
+    expect(storageDelete).not.toHaveBeenCalled();
+
+    resolveComplete!(false);
+    await flushMicrotasks();
+    expect(
+      storageDelete.mock.calls.some(
+        (args) =>
+          typeof args[0] === "string" &&
+          args[0].includes("late-complete-timeout")
+      )
+    ).toBe(true);
   });
 });
 

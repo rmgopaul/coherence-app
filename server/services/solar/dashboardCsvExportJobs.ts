@@ -112,6 +112,7 @@ const HEARTBEAT_INTERVAL_MS = 30 * 1000; // 30 seconds
  */
 const MAX_LOCAL_RUNNERS = 2;
 const EXPORT_RUNNER_TIMEOUT_MS = 25 * 60 * 1000; // 25 minutes
+const TERMINAL_UPDATE_TIMEOUT_MS = 10 * 1000; // 10 seconds
 
 interface PendingRunnerJob {
   jobId: string;
@@ -299,42 +300,75 @@ export async function getCsvExportJobStatus(
  * function does NOT throw under any expected control flow.
  */
 export async function runCsvExportJob(jobId: string): Promise<void> {
+  const deadline = createRunnerDeadline(jobId);
   // Fetch the row to know which scope to claim under. The claim
   // call needs `scopeId` because every WHERE in this module is
   // scoped — we don't want a runner from one scope to claim a
   // row in another scope (which can't happen given the schema
   // but the predicate cost is essentially zero).
-  const row = await getDashboardCsvExportJobById(jobId);
+  let row: DashboardCsvExportJob | null = null;
+  try {
+    row = await Promise.race([
+      getDashboardCsvExportJobById(jobId),
+      deadline.promise,
+    ]);
+  } catch (err) {
+    console.error(
+      `${METRIC_PREFIX} failed before claim for jobId=${jobId}: ${
+        err instanceof Error ? err.message : String(err)
+      }`
+    );
+    deadline.clear();
+    return;
+  }
   if (!row) {
     // Row was pruned between INSERT and the runner firing
     // (extreme edge: TTL would have to elapse in the schedule
     // gap). Nothing to do.
+    deadline.clear();
     return;
   }
   const claimId = getClaimId();
   const staleClaimBefore = new Date(Date.now() - STALE_CLAIM_MS);
-  const claimed = await claimDashboardCsvExportJob(
-    row.scopeId,
-    jobId,
-    claimId,
-    staleClaimBefore
-  );
+  let claimed = false;
+  try {
+    claimed = await Promise.race([
+      claimDashboardCsvExportJob(
+        row.scopeId,
+        jobId,
+        claimId,
+        staleClaimBefore
+      ),
+      deadline.promise,
+    ]);
+  } catch (err) {
+    console.error(
+      `${METRIC_PREFIX} failed while claiming jobId=${jobId}: ${
+        err instanceof Error ? err.message : String(err)
+      }`
+    );
+    deadline.clear();
+    return;
+  }
   if (!claimed) {
     // Another worker holds a fresh claim, OR the row already
     // reached a terminal state (most likely: the previous run
     // completed and a duplicate `runCsvExportJob` got scheduled).
     // Nothing for us to do.
+    deadline.clear();
     return;
   }
 
   const input = parseInputJson(row.input);
   if (!input) {
-    await completeDashboardCsvExportJobFailure(
+    await completeFailureBestEffort(
       row.scopeId,
       jobId,
       claimId,
-      "input JSON failed to parse — runner version mismatch?"
+      "input JSON failed to parse — runner version mismatch?",
+      "invalid-input"
     );
+    deadline.clear();
     return;
   }
 
@@ -384,7 +418,6 @@ export async function runCsvExportJob(jobId: string): Promise<void> {
   let completionRecorded = false;
   let uploadedArtifactCleaned = false;
   let successCompletionStarted = false;
-  const deadline = createRunnerDeadline(jobId);
 
   const cleanupCurrentUploadedArtifact = async (reason: string) => {
     if (!uploadedKey || completionRecorded || uploadedArtifactCleaned) return;
@@ -432,23 +465,85 @@ export async function runCsvExportJob(jobId: string): Promise<void> {
         "storageKeyForJob returned null after fileName was set"
       );
     }
+    let storagePutTimedOut = false;
+    const storagePutPromise = storagePut(
+      key,
+      built.csv,
+      "text/csv; charset=utf-8"
+    );
+    void storagePutPromise.then(
+      () => {
+        if (!storagePutTimedOut || completionRecorded) return;
+        void cleanupUploadedArtifact(
+          jobId,
+          key,
+          "late-storage-put-after-timeout"
+        );
+      },
+      (lateErr) => {
+        if (!storagePutTimedOut) return;
+        console.warn(
+          `${METRIC_PREFIX} storagePut rejected after runner timeout ` +
+            `for jobId=${jobId} key=${key}: ${
+              lateErr instanceof Error ? lateErr.message : String(lateErr)
+            }`
+        );
+      }
+    );
     await Promise.race([
-      storagePut(key, built.csv, "text/csv; charset=utf-8"),
-      deadline.promise,
+      storagePutPromise,
+      deadline.promise.catch((err) => {
+        if (err instanceof DashboardCsvExportTimeoutError) {
+          storagePutTimedOut = true;
+        }
+        throw err;
+      }),
     ]);
     uploadedKey = key;
     deadline.throwIfExpired();
     const { url } = await Promise.race([storageGet(key), deadline.promise]);
     deadline.throwIfExpired();
     successCompletionStarted = true;
-    const ok = await Promise.race([
-      completeDashboardCsvExportJobSuccess(row.scopeId, jobId, claimId, {
+    let successCompletionTimedOut = false;
+    const successCompletionPromise = completeDashboardCsvExportJobSuccess(
+      row.scopeId,
+      jobId,
+      claimId,
+      {
         fileName: built.fileName,
         artifactUrl: url,
         rowCount: built.rowCount,
         csvBytes: Buffer.byteLength(built.csv, "utf8"),
+      }
+    );
+    void successCompletionPromise.then(
+      (ok) => {
+        if (!successCompletionTimedOut || ok) return;
+        void cleanupCurrentUploadedArtifact(
+          "late-success-completion-lost-claim"
+        );
+      },
+      (lateErr) => {
+        if (!successCompletionTimedOut) return;
+        void cleanupCurrentUploadedArtifact(
+          "late-success-completion-error"
+        );
+        console.warn(
+          `${METRIC_PREFIX} success completion rejected after runner ` +
+            `timeout for jobId=${jobId}: ${
+              lateErr instanceof Error ? lateErr.message : String(lateErr)
+            }`
+        );
+      }
+    );
+    const ok = await Promise.race([
+      successCompletionPromise,
+      deadline.promise.catch((err) => {
+        if (err instanceof DashboardCsvExportTimeoutError) {
+          successCompletionTimedOut = true;
+        }
+        throw err;
       }),
-      deadline.promise,
     ]);
     successCompletionStarted = false;
     if (!ok) {
@@ -490,11 +585,14 @@ export async function runCsvExportJob(jobId: string): Promise<void> {
       );
     }
     if (!claimLost && !timedOutDuringSuccessCompletion) {
-      await completeDashboardCsvExportJobFailure(
+      await completeFailureBestEffort(
         row.scopeId,
         jobId,
         claimId,
-        message
+        message,
+        err instanceof DashboardCsvExportTimeoutError
+          ? "runner-timeout"
+          : "runner-error"
       );
     }
     metric.fail(err);
@@ -582,6 +680,51 @@ async function cleanupUploadedArtifact(
           deleteErr instanceof Error ? deleteErr.message : String(deleteErr)
         }`
     );
+  }
+}
+
+async function completeFailureBestEffort(
+  scopeId: string,
+  jobId: string,
+  claimId: string,
+  errorMessage: string,
+  context: string
+): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const timeout = new Promise<false>((resolve) => {
+    timer = setTimeout(() => resolve(false), TERMINAL_UPDATE_TIMEOUT_MS);
+    const maybeUnref = timer as ReturnType<typeof setTimeout> & {
+      unref?: () => void;
+    };
+    if (typeof maybeUnref.unref === "function") maybeUnref.unref();
+  });
+  try {
+    const ok = await Promise.race([
+      completeDashboardCsvExportJobFailure(
+        scopeId,
+        jobId,
+        claimId,
+        errorMessage
+      ),
+      timeout,
+    ]);
+    if (!ok) {
+      console.warn(
+        `${METRIC_PREFIX} failure completion did not record for ` +
+          `jobId=${jobId} context=${context}`
+      );
+    }
+    return ok;
+  } catch (err) {
+    console.warn(
+      `${METRIC_PREFIX} failure completion threw for jobId=${jobId} ` +
+        `context=${context}: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+    );
+    return false;
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 
