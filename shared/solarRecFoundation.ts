@@ -23,13 +23,13 @@
  *     Application_ID is never a fallback. Terminated systems are
  *     excluded from KPI denominators but stay in the canonical map
  *     with `isTerminated: true`.
- *   - **Reporting** = positive generation in
+ *   - **Reporting** = entered read date in
  *     `[firstDayOfAnchorMonth − 2 calendar months 00:00:00 America/
  *      Chicago, firstDayOfAnchorMonth + 1 calendar month 00:00:00
- *      America/Chicago)`, where anchor = newest valid generation date
+ *      America/Chicago)`, where anchor = newest valid read date
  *     in `srDsAccountSolarGeneration` ∪ `srDsGenerationEntry`. Transfer
- *     History never affects reporting. Zero-production rows do not
- *     count.
+ *     History never affects reporting. Zero/null-kWh rows still count
+ *     when a read date is entered.
  *   - **Part II Verified** = mapped CSG ID + valid Part II date
  *     (`Part_2_App_Verification_Date` or `part_2_app_verification_date`)
  *     + ABP status NOT in {rejected, cancelled, canceled, withdrawn}.
@@ -206,7 +206,7 @@ export type FoundationCanonicalSystem = {
   isTerminated: boolean;
   /** Locked def: mapped CSG + valid Part II date + ABP status not in (rejected/cancelled/withdrawn). */
   isPart2Verified: boolean;
-  /** Locked def (v2): positive generation in [anchor − 2mo, anchor + 1mo) America/Chicago. */
+  /** Locked def (v2): entered read date in [anchor − 2mo, anchor + 1mo) America/Chicago. */
   isReporting: boolean;
   /** Lifecycle bucket. Tabs combine with `isReporting` for the legacy 6-state combined enum (`Terminated and Reporting`, etc.). */
   ownershipStatus:

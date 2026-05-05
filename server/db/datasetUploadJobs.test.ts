@@ -160,7 +160,7 @@ describe("insertDatasetUploadJob", () => {
       status: "queued",
     };
     await insertDatasetUploadJob(entry as never);
-    const call = stub.calls.find((c) => c.kind === "insert");
+    const call = stub.calls.find(c => c.kind === "insert");
     expect(call?.insertValues).toBe(entry);
   });
 
@@ -223,12 +223,10 @@ describe("listDatasetUploadJobs", () => {
   it("clamps the limit to a sane range", async () => {
     const stub = makeDbStub({ selectRows: [[]] });
     mocks.getDb.mockResolvedValue(stub);
-    await expect(
-      listDatasetUploadJobs("s", { limit: 0 })
-    ).resolves.toEqual([]);
-    await expect(
-      listDatasetUploadJobs("s", { limit: 9999 })
-    ).resolves.toEqual([]);
+    await expect(listDatasetUploadJobs("s", { limit: 0 })).resolves.toEqual([]);
+    await expect(listDatasetUploadJobs("s", { limit: 9999 })).resolves.toEqual(
+      []
+    );
   });
 
   it("issues a single WHERE call when no datasetKey filter", async () => {
@@ -272,7 +270,7 @@ describe("updateDatasetUploadJob", () => {
       totalRows: undefined,
       totalChunks: 5,
     });
-    const call = stub.calls.find((c) => c.kind === "update");
+    const call = stub.calls.find(c => c.kind === "update");
     expect(call?.setValue?.status).toBe("uploading");
     expect(call?.setValue?.errorMessage).toBeNull();
     expect(call?.setValue?.totalChunks).toBe(5);
@@ -320,7 +318,7 @@ describe("incrementDatasetUploadJobCounter", () => {
       500
     );
     expect(ok).toBe(true);
-    const call = stub.calls.find((c) => c.kind === "update");
+    const call = stub.calls.find(c => c.kind === "update");
     expect(call?.setValue?.rowsWritten).toBeDefined();
     expect(call?.setValue?.updatedAt).toBeInstanceOf(Date);
   });
@@ -393,7 +391,7 @@ describe("recordDatasetUploadJobError", () => {
       errorMessage: "Bad row",
     };
     await recordDatasetUploadJobError(entry as never);
-    const call = stub.calls.find((c) => c.kind === "insert");
+    const call = stub.calls.find(c => c.kind === "insert");
     expect(call?.insertValues).toBe(entry);
   });
 });
@@ -428,7 +426,7 @@ describe("deleteDatasetUploadJob", () => {
     mocks.getDb.mockResolvedValue(stub);
     const ok = await deleteDatasetUploadJob("s", "job-1");
     expect(ok).toBe(true);
-    const deletes = stub.calls.filter((c) => c.kind === "delete");
+    const deletes = stub.calls.filter(c => c.kind === "delete");
     // One DELETE for errors, one for the job itself.
     expect(deletes.length).toBe(2);
   });
@@ -442,15 +440,29 @@ describe("deleteDatasetUploadJob", () => {
 });
 
 describe("sweepStaleDatasetUploadJobs", () => {
-  it("issues a single UPDATE setting status='failed' with a cutoff WHERE", async () => {
-    const stub = makeDbStub({ updateAffected: 3 });
+  it("marks each loaded stale job failed with a cutoff WHERE", async () => {
+    const staleJobs = [
+      {
+        id: "job-1",
+        scopeId: "scope-1",
+        datasetKey: "convertedReads",
+        batchId: null,
+      },
+      {
+        id: "job-2",
+        scopeId: "scope-1",
+        datasetKey: "transferHistory",
+        batchId: null,
+      },
+    ];
+    const stub = makeDbStub({ selectRows: [staleJobs], updateAffected: 1 });
     mocks.getDb.mockResolvedValue(stub);
 
     const swept = await sweepStaleDatasetUploadJobs(10 * 60 * 1000);
-    expect(swept).toBe(3);
+    expect(swept).toBe(2);
 
-    const updates = stub.calls.filter((c) => c.kind === "update");
-    expect(updates).toHaveLength(1);
+    const updates = stub.calls.filter(c => c.kind === "update");
+    expect(updates).toHaveLength(2);
     const update = updates[0]!;
     expect(update.setValue).toMatchObject({ status: "failed" });
     expect(update.setValue?.completedAt).toBeInstanceOf(Date);
@@ -459,7 +471,7 @@ describe("sweepStaleDatasetUploadJobs", () => {
   });
 
   it("returns 0 when no rows match", async () => {
-    const stub = makeDbStub({ updateAffected: 0 });
+    const stub = makeDbStub({ selectRows: [[]], updateAffected: 0 });
     mocks.getDb.mockResolvedValue(stub);
     const swept = await sweepStaleDatasetUploadJobs(60 * 60 * 1000);
     expect(swept).toBe(0);
@@ -480,7 +492,7 @@ describe("touchDatasetUploadJob", () => {
     const ok = await touchDatasetUploadJob("scope-1", "job-1");
     expect(ok).toBe(true);
 
-    const update = stub.calls.find((c) => c.kind === "update");
+    const update = stub.calls.find(c => c.kind === "update");
     expect(update?.setValue?.updatedAt).toBeInstanceOf(Date);
     expect(update?.setValue).not.toHaveProperty("status");
     expect(update?.setValue).not.toHaveProperty("rowsParsed");

@@ -24,13 +24,13 @@
  *
  * Phase 2.7 (2026-05-01) extends the builder with reporting +
  * ownership state. The two new locked definitions:
- *   - **Reporting** — anchor = newest valid generation date across
- *     `srDsAccountSolarGeneration` ∪ `srDsGenerationEntry` where
- *     kWh > 0. Per-system `isReporting` = true iff the system has a
- *     positive generation reading inside `[firstDayOfAnchorMonth − 2
- *     calendar months, firstDayOfAnchorMonth + 1 calendar month)`,
- *     half-open, America/Chicago. Zero-production rows do not count.
- *     Transfer history never affects reporting.
+ *   - **Reporting** — anchor = newest valid read date entered across
+ *     `srDsAccountSolarGeneration` ∪ `srDsGenerationEntry`. Per-system
+ *     `isReporting` = true iff the system has a linked read date inside
+ *     `[firstDayOfAnchorMonth − 2 calendar months,
+ *     firstDayOfAnchorMonth + 1 calendar month)`, half-open,
+ *     America/Chicago. Zero/null-kWh rows still count when a read date
+ *     is entered. Transfer history never affects reporting.
  *   - **Ownership status** lifecycle bucket (4 states). Priority:
  *     `terminated` (contract type) > `transferred` (contract type)
  *     > `change-of-ownership` (Zillow sold > contracted) > `active`.
@@ -759,17 +759,16 @@ export function buildFoundationFromInputs(
   }
 
   // -------- Step 6: per-system generation accumulator --------
-  // Track newest-positive-kWh date (anchor + isReporting) and newest
-  // meter-read date (lastMeterReadDateIso) separately. Zero-production
-  // rows still count as the latest meter read but never as positive
-  // generation.
+  // Track newest entered read date (anchor + isReporting) and newest
+  // meter-read value separately. Zero/null-kWh rows still count as
+  // reporting when their read date falls inside the reporting window.
   type GenAccumulator = {
-    latestPositiveGenDate: string | null;
+    latestReportingReadDate: string | null;
     latestMeterReadDate: string | null;
     latestMeterReadKwh: number | null;
   };
   const genByCsgId = new Map<string, GenAccumulator>();
-  let scopeLatestPositiveGenDate: string | null = null;
+  let scopeLatestReportingReadDate: string | null = null;
 
   function isoMaxDate(a: string | null, b: string | null): string | null {
     if (!a) return b;
@@ -781,7 +780,7 @@ export function buildFoundationFromInputs(
     let acc = genByCsgId.get(csgId);
     if (!acc) {
       acc = {
-        latestPositiveGenDate: null,
+        latestReportingReadDate: null,
         latestMeterReadDate: null,
         latestMeterReadKwh: null,
       };
@@ -816,10 +815,11 @@ export function buildFoundationFromInputs(
     const kWh = row.lastMeterReadKwh;
     const acc = ensureGen(csgId);
     updateMeterRead(acc, date, kWh);
-    if (kWh !== null && kWh > 0) {
-      acc.latestPositiveGenDate = isoMaxDate(acc.latestPositiveGenDate, date);
-      scopeLatestPositiveGenDate = isoMaxDate(scopeLatestPositiveGenDate, date);
-    }
+    acc.latestReportingReadDate = isoMaxDate(acc.latestReportingReadDate, date);
+    scopeLatestReportingReadDate = isoMaxDate(
+      scopeLatestReportingReadDate,
+      date
+    );
   }
 
   // Generation Entry: kWh comes from rawRow (extracted upstream by the
@@ -834,15 +834,16 @@ export function buildFoundationFromInputs(
     const kWh = row.generationKwh;
     const acc = ensureGen(csgId);
     updateMeterRead(acc, date, kWh);
-    if (kWh !== null && kWh > 0) {
-      acc.latestPositiveGenDate = isoMaxDate(acc.latestPositiveGenDate, date);
-      scopeLatestPositiveGenDate = isoMaxDate(scopeLatestPositiveGenDate, date);
-    }
+    acc.latestReportingReadDate = isoMaxDate(acc.latestReportingReadDate, date);
+    scopeLatestReportingReadDate = isoMaxDate(
+      scopeLatestReportingReadDate,
+      date
+    );
   }
 
   // -------- Step 7: reporting anchor + window --------
-  const anchorMonthIso = scopeLatestPositiveGenDate
-    ? firstDayOfMonthIso(scopeLatestPositiveGenDate)
+  const anchorMonthIso = scopeLatestReportingReadDate
+    ? firstDayOfMonthIso(scopeLatestReportingReadDate)
     : null;
   const windowStartIso = anchorMonthIso
     ? shiftIsoMonth(anchorMonthIso, -2)
@@ -861,11 +862,11 @@ export function buildFoundationFromInputs(
 
     if (
       gen &&
-      gen.latestPositiveGenDate &&
+      gen.latestReportingReadDate &&
       windowStartIso &&
       windowEndIso &&
-      gen.latestPositiveGenDate >= windowStartIso &&
-      gen.latestPositiveGenDate < windowEndIso
+      gen.latestReportingReadDate >= windowStartIso &&
+      gen.latestReportingReadDate < windowEndIso
     ) {
       system.isReporting = true;
     }
@@ -1360,7 +1361,7 @@ export async function buildFoundationArtifact(
   type GenStateForKey = {
     latestMeterReadDate: string | null;
     latestMeterReadKwh: number | null;
-    latestPositiveGenDate: string | null;
+    latestReportingReadDate: string | null;
   };
   function foldGenState(
     map: Map<string, GenStateForKey>,
@@ -1373,7 +1374,7 @@ export async function buildFoundationArtifact(
       state = {
         latestMeterReadDate: null,
         latestMeterReadKwh: null,
-        latestPositiveGenDate: null,
+        latestReportingReadDate: null,
       };
       map.set(key, state);
     }
@@ -1384,13 +1385,11 @@ export async function buildFoundationArtifact(
       state.latestMeterReadDate = date;
       state.latestMeterReadKwh = kWh;
     }
-    if (kWh !== null && kWh > 0) {
-      if (
-        state.latestPositiveGenDate === null ||
-        date > state.latestPositiveGenDate
-      ) {
-        state.latestPositiveGenDate = date;
-      }
+    if (
+      state.latestReportingReadDate === null ||
+      date > state.latestReportingReadDate
+    ) {
+      state.latestReportingReadDate = date;
     }
   }
   function synthesizeGenRowsForState<TOut>(
@@ -1404,20 +1403,15 @@ export async function buildFoundationArtifact(
         makeRow(keyValue, state.latestMeterReadDate, state.latestMeterReadKwh)
       );
     }
-    // Emit a second row only when the latest positive-gen date isn't
+    // Emit a second row only when the latest reporting read date isn't
     // already covered by the meter-read row above. Pure builder's
-    // `updateMeterRead` is monotonic so the older positive-gen row
-    // can't clobber the newer meter-read state, but its kWh > 0 path
-    // still updates `latestPositiveGenDate` correctly.
+    // `updateMeterRead` is monotonic so an older reporting row cannot
+    // clobber the newer meter-read state.
     if (
-      state.latestPositiveGenDate &&
-      (state.latestPositiveGenDate !== state.latestMeterReadDate ||
-        !(
-          typeof state.latestMeterReadKwh === "number" &&
-          state.latestMeterReadKwh > 0
-        ))
+      state.latestReportingReadDate &&
+      state.latestReportingReadDate !== state.latestMeterReadDate
     ) {
-      out.push(makeRow(keyValue, state.latestPositiveGenDate, 1));
+      out.push(makeRow(keyValue, state.latestReportingReadDate, null));
     }
     return out;
   }

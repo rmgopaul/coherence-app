@@ -21,7 +21,9 @@ describe("solarRecDatasets", () => {
     mocks.getDb.mockReset();
     mocks.withDbRetry.mockReset();
     mocks.deleteDatasetBatchRows.mockReset();
-    mocks.withDbRetry.mockImplementation(async (_operation, action) => action());
+    mocks.withDbRetry.mockImplementation(async (_operation, action) =>
+      action()
+    );
   });
 
   afterEach(() => {
@@ -50,24 +52,28 @@ describe("solarRecDatasets", () => {
       })),
       insert: vi.fn(() => ({
         values: (values: Record<string, unknown>) => ({
-          onDuplicateKeyUpdate: vi.fn(async ({ set }: { set: Record<string, unknown> }) => {
-            events.push("swapActivePointer");
-            expect(values.scopeId).toBe("scope-1");
-            expect(values.datasetKey).toBe("transferHistory");
-            expect(values.batchId).toBe("batch-new");
-            expect(set.batchId).toBe("batch-new");
-            expect(set.activatedAt).toBeInstanceOf(Date);
-          }),
+          onDuplicateKeyUpdate: vi.fn(
+            async ({ set }: { set: Record<string, unknown> }) => {
+              events.push("swapActivePointer");
+              expect(values.scopeId).toBe("scope-1");
+              expect(values.datasetKey).toBe("transferHistory");
+              expect(values.batchId).toBe("batch-new");
+              expect(set.batchId).toBe("batch-new");
+              expect(set.activatedAt).toBeInstanceOf(Date);
+            }
+          ),
         }),
       })),
     };
 
     const db = {
-      transaction: vi.fn(async (callback: (trx: typeof tx) => Promise<void>) => {
-        events.push("beginTransaction");
-        await callback(tx);
-        events.push("commitTransaction");
-      }),
+      transaction: vi.fn(
+        async (callback: (trx: typeof tx) => Promise<void>) => {
+          events.push("beginTransaction");
+          await callback(tx);
+          events.push("commitTransaction");
+        }
+      ),
     };
 
     mocks.getDb.mockResolvedValue(db);
@@ -90,14 +96,30 @@ describe("solarRecDatasets", () => {
   });
 
   it("marks orphaned in-flight import batches as failed on startup", async () => {
-    let appliedUpdate: Record<string, unknown> | null = null;
+    const appliedUpdates: Record<string, unknown>[] = [];
 
     const db = {
+      select: vi.fn(() => ({
+        from: () => ({
+          where: vi.fn(async () => [
+            {
+              id: "batch-1",
+              scopeId: "scope-1",
+              datasetKey: "convertedReads",
+            },
+            {
+              id: "batch-2",
+              scopeId: "scope-1",
+              datasetKey: "transferHistory",
+            },
+          ]),
+        }),
+      })),
       update: vi.fn(() => ({
         set: (values: Record<string, unknown>) => {
-          appliedUpdate = values;
+          appliedUpdates.push(values);
           return {
-            where: vi.fn(async () => [{ affectedRows: 2 }]),
+            where: vi.fn(async () => [{ affectedRows: 1 }]),
           };
         },
       })),
@@ -105,17 +127,38 @@ describe("solarRecDatasets", () => {
 
     mocks.getDb.mockResolvedValue(db);
 
-    const { clearOrphanedImportBatchesOnStartup } = await import(
-      "./db/solarRecDatasets"
-    );
+    const { clearOrphanedImportBatchesOnStartup } =
+      await import("./db/solarRecDatasets");
 
     const cleared = await clearOrphanedImportBatchesOnStartup();
 
     expect(cleared).toBe(2);
-    expect(appliedUpdate).not.toBeNull();
-    expect(appliedUpdate?.status).toBe("failed");
-    expect(appliedUpdate?.error).toBe("orphaned by server restart");
-    expect(appliedUpdate?.completedAt).toBeInstanceOf(Date);
+    expect(mocks.deleteDatasetBatchRows).toHaveBeenCalledTimes(2);
+    expect(mocks.deleteDatasetBatchRows).toHaveBeenNthCalledWith(
+      1,
+      "convertedReads",
+      "batch-1"
+    );
+    expect(mocks.deleteDatasetBatchRows).toHaveBeenNthCalledWith(
+      2,
+      "transferHistory",
+      "batch-2"
+    );
+    expect(appliedUpdates).toHaveLength(4);
+    const batchUpdates = appliedUpdates.filter(u => u.error);
+    expect(batchUpdates).toHaveLength(2);
+    for (const update of batchUpdates) {
+      expect(update.status).toBe("failed");
+      expect(update.error).toBe("orphaned by server restart");
+      expect(update.completedAt).toBeInstanceOf(Date);
+    }
+    const jobUpdates = appliedUpdates.filter(u => u.errorMessage);
+    expect(jobUpdates).toHaveLength(2);
+    for (const update of jobUpdates) {
+      expect(update.status).toBe("failed");
+      expect(update.errorMessage).toMatch(/server restart/i);
+      expect(update.completedAt).toBeInstanceOf(Date);
+    }
   });
 
   it("bumpScopeContractScanJobVersion uses onDuplicateKeyUpdate inside withDbRetry (no swallow-all try/catch)", async () => {
@@ -127,9 +170,11 @@ describe("solarRecDatasets", () => {
     // match the rest of the dataset-write surface.
     const captured: Record<string, unknown> = {};
 
-    const onDuplicateKeyUpdate = vi.fn(async ({ set }: { set: Record<string, unknown> }) => {
-      captured.upsertSet = set;
-    });
+    const onDuplicateKeyUpdate = vi.fn(
+      async ({ set }: { set: Record<string, unknown> }) => {
+        captured.upsertSet = set;
+      }
+    );
     const insertChain = {
       values: vi.fn((values: Record<string, unknown>) => {
         captured.insertValues = values;
@@ -137,19 +182,20 @@ describe("solarRecDatasets", () => {
       }),
     };
     const db = {
-      insert: vi.fn((_table) => insertChain),
+      insert: vi.fn(_table => insertChain),
     };
 
     mocks.getDb.mockResolvedValue(db);
     let retryOperation: string | null = null;
-    mocks.withDbRetry.mockImplementation(async (operation: string, action: () => Promise<unknown>) => {
-      retryOperation = operation;
-      return action();
-    });
-
-    const { bumpScopeContractScanJobVersion } = await import(
-      "./db/solarRecDatasets"
+    mocks.withDbRetry.mockImplementation(
+      async (operation: string, action: () => Promise<unknown>) => {
+        retryOperation = operation;
+        return action();
+      }
     );
+
+    const { bumpScopeContractScanJobVersion } =
+      await import("./db/solarRecDatasets");
 
     await bumpScopeContractScanJobVersion("scope-1", "job-42");
 
@@ -176,9 +222,8 @@ describe("solarRecDatasets", () => {
     mocks.getDb.mockResolvedValue(db);
     mocks.withDbRetry.mockImplementation(async (_op, action) => action());
 
-    const { bumpScopeContractScanJobVersion } = await import(
-      "./db/solarRecDatasets"
-    );
+    const { bumpScopeContractScanJobVersion } =
+      await import("./db/solarRecDatasets");
 
     await expect(
       bumpScopeContractScanJobVersion("scope-1", "job-42")
@@ -189,9 +234,11 @@ describe("solarRecDatasets", () => {
     const captured: Record<string, unknown> = {};
     const overrideAt = new Date("2026-05-05T12:00:00.000Z");
 
-    const onDuplicateKeyUpdate = vi.fn(async ({ set }: { set: Record<string, unknown> }) => {
-      captured.upsertSet = set;
-    });
+    const onDuplicateKeyUpdate = vi.fn(
+      async ({ set }: { set: Record<string, unknown> }) => {
+        captured.upsertSet = set;
+      }
+    );
     const insertChain = {
       values: vi.fn((values: Record<string, unknown>) => {
         captured.insertValues = values;
@@ -199,19 +246,20 @@ describe("solarRecDatasets", () => {
       }),
     };
     const db = {
-      insert: vi.fn((_table) => insertChain),
+      insert: vi.fn(_table => insertChain),
     };
 
     mocks.getDb.mockResolvedValue(db);
     let retryOperation: string | null = null;
-    mocks.withDbRetry.mockImplementation(async (operation: string, action: () => Promise<unknown>) => {
-      retryOperation = operation;
-      return action();
-    });
-
-    const { bumpScopeContractScanOverrideVersion } = await import(
-      "./db/solarRecDatasets"
+    mocks.withDbRetry.mockImplementation(
+      async (operation: string, action: () => Promise<unknown>) => {
+        retryOperation = operation;
+        return action();
+      }
     );
+
+    const { bumpScopeContractScanOverrideVersion } =
+      await import("./db/solarRecDatasets");
 
     await bumpScopeContractScanOverrideVersion("scope-1", overrideAt);
 
@@ -226,8 +274,10 @@ describe("solarRecDatasets", () => {
   it("bump helpers are no-ops when getDb() returns null (test/dev environments)", async () => {
     mocks.getDb.mockResolvedValue(null);
 
-    const { bumpScopeContractScanJobVersion, bumpScopeContractScanOverrideVersion } =
-      await import("./db/solarRecDatasets");
+    const {
+      bumpScopeContractScanJobVersion,
+      bumpScopeContractScanOverrideVersion,
+    } = await import("./db/solarRecDatasets");
 
     await expect(
       bumpScopeContractScanJobVersion("scope-1", "job-42")
@@ -295,9 +345,8 @@ describe("solarRecDatasets", () => {
     mocks.getDb.mockResolvedValue(db);
     mocks.deleteDatasetBatchRows.mockResolvedValue(321);
 
-    const { archiveSupersededImportBatchesOnStartup } = await import(
-      "./db/solarRecDatasets"
-    );
+    const { archiveSupersededImportBatchesOnStartup } =
+      await import("./db/solarRecDatasets");
 
     const result = await archiveSupersededImportBatchesOnStartup(5);
 

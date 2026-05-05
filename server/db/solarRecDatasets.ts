@@ -15,6 +15,7 @@ import {
   solarRecActiveDatasetVersions,
   solarRecComputeRuns,
   solarRecComputedArtifacts,
+  datasetUploadJobs,
   type InsertSolarRecScope,
   type InsertSolarRecImportBatch,
   type InsertSolarRecImportFile,
@@ -160,7 +161,9 @@ export async function updateImportBatchStatus(
       .update(solarRecImportBatches)
       .set({
         status,
-        ...(updates.rowCount !== undefined ? { rowCount: updates.rowCount } : {}),
+        ...(updates.rowCount !== undefined
+          ? { rowCount: updates.rowCount }
+          : {}),
         ...(updates.error !== undefined ? { error: updates.error } : {}),
         ...(updates.completedAt ? { completedAt: updates.completedAt } : {}),
       })
@@ -221,7 +224,7 @@ export async function createImportErrors(
   const db = await getDb();
   if (!db || errors.length === 0) return;
 
-  const rows = errors.map((err) => ({ ...err, id: nanoid() }));
+  const rows = errors.map(err => ({ ...err, id: nanoid() }));
   await withDbRetry("create import errors", () =>
     db.insert(solarRecImportErrors).values(rows)
   );
@@ -262,8 +265,8 @@ export async function getActiveVersionsForKeys(
   const all = await getActiveDatasetVersions(scopeId);
   const keySet = new Set(datasetKeys);
   return all
-    .filter((v) => keySet.has(v.datasetKey))
-    .map((v) => ({ datasetKey: v.datasetKey, batchId: v.batchId }));
+    .filter(v => keySet.has(v.datasetKey))
+    .map(v => ({ datasetKey: v.datasetKey, batchId: v.batchId }));
 }
 
 export async function activateDatasetVersion(
@@ -279,7 +282,7 @@ export async function activateDatasetVersion(
   const completedAt = options.completedAt ?? activatedAt;
 
   await withDbRetry("activate dataset version", () =>
-    db.transaction(async (tx) => {
+    db.transaction(async tx => {
       // Supersede the prior active batch BEFORE swapping the pointer so we
       // don't accidentally match the new batch in the status update below.
       await tx
@@ -330,20 +333,71 @@ export async function clearOrphanedImportBatchesOnStartup(): Promise<number> {
   if (!db) return 0;
 
   const now = new Date();
-  const result = await withDbRetry("clear orphaned import batches", () =>
-    db
-      .update(solarRecImportBatches)
-      .set({
-        status: "failed",
-        error: "orphaned by server restart",
-        completedAt: now,
-      })
-      .where(
-        sql`${solarRecImportBatches.status} IN ('uploading', 'processing')`
-      )
+  const orphanedBatches = await withDbRetry(
+    "load orphaned import batches",
+    () =>
+      db
+        .select({
+          id: solarRecImportBatches.id,
+          scopeId: solarRecImportBatches.scopeId,
+          datasetKey: solarRecImportBatches.datasetKey,
+        })
+        .from(solarRecImportBatches)
+        .where(
+          sql`${solarRecImportBatches.status} IN ('uploading', 'processing')`
+        )
   );
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return (result as any)?.[0]?.affectedRows ?? 0;
+
+  if (orphanedBatches.length === 0) return 0;
+
+  const { deleteDatasetBatchRows } =
+    await import("../services/solar/datasetRowPersistence");
+
+  let cleared = 0;
+  for (const batch of orphanedBatches) {
+    try {
+      await deleteDatasetBatchRows(batch.datasetKey, batch.id);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error(
+        `[clearOrphanedImportBatchesOnStartup] failed to purge rows for ${batch.datasetKey} batch ${batch.id}`,
+        err
+      );
+    }
+
+    await withDbRetry("mark orphaned import batch failed", () =>
+      db
+        .update(solarRecImportBatches)
+        .set({
+          status: "failed",
+          error: "orphaned by server restart",
+          completedAt: now,
+        })
+        .where(eq(solarRecImportBatches.id, batch.id))
+    );
+
+    await withDbRetry("mark orphaned upload job failed", () =>
+      db
+        .update(datasetUploadJobs)
+        .set({
+          status: "failed",
+          errorMessage:
+            "Upload job was interrupted by a server restart before parsing completed. Re-upload to retry.",
+          completedAt: now,
+        })
+        .where(
+          and(
+            eq(datasetUploadJobs.scopeId, batch.scopeId),
+            eq(datasetUploadJobs.batchId, batch.id),
+            sql`${datasetUploadJobs.status} IN ('queued', 'uploading', 'parsing', 'preparing', 'writing')`
+          )
+        )
+    );
+
+    cleared += 1;
+  }
+
+  return cleared;
 }
 
 /**
@@ -385,10 +439,10 @@ export async function archiveSupersededImportBatchesOnStartup(
     ),
   ]);
 
-  const activeBatchIds = new Set(activeVersions.map((row) => row.batchId));
+  const activeBatchIds = new Set(activeVersions.map(row => row.batchId));
   const batchesToArchive = candidates
     .filter(
-      (batch) =>
+      batch =>
         !activeBatchIds.has(batch.id) &&
         isOlderThanRetentionWindow(
           batch.completedAt,
@@ -401,9 +455,8 @@ export async function archiveSupersededImportBatchesOnStartup(
     return { archivedBatches: 0, purgedRows: 0 };
   }
 
-  const { deleteDatasetBatchRows } = await import(
-    "../services/solar/datasetRowPersistence"
-  );
+  const { deleteDatasetBatchRows } =
+    await import("../services/solar/datasetRowPersistence");
 
   let archivedBatches = 0;
   let purgedRows = 0;
@@ -442,9 +495,7 @@ export async function archiveSupersededImportBatchesOnStartup(
  * the request doesn't exceed Render's proxy timeout on a very
  * bloated database.
  */
-export async function purgeOrphanedDatasetRowsNow(
-  maxBatches = 200
-): Promise<{
+export async function purgeOrphanedDatasetRowsNow(maxBatches = 200): Promise<{
   archivedBatches: number;
   purgedRows: number;
   skippedDueToLimit: boolean;
@@ -463,7 +514,7 @@ export async function purgeOrphanedDatasetRowsNow(
         .from(solarRecActiveDatasetVersions)
   );
   const activeBatchIds = new Set(
-    activeVersions.map((row) => row.batchId).filter(Boolean) as string[]
+    activeVersions.map(row => row.batchId).filter(Boolean) as string[]
   );
 
   // Candidates: any batch in superseded OR failed state. Archived
@@ -478,9 +529,7 @@ export async function purgeOrphanedDatasetRowsNow(
           datasetKey: solarRecImportBatches.datasetKey,
         })
         .from(solarRecImportBatches)
-        .where(
-          sql`${solarRecImportBatches.status} IN ('superseded', 'failed')`
-        )
+        .where(sql`${solarRecImportBatches.status} IN ('superseded', 'failed')`)
         .orderBy(asc(solarRecImportBatches.createdAt))
         .limit(maxBatches + 1)
   );
@@ -488,15 +537,14 @@ export async function purgeOrphanedDatasetRowsNow(
   const skippedDueToLimit = candidates.length > maxBatches;
   const batchesToArchive = candidates
     .slice(0, maxBatches)
-    .filter((batch) => !activeBatchIds.has(batch.id));
+    .filter(batch => !activeBatchIds.has(batch.id));
 
   if (batchesToArchive.length === 0) {
     return { archivedBatches: 0, purgedRows: 0, skippedDueToLimit };
   }
 
-  const { deleteDatasetBatchRows } = await import(
-    "../services/solar/datasetRowPersistence"
-  );
+  const { deleteDatasetBatchRows } =
+    await import("../services/solar/datasetRowPersistence");
 
   let archivedBatches = 0;
   let purgedRows = 0;
@@ -589,9 +637,7 @@ export async function claimComputeRun(
  *
  * Returns the existing row id.
  */
-export async function reclaimComputeRun(
-  runId: string
-): Promise<void> {
+export async function reclaimComputeRun(runId: string): Promise<void> {
   const db = await getDb();
   if (!db) return;
   await withDbRetry("reclaim compute run", () =>
@@ -735,7 +781,8 @@ export async function getScopeContractScanVersion(scopeId: string) {
   const db = await getDb();
   if (!db) return null;
 
-  const { solarRecScopeContractScanVersion } = await import("../../drizzle/schema");
+  const { solarRecScopeContractScanVersion } =
+    await import("../../drizzle/schema");
   const rows = await withDbRetry("get scope scan version", () =>
     db
       .select()
@@ -767,7 +814,8 @@ export async function bumpScopeContractScanJobVersion(
   const db = await getDb();
   if (!db) return;
 
-  const { solarRecScopeContractScanVersion } = await import("../../drizzle/schema");
+  const { solarRecScopeContractScanVersion } =
+    await import("../../drizzle/schema");
   await withDbRetry("bump contract scan job version", () =>
     db
       .insert(solarRecScopeContractScanVersion)
@@ -792,7 +840,8 @@ export async function bumpScopeContractScanOverrideVersion(
   const db = await getDb();
   if (!db) return;
 
-  const { solarRecScopeContractScanVersion } = await import("../../drizzle/schema");
+  const { solarRecScopeContractScanVersion } =
+    await import("../../drizzle/schema");
   await withDbRetry("bump contract scan override version", () =>
     db
       .insert(solarRecScopeContractScanVersion)

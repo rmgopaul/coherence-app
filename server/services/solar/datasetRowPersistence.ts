@@ -77,8 +77,23 @@ function pick(row: CsvRow, ...keys: string[]): string | null {
   for (const key of keys) {
     const v = clean(row[key]);
     if (v !== null) return v;
+
+    const normalizedKey = normalizeHeaderKey(key);
+    for (const actualKey of Object.keys(row)) {
+      if (normalizeHeaderKey(actualKey) !== normalizedKey) continue;
+      const normalizedValue = clean(row[actualKey]);
+      if (normalizedValue !== null) return normalizedValue;
+    }
   }
   return null;
+}
+
+function normalizeHeaderKey(value: string): string {
+  return value.toLowerCase().replace(/[_\s\-]+/g, "");
+}
+
+function pickNum(row: CsvRow, ...keys: string[]): number | null {
+  return parseNum(pick(row, ...keys));
 }
 
 const ACCOUNT_SOLAR_GENERATION_LAST_METER_READ_KEYS = [
@@ -91,8 +106,19 @@ const ACCOUNT_SOLAR_GENERATION_LAST_METER_READ_KEYS = [
   "Meter Read kWh",
 ] as const;
 
+const ACCOUNT_SOLAR_GENERATION_METER_ID_KEYS = [
+  "meterId",
+  "Meter ID",
+  "meter_id",
+  "GATS Meter ID",
+] as const;
+
 function pickAccountSolarGenerationLastMeterRead(row: CsvRow): string | null {
   return pick(row, ...ACCOUNT_SOLAR_GENERATION_LAST_METER_READ_KEYS);
+}
+
+function pickAccountSolarGenerationMeterId(row: CsvRow): string | null {
+  return pick(row, ...ACCOUNT_SOLAR_GENERATION_METER_ID_KEYS);
 }
 
 type DatasetInserter = (
@@ -840,10 +866,28 @@ const accountSolarGenerationRowExists: AppendRowChecker = async (
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
-  const gatsGenId = clip(pick(row, "GATS Gen ID"), 64);
-  const facilityName = clip(pick(row, "Facility Name"), 255);
-  const monthOfGeneration = clip(pick(row, "Month of Generation"), 32);
-  const lastMeterReadDate = clip(pick(row, "Last Meter Read Date"), 32);
+  const gatsGenId = clip(
+    pick(row, "gatsGenId", "GATS Gen ID", "gats_gen_id"),
+    64
+  );
+  const facilityName = clip(
+    pick(row, "facilityName", "Facility Name", "facility_name"),
+    255
+  );
+  const monthOfGeneration = clip(
+    pick(
+      row,
+      "monthOfGeneration",
+      "Month of Generation",
+      "month_of_generation"
+    ),
+    32
+  );
+  const lastMeterReadDate = clip(
+    pick(row, "lastMeterReadDate", "Last Meter Read Date", "Meter Read Date"),
+    32
+  );
+  const meterId = clip(pickAccountSolarGenerationMeterId(row), 64);
   const lastMeterReadKwh = clip(
     pickAccountSolarGenerationLastMeterRead(row),
     64
@@ -863,6 +907,17 @@ const accountSolarGenerationRowExists: AppendRowChecker = async (
           AND ${srDsAccountSolarGeneration.facilityName} <=> ${facilityName}
           AND ${srDsAccountSolarGeneration.monthOfGeneration} <=> ${monthOfGeneration}
           AND ${srDsAccountSolarGeneration.lastMeterReadDate} <=> ${lastMeterReadDate}
+          AND CASE
+            WHEN ${srDsAccountSolarGeneration.rawRow} IS NULL
+              OR JSON_VALID(${srDsAccountSolarGeneration.rawRow}) = 0
+              THEN NULL
+            ELSE COALESCE(
+              NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT(${srDsAccountSolarGeneration.rawRow}, '$."meterId"'))), ''),
+              NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT(${srDsAccountSolarGeneration.rawRow}, '$."Meter ID"'))), ''),
+              NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT(${srDsAccountSolarGeneration.rawRow}, '$."meter_id"'))), ''),
+              NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT(${srDsAccountSolarGeneration.rawRow}, '$."GATS Meter ID"'))), '')
+            )
+          END <=> ${meterId}
           AND ${srDsAccountSolarGeneration.lastMeterReadKwh} <=> ${lastMeterReadKwh}
         `
         )
@@ -880,13 +935,26 @@ const transferHistoryRowExists: AppendRowChecker = async (
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
-  const transactionId = clip(pick(row, "Transaction ID", "transaction_id"), 64);
-  const unitId = clip(pick(row, "Unit ID", "unit_id"), 64);
+  const transactionId = clip(
+    pick(row, "transactionId", "Transaction ID", "transaction_id", "Txn ID"),
+    64
+  );
+  const unitId = clip(
+    pick(row, "unitId", "Unit ID", "unit_id", "GATS Unit ID"),
+    64
+  );
   const transferCompletionDate = clip(
-    pick(row, "Transfer Completion Date", "Transfer Date", "transfer_date"),
+    pick(
+      row,
+      "transferCompletionDate",
+      "Transfer Completion Date",
+      "Completion Date",
+      "Transfer Date",
+      "transfer_date"
+    ),
     32
   );
-  const quantity = parseNum(row.Quantity ?? row.quantity);
+  const quantity = pickNum(row, "quantity", "Quantity", "Qty");
 
   // When the row has a Transaction ID, treat it as the canonical
   // identity. GATS txIds are globally unique per confirmed transfer,
@@ -1032,11 +1100,36 @@ const convertedReadsRowExists: AppendRowChecker = async (
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
-  const monitoring = clip(pick(row, "monitoring"), 64);
-  const monitoringSystemId = clip(pick(row, "monitoring_system_id"), 128);
-  const monitoringSystemName = clip(pick(row, "monitoring_system_name"), 255);
-  const lifetimeMeterReadWh = parseNum(row.lifetime_meter_read_wh);
-  const readDate = clip(pick(row, "read_date"), 32);
+  const monitoring = clip(pick(row, "monitoring", "Monitoring", "vendor"), 64);
+  const monitoringSystemId = clip(
+    pick(
+      row,
+      "monitoring_system_id",
+      "monitoringSystemId",
+      "Monitoring System ID"
+    ),
+    128
+  );
+  const monitoringSystemName = clip(
+    pick(
+      row,
+      "monitoring_system_name",
+      "monitoringSystemName",
+      "Monitoring System Name"
+    ),
+    255
+  );
+  const lifetimeMeterReadWh = pickNum(
+    row,
+    "lifetime_meter_read_wh",
+    "lifetimeMeterReadWh",
+    "Lifetime Meter Read Wh",
+    "Lifetime Wh"
+  );
+  const readDate = clip(
+    pick(row, "read_date", "readDate", "Read Date", "date"),
+    32
+  );
 
   const rows = await withDbRetry("check converted reads append row", () =>
     db
@@ -1077,7 +1170,8 @@ const cloneConvertedReadsBatch: BatchRowCloner = async (
       : sql``;
     const idResult: unknown = await withDbRetry(
       "page converted reads clone ids",
-      () => db.execute(sql`
+      () =>
+        db.execute(sql`
         SELECT id
         FROM srDsConvertedReads
         WHERE scopeId = ${scopeId}
@@ -1240,10 +1334,16 @@ export function buildAppendRowKey(datasetKey: string, row: CsvRow): string {
 function rowKey(datasetKey: string, row: CsvRow): string {
   if (datasetKey === "accountSolarGeneration") {
     return [
-      pick(row, "GATS Gen ID"),
-      pick(row, "Facility Name"),
-      pick(row, "Month of Generation"),
-      pick(row, "Last Meter Read Date"),
+      pick(row, "gatsGenId", "GATS Gen ID", "gats_gen_id"),
+      pick(row, "facilityName", "Facility Name", "facility_name"),
+      pick(
+        row,
+        "monthOfGeneration",
+        "Month of Generation",
+        "month_of_generation"
+      ),
+      pick(row, "lastMeterReadDate", "Last Meter Read Date", "Meter Read Date"),
+      pickAccountSolarGenerationMeterId(row),
       pickAccountSolarGenerationLastMeterRead(row),
     ]
       .map(v => (v ?? "").trim().toLowerCase())
@@ -1255,14 +1355,27 @@ function rowKey(datasetKey: string, row: CsvRow): string {
     // format drift across re-exports. The "tx:" prefix prevents a
     // txId string from ever colliding with a composite-key string
     // from a row without a txId.
-    const txId = pick(row, "Transaction ID", "transaction_id");
+    const txId = pick(
+      row,
+      "transactionId",
+      "Transaction ID",
+      "transaction_id",
+      "Txn ID"
+    );
     if (txId) {
       return `tx:${txId.trim().toLowerCase()}`;
     }
     return [
-      pick(row, "Unit ID", "unit_id"),
-      pick(row, "Transfer Completion Date", "Transfer Date", "transfer_date"),
-      String(parseNum(row.Quantity ?? row.quantity) ?? ""),
+      pick(row, "unitId", "Unit ID", "unit_id", "GATS Unit ID"),
+      pick(
+        row,
+        "transferCompletionDate",
+        "Transfer Completion Date",
+        "Completion Date",
+        "Transfer Date",
+        "transfer_date"
+      ),
+      String(pickNum(row, "quantity", "Quantity", "Qty") ?? ""),
     ]
       .map(v => (v ?? "").trim().toLowerCase())
       .join("|");
@@ -1275,11 +1388,29 @@ function rowKey(datasetKey: string, row: CsvRow): string {
     // (e.g., a corrected read replacing an earlier one) keep both
     // historical rows.
     return [
-      pick(row, "monitoring"),
-      pick(row, "monitoring_system_id"),
-      pick(row, "monitoring_system_name"),
-      String(parseNum(row.lifetime_meter_read_wh) ?? ""),
-      pick(row, "read_date"),
+      pick(row, "monitoring", "Monitoring", "vendor"),
+      pick(
+        row,
+        "monitoring_system_id",
+        "monitoringSystemId",
+        "Monitoring System ID"
+      ),
+      pick(
+        row,
+        "monitoring_system_name",
+        "monitoringSystemName",
+        "Monitoring System Name"
+      ),
+      String(
+        pickNum(
+          row,
+          "lifetime_meter_read_wh",
+          "lifetimeMeterReadWh",
+          "Lifetime Meter Read Wh",
+          "Lifetime Wh"
+        ) ?? ""
+      ),
+      pick(row, "read_date", "readDate", "Read Date", "date"),
     ]
       .map(v => (v ?? "").trim().toLowerCase())
       .join("|");
@@ -1302,6 +1433,7 @@ function typedRowKey(datasetKey: string, row: Record<string, unknown>): string {
       s(row.facilityName),
       s(row.monthOfGeneration),
       s(row.lastMeterReadDate),
+      s(row.meterId),
       s(row.lastMeterReadKwh),
     ].join("|");
   }
@@ -1366,18 +1498,30 @@ export async function loadExistingRowKeys(
   if (!db) return new Set();
 
   if (datasetKey === "accountSolarGeneration") {
-    return loadExistingRowKeysByPage(datasetKey, async cursor => {
-      const cursorClause = cursor ? sql`AND id > ${cursor}` : sql``;
-      const result = await withDbRetry(
-        "load account solar generation keys page",
-        () =>
-          db.execute(sql`
+    return loadExistingRowKeysByPage(
+      datasetKey,
+      async cursor => {
+        const cursorClause = cursor ? sql`AND id > ${cursor}` : sql``;
+        const result = await withDbRetry(
+          "load account solar generation keys page",
+          () =>
+            db.execute(sql`
             SELECT
               id,
               gatsGenId,
               facilityName,
               monthOfGeneration,
               lastMeterReadDate,
+              CASE
+                WHEN rawRow IS NULL OR JSON_VALID(rawRow) = 0
+                  THEN NULL
+                ELSE COALESCE(
+                  NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT(rawRow, '$."meterId"'))), ''),
+                  NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT(rawRow, '$."Meter ID"'))), ''),
+                  NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT(rawRow, '$."meter_id"'))), ''),
+                  NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT(rawRow, '$."GATS Meter ID"'))), '')
+                )
+              END AS meterId,
               CASE
                 WHEN lastMeterReadKwh IS NOT NULL
                   AND TRIM(lastMeterReadKwh) <> ''
@@ -1402,18 +1546,24 @@ export async function loadExistingRowKeys(
             ORDER BY id
             LIMIT ${APPEND_PREP_PAGE_SIZE}
           `)
-      );
-      return extractExecuteRows<Record<string, unknown> & { id: string }>(
-        result
-      );
-    }, options);
+        );
+        return extractExecuteRows<Record<string, unknown> & { id: string }>(
+          result
+        );
+      },
+      options
+    );
   }
 
   if (datasetKey === "transferHistory") {
-    return loadExistingRowKeysByPage(datasetKey, async cursor => {
-      const cursorClause = cursor ? sql`AND id > ${cursor}` : sql``;
-      const result = await withDbRetry("load transfer history keys page", () =>
-        db.execute(sql`
+    return loadExistingRowKeysByPage(
+      datasetKey,
+      async cursor => {
+        const cursorClause = cursor ? sql`AND id > ${cursor}` : sql``;
+        const result = await withDbRetry(
+          "load transfer history keys page",
+          () =>
+            db.execute(sql`
           SELECT
             id,
             transactionId,
@@ -1427,18 +1577,22 @@ export async function loadExistingRowKeys(
           ORDER BY id
           LIMIT ${APPEND_PREP_PAGE_SIZE}
         `)
-      );
-      return extractExecuteRows<Record<string, unknown> & { id: string }>(
-        result
-      );
-    }, options);
+        );
+        return extractExecuteRows<Record<string, unknown> & { id: string }>(
+          result
+        );
+      },
+      options
+    );
   }
 
   if (datasetKey === "convertedReads") {
-    return loadExistingRowKeysByPage(datasetKey, async cursor => {
-      const cursorClause = cursor ? sql`AND id > ${cursor}` : sql``;
-      const result = await withDbRetry("load converted reads keys page", () =>
-        db.execute(sql`
+    return loadExistingRowKeysByPage(
+      datasetKey,
+      async cursor => {
+        const cursorClause = cursor ? sql`AND id > ${cursor}` : sql``;
+        const result = await withDbRetry("load converted reads keys page", () =>
+          db.execute(sql`
           SELECT
             id,
             monitoring,
@@ -1453,11 +1607,13 @@ export async function loadExistingRowKeys(
           ORDER BY id
           LIMIT ${APPEND_PREP_PAGE_SIZE}
         `)
-      );
-      return extractExecuteRows<Record<string, unknown> & { id: string }>(
-        result
-      );
-    }, options);
+        );
+        return extractExecuteRows<Record<string, unknown> & { id: string }>(
+          result
+        );
+      },
+      options
+    );
   }
 
   return new Set();
@@ -1490,6 +1646,249 @@ async function loadExistingRowKeysByPage(
   }
 
   return set;
+}
+
+type AccountSolarGenerationCompactionRow = {
+  id: string;
+  gatsGenId: string | null;
+  facilityName: string | null;
+  monthOfGeneration: string | null;
+  lastMeterReadDate: string | null;
+  createdAt: Date | string | null;
+  meterId: string | null;
+};
+
+export type AccountSolarGenerationCompactionResult = {
+  rowCount: number;
+  deletedRows: number;
+};
+
+const ACCOUNT_SOLAR_GENERATION_DELETE_CHUNK_SIZE = 1_000;
+
+/**
+ * Account Solar Generation is append-fed, but the business record is
+ * the newest meter read for a given system+meter. Collapse a freshly
+ * assembled batch before activation so new uploads repair duplicates
+ * cloned from the prior active batch instead of preserving them
+ * forever. Rows without a meter id are left untouched because they
+ * cannot be safely assigned to a meter identity.
+ */
+export async function compactAccountSolarGenerationLatestMeterReads(
+  scopeId: string,
+  batchId: string,
+  options?: AppendPreparationOptions
+): Promise<AccountSolarGenerationCompactionResult> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const keepersByIdentity = new Map<
+    string,
+    AccountSolarGenerationCompactionRow
+  >();
+  const idsToDelete: string[] = [];
+  let cursor: string | null = null;
+  let scannedRows = 0;
+
+  for (;;) {
+    const cursorClause: ReturnType<typeof sql> = cursor
+      ? sql`AND id > ${cursor}`
+      : sql``;
+    const result: unknown = await withDbRetry(
+      "load account solar generation compaction page",
+      (): Promise<unknown> =>
+        db.execute(sql`
+          SELECT
+            id,
+            gatsGenId,
+            facilityName,
+            monthOfGeneration,
+            lastMeterReadDate,
+            createdAt,
+            CASE
+              WHEN rawRow IS NULL OR JSON_VALID(rawRow) = 0
+                THEN NULL
+              ELSE COALESCE(
+                NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT(rawRow, '$."meterId"'))), ''),
+                NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT(rawRow, '$."Meter ID"'))), ''),
+                NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT(rawRow, '$."meter_id"'))), ''),
+                NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT(rawRow, '$."GATS Meter ID"'))), '')
+              )
+            END AS meterId
+          FROM srDsAccountSolarGeneration
+          WHERE scopeId = ${scopeId}
+            AND batchId = ${batchId}
+            ${cursorClause}
+          ORDER BY id
+          LIMIT ${APPEND_PREP_PAGE_SIZE}
+        `)
+    );
+    const rows: AccountSolarGenerationCompactionRow[] =
+      extractExecuteRows<AccountSolarGenerationCompactionRow>(result);
+    if (rows.length === 0) break;
+
+    for (const row of rows) {
+      scannedRows += 1;
+      const identity = accountSolarGenerationMeterIdentity(row);
+      if (!identity) continue;
+
+      const existing = keepersByIdentity.get(identity);
+      if (!existing) {
+        keepersByIdentity.set(identity, row);
+        continue;
+      }
+
+      if (isNewerAccountSolarGenerationMeterRead(row, existing)) {
+        idsToDelete.push(existing.id);
+        keepersByIdentity.set(identity, row);
+      } else {
+        idsToDelete.push(row.id);
+      }
+    }
+
+    cursor = String(rows[rows.length - 1]!.id);
+    await options?.onProgress?.({ processedRows: scannedRows });
+    if (rows.length < APPEND_PREP_PAGE_SIZE) break;
+  }
+
+  let deletedRows = 0;
+  for (
+    let index = 0;
+    index < idsToDelete.length;
+    index += ACCOUNT_SOLAR_GENERATION_DELETE_CHUNK_SIZE
+  ) {
+    const chunk = idsToDelete.slice(
+      index,
+      index + ACCOUNT_SOLAR_GENERATION_DELETE_CHUNK_SIZE
+    );
+    if (chunk.length === 0) continue;
+    const result = await withDbRetry(
+      "delete superseded account solar generation meter reads",
+      () =>
+        db.execute(sql`
+          DELETE FROM srDsAccountSolarGeneration
+          WHERE scopeId = ${scopeId}
+            AND batchId = ${batchId}
+            AND id IN (${sql.join(
+              chunk.map(id => sql`${id}`),
+              sql`, `
+            )})
+        `)
+    );
+    deletedRows += getDbExecuteAffectedRows(result);
+    await options?.onProgress?.({ processedRows: scannedRows });
+  }
+
+  return { rowCount: scannedRows - deletedRows, deletedRows };
+}
+
+function accountSolarGenerationMeterIdentity(
+  row: Pick<
+    AccountSolarGenerationCompactionRow,
+    "gatsGenId" | "facilityName" | "meterId"
+  >
+): string | null {
+  const meterId = normalizeKeyPart(row.meterId);
+  if (!meterId) return null;
+
+  const gatsGenId = normalizeKeyPart(row.gatsGenId);
+  if (gatsGenId) return `gats:${gatsGenId}|meter:${meterId}`;
+
+  const facilityName = normalizeKeyPart(row.facilityName);
+  if (facilityName) return `facility:${facilityName}|meter:${meterId}`;
+
+  return null;
+}
+
+function normalizeKeyPart(value: unknown): string {
+  return value === null || value === undefined
+    ? ""
+    : String(value).trim().toLowerCase();
+}
+
+function isNewerAccountSolarGenerationMeterRead(
+  candidate: AccountSolarGenerationCompactionRow,
+  current: AccountSolarGenerationCompactionRow
+): boolean {
+  const candidateReadRank = accountSolarGenerationReadDateRank(candidate);
+  const currentReadRank = accountSolarGenerationReadDateRank(current);
+  if (candidateReadRank !== currentReadRank) {
+    return candidateReadRank > currentReadRank;
+  }
+
+  const candidateCreatedAt = parseTimestampRank(candidate.createdAt);
+  const currentCreatedAt = parseTimestampRank(current.createdAt);
+  if (candidateCreatedAt !== currentCreatedAt) {
+    return candidateCreatedAt > currentCreatedAt;
+  }
+
+  return candidate.id > current.id;
+}
+
+function accountSolarGenerationReadDateRank(
+  row: Pick<
+    AccountSolarGenerationCompactionRow,
+    "lastMeterReadDate" | "monthOfGeneration"
+  >
+): number {
+  return (
+    parseDateRank(row.lastMeterReadDate) ??
+    parseDateRank(row.monthOfGeneration) ??
+    Number.NEGATIVE_INFINITY
+  );
+}
+
+function parseTimestampRank(value: Date | string | null): number {
+  if (value instanceof Date) {
+    const time = value.getTime();
+    return Number.isFinite(time) ? time : Number.NEGATIVE_INFINITY;
+  }
+  return parseDateRank(value) ?? Number.NEGATIVE_INFINITY;
+}
+
+function parseDateRank(value: unknown): number | null {
+  const raw = clean(value);
+  if (!raw) return null;
+
+  const iso = raw.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (iso) {
+    const year = Number(iso[1]);
+    const month = Number(iso[2]);
+    const day = Number(iso[3]);
+    if (isValidDateParts(year, month, day)) {
+      return Date.UTC(year, month - 1, day);
+    }
+  }
+
+  const slash = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);
+  if (slash) {
+    const month = Number(slash[1]);
+    const day = Number(slash[2]);
+    const rawYear = Number(slash[3]);
+    const year = rawYear < 100 ? 2000 + rawYear : rawYear;
+    if (isValidDateParts(year, month, day)) {
+      return Date.UTC(year, month - 1, day);
+    }
+  }
+
+  const fallback = new Date(raw).getTime();
+  return Number.isFinite(fallback) ? fallback : null;
+}
+
+function isValidDateParts(year: number, month: number, day: number): boolean {
+  if (
+    !Number.isInteger(year) ||
+    !Number.isInteger(month) ||
+    !Number.isInteger(day)
+  ) {
+    return false;
+  }
+  if (month < 1 || month > 12 || day < 1 || day > 31) return false;
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return (
+    date.getUTCFullYear() === year &&
+    date.getUTCMonth() === month - 1 &&
+    date.getUTCDate() === day
+  );
 }
 
 /**

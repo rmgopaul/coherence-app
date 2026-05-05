@@ -767,7 +767,7 @@ describe("buildFoundationFromInputs — reporting anchor (Phase 2.7)", () => {
     expect(payload.summaryCounts.reporting).toBe(1);
   });
 
-  it("anchor is the newest valid generation date, not today", () => {
+  it("anchor is the newest valid read date, not today", () => {
     const payload = buildFoundationFromInputs(
       makeInputs({
         solarApplications: [
@@ -784,24 +784,24 @@ describe("buildFoundationFromInputs — reporting anchor (Phase 2.7)", () => {
     expect(payload.reportingAnchorDateIso).toBe("2024-04-01");
   });
 
-  it("anchor ignores zero-production rows when picking newest", () => {
+  it("anchor uses the newest entered read date even when kWh is zero", () => {
     const payload = buildFoundationFromInputs(
       makeInputs({
         solarApplications: [
           makeSolar("CSG-1", { trackingSystemRefId: "TR-1" }),
         ],
         accountSolarGeneration: [
-          // A newer zero-prod row should NOT win the anchor.
+          // A newer zero-kWh row still has an entered read date.
           makeAccountSolarGen("TR-1", "2024-06-15", 0),
           makeAccountSolarGen("TR-1", "2024-04-15", 1500),
         ],
       }),
       FIXED_BUILT_AT
     );
-    expect(payload.reportingAnchorDateIso).toBe("2024-04-01");
+    expect(payload.reportingAnchorDateIso).toBe("2024-06-01");
   });
 
-  it("anchor is null when no positive-kWh generation exists", () => {
+  it("anchor uses entered read dates when kWh is zero or null", () => {
     const payload = buildFoundationFromInputs(
       makeInputs({
         solarApplications: [
@@ -814,11 +814,11 @@ describe("buildFoundationFromInputs — reporting anchor (Phase 2.7)", () => {
       }),
       FIXED_BUILT_AT
     );
-    expect(payload.reportingAnchorDateIso).toBeNull();
-    expect(payload.canonicalSystemsByCsgId["CSG-1"].isReporting).toBe(false);
+    expect(payload.reportingAnchorDateIso).toBe("2024-06-01");
+    expect(payload.canonicalSystemsByCsgId["CSG-1"].isReporting).toBe(true);
   });
 
-  it("system with positive generation in window → isReporting=true", () => {
+  it("system with an entered read date in window → isReporting=true", () => {
     // Anchor = 2024-04-01. Window = [2024-02-01, 2024-05-01).
     const payload = buildFoundationFromInputs(
       makeInputs({
@@ -836,7 +836,7 @@ describe("buildFoundationFromInputs — reporting anchor (Phase 2.7)", () => {
     expect(payload.summaryCounts.reporting).toBe(1);
   });
 
-  it("system with zero-production rows only → isReporting=false", () => {
+  it("system with zero-production rows only → isReporting=true", () => {
     // Force a non-null anchor via a second system so the window math runs.
     const payload = buildFoundationFromInputs(
       makeInputs({
@@ -851,9 +851,8 @@ describe("buildFoundationFromInputs — reporting anchor (Phase 2.7)", () => {
       }),
       FIXED_BUILT_AT
     );
-    expect(payload.canonicalSystemsByCsgId["CSG-1"].isReporting).toBe(false);
-    // CSG-ANCHOR should be reporting; CSG-1 should not.
-    expect(payload.reportingCsgIds).toEqual(["CSG-ANCHOR"]);
+    expect(payload.canonicalSystemsByCsgId["CSG-1"].isReporting).toBe(true);
+    expect(payload.reportingCsgIds).toEqual(["CSG-1", "CSG-ANCHOR"]);
   });
 
   it("system with no generation rows at all → isReporting=false", () => {
@@ -887,7 +886,7 @@ describe("buildFoundationFromInputs — reporting anchor (Phase 2.7)", () => {
         accountSolarGeneration: [
           // Anchor sits at 2024-04-15 → anchor month 2024-04-01.
           makeAccountSolarGen("TR-ANCHOR", "2024-04-15", 1000),
-          // EARLY's only positive reading is one day before windowStart.
+          // EARLY's only read date is one day before windowStart.
           makeAccountSolarGen("TR-EARLY", "2024-01-31", 800),
         ],
       }),
@@ -968,7 +967,7 @@ describe("buildFoundationFromInputs — reporting anchor (Phase 2.7)", () => {
     expect(payload.canonicalSystemsByCsgId["CSG-1"].isReporting).toBe(true);
   });
 
-  it("zero-kWh meter reads do not advance anchor or isReporting", () => {
+  it("zero-kWh meter reads advance the reporting anchor", () => {
     const payload = buildFoundationFromInputs(
       makeInputs({
         solarApplications: [
@@ -976,14 +975,14 @@ describe("buildFoundationFromInputs — reporting anchor (Phase 2.7)", () => {
         ],
         accountSolarGeneration: [
           makeAccountSolarGen("TR-1", "2024-04-15", 1500),
-          // Newer zero-kWh reading must NOT advance the anchor.
+          // Newer zero-kWh reading still has an entered read date.
           makeAccountSolarGen("TR-1", "2024-06-15", 0),
         ],
       }),
       FIXED_BUILT_AT
     );
-    // Anchor still 2024-04-01 (newest positive-kWh row).
-    expect(payload.reportingAnchorDateIso).toBe("2024-04-01");
+    expect(payload.reportingAnchorDateIso).toBe("2024-06-01");
+    expect(payload.canonicalSystemsByCsgId["CSG-1"].isReporting).toBe(true);
   });
 
   it("generationEntry rows participate in anchor + isReporting via unitId", () => {
