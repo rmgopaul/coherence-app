@@ -678,8 +678,8 @@ export default function TeslaPowerhubMeterReads() {
             <div>
               <CardTitle className="text-base">Sites</CardTitle>
               <CardDescription>
-                Discover sites in the connected Powerhub group. This calls the
-                same cached bulk production endpoint as the production job.
+                Discover sites with the lightweight Powerhub inventory path.
+                Production metrics still run separately as a background job.
               </CardDescription>
             </div>
             <Button
@@ -1025,8 +1025,7 @@ export default function TeslaPowerhubMeterReads() {
         <CardHeader>
           <CardTitle className="text-base">Site Snapshot</CardTitle>
           <CardDescription>
-            Pull a single site from the cached group result and optionally push
-            it to Converted Reads.
+            Pull one site directly and optionally push it to Converted Reads.
             {!canEdit && (
               <span className="ml-1 text-amber-700">
                 You have read-only access; running a snapshot requires{" "}

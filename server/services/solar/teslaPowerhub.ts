@@ -88,6 +88,20 @@ export type TeslaPowerhubSiteInventoryResult = {
   debug: unknown;
 };
 
+export type TeslaPowerhubSiteSnapshotResult = {
+  siteId: string;
+  status: "Found" | "Not Found" | "Error";
+  siteName: string | null;
+  siteExternalId: string | null;
+  dailyKwh: number | null;
+  weeklyKwh: number | null;
+  monthlyKwh: number | null;
+  yearlyKwh: number | null;
+  lifetimeKwh: number | null;
+  dataSource: "rgm" | "inverter" | null;
+  error: string | null;
+};
+
 export type TeslaPowerhubProductionMetricsResult = {
   sites: TeslaPowerhubSiteProductionMetrics[];
   requestedGroupId: string;
@@ -132,12 +146,15 @@ const MAX_WALK_DEPTH = 10;
 const GLOBAL_TIMEOUT_MS = 5 * 60 * 1000;
 const INVENTORY_GLOBAL_TIMEOUT_MS = 25_000;
 const DISCOVERY_REQUEST_TIMEOUT_MS = 5_000;
+const SITE_SNAPSHOT_GLOBAL_TIMEOUT_MS = 60_000;
 
 function normalizeTimeoutMs(
   timeoutMs: number | null | undefined,
   fallbackMs: number
 ): number {
-  return typeof timeoutMs === "number" && Number.isFinite(timeoutMs) && timeoutMs > 0
+  return typeof timeoutMs === "number" &&
+    Number.isFinite(timeoutMs) &&
+    timeoutMs > 0
     ? timeoutMs
     : fallbackMs;
 }
@@ -162,6 +179,13 @@ function isAbortOrTimeoutError(error: unknown): boolean {
     name === "TimeoutError" ||
     /aborted due to timeout/i.test(message)
   );
+}
+
+function throwIfSignalAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) return;
+  const reason = signal.reason;
+  if (reason instanceof Error) throw reason;
+  throw new DOMException("Operation aborted", "AbortError");
 }
 
 function buildBasicAuth(clientId: string, clientSecret: string): string {
@@ -1489,7 +1513,8 @@ async function fetchSingleSiteTelemetryTotal(
         };
       }
       return null;
-    } catch {
+    } catch (error) {
+      throwIfSignalAborted(options.abortSignal);
       return null;
     }
   };
@@ -1619,6 +1644,7 @@ async function fetchGroupSites(
   const diagnostics: { url: string; status: string; preview?: unknown }[] = [];
 
   for (const url of candidateUrls) {
+    throwIfSignalAborted(options.signal);
     try {
       const raw = await fetchJsonWithBearerToken(url, accessToken, {
         signal: options.signal,
@@ -1639,6 +1665,7 @@ async function fetchGroupSites(
         preview: createPreview(raw, 0),
       });
     } catch (error) {
+      throwIfSignalAborted(options.signal);
       diagnostics.push({
         url,
         status: error instanceof Error ? error.message : "Unknown error",
@@ -1646,6 +1673,7 @@ async function fetchGroupSites(
     }
   }
 
+  throwIfSignalAborted(options.signal);
   return {
     sites: [],
     resolvedEndpointUrl: null,
@@ -1685,6 +1713,7 @@ async function fetchAccessibleGroups(
   const diagnostics: { url: string; status: string; preview?: unknown }[] = [];
 
   for (const url of candidateUrls) {
+    throwIfSignalAborted(options.signal);
     try {
       const raw = await fetchJsonWithBearerToken(url, accessToken, {
         signal: options.signal,
@@ -1704,6 +1733,7 @@ async function fetchAccessibleGroups(
         preview: createPreview(raw, 0),
       });
     } catch (error) {
+      throwIfSignalAborted(options.signal);
       diagnostics.push({
         url,
         status: error instanceof Error ? error.message : "Unknown error",
@@ -1711,6 +1741,7 @@ async function fetchAccessibleGroups(
     }
   }
 
+  throwIfSignalAborted(options.signal);
   return {
     groups: [],
     resolvedEndpointUrl: null,
@@ -1741,6 +1772,7 @@ async function fetchAccessibleSites(
   const diagnostics: { url: string; status: string; preview?: unknown }[] = [];
 
   for (const url of candidateUrls) {
+    throwIfSignalAborted(options.signal);
     try {
       const raw = await fetchJsonWithBearerToken(url, accessToken, {
         signal: options.signal,
@@ -1760,6 +1792,7 @@ async function fetchAccessibleSites(
         preview: createPreview(raw, 0),
       });
     } catch (error) {
+      throwIfSignalAborted(options.signal);
       diagnostics.push({
         url,
         status: error instanceof Error ? error.message : "Unknown error",
@@ -1767,6 +1800,7 @@ async function fetchAccessibleSites(
     }
   }
 
+  throwIfSignalAborted(options.signal);
   return {
     sites: [],
     resolvedEndpointUrl: null,
@@ -1809,6 +1843,7 @@ async function fetchTelemetryWindowTotals(
   let lastRawPreview: unknown = null;
 
   for (const attempt of attempts) {
+    throwIfSignalAborted(options.abortSignal);
     const requestUrl = buildTelemetryRequestUrl(attempt.baseUrl, {
       groupId: options.groupId,
       signal: options.signal,
@@ -1844,6 +1879,7 @@ async function fetchTelemetryWindowTotals(
       lastRawPreview = createPreview(raw);
       lastError = `No per-site telemetry values parsed from ${requestUrl} (likely group-aggregated data only).`;
     } catch (error) {
+      throwIfSignalAborted(options.abortSignal);
       lastError =
         error instanceof Error ? error.message : "Unknown request error.";
     }
@@ -2500,8 +2536,17 @@ function dedupeSiteDescriptors(
   });
 }
 
-export async function listTeslaPowerhubSites(
+function buildTokenInfo(token: TeslaPowerhubTokenResponse) {
+  return {
+    tokenType: token.token_type ?? "Bearer",
+    expiresIn: typeof token.expires_in === "number" ? token.expires_in : null,
+    scope: token.scope ?? null,
+  };
+}
+
+async function listTeslaPowerhubSitesWithToken(
   context: TeslaPowerhubApiContext,
+  token: TeslaPowerhubTokenResponse,
   options?: {
     groupId?: string | null;
     endpointUrl?: string | null;
@@ -2513,16 +2558,9 @@ export async function listTeslaPowerhubSites(
     options?.abortSignal,
     normalizeTimeoutMs(options?.globalTimeoutMs, INVENTORY_GLOBAL_TIMEOUT_MS)
   );
-  const token = await requestClientCredentialsToken(context, {
-    signal: globalSignal,
-  });
   const groupId = toNonEmptyString(options?.groupId);
   const endpointUrl = toNonEmptyString(options?.endpointUrl);
-  const tokenInfo = {
-    tokenType: token.token_type ?? "Bearer",
-    expiresIn: typeof token.expires_in === "number" ? token.expires_in : null,
-    scope: token.scope ?? null,
-  };
+  const tokenInfo = buildTokenInfo(token);
 
   if (groupId) {
     const result = await fetchGroupSites(context, token.access_token, {
@@ -2531,6 +2569,7 @@ export async function listTeslaPowerhubSites(
       signal: globalSignal,
       requestTimeoutMs: DISCOVERY_REQUEST_TIMEOUT_MS,
     });
+    throwIfSignalAborted(globalSignal);
     return {
       sites: dedupeSiteDescriptors(result.sites),
       requestedGroupId: groupId,
@@ -2583,6 +2622,7 @@ export async function listTeslaPowerhubSites(
       });
     }
 
+    throwIfSignalAborted(globalSignal);
     return {
       sites: dedupeSiteDescriptors(sites),
       requestedGroupId: "auto",
@@ -2605,6 +2645,7 @@ export async function listTeslaPowerhubSites(
     requestTimeoutMs: DISCOVERY_REQUEST_TIMEOUT_MS,
   });
 
+  throwIfSignalAborted(globalSignal);
   return {
     sites: dedupeSiteDescriptors(siteDiscovery.sites),
     requestedGroupId: null,
@@ -2616,6 +2657,202 @@ export async function listTeslaPowerhubSites(
       groupDiscovery: groupDiscovery.rawPreview,
       siteDiscovery: siteDiscovery.rawPreview,
     },
+  };
+}
+
+export async function listTeslaPowerhubSites(
+  context: TeslaPowerhubApiContext,
+  options?: {
+    groupId?: string | null;
+    endpointUrl?: string | null;
+    abortSignal?: AbortSignal;
+    globalTimeoutMs?: number;
+  }
+): Promise<TeslaPowerhubSiteInventoryResult> {
+  const globalSignal = createGlobalSignal(
+    options?.abortSignal,
+    normalizeTimeoutMs(options?.globalTimeoutMs, INVENTORY_GLOBAL_TIMEOUT_MS)
+  );
+  const token = await requestClientCredentialsToken(context, {
+    signal: globalSignal,
+  });
+  return listTeslaPowerhubSitesWithToken(context, token, {
+    ...options,
+    abortSignal: globalSignal,
+  });
+}
+
+function matchesSiteDescriptor(
+  site: TeslaPowerhubSiteDescriptor,
+  requestedSiteId: string
+): boolean {
+  const normalized = requestedSiteId.trim();
+  return (
+    site.siteId === normalized ||
+    site.siteExternalId === normalized ||
+    site.siteName === normalized
+  );
+}
+
+function dataSourceFromSignal(
+  signal: string | null
+): "rgm" | "inverter" | null {
+  if (signal === "solar_energy_exported_rgm") return "rgm";
+  if (signal === "solar_energy_exported") return "inverter";
+  return null;
+}
+
+export async function getTeslaPowerhubSiteSnapshot(
+  context: TeslaPowerhubApiContext,
+  options: {
+    siteId: string;
+    groupId?: string | null;
+    endpointUrl?: string | null;
+    signal?: string | null;
+    abortSignal?: AbortSignal;
+    globalTimeoutMs?: number;
+  }
+): Promise<TeslaPowerhubSiteSnapshotResult> {
+  const requestedSiteId = options.siteId.trim();
+  if (!requestedSiteId) {
+    throw new Error("siteId is required.");
+  }
+
+  const globalSignal = createGlobalSignal(
+    options.abortSignal,
+    normalizeTimeoutMs(options.globalTimeoutMs, SITE_SNAPSHOT_GLOBAL_TIMEOUT_MS)
+  );
+  const token = await requestClientCredentialsToken(context, {
+    signal: globalSignal,
+  });
+
+  let siteDescriptor: TeslaPowerhubSiteDescriptor | null = null;
+  let inventoryError: string | null = null;
+  try {
+    const inventory = await listTeslaPowerhubSitesWithToken(context, token, {
+      groupId: options.groupId ?? null,
+      endpointUrl: options.endpointUrl ?? null,
+      abortSignal: globalSignal,
+      globalTimeoutMs: INVENTORY_GLOBAL_TIMEOUT_MS,
+    });
+    siteDescriptor =
+      inventory.sites.find(site =>
+        matchesSiteDescriptor(site, requestedSiteId)
+      ) ?? null;
+  } catch (error) {
+    throwIfSignalAborted(globalSignal);
+    inventoryError = error instanceof Error ? error.message : String(error);
+  }
+
+  const telemetrySiteId = siteDescriptor?.siteId ?? requestedSiteId;
+  const RGM_SIGNAL = "solar_energy_exported_rgm";
+  const INV_SIGNAL = "solar_energy_exported";
+  const primarySignal = toNonEmptyString(options.signal) ?? RGM_SIGNAL;
+  const fallbackSignal = primarySignal === RGM_SIGNAL ? INV_SIGNAL : RGM_SIGNAL;
+  const windows = buildWindowConfigs(new Date());
+
+  const windowResults = await Promise.all(
+    windows.map(async window => {
+      throwIfSignalAborted(globalSignal);
+      try {
+        const result = await fetchSingleSiteTelemetryTotal(
+          context,
+          token.access_token,
+          {
+            siteId: telemetrySiteId,
+            signal: primarySignal,
+            startDatetime: window.startDatetime,
+            endDatetime: window.endDatetime,
+            period: window.period,
+            fallbackSignal,
+            abortSignal: globalSignal,
+          }
+        );
+        return {
+          key: window.key,
+          result,
+          error: null as string | null,
+        };
+      } catch (error) {
+        throwIfSignalAborted(globalSignal);
+        return {
+          key: window.key,
+          result: null,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    })
+  );
+
+  const totalsByWindow = new Map<
+    TeslaPowerhubWindowKey,
+    { totalKwh: number; usedSignal: string }
+  >();
+  const errorsByWindow = new Map<TeslaPowerhubWindowKey, string>();
+  for (const entry of windowResults) {
+    if (entry.result) {
+      totalsByWindow.set(entry.key, {
+        totalKwh: entry.result.totalKwh,
+        usedSignal: entry.result.usedSignal,
+      });
+    } else if (entry.error) {
+      errorsByWindow.set(entry.key, entry.error);
+    }
+  }
+
+  const hasTelemetry = totalsByWindow.size > 0;
+  if (!hasTelemetry) {
+    const errorDetails = Array.from(errorsByWindow.entries())
+      .map(([key, error]) => `${key}: ${error}`)
+      .join(" | ");
+    return {
+      siteId: telemetrySiteId,
+      status: "Not Found",
+      siteName: siteDescriptor?.siteName ?? null,
+      siteExternalId: siteDescriptor?.siteExternalId ?? null,
+      dailyKwh: null,
+      weeklyKwh: null,
+      monthlyKwh: null,
+      yearlyKwh: null,
+      lifetimeKwh: null,
+      dataSource: null,
+      error:
+        errorDetails ||
+        inventoryError ||
+        "No Tesla Powerhub telemetry returned for this site.",
+    };
+  }
+
+  const dailyRaw = totalsByWindow.get("daily")?.totalKwh ?? 0;
+  const weeklyRaw = totalsByWindow.get("weekly")?.totalKwh ?? 0;
+  const monthlyRaw = totalsByWindow.get("monthly")?.totalKwh ?? 0;
+  const yearlyRaw = totalsByWindow.get("yearly")?.totalKwh ?? 0;
+  const lifetimeRaw = totalsByWindow.get("lifetime")?.totalKwh ?? 0;
+  const daily = dailyRaw;
+  const weekly = Math.max(weeklyRaw, daily);
+  const monthly = Math.max(monthlyRaw, weekly);
+  const yearly = Math.max(yearlyRaw, monthly);
+  const lifetime = Math.max(lifetimeRaw, yearly);
+  const usedSignal =
+    totalsByWindow.get("lifetime")?.usedSignal ??
+    totalsByWindow.get("yearly")?.usedSignal ??
+    totalsByWindow.get("monthly")?.usedSignal ??
+    totalsByWindow.get("weekly")?.usedSignal ??
+    totalsByWindow.get("daily")?.usedSignal ??
+    primarySignal;
+
+  return {
+    siteId: telemetrySiteId,
+    status: "Found",
+    siteName: siteDescriptor?.siteName ?? null,
+    siteExternalId: siteDescriptor?.siteExternalId ?? null,
+    dailyKwh: roundToFourDecimals(daily),
+    weeklyKwh: roundToFourDecimals(weekly),
+    monthlyKwh: roundToFourDecimals(monthly),
+    yearlyKwh: roundToFourDecimals(yearly),
+    lifetimeKwh: roundToFourDecimals(lifetime),
+    dataSource: dataSourceFromSignal(usedSignal),
+    error: null,
   };
 }
 
