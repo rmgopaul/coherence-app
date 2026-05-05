@@ -55,11 +55,11 @@ import type {
 /**
  * Minimal structural shape of the parent `summary` memo, as a
  * discriminated union on `kind`. The slim variant carries
- * `terminatedSystems` (portfolio total from
- * `foundation.summaryCounts.terminated`); the heavy variant
- * carries `ownershipOverview.terminatedTotal` (Part-II-scoped
- * count from the heavy aggregator). Each tile reads exactly one
- * field per branch — the type forces consumers to narrow on
+ * Part-II verified headline counts plus `terminatedSystems`
+ * (portfolio total from `foundation.summaryCounts.terminated`);
+ * the heavy variant carries `ownershipOverview.terminatedTotal`
+ * (Part-II-scoped count from the heavy aggregator). Each tile
+ * reads exactly one field per branch — the type forces consumers to narrow on
  * `summary.kind` first, so a future caller can't accidentally
  * read the wrong source.
  *
@@ -226,6 +226,7 @@ export default memo(function OverviewTab(props: OverviewTabProps) {
           <CardHeader>
             <CardDescription>Total Systems</CardDescription>
             <CardTitle className="text-2xl">{formatNumber(summary.totalSystems)}</CardTitle>
+            <CardDescription>Part II verified</CardDescription>
           </CardHeader>
         </Card>
         <Card>

@@ -352,14 +352,17 @@ describe("Phase 3.1 cross-tab parity", () => {
     expect(foundation.summaryCounts.part2VerifiedAndReporting).toBe(2);
   });
 
-  it("Overview summary reporting count matches foundation after overlay", () => {
+  it("Overview summary reporting count matches foundation Part-II reporting after overlay", () => {
     const { foundation, snapshotSystems, abpReportRows } = buildFixture();
     const result = buildOverviewSummaryWithFoundationOverlay(
       foundation,
       snapshotSystems,
       abpReportRows
     );
-    expect(result.reportingSystems).toBe(foundation.summaryCounts.reporting);
+    expect(result.totalSystems).toBe(foundation.summaryCounts.part2Verified);
+    expect(result.reportingSystems).toBe(
+      foundation.summaryCounts.part2VerifiedAndReporting
+    );
   });
 
   it("Offline Monitoring part2VerifiedSystemIds count matches foundation Part II Verified count", () => {

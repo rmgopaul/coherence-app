@@ -113,6 +113,14 @@ describe("Solar REC dashboard mount: heavy-query gates", () => {
     expect(block!).not.toMatch(/enabled\s*:/);
   });
 
+  it("Overview summary initialization renders a progress bar, not text only", () => {
+    const start = code.indexOf("Loading dashboard summary");
+    expect(start).toBeGreaterThan(-1);
+    const block = code.slice(Math.max(0, start - 300), start + 700);
+    expect(block).toMatch(/<Progress\s+value=\{65\}/);
+    expect(block).toMatch(/Preparing Overview/);
+  });
+
   it("Part II Filter QA uses slim-summary counts before heavy queries load", () => {
     const start = code.indexOf("const part2FilterAudit = useMemo");
     expect(start).toBeGreaterThan(-1);

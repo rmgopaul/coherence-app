@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
+import type { FoundationArtifactPayload } from "../../../shared/solarRecFoundation";
 import {
   buildOverviewSummary,
+  buildOverviewSummaryWithFoundationOverlay,
   extractSnapshotSystemsForSummary,
   type SnapshotSystemForSummary,
 } from "./buildOverviewSummaryAggregates";
@@ -42,6 +44,76 @@ function system(overrides: Partial<SnapshotSystemForSummary> = {}): SnapshotSyst
     contractedValue: null,
     deliveredValue: 25_000,
     ...overrides,
+  };
+}
+
+function foundationForOverviewHeadlineCounts(): FoundationArtifactPayload {
+  return {
+    schemaVersion: 1,
+    definitionVersion: 4,
+    foundationHash: "test-hash",
+    builtAt: new Date(0).toISOString(),
+    reportingAnchorDateIso: "2026-04-01",
+    inputVersions: {
+      solarApplications: { batchId: "solar-batch", rowCount: 3 },
+      abpReport: { batchId: "abp-batch", rowCount: 3 },
+      generationEntry: { batchId: null, rowCount: 0 },
+      accountSolarGeneration: { batchId: null, rowCount: 0 },
+      annualProductionEstimates: { batchId: null, rowCount: 0 },
+      contractedDate: { batchId: null, rowCount: 0 },
+      convertedReads: { batchId: null, rowCount: 0 },
+      deliveryScheduleBase: { batchId: null, rowCount: 0 },
+      transferHistory: { batchId: null, rowCount: 0 },
+      generatorDetails: { batchId: null, rowCount: 0 },
+      abpCsgSystemMapping: { batchId: null, rowCount: 0 },
+      abpProjectApplicationRows: { batchId: null, rowCount: 0 },
+      abpPortalInvoiceMapRows: { batchId: null, rowCount: 0 },
+      abpCsgPortalDatabaseRows: { batchId: null, rowCount: 0 },
+      abpQuickBooksRows: { batchId: null, rowCount: 0 },
+      abpUtilityInvoiceRows: { batchId: null, rowCount: 0 },
+      abpIccReport2Rows: { batchId: null, rowCount: 0 },
+      abpIccReport3Rows: { batchId: null, rowCount: 0 },
+    },
+    canonicalSystemsByCsgId: {
+      "SYS-1": {
+        csgId: "SYS-1",
+        abpIds: ["APP-1"],
+        isTerminated: false,
+        isPart2Verified: true,
+        isReporting: true,
+        ownershipStatus: "active",
+        integrityWarningCodes: [],
+      },
+      "SYS-2": {
+        csgId: "SYS-2",
+        abpIds: ["APP-2"],
+        isTerminated: false,
+        isPart2Verified: true,
+        isReporting: false,
+        ownershipStatus: "active",
+        integrityWarningCodes: [],
+      },
+      "SYS-OUT": {
+        csgId: "SYS-OUT",
+        abpIds: ["APP-OUT"],
+        isTerminated: false,
+        isPart2Verified: false,
+        isReporting: true,
+        ownershipStatus: "active",
+        integrityWarningCodes: [],
+      },
+    },
+    part2EligibleCsgIds: ["SYS-1", "SYS-2"],
+    reportingCsgIds: ["SYS-1", "SYS-OUT"],
+    summaryCounts: {
+      totalSystems: 3,
+      terminated: 0,
+      part2Verified: 2,
+      reporting: 2,
+      part2VerifiedAndReporting: 1,
+    },
+    integrityWarnings: [],
+    populatedDatasets: ["solarApplications", "abpReport"],
   };
 }
 
@@ -303,6 +375,62 @@ describe("buildOverviewSummary", () => {
       ],
     });
     expect(out.totalContractedValue).toBe(75_000);
+  });
+
+  it("uses foundation Part-II CSG counts for headline totals after overlay", () => {
+    const out = buildOverviewSummaryWithFoundationOverlay(
+      foundationForOverviewHeadlineCounts(),
+      [
+        system({
+          key: "sys-1",
+          systemId: "SYS-1",
+          stateApplicationRefId: "APP-1",
+          trackingSystemRefId: "NON-1",
+          systemName: "Project 1",
+        }),
+        system({
+          key: "sys-2",
+          systemId: "SYS-2",
+          stateApplicationRefId: "APP-2",
+          trackingSystemRefId: "NON-2",
+          systemName: "Project 2",
+          isReporting: true,
+        }),
+        system({
+          key: "sys-out",
+          systemId: "SYS-OUT",
+          stateApplicationRefId: "APP-OUT",
+          trackingSystemRefId: "NON-OUT",
+          systemName: "Outside Part II",
+          isReporting: true,
+        }),
+      ],
+      [
+        abpRow({
+          Application_ID: "APP-1",
+          system_id: "SYS-1",
+          PJM_GATS_or_MRETS_Unit_ID_Part_2: "NON-1",
+          Project_Name: "Project 1",
+        }),
+        abpRow({
+          Application_ID: "APP-2",
+          system_id: "SYS-2",
+          PJM_GATS_or_MRETS_Unit_ID_Part_2: "NON-2",
+          Project_Name: "Project 2",
+        }),
+        abpRow({
+          Application_ID: "APP-X",
+          system_id: "SYS-X",
+          PJM_GATS_or_MRETS_Unit_ID_Part_2: "NON-X",
+          Project_Name: "Unmatched Part II row",
+        }),
+      ]
+    );
+
+    expect(out.ownershipRows).toHaveLength(3);
+    expect(out.totalSystems).toBe(2);
+    expect(out.reportingSystems).toBe(1);
+    expect(out.reportingPercent).toBe(50);
   });
 });
 
