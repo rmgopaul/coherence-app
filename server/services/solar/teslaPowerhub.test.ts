@@ -59,6 +59,9 @@ const {
   isLikelySiteIdKey,
   requestClientCredentialsToken,
   fetchJsonWithBearerToken,
+  fetchAccessibleSites,
+  fetchAccessibleGroups,
+  fetchGroupSites,
 } = __TEST_ONLY__;
 
 // ────────────────────────────────────────────────────────────────────
@@ -870,5 +873,338 @@ describe("fetchJsonWithBearerToken", () => {
     await expect(
       fetchJsonWithBearerToken("https://example.com/x", "tok")
     ).rejects.toThrow(/internal abort/);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────
+// URL-candidate iterators (fetchAccessibleSites,
+// fetchAccessibleGroups, fetchGroupSites) — Concern #1 slice 4b
+//
+// All three follow an identical shape: build N candidate URLs, try
+// each via `fetchJsonWithBearerToken`, return the first non-empty
+// success (with `resolvedEndpointUrl`), accumulate diagnostics on
+// failure / empty-but-200, return empty result + diagnostics if all
+// URLs fail.
+// ────────────────────────────────────────────────────────────────────
+
+/** A site descriptor payload that `collectSitesFromUnknown` recognizes. */
+function siteListPayload(siteIds: string[]): unknown {
+  // collectSitesFromUnknown looks for arrays under "sites", "site_ids",
+  // etc. Use a UUID-shaped string so the parser's UUID regex matches.
+  return { sites: siteIds };
+}
+
+/** A group descriptor payload that `collectGroupsFromUnknown` recognizes. */
+function groupListPayload(groupIds: string[]): unknown {
+  // detectGroupId checks `group_id` / `groupId` / `group_uuid` first;
+  // it only falls back to plain `id` when `type` or `asset_type`
+  // contains "group" or "portfolio". Use `group_id` for unambiguous
+  // detection independent of any type heuristic.
+  return groupIds.map(id => ({ group_id: id, name: `Group ${id}` }));
+}
+
+const SITE_UUID_1 = "00000000-0000-4000-8000-000000000001";
+const SITE_UUID_2 = "00000000-0000-4000-8000-000000000002";
+
+describe("fetchAccessibleSites", () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("returns the first URL's payload when it parses to non-empty sites", async () => {
+    fetchMock.mockResolvedValueOnce(
+      buildBearerResponse({
+        ok: true,
+        contentType: "application/json",
+        json: siteListPayload([SITE_UUID_1, SITE_UUID_2]),
+      })
+    );
+    const result = await fetchAccessibleSites(VALID_CONTEXT, "tok", {});
+    expect(result.sites).toHaveLength(2);
+    expect(result.resolvedEndpointUrl).toBeTruthy();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls through past a 200-but-empty URL to the next candidate", async () => {
+    // First URL: 200 OK but no recognizable sites — iterator falls through.
+    fetchMock.mockResolvedValueOnce(
+      buildBearerResponse({
+        ok: true,
+        contentType: "application/json",
+        json: { unrelated: "value" },
+      })
+    );
+    // Second URL: succeeds with sites.
+    fetchMock.mockResolvedValueOnce(
+      buildBearerResponse({
+        ok: true,
+        contentType: "application/json",
+        json: siteListPayload([SITE_UUID_1]),
+      })
+    );
+    const result = await fetchAccessibleSites(VALID_CONTEXT, "tok", {});
+    expect(result.sites).toHaveLength(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("falls through past a 401 to the next candidate (collected as diagnostic)", async () => {
+    fetchMock.mockResolvedValueOnce(
+      buildBearerResponse({
+        ok: false,
+        status: 401,
+        statusText: "Unauthorized",
+      })
+    );
+    fetchMock.mockResolvedValueOnce(
+      buildBearerResponse({
+        ok: true,
+        contentType: "application/json",
+        json: siteListPayload([SITE_UUID_1]),
+      })
+    );
+    const result = await fetchAccessibleSites(VALID_CONTEXT, "tok", {});
+    expect(result.sites).toHaveLength(1);
+  });
+
+  it("returns empty result + diagnostics when ALL URLs fail", async () => {
+    // Sticky mock — every call returns the same 500.
+    fetchMock.mockResolvedValue(
+      buildBearerResponse({
+        ok: false,
+        status: 500,
+        statusText: "Internal Server Error",
+      })
+    );
+    const result = await fetchAccessibleSites(VALID_CONTEXT, "tok", {});
+    expect(result.sites).toEqual([]);
+    expect(result.resolvedEndpointUrl).toBeNull();
+    // Diagnostics shape: { error: "No sites found...", attempts: [...] }
+    const preview = result.rawPreview as {
+      error: string;
+      attempts: Array<{ url: string; status: string }>;
+    };
+    expect(preview.error).toMatch(/No sites found in \d+ URL candidate/);
+    expect(preview.attempts.length).toBeGreaterThan(0);
+    expect(preview.attempts[0].status).toMatch(/500/);
+  });
+
+  it("aborts mid-iteration when the caller's signal is set", async () => {
+    const controller = new AbortController();
+    fetchMock.mockImplementationOnce(async () => {
+      // Simulate the first URL's response triggering abort
+      // (e.g. caller cancelled while we were waiting). On the next
+      // iteration `throwIfSignalAborted` should throw.
+      controller.abort();
+      return buildBearerResponse({
+        ok: true,
+        contentType: "application/json",
+        json: { unrelated: "no sites" },
+      });
+    });
+    await expect(
+      fetchAccessibleSites(VALID_CONTEXT, "tok", {
+        signal: controller.signal,
+      })
+    ).rejects.toThrow();
+    // Only the first URL was attempted before abort short-circuited.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses the override endpoint URL first when provided", async () => {
+    fetchMock.mockResolvedValueOnce(
+      buildBearerResponse({
+        ok: true,
+        contentType: "application/json",
+        json: siteListPayload([SITE_UUID_1]),
+      })
+    );
+    await fetchAccessibleSites(VALID_CONTEXT, "tok", {
+      endpointUrl: "https://override.example.com/sites/list",
+    });
+    const [firstUrl] = fetchMock.mock.calls[0];
+    expect(firstUrl).toBe("https://override.example.com/sites/list");
+  });
+});
+
+describe("fetchAccessibleGroups", () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("returns the first URL's payload when it parses to non-empty groups", async () => {
+    fetchMock.mockResolvedValueOnce(
+      buildBearerResponse({
+        ok: true,
+        contentType: "application/json",
+        json: groupListPayload(["group-1", "group-2"]),
+      })
+    );
+    const result = await fetchAccessibleGroups(VALID_CONTEXT, "tok", {});
+    expect(result.groups.length).toBeGreaterThan(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("short-circuits — NO fetch — when endpointUrl already encodes a group ID", async () => {
+    // The early-return path: regex extracts the group ID from the URL
+    // and returns immediately without hitting the network.
+    const result = await fetchAccessibleGroups(VALID_CONTEXT, "tok", {
+      endpointUrl: "https://example.com/asset/groups/abc-123/sites",
+    });
+    expect(result.groups).toEqual([
+      { groupId: "abc-123", groupName: null },
+    ]);
+    expect(result.resolvedEndpointUrl).toBe(
+      "https://example.com/asset/groups/abc-123/sites"
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("falls through past a 200-empty URL to the next candidate", async () => {
+    fetchMock.mockResolvedValueOnce(
+      buildBearerResponse({
+        ok: true,
+        contentType: "application/json",
+        json: { unrelated: "value" },
+      })
+    );
+    fetchMock.mockResolvedValueOnce(
+      buildBearerResponse({
+        ok: true,
+        contentType: "application/json",
+        json: groupListPayload(["group-x"]),
+      })
+    );
+    const result = await fetchAccessibleGroups(VALID_CONTEXT, "tok", {});
+    expect(result.groups.length).toBeGreaterThan(0);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("returns empty result + diagnostics when ALL URLs fail", async () => {
+    fetchMock.mockResolvedValue(
+      buildBearerResponse({
+        ok: false,
+        status: 503,
+        statusText: "Service Unavailable",
+      })
+    );
+    const result = await fetchAccessibleGroups(VALID_CONTEXT, "tok", {});
+    expect(result.groups).toEqual([]);
+    expect(result.resolvedEndpointUrl).toBeNull();
+    const preview = result.rawPreview as {
+      error: string;
+      attempts: unknown[];
+    };
+    expect(preview.error).toMatch(/No groups found in \d+ URL candidate/);
+  });
+});
+
+describe("fetchGroupSites", () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("returns the first URL's payload when it parses to non-empty sites", async () => {
+    fetchMock.mockResolvedValueOnce(
+      buildBearerResponse({
+        ok: true,
+        contentType: "application/json",
+        json: siteListPayload([SITE_UUID_1]),
+      })
+    );
+    const result = await fetchGroupSites(VALID_CONTEXT, "tok", {
+      groupId: "group-abc",
+    });
+    expect(result.sites).toHaveLength(1);
+    expect(result.resolvedEndpointUrl).toBeTruthy();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls through past 200-empty + 401 URLs to a third candidate that succeeds", async () => {
+    // Mixed-failure sequence — proves the iterator handles both
+    // empty-but-200 and error responses uniformly.
+    fetchMock.mockResolvedValueOnce(
+      buildBearerResponse({
+        ok: true,
+        contentType: "application/json",
+        json: { unrelated: "no sites here" },
+      })
+    );
+    fetchMock.mockResolvedValueOnce(
+      buildBearerResponse({
+        ok: false,
+        status: 401,
+        statusText: "Unauthorized",
+      })
+    );
+    fetchMock.mockResolvedValueOnce(
+      buildBearerResponse({
+        ok: true,
+        contentType: "application/json",
+        json: siteListPayload([SITE_UUID_2]),
+      })
+    );
+    const result = await fetchGroupSites(VALID_CONTEXT, "tok", {
+      groupId: "group-abc",
+    });
+    expect(result.sites).toHaveLength(1);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("returns empty result + diagnostics when ALL URLs fail", async () => {
+    fetchMock.mockResolvedValue(
+      buildBearerResponse({
+        ok: false,
+        status: 500,
+        statusText: "Server Error",
+      })
+    );
+    const result = await fetchGroupSites(VALID_CONTEXT, "tok", {
+      groupId: "group-abc",
+    });
+    expect(result.sites).toEqual([]);
+    expect(result.resolvedEndpointUrl).toBeNull();
+    const preview = result.rawPreview as {
+      error: string;
+      attempts: unknown[];
+    };
+    expect(preview.error).toMatch(/No sites found in \d+ URL candidate/);
+  });
+
+  it("trims surrounding whitespace from groupId before building URLs", async () => {
+    fetchMock.mockResolvedValueOnce(
+      buildBearerResponse({
+        ok: true,
+        contentType: "application/json",
+        json: siteListPayload([SITE_UUID_1]),
+      })
+    );
+    await fetchGroupSites(VALID_CONTEXT, "tok", {
+      groupId: "  group-trimmed  ",
+    });
+    const [url] = fetchMock.mock.calls[0];
+    // The group ID appears in the URL with no surrounding whitespace.
+    expect(url).toMatch(/group-trimmed/);
+    expect(url).not.toMatch(/\s/);
   });
 });

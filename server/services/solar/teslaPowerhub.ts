@@ -3396,20 +3396,23 @@ export async function getTeslaPowerhubGroupProductionMetricsCached(
 //   pattern (`vi.stubGlobal("fetch", ...)`) for solar adapters
 //   before tackling the multi-fetch site-discovery + telemetry paths.
 //
-// Slice 4a (this PR): adds `fetchJsonWithBearerToken` — the
-//   foundational helper EVERY multi-fetch path uses
-//   (`fetchAccessibleSites`, `fetchAccessibleGroups`,
-//   `fetchGroupSites`, `fetchSiteExternalIds`,
-//   `fetchSingleSiteTelemetryTotal`, `fetchTelemetryWindowTotals`
-//   all delegate to it). A regression here breaks every downstream
-//   path. Outcomes: 200+JSON / non-OK / wrong content-type /
-//   timeout / external abort / network error.
+// Slice 4a (#401): adds `fetchJsonWithBearerToken` — the
+//   foundational helper EVERY multi-fetch path uses. A regression
+//   here breaks every downstream path. Outcomes: 200+JSON / non-OK /
+//   wrong content-type / timeout / external abort / network error.
 //
-// Still to come: URL-candidate iteration (`fetchAccessibleGroups`,
-// `fetchAccessibleSites`, `fetchGroupSites` — they wrap
-// `fetchJsonWithBearerToken` and try multiple URLs); telemetry
-// window totals (`getTeslaPowerhubProductionMetrics` →
-// `fetchTelemetryWindowTotals`).
+// Slice 4b (this PR): adds the 3 URL-candidate iterators that wrap
+//   `fetchJsonWithBearerToken` — `fetchAccessibleSites`,
+//   `fetchAccessibleGroups`, `fetchGroupSites`. They share an
+//   identical shape: build N candidate URLs, try each, return the
+//   first non-empty success (with `resolvedEndpointUrl` so callers
+//   know which URL won), accumulate diagnostics on failure /
+//   empty-but-200, return empty result + diagnostics if all URLs
+//   fail. `fetchAccessibleGroups` also has an early-return path for
+//   when `endpointUrl` already encodes a group ID — no fetch needed.
+//
+// Still to come: telemetry window totals
+// (`getTeslaPowerhubProductionMetrics` → `fetchTelemetryWindowTotals`).
 // ────────────────────────────────────────────────────────────────────
 export const __TEST_ONLY__ = {
   normalizeTimeoutMs,
@@ -3422,4 +3425,7 @@ export const __TEST_ONLY__ = {
   isLikelySiteIdKey,
   requestClientCredentialsToken,
   fetchJsonWithBearerToken,
+  fetchAccessibleSites,
+  fetchAccessibleGroups,
+  fetchGroupSites,
 };
