@@ -8,7 +8,8 @@ import {
 } from "./teslaPowerhub";
 
 export const TESLA_POWERHUB_PRODUCTION_JOB_RUNNER_VERSION =
-  "solar-rec-tesla-powerhub-production-job-v1";
+  "solar-rec-tesla-powerhub-production-job-v2";
+const TESLA_POWERHUB_PRODUCTION_JOB_TIMEOUT_MS = 30 * 60 * 1000;
 
 type TeslaPowerhubProductionJobStatus =
   | "queued"
@@ -137,6 +138,21 @@ function updateProgress(
   });
 }
 
+function formatTeslaPowerhubJobError(error: unknown): string {
+  const message = error instanceof Error ? error.message : "Unknown job error.";
+  const name = error instanceof Error ? error.name : "";
+  if (
+    name === "TimeoutError" ||
+    /aborted due to timeout/i.test(message) ||
+    /global timeout/i.test(message)
+  ) {
+    return `Tesla Powerhub production job exceeded ${Math.round(
+      TESLA_POWERHUB_PRODUCTION_JOB_TIMEOUT_MS / 60_000
+    )} minutes. Try again with a group ID or endpoint override so the job can avoid broad discovery.`;
+  }
+  return message;
+}
+
 export function startTeslaPowerhubProductionJob(input: {
   scopeId: string;
   createdBy: number | null;
@@ -195,6 +211,7 @@ export function startTeslaPowerhubProductionJob(input: {
         groupId: input.groupId ?? null,
         endpointUrl: input.endpointUrl ?? null,
         signal: input.signal ?? null,
+        globalTimeoutMs: TESLA_POWERHUB_PRODUCTION_JOB_TIMEOUT_MS,
         onProgress: progress => updateProgress(jobId, progress),
       });
 
@@ -219,7 +236,7 @@ export function startTeslaPowerhubProductionJob(input: {
         status: "failed",
         updatedAt: new Date().toISOString(),
         finishedAt: new Date().toISOString(),
-        error: error instanceof Error ? error.message : "Unknown job error.",
+        error: formatTeslaPowerhubJobError(error),
         result: null,
         progress: {
           ...current.progress,
