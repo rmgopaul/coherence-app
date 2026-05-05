@@ -186,6 +186,13 @@ function newJobId(): string {
  * persisted the storage key on the row (we only persist the URL,
  * which can be a Forge proxy URL or a local-mode `/_local_uploads/...`
  * path — neither of which is the storage key directly).
+ *
+ * v4+ keys intentionally do NOT include `fileName`: if a worker
+ * crashes after storagePut but before success completion, the
+ * terminal failed row may still have `fileName = null`. The key
+ * must remain derivable from durable row fields (`id`, `scopeId`,
+ * `claimedBy`, `runnerVersion`) so TTL cleanup can delete a
+ * crash-after-upload artifact.
  */
 function storageKeyForJob(
   jobId: string,
@@ -194,12 +201,12 @@ function storageKeyForJob(
   claimId: string | null = null,
   runnerVersion: string | null = null
 ): string | null {
-  if (!fileName) return null;
   if (usesClaimScopedArtifactKey(runnerVersion)) {
     if (!claimId) return null;
     const safeClaimId = encodeURIComponent(claimId);
-    return `solar-rec-dashboard/${scopeId}/exports/${jobId}-${safeClaimId}-${fileName}`;
+    return `solar-rec-dashboard/${scopeId}/exports/${jobId}-${safeClaimId}.csv`;
   }
+  if (!fileName) return null;
   return `solar-rec-dashboard/${scopeId}/exports/${jobId}-${fileName}`;
 }
 
@@ -342,6 +349,8 @@ export async function runCsvExportJob(jobId: string): Promise<void> {
   }
   const claimId = getClaimId();
   const staleClaimBefore = new Date(Date.now() - STALE_CLAIM_MS);
+  const staleClaimToClean =
+    row.status === "running" && row.claimedBy ? row.claimedBy : null;
   let claimed = false;
   try {
     claimed = await Promise.race([
@@ -349,7 +358,8 @@ export async function runCsvExportJob(jobId: string): Promise<void> {
         row.scopeId,
         jobId,
         claimId,
-        staleClaimBefore
+        staleClaimBefore,
+        DASHBOARD_CSV_EXPORT_RUNNER_VERSION
       ),
       deadline.promise,
     ]);
@@ -369,6 +379,18 @@ export async function runCsvExportJob(jobId: string): Promise<void> {
     // Nothing for us to do.
     deadline.clear();
     return;
+  }
+  if (staleClaimToClean && staleClaimToClean !== claimId) {
+    const staleKey = storageKeyForJob(
+      jobId,
+      row.scopeId,
+      row.fileName,
+      staleClaimToClean,
+      row.runnerVersion
+    );
+    if (staleKey) {
+      void cleanupUploadedArtifact(jobId, staleKey, "stale-claim-reclaimed");
+    }
   }
 
   const input = parseInputJson(row.input);
@@ -900,7 +922,10 @@ async function sweepStaleAndPruned(): Promise<void> {
         row.claimedBy,
         row.runnerVersion
       );
-      if (!key || !row.artifactUrl) continue;
+      if (!key) continue;
+      if (!row.artifactUrl && !usesClaimScopedArtifactKey(row.runnerVersion)) {
+        continue;
+      }
       // Fire-and-forget; don't block the sweep on storage IO.
       storageDelete(key).catch((err) => {
         console.warn(
