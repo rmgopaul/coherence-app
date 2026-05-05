@@ -16,6 +16,7 @@ import {
 } from "../../db";
 import { storagePut } from "../../storage";
 import {
+  compactAccountSolarGenerationLatestMeterReads,
   persistDatasetRows,
   hasPersistence,
   cloneDatasetBatchRows,
@@ -110,12 +111,7 @@ const CORE_DATASET_DEFINITIONS: Record<string, DatasetDefinition> = {
       ["transaction_id", "unit_id"],
     ],
     multiFileAppend: true,
-    rowKeyFields: [
-      "Transaction ID",
-      "Unit ID",
-      "Transfer Date",
-      "Quantity",
-    ],
+    rowKeyFields: ["Transaction ID", "Unit ID", "Transfer Date", "Quantity"],
   },
   generatorDetails: {
     label: "Generator Details",
@@ -263,8 +259,8 @@ function validateHeaders(
 ): boolean {
   const normalizedHeaders = new Set(headers.map(normalizeHeader));
 
-  return definition.requiredHeaderSets.some((requiredSet) =>
-    requiredSet.every((required) =>
+  return definition.requiredHeaderSets.some(requiredSet =>
+    requiredSet.every(required =>
       normalizedHeaders.has(normalizeHeader(required))
     )
   );
@@ -291,9 +287,8 @@ async function filterAppendRows(
   // When batchId is null (no previous active batch to clone from
   // or first-time ingest), the existing set is empty and we only
   // dedupe within the upload itself.
-  const { loadExistingRowKeys, partitionAppendRowsByKeySet } = await import(
-    "./datasetRowPersistence"
-  );
+  const { loadExistingRowKeys, partitionAppendRowsByKeySet } =
+    await import("./datasetRowPersistence");
   const existingKeys = batchId
     ? await loadExistingRowKeys(scopeId, batchId, datasetKey)
     : new Set<string>();
@@ -493,7 +488,7 @@ export async function ingestDataset(
 
     if (validationErrors.length > 0) {
       await createImportErrors(
-        validationErrors.map((err) => ({
+        validationErrors.map(err => ({
           batchId,
           rowIndex: err.rowIndex,
           columnName: null,
@@ -559,6 +554,18 @@ export async function ingestDataset(
           errors: [{ rowIndex: -1, message: `Row persistence: ${message}` }],
         };
       }
+    }
+
+    if (
+      datasetKey === "accountSolarGeneration" &&
+      hasPersistence(datasetKey) &&
+      totalRowCount > 0
+    ) {
+      const compacted = await compactAccountSolarGenerationLatestMeterReads(
+        scopeId,
+        batchId
+      );
+      totalRowCount = compacted.rowCount;
     }
 
     // Atomically promote the new batch so the active pointer, row count,

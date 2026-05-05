@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { buildAppendRowKey } from "./datasetRowPersistence";
+import {
+  buildAccountSolarGenerationStoredRowKey,
+  buildAppendRowKey,
+} from "./datasetRowPersistence";
 
 describe("buildAppendRowKey", () => {
   it("uses the CSG portal kWh/Btu meter-read header for Account Solar Generation", () => {
@@ -72,6 +75,31 @@ describe("buildAppendRowKey", () => {
     });
 
     expect(first).not.toBe(second);
+  });
+
+  it("matches stored Account Solar Generation rawRow aliases accepted by uploads", () => {
+    const uploadKey = buildAppendRowKey("accountSolarGeneration", {
+      gats_gen_id: "NON305284",
+      facilityName: "Bruce Thompson - 26157",
+      month_of_generation: "03/01/2026",
+      lastMeterReadDate: "04/01/2026",
+      "meter id": "2",
+      last_meter_read_kwh: "68,783",
+    });
+    const storedKey = buildAccountSolarGenerationStoredRowKey({
+      gatsGenId: "NON305284",
+      facilityName: "Bruce Thompson - 26157",
+      monthOfGeneration: "03/01/2026",
+      lastMeterReadDate: "04/01/2026",
+      lastMeterReadKwh: null,
+      rawRow: JSON.stringify({
+        "meter id": "2",
+        last_meter_read_kwh: "68,783",
+      }),
+    });
+
+    expect(storedKey).toBe(uploadKey);
+    expect(storedKey).toContain("|2|68,783");
   });
 
   it("matches Converted Reads title-case headers accepted by the parser", () => {

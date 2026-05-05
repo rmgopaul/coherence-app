@@ -470,6 +470,37 @@ describe("sweepStaleDatasetUploadJobs", () => {
     expect(update.whereCalled).toBe(1);
   });
 
+  it("repairs stale jobs to done when their batch is already active", async () => {
+    const batchCompletedAt = new Date("2026-05-05T12:00:00.000Z");
+    const staleJobs = [
+      {
+        id: "job-1",
+        scopeId: "scope-1",
+        datasetKey: "accountSolarGeneration",
+        batchId: "batch-active",
+      },
+    ];
+    const stub = makeDbStub({
+      selectRows: [
+        staleJobs,
+        [{ status: "active", completedAt: batchCompletedAt }],
+      ],
+      updateAffected: 1,
+    });
+    mocks.getDb.mockResolvedValue(stub);
+
+    const swept = await sweepStaleDatasetUploadJobs(10 * 60 * 1000);
+    expect(swept).toBe(1);
+
+    const updates = stub.calls.filter(c => c.kind === "update");
+    expect(updates).toHaveLength(1);
+    expect(updates[0].setValue).toMatchObject({
+      status: "done",
+      errorMessage: null,
+      completedAt: batchCompletedAt,
+    });
+  });
+
   it("returns 0 when no rows match", async () => {
     const stub = makeDbStub({ selectRows: [[]], updateAffected: 0 });
     mocks.getDb.mockResolvedValue(stub);

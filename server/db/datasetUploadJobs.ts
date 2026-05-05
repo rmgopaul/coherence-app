@@ -39,6 +39,11 @@ const IN_FLIGHT_UPLOAD_STATUSES = [
   "writing",
 ] as const;
 
+const REPAIRABLE_ACTIVE_BATCH_JOB_STATUSES = [
+  ...IN_FLIGHT_UPLOAD_STATUSES,
+  "failed",
+] as const;
+
 function affectedRows(result: unknown): number {
   return (
     (result as { affectedRows?: number; rowCount?: number }).affectedRows ??
@@ -344,7 +349,7 @@ export async function deleteDatasetUploadJob(
  * those job rows live forever and the dashboard's cloud-sync
  * indicator never clears.
  *
- * Returns the count of rows updated. Idempotent — already-failed
+ * Returns the count of rows terminalized. Idempotent — already-failed
  * or already-done rows are not touched. Scope-agnostic; intended
  * for a process-level sweep timer (see
  * `server/services/core/datasetUploadStaleJobSweeper.ts`).
@@ -375,69 +380,191 @@ export async function sweepStaleDatasetUploadJobs(
         )
   );
 
-  let failedJobs = 0;
+  let terminalizedJobs = 0;
   for (const job of staleJobs) {
     const completedAt = new Date();
-    const result = await withDbRetry(
-      "fail stale dataset upload job",
-      async () =>
-        db
-          .update(datasetUploadJobs)
-          .set({
-            status: "failed",
-            errorMessage: STALE_UPLOAD_JOB_MESSAGE,
-            completedAt,
-          })
-          .where(
-            and(
-              eq(datasetUploadJobs.scopeId, job.scopeId),
-              eq(datasetUploadJobs.id, job.id),
-              inArray(datasetUploadJobs.status, IN_FLIGHT_UPLOAD_STATUSES),
-              lt(datasetUploadJobs.updatedAt, cutoff)
-            )
-          )
-    );
-    if (affectedRows(result) <= 0) continue;
-
-    failedJobs += 1;
     if (job.batchId) {
-      await cleanupStaleUploadBatch(
+      const batch = await loadStaleUploadBatch(job.batchId);
+      if (batch?.status === "active") {
+        const repaired = await markUploadJobDoneForActiveBatch(
+          job.scopeId,
+          job.id,
+          job.batchId,
+          coerceDate(batch.completedAt, completedAt)
+        );
+        if (repaired) terminalizedJobs += 1;
+        continue;
+      }
+    }
+
+    const failed = await failStaleUploadJob(
+      job.scopeId,
+      job.id,
+      cutoff,
+      completedAt
+    );
+    if (!failed) continue;
+
+    terminalizedJobs += 1;
+    if (job.batchId) {
+      const cleanupResult = await cleanupStaleUploadBatch(
         job.datasetKey,
         job.batchId,
         STALE_UPLOAD_JOB_MESSAGE,
         completedAt
       );
+      if (cleanupResult === "active") {
+        await markUploadJobDoneForActiveBatch(
+          job.scopeId,
+          job.id,
+          job.batchId,
+          completedAt
+        );
+      }
     }
   }
 
-  return failedJobs;
+  return terminalizedJobs;
 }
+
+type StaleUploadBatchSnapshot = {
+  status: string | null;
+  completedAt: Date | string | null;
+};
+
+async function loadStaleUploadBatch(
+  batchId: string
+): Promise<StaleUploadBatchSnapshot | null> {
+  const db = await getDb();
+  if (!db) return null;
+
+  const batchRows = await withDbRetry("load stale upload import batch", () =>
+    db
+      .select({
+        status: solarRecImportBatches.status,
+        completedAt: solarRecImportBatches.completedAt,
+      })
+      .from(solarRecImportBatches)
+      .where(eq(solarRecImportBatches.id, batchId))
+      .limit(1)
+  );
+  return batchRows[0] ?? null;
+}
+
+function coerceDate(value: Date | string | null, fallback: Date): Date {
+  if (value instanceof Date) return value;
+  if (typeof value === "string") {
+    const parsed = new Date(value);
+    if (Number.isFinite(parsed.getTime())) return parsed;
+  }
+  return fallback;
+}
+
+async function markUploadJobDoneForActiveBatch(
+  scopeId: string,
+  jobId: string,
+  batchId: string,
+  completedAt: Date
+): Promise<boolean> {
+  const db = await getDb();
+  if (!db) return false;
+
+  const result = await withDbRetry(
+    "repair activated stale dataset upload job",
+    async () =>
+      db
+        .update(datasetUploadJobs)
+        .set({
+          status: "done",
+          errorMessage: null,
+          completedAt,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(datasetUploadJobs.scopeId, scopeId),
+            eq(datasetUploadJobs.id, jobId),
+            eq(datasetUploadJobs.batchId, batchId),
+            inArray(
+              datasetUploadJobs.status,
+              REPAIRABLE_ACTIVE_BATCH_JOB_STATUSES
+            )
+          )
+        )
+  );
+
+  return affectedRows(result) > 0;
+}
+
+async function failStaleUploadJob(
+  scopeId: string,
+  jobId: string,
+  cutoff: Date,
+  completedAt: Date
+): Promise<boolean> {
+  const db = await getDb();
+  if (!db) return false;
+
+  const result = await withDbRetry("fail stale dataset upload job", async () =>
+    db
+      .update(datasetUploadJobs)
+      .set({
+        status: "failed",
+        errorMessage: STALE_UPLOAD_JOB_MESSAGE,
+        completedAt,
+      })
+      .where(
+        and(
+          eq(datasetUploadJobs.scopeId, scopeId),
+          eq(datasetUploadJobs.id, jobId),
+          inArray(datasetUploadJobs.status, IN_FLIGHT_UPLOAD_STATUSES),
+          lt(datasetUploadJobs.updatedAt, cutoff)
+        )
+      )
+  );
+
+  return affectedRows(result) > 0;
+}
+
+type StaleUploadBatchCleanupResult = "active" | "failed" | "skipped";
 
 async function cleanupStaleUploadBatch(
   datasetKey: string,
   batchId: string,
   message: string,
   completedAt: Date
-): Promise<void> {
+): Promise<StaleUploadBatchCleanupResult> {
   const db = await getDb();
-  if (!db) return;
+  if (!db) return "skipped";
 
-  const batchRows = await withDbRetry("load stale upload import batch", () =>
-    db
-      .select({
-        id: solarRecImportBatches.id,
-        status: solarRecImportBatches.status,
-      })
-      .from(solarRecImportBatches)
-      .where(eq(solarRecImportBatches.id, batchId))
-      .limit(1)
+  const batch = await loadStaleUploadBatch(batchId);
+  if (!batch) return "skipped";
+  if (batch.status === "active") return "active";
+  if (!["uploading", "processing", "failed"].includes(String(batch.status))) {
+    return "skipped";
+  }
+
+  const result = await withDbRetry(
+    "mark stale upload import batch failed",
+    () =>
+      db
+        .update(solarRecImportBatches)
+        .set({
+          status: "failed",
+          error: message,
+          completedAt,
+        })
+        .where(
+          and(
+            eq(solarRecImportBatches.id, batchId),
+            sql`${solarRecImportBatches.status} IN ('uploading', 'processing', 'failed')`
+          )
+        )
   );
-  const batch = batchRows[0];
-  if (
-    !batch ||
-    !["uploading", "processing", "failed"].includes(String(batch.status))
-  ) {
-    return;
+  if (affectedRows(result) <= 0) {
+    const latestBatch = await loadStaleUploadBatch(batchId);
+    if (latestBatch?.status === "active") return "active";
+    return "skipped";
   }
 
   try {
@@ -451,20 +578,5 @@ async function cleanupStaleUploadBatch(
       err
     );
   }
-
-  await withDbRetry("mark stale upload import batch failed", () =>
-    db
-      .update(solarRecImportBatches)
-      .set({
-        status: "failed",
-        error: message,
-        completedAt,
-      })
-      .where(
-        and(
-          eq(solarRecImportBatches.id, batchId),
-          sql`${solarRecImportBatches.status} IN ('uploading', 'processing', 'failed')`
-        )
-      )
-  );
+  return "failed";
 }
