@@ -30,34 +30,48 @@ type SnapshotResult = {
 };
 
 type ProviderAdapter = {
-  listSites: (credential: { accessToken?: string | null; metadata?: string | null }) => Promise<SiteInfo[]>;
+  listSites: (credential: {
+    accessToken?: string | null;
+    metadata?: string | null;
+  }) => Promise<SiteInfo[]>;
   getSnapshots: (
     credential: { accessToken?: string | null; metadata?: string | null },
     siteIds: string[],
     anchorDate: string
   ) => Promise<SnapshotResult[]>;
+  /**
+   * Some vendors expose a true bulk read where one upstream request returns
+   * every requested site. Running those one site at a time creates redundant
+   * work and can hit the per-site timeout before the shared bulk call finishes.
+   */
+  supportsBulkSnapshots?: boolean;
+  snapshotTimeoutMs?: number;
 };
 
 // Lazy-loaded provider adapters. Each adapter wraps the existing service
 // functions in server/services/*.ts with a consistent interface.
 const providerAdapters: Record<string, () => Promise<ProviderAdapter>> = {
-  solaredge: () => import("./adapters/solaredge.adapter").then((m) => m.default),
-  "enphase-v4": () => import("./adapters/enphaseV4.adapter").then((m) => m.default),
-  fronius: () => import("./adapters/fronius.adapter").then((m) => m.default),
-  generac: () => import("./adapters/generac.adapter").then((m) => m.default),
-  hoymiles: () => import("./adapters/hoymiles.adapter").then((m) => m.default),
-  goodwe: () => import("./adapters/goodwe.adapter").then((m) => m.default),
-  solis: () => import("./adapters/solis.adapter").then((m) => m.default),
-  locus: () => import("./adapters/locus.adapter").then((m) => m.default),
-  apsystems: () => import("./adapters/apsystems.adapter").then((m) => m.default),
-  solarlog: () => import("./adapters/solarlog.adapter").then((m) => m.default),
-  growatt: () => import("./adapters/growatt.adapter").then((m) => m.default),
-  egauge: () => import("./adapters/egauge.adapter").then((m) => m.default),
-  "egauge-monitoring": () => import("./adapters/egauge.adapter").then((m) => m.default),
-  "tesla-powerhub": () => import("./adapters/teslaPowerhub.adapter").then((m) => m.default),
-  teslapowerhub: () => import("./adapters/teslaPowerhub.adapter").then((m) => m.default),
-  ennexos: () => import("./adapters/ennexos.adapter").then((m) => m.default),
-  ekm: () => import("./adapters/ekm.adapter").then((m) => m.default),
+  solaredge: () => import("./adapters/solaredge.adapter").then(m => m.default),
+  "enphase-v4": () =>
+    import("./adapters/enphaseV4.adapter").then(m => m.default),
+  fronius: () => import("./adapters/fronius.adapter").then(m => m.default),
+  generac: () => import("./adapters/generac.adapter").then(m => m.default),
+  hoymiles: () => import("./adapters/hoymiles.adapter").then(m => m.default),
+  goodwe: () => import("./adapters/goodwe.adapter").then(m => m.default),
+  solis: () => import("./adapters/solis.adapter").then(m => m.default),
+  locus: () => import("./adapters/locus.adapter").then(m => m.default),
+  apsystems: () => import("./adapters/apsystems.adapter").then(m => m.default),
+  solarlog: () => import("./adapters/solarlog.adapter").then(m => m.default),
+  growatt: () => import("./adapters/growatt.adapter").then(m => m.default),
+  egauge: () => import("./adapters/egauge.adapter").then(m => m.default),
+  "egauge-monitoring": () =>
+    import("./adapters/egauge.adapter").then(m => m.default),
+  "tesla-powerhub": () =>
+    import("./adapters/teslaPowerhub.adapter").then(m => m.default),
+  teslapowerhub: () =>
+    import("./adapters/teslaPowerhub.adapter").then(m => m.default),
+  ennexos: () => import("./adapters/ennexos.adapter").then(m => m.default),
+  ekm: () => import("./adapters/ekm.adapter").then(m => m.default),
 };
 
 // ---------------------------------------------------------------------------
@@ -65,33 +79,57 @@ const providerAdapters: Record<string, () => Promise<ProviderAdapter>> = {
 // ---------------------------------------------------------------------------
 
 /** Max time (ms) to wait for a single site's getSnapshots call before recording a timeout error. */
-const PER_SITE_TIMEOUT_MS = 30_000;
+const DEFAULT_SNAPSHOT_TIMEOUT_MS = 30_000;
 const PROGRESS_UPDATE_SITE_INTERVAL = 250;
 const PROGRESS_UPDATE_MS = 10_000;
 
 /** Extract a human-readable label from a credential's metadata (username, account, apiKey prefix). */
 function extractCredentialLabel(
-  cred: { connectionName?: string | null; metadata?: string | null; accessToken?: string | null } | undefined
+  cred:
+    | {
+        connectionName?: string | null;
+        metadata?: string | null;
+        accessToken?: string | null;
+      }
+    | undefined
 ): string | null {
   if (!cred) return null;
   if (cred.connectionName) return cred.connectionName;
-  if (!cred.metadata) return cred.accessToken ? `...${cred.accessToken.slice(-6)}` : null;
+  if (!cred.metadata)
+    return cred.accessToken ? `...${cred.accessToken.slice(-6)}` : null;
   try {
     const meta = JSON.parse(cred.metadata);
-    return meta.username ?? meta.account ?? meta.connectionName
-      ?? (meta.apiKey ? `Key ...${meta.apiKey.slice(-6)}` : null);
+    return (
+      meta.username ??
+      meta.account ??
+      meta.connectionName ??
+      (meta.apiKey ? `Key ...${meta.apiKey.slice(-6)}` : null)
+    );
   } catch {
     return null;
   }
 }
 
 /** Race a promise against a timeout. Rejects with a clear message on timeout. */
-function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+function withTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+  label: string
+): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`Timeout after ${ms}ms: ${label}`)), ms);
+    const timer = setTimeout(
+      () => reject(new Error(`Timeout after ${ms}ms: ${label}`)),
+      ms
+    );
     promise.then(
-      (val) => { clearTimeout(timer); resolve(val); },
-      (err) => { clearTimeout(timer); reject(err); },
+      val => {
+        clearTimeout(timer);
+        resolve(val);
+      },
+      err => {
+        clearTimeout(timer);
+        reject(err);
+      }
     );
   });
 }
@@ -124,11 +162,15 @@ export async function executeProviderRun(
 
   let credentials = await db.getSolarRecTeamCredentialsByProvider(provider);
   if (selectedCredentialSet) {
-    credentials = credentials.filter((credential) => selectedCredentialSet.has(credential.id));
+    credentials = credentials.filter(credential =>
+      selectedCredentialSet.has(credential.id)
+    );
   }
 
   if (credentials.length === 0) {
-    console.log(`[Monitoring] No credentials for provider ${provider}, skipping`);
+    console.log(
+      `[Monitoring] No credentials for provider ${provider}, skipping`
+    );
     return { success: 0, error: 0, noData: 0 };
   }
 
@@ -153,7 +195,10 @@ export async function executeProviderRun(
         triggeredAt: new Date(),
       });
     } catch (persistError) {
-      console.error(`[Monitoring] Failed to persist missing-adapter error for ${provider}:`, persistError);
+      console.error(
+        `[Monitoring] Failed to persist missing-adapter error for ${provider}:`,
+        persistError
+      );
     }
     return { success: 0, error: 1, noData: 0 };
   }
@@ -175,107 +220,164 @@ export async function executeProviderRun(
       const sites = await adapter.listSites(cred);
       if (sites.length === 0) continue;
 
-      const rowsToPersist = await mapWithConcurrency(sites, 4, async (site) => {
-        const start = Date.now();
-        try {
-          // Wrap each site call with a timeout to prevent one slow API from blocking the batch
-          const results = await withTimeout(
-            adapter.getSnapshots(cred, [site.siteId], dateKey),
-            PER_SITE_TIMEOUT_MS,
-            `${provider}/${site.siteId}`
-          );
-          const result = results[0];
-          const durationMs = Date.now() - start;
-
-          let row;
-          if (!result || result.status === "Not Found") {
-            noData++;
-            row = {
-              provider,
-              connectionId: cred.id,
-              siteId: site.siteId,
-              siteName: site.siteName,
-              dateKey,
-              status: "no_data" as const,
-              readingsCount: 0,
-              lifetimeKwh: null,
-              durationMs,
-              triggeredBy,
-              triggeredAt: new Date(),
-            };
-          } else if (result.status === "Error") {
-            error++;
-            row = {
-              provider,
-              connectionId: cred.id,
-              siteId: site.siteId,
-              siteName: result.siteName ?? site.siteName,
-              dateKey,
-              status: "error" as const,
-              readingsCount: 0,
-              lifetimeKwh: null,
-              errorMessage: result.errorMessage ?? "Unknown error",
-              durationMs,
-              triggeredBy,
-              triggeredAt: new Date(),
-            };
-          } else {
-            success++;
-            row = {
-              provider,
-              connectionId: cred.id,
-              siteId: site.siteId,
-              siteName: result.siteName ?? site.siteName,
-              dateKey,
-              status: "success" as const,
-              readingsCount: result.lifetimeKwh != null ? 1 : 0,
-              lifetimeKwh: result.lifetimeKwh,
-              durationMs,
-              triggeredBy,
-              triggeredAt: new Date(),
-            };
-          }
-
-          options?.onSiteProgress?.({
-            success: row.status === "success" ? 1 : 0,
-            error: row.status === "error" ? 1 : 0,
-            noData: row.status === "no_data" ? 1 : 0,
-            run: {
-              provider,
-              siteId: row.siteId,
-              siteName: row.siteName ?? null,
-              lifetimeKwh: row.lifetimeKwh ?? null,
-              dateKey,
-              status: row.status,
-            },
-          });
-          return { id: nanoid(), scopeId, ...row };
-        } catch (err) {
-          error++;
-          const row = {
+      const buildPersistRow = (
+        site: SiteInfo,
+        result: SnapshotResult | undefined,
+        durationMs: number
+      ) => {
+        let row;
+        if (!result || result.status === "Not Found") {
+          noData++;
+          row = {
             provider,
             connectionId: cred.id,
             siteId: site.siteId,
             siteName: site.siteName,
             dateKey,
-            status: "error" as const,
+            status: "no_data" as const,
             readingsCount: 0,
             lifetimeKwh: null,
-            errorMessage: err instanceof Error ? err.message : String(err),
-            durationMs: Date.now() - start,
+            durationMs,
             triggeredBy,
             triggeredAt: new Date(),
           };
-          options?.onSiteProgress?.({ success: 0, error: 1, noData: 0 });
-          return { id: nanoid(), scopeId, ...row };
+        } else if (result.status === "Error") {
+          error++;
+          row = {
+            provider,
+            connectionId: cred.id,
+            siteId: site.siteId,
+            siteName: result.siteName ?? site.siteName,
+            dateKey,
+            status: "error" as const,
+            readingsCount: 0,
+            lifetimeKwh: null,
+            errorMessage: result.errorMessage ?? "Unknown error",
+            durationMs,
+            triggeredBy,
+            triggeredAt: new Date(),
+          };
+        } else {
+          success++;
+          row = {
+            provider,
+            connectionId: cred.id,
+            siteId: site.siteId,
+            siteName: result.siteName ?? site.siteName,
+            dateKey,
+            status: "success" as const,
+            readingsCount: result.lifetimeKwh != null ? 1 : 0,
+            lifetimeKwh: result.lifetimeKwh,
+            durationMs,
+            triggeredBy,
+            triggeredAt: new Date(),
+          };
+        }
+
+        options?.onSiteProgress?.({
+          success: row.status === "success" ? 1 : 0,
+          error: row.status === "error" ? 1 : 0,
+          noData: row.status === "no_data" ? 1 : 0,
+          run: {
+            provider,
+            siteId: row.siteId,
+            siteName: row.siteName ?? null,
+            lifetimeKwh: row.lifetimeKwh ?? null,
+            dateKey,
+            status: row.status,
+          },
+        });
+
+        return { id: nanoid(), scopeId, ...row };
+      };
+
+      const buildErrorRow = (
+        site: SiteInfo,
+        message: string,
+        durationMs: number
+      ) => {
+        error++;
+        const row = {
+          provider,
+          connectionId: cred.id,
+          siteId: site.siteId,
+          siteName: site.siteName,
+          dateKey,
+          status: "error" as const,
+          readingsCount: 0,
+          lifetimeKwh: null,
+          errorMessage: message,
+          durationMs,
+          triggeredBy,
+          triggeredAt: new Date(),
+        };
+        options?.onSiteProgress?.({ success: 0, error: 1, noData: 0 });
+        return { id: nanoid(), scopeId, ...row };
+      };
+
+      if (adapter.supportsBulkSnapshots) {
+        const start = Date.now();
+        try {
+          const results = await withTimeout(
+            adapter.getSnapshots(
+              cred,
+              sites.map(site => site.siteId),
+              dateKey
+            ),
+            adapter.snapshotTimeoutMs ?? DEFAULT_SNAPSHOT_TIMEOUT_MS,
+            `${provider}/${cred.id}/bulk`
+          );
+          const durationMs = Date.now() - start;
+          const resultsBySiteId = new Map(
+            results.map(result => [result.siteId, result])
+          );
+          const rowsToPersist = sites.map(site =>
+            buildPersistRow(site, resultsBySiteId.get(site.siteId), durationMs)
+          );
+          await db.upsertMonitoringApiRuns(rowsToPersist);
+        } catch (err) {
+          const durationMs = Date.now() - start;
+          const message = err instanceof Error ? err.message : String(err);
+          const rowsToPersist = sites.map(site =>
+            buildErrorRow(site, message, durationMs)
+          );
+          await db.upsertMonitoringApiRuns(rowsToPersist);
+        }
+        continue;
+      }
+
+      const rowsToPersist = await mapWithConcurrency(sites, 4, async site => {
+        const start = Date.now();
+        try {
+          // Wrap each site call with a timeout to prevent one slow API from blocking the batch
+          const results = await withTimeout(
+            adapter.getSnapshots(cred, [site.siteId], dateKey),
+            adapter.snapshotTimeoutMs ?? DEFAULT_SNAPSHOT_TIMEOUT_MS,
+            `${provider}/${site.siteId}`
+          );
+          const result = results[0];
+          const durationMs = Date.now() - start;
+
+          return buildPersistRow(site, result, durationMs);
+        } catch (err) {
+          return buildErrorRow(
+            site,
+            err instanceof Error ? err.message : String(err),
+            Date.now() - start
+          );
         }
       });
       await db.upsertMonitoringApiRuns(rowsToPersist);
     } catch (err) {
-      console.error(`[Monitoring] Provider ${provider} credential ${cred.id} failed:`, err);
+      console.error(
+        `[Monitoring] Provider ${provider} credential ${cred.id} failed:`,
+        err
+      );
       const message = err instanceof Error ? err.message : String(err);
       const credentialLabel =
-        cred.connectionName ?? extractCredentialLabel(cred) ?? `Credential ${cred.id.slice(-6)}`;
+        cred.connectionName ??
+        extractCredentialLabel(cred) ??
+        `Credential ${cred.id.slice(-6)}`;
       try {
         await db.upsertMonitoringApiRun({
           id: nanoid(),
@@ -329,25 +431,29 @@ export async function executeMonitoringBatch(
       selectedCredentialIds && selectedCredentialIds.length > 0
         ? new Set(
             selectedCredentialIds
-              .map((credentialId) => credentialId.trim())
-              .filter((credentialId) => credentialId.length > 0)
+              .map(credentialId => credentialId.trim())
+              .filter(credentialId => credentialId.length > 0)
           )
         : null;
     const scopedCredentials = selectedCredentialSet
-      ? allCredentials.filter((credential) => selectedCredentialSet.has(credential.id))
+      ? allCredentials.filter(credential =>
+          selectedCredentialSet.has(credential.id)
+        )
       : allCredentials;
 
-    const allProviders = Array.from(new Set(scopedCredentials.map((c) => c.provider)));
+    const allProviders = Array.from(
+      new Set(scopedCredentials.map(c => c.provider))
+    );
     const selectedSet =
       selectedProviders && selectedProviders.length > 0
         ? new Set(
             selectedProviders
-              .map((provider) => provider.trim().toLowerCase())
-              .filter((provider) => provider.length > 0)
+              .map(provider => provider.trim().toLowerCase())
+              .filter(provider => provider.length > 0)
           )
         : null;
     const providers = selectedSet
-      ? allProviders.filter((provider) => selectedSet.has(provider.toLowerCase()))
+      ? allProviders.filter(provider => selectedSet.has(provider.toLowerCase()))
       : allProviders;
 
     await db.updateMonitoringBatchRun(batchId, {
@@ -396,7 +502,9 @@ export async function executeMonitoringBatch(
 
     let providersCompleted = 0;
     for (const provider of providers) {
-      const providerCredentials = scopedCredentials.filter((credential) => credential.provider === provider);
+      const providerCredentials = scopedCredentials.filter(
+        credential => credential.provider === provider
+      );
       if (providerCredentials.length === 0) {
         providersCompleted++;
         continue;
@@ -420,9 +528,9 @@ export async function executeMonitoringBatch(
         dateKey,
         triggeredBy,
         {
-          credentialIds: providerCredentials.map((credential) => credential.id),
+          credentialIds: providerCredentials.map(credential => credential.id),
           // Incremental progress: update batch status after each site completes
-          onSiteProgress: (delta) => {
+          onSiteProgress: delta => {
             totalSuccess += delta.success;
             totalError += delta.error;
             totalNoData += delta.noData;
@@ -442,7 +550,9 @@ export async function executeMonitoringBatch(
       // this provider (not the accumulated `allCompletedRuns` across
       // previous providers, since each provider owns its own source).
       if (ownerUserId) {
-        const providerRuns = allCompletedRuns.filter((r) => r.provider === provider);
+        const providerRuns = allCompletedRuns.filter(
+          r => r.provider === provider
+        );
         if (providerRuns.length > 0) {
           try {
             const result = await pushMonitoringRunsToConvertedReads(

@@ -9,14 +9,14 @@
  * - Cache auto-clears on rejected promises so retries work
  */
 import {
-  getTeslaPowerhubGroupProductionMetrics,
+  getTeslaPowerhubProductionMetrics,
   type TeslaPowerhubApiContext,
   type TeslaPowerhubSiteProductionMetrics,
 } from "../../services/solar/teslaPowerhub";
 import { toNonEmptyString } from "../../services/solar/teslaPowerhubUtils";
 
 type TeslaPowerhubConnection = TeslaPowerhubApiContext & {
-  groupId: string;
+  groupId: string | null;
   endpointUrl?: string | null;
   signal?: string | null;
 };
@@ -40,14 +40,19 @@ function extractGroupIdFromUrl(raw: string | null): string | null {
 
 function extractUuidLike(raw: string | null): string | null {
   if (!raw) return null;
-  const match = raw.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
+  const match = raw.match(
+    /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i
+  );
   return match?.[0] ?? null;
 }
 
-function buildCacheKey(connection: TeslaPowerhubConnection, anchorDate: string): string {
+function buildCacheKey(
+  connection: TeslaPowerhubConnection,
+  anchorDate: string
+): string {
   return [
     connection.clientId,
-    connection.groupId,
+    connection.groupId ?? "auto",
     connection.tokenUrl ?? "",
     connection.apiBaseUrl ?? "",
     connection.portalBaseUrl ?? "",
@@ -62,11 +67,17 @@ function trimGroupMetricsCache() {
   const sorted = Array.from(groupMetricsCache.entries()).sort(
     (a, b) => a[1].createdAt - b[1].createdAt
   );
-  const toDrop = sorted.slice(0, Math.max(1, groupMetricsCache.size - CACHE_MAX_ENTRIES));
+  const toDrop = sorted.slice(
+    0,
+    Math.max(1, groupMetricsCache.size - CACHE_MAX_ENTRIES)
+  );
   toDrop.forEach(([key]) => groupMetricsCache.delete(key));
 }
 
-function parseConnections(credential: { accessToken?: string | null; metadata?: string | null }): TeslaPowerhubConnection[] {
+function parseConnections(credential: {
+  accessToken?: string | null;
+  metadata?: string | null;
+}): TeslaPowerhubConnection[] {
   const fallbackSecret = toNonEmptyString(credential.accessToken);
   if (!credential.metadata) return [];
   try {
@@ -75,18 +86,25 @@ function parseConnections(credential: { accessToken?: string | null; metadata?: 
 
     return rows
       .map((row: unknown) => {
-        const record = (row && typeof row === "object" ? row : {}) as Record<string, unknown>;
-        const clientId = toNonEmptyString(record.clientId) ?? toNonEmptyString(meta.clientId);
+        const record = (row && typeof row === "object" ? row : {}) as Record<
+          string,
+          unknown
+        >;
+        const clientId =
+          toNonEmptyString(record.clientId) ?? toNonEmptyString(meta.clientId);
         const clientSecret =
           toNonEmptyString(record.clientSecret) ??
           toNonEmptyString(meta.clientSecret) ??
           fallbackSecret;
         const endpointUrl =
-          toNonEmptyString(record.endpointUrl) ?? toNonEmptyString(meta.endpointUrl);
+          toNonEmptyString(record.endpointUrl) ??
+          toNonEmptyString(meta.endpointUrl);
         const portalBaseUrl =
-          toNonEmptyString(record.portalBaseUrl) ?? toNonEmptyString(meta.portalBaseUrl);
+          toNonEmptyString(record.portalBaseUrl) ??
+          toNonEmptyString(meta.portalBaseUrl);
         const connectionName =
-          toNonEmptyString(record.connectionName) ?? toNonEmptyString(meta.connectionName);
+          toNonEmptyString(record.connectionName) ??
+          toNonEmptyString(meta.connectionName);
         const sourceConnectionId =
           toNonEmptyString(record.sourceConnectionId) ??
           toNonEmptyString(meta.sourceConnectionId) ??
@@ -99,21 +117,27 @@ function parseConnections(credential: { accessToken?: string | null; metadata?: 
           extractGroupIdFromUrl(portalBaseUrl) ??
           extractUuidLike(connectionName) ??
           extractUuidLike(sourceConnectionId);
-        if (!clientId || !clientSecret || !groupId) return null;
+        if (!clientId || !clientSecret) return null;
         return {
           clientId,
           clientSecret,
           groupId,
-          tokenUrl: toNonEmptyString(record.tokenUrl) ?? toNonEmptyString(meta.tokenUrl),
-          apiBaseUrl: toNonEmptyString(record.apiBaseUrl) ?? toNonEmptyString(meta.apiBaseUrl),
+          tokenUrl:
+            toNonEmptyString(record.tokenUrl) ??
+            toNonEmptyString(meta.tokenUrl),
+          apiBaseUrl:
+            toNonEmptyString(record.apiBaseUrl) ??
+            toNonEmptyString(meta.apiBaseUrl),
           portalBaseUrl,
           endpointUrl,
-          signal: toNonEmptyString(record.signal) ?? toNonEmptyString(meta.signal),
+          signal:
+            toNonEmptyString(record.signal) ?? toNonEmptyString(meta.signal),
         } satisfies TeslaPowerhubConnection;
       })
       .filter(
-        (connection: TeslaPowerhubConnection | null): connection is TeslaPowerhubConnection =>
-          connection !== null
+        (
+          connection: TeslaPowerhubConnection | null
+        ): connection is TeslaPowerhubConnection => connection !== null
       );
   } catch {
     return [];
@@ -131,7 +155,7 @@ async function loadGroupSites(
     return cached.promise;
   }
 
-  const promise = getTeslaPowerhubGroupProductionMetrics(
+  const promise = getTeslaPowerhubProductionMetrics(
     {
       clientId: connection.clientId,
       clientSecret: connection.clientSecret,
@@ -147,8 +171,8 @@ async function loadGroupSites(
       includeDebugPreviews: false,
     }
   )
-    .then((result) => result.sites)
-    .catch((error) => {
+    .then(result => result.sites)
+    .catch(error => {
       // Clear failed cache entry so the next call retries fresh
       groupMetricsCache.delete(cacheKey);
       throw error;
@@ -160,11 +184,17 @@ async function loadGroupSites(
 }
 
 const adapter = {
-  async listSites(credential: { accessToken?: string | null; metadata?: string | null }) {
+  supportsBulkSnapshots: true,
+  snapshotTimeoutMs: 6 * 60 * 1000,
+
+  async listSites(credential: {
+    accessToken?: string | null;
+    metadata?: string | null;
+  }) {
     const connections = parseConnections(credential);
     if (connections.length === 0) {
       throw new Error(
-        "Tesla Powerhub setup is missing required values. Save clientId, clientSecret, and groupId (from /group/<id> URL) in Solar REC Settings > API Credentials."
+        "Tesla Powerhub setup is missing required values. Save clientId and clientSecret in Solar REC Settings > API Credentials."
       );
     }
 
@@ -174,7 +204,7 @@ const adapter = {
     for (const connection of connections) {
       try {
         const sites = await loadGroupSites(connection, anchorDate);
-        sites.forEach((site) => {
+        sites.forEach(site => {
           if (sitesById.has(site.siteId)) return;
           sitesById.set(site.siteId, {
             siteId: site.siteId,
@@ -204,13 +234,13 @@ const adapter = {
   ) {
     const connections = parseConnections(credential);
     if (connections.length === 0) {
-      return siteIds.map((siteId) => ({
+      return siteIds.map(siteId => ({
         siteId,
         siteName: null,
         status: "Error" as const,
         lifetimeKwh: null,
         errorMessage:
-          "Tesla Powerhub setup is missing required values. Save clientId, clientSecret, and groupId in Solar REC Settings.",
+          "Tesla Powerhub setup is missing required values. Save clientId and clientSecret in Solar REC Settings.",
       }));
     }
 
@@ -220,18 +250,21 @@ const adapter = {
     for (const connection of connections) {
       try {
         const sites = await loadGroupSites(connection, anchorDate);
-        sites.forEach((site) => {
+        sites.forEach(site => {
           if (!sitesById.has(site.siteId)) {
             sitesById.set(site.siteId, site);
           }
         });
       } catch (error) {
         preloadError = error instanceof Error ? error.message : String(error);
-        console.error("[Tesla Powerhub adapter] getSnapshots preload error:", preloadError);
+        console.error(
+          "[Tesla Powerhub adapter] getSnapshots preload error:",
+          preloadError
+        );
       }
     }
 
-    return siteIds.map((siteId) => {
+    return siteIds.map(siteId => {
       const site = sitesById.get(siteId);
       if (!site) {
         // If preload failed entirely, report the actual error instead of "Not Found"
@@ -251,7 +284,9 @@ const adapter = {
           lifetimeKwh: null,
         };
       }
-      const hasReading = typeof site.lifetimeKwh === "number" && Number.isFinite(site.lifetimeKwh);
+      const hasReading =
+        typeof site.lifetimeKwh === "number" &&
+        Number.isFinite(site.lifetimeKwh);
       return {
         siteId,
         siteName: site.siteName ?? site.siteExternalId ?? null,
