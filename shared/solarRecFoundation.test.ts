@@ -55,21 +55,21 @@ function makePayload(
   overrides: Partial<FoundationArtifactPayload> = {}
 ): FoundationArtifactPayload {
   const canonicalSystemsByCsgId = Object.fromEntries(
-    systems.map((s) => [s.csgId, s])
+    systems.map(s => [s.csgId, s])
   );
   const part2EligibleCsgIds = systems
-    .filter((s) => s.isPart2Verified && !s.isTerminated)
-    .map((s) => s.csgId)
+    .filter(s => s.isPart2Verified && !s.isTerminated)
+    .map(s => s.csgId)
     .sort();
   const reportingCsgIds = systems
-    .filter((s) => s.isReporting && !s.isTerminated)
-    .map((s) => s.csgId)
+    .filter(s => s.isReporting && !s.isTerminated)
+    .map(s => s.csgId)
     .sort();
-  const totalSystems = systems.filter((s) => !s.isTerminated).length;
-  const terminated = systems.filter((s) => s.isTerminated).length;
+  const totalSystems = systems.filter(s => !s.isTerminated).length;
+  const terminated = systems.filter(s => s.isTerminated).length;
 
   const inputVersions = Object.fromEntries(
-    DATASET_KEYS.map((k) => [k, { batchId: "batch-1", rowCount: 1 }])
+    DATASET_KEYS.map(k => [k, { batchId: "batch-1", rowCount: 1 }])
   ) as Record<DatasetKey, { batchId: string | null; rowCount: number }>;
 
   return {
@@ -88,7 +88,7 @@ function makePayload(
       part2Verified: part2EligibleCsgIds.length,
       reporting: reportingCsgIds.length,
       part2VerifiedAndReporting: systems.filter(
-        (s) => s.isPart2Verified && s.isReporting && !s.isTerminated
+        s => s.isPart2Verified && s.isReporting && !s.isTerminated
       ).length,
     },
     integrityWarnings: [],
@@ -111,9 +111,10 @@ describe("foundation constants", () => {
     // fixes in PR #323 + #324, this drops the cached JSON.parse
     // memory cost ~5x so 8 parallel tab aggregators don't OOM the
     // 4 GB Render Pro container.
-    // 2026-05-05 bumped to 5 — accepts production GATS slash dates
-    // and comma-formatted generation kWh values for reporting counts.
-    expect(FOUNDATION_DEFINITION_VERSION).toBe(5);
+    // 2026-05-05 bumped to 7 — transferHistory no longer marks
+    // ownership transfer and Zillow sale events parse from active
+    // Solar Applications headers.
+    expect(FOUNDATION_DEFINITION_VERSION).toBe(7);
   });
 
   it("definition version matches the empty artifact's version", () => {
@@ -125,7 +126,9 @@ describe("foundation constants", () => {
 
 describe("EMPTY_FOUNDATION_ARTIFACT", () => {
   it("satisfies every invariant out of the box", () => {
-    expect(() => assertFoundationInvariants(EMPTY_FOUNDATION_ARTIFACT)).not.toThrow();
+    expect(() =>
+      assertFoundationInvariants(EMPTY_FOUNDATION_ARTIFACT)
+    ).not.toThrow();
   });
 
   it("includes every DatasetKey in inputVersions", () => {
@@ -139,7 +142,9 @@ describe("EMPTY_FOUNDATION_ARTIFACT", () => {
   });
 
   it("is exactly 18 dataset entries — matches the DatasetKey union", () => {
-    expect(Object.keys(EMPTY_FOUNDATION_ARTIFACT.inputVersions)).toHaveLength(18);
+    expect(Object.keys(EMPTY_FOUNDATION_ARTIFACT.inputVersions)).toHaveLength(
+      18
+    );
     expect(DATASET_KEYS.length).toBe(18);
   });
 
@@ -177,18 +182,16 @@ describe("assertFoundationInvariants — happy paths", () => {
   });
 
   it("accepts an artifact with a 64-char lowercase hex hash", () => {
-    const payload = makePayload(
-      [makeSystem({ csgId: "CSG-1" })],
-      { foundationHash: VALID_HASH }
-    );
+    const payload = makePayload([makeSystem({ csgId: "CSG-1" })], {
+      foundationHash: VALID_HASH,
+    });
     expect(() => assertFoundationInvariants(payload)).not.toThrow();
   });
 
   it("accepts an artifact with empty hash (placeholder shape)", () => {
-    const payload = makePayload(
-      [makeSystem({ csgId: "CSG-1" })],
-      { foundationHash: "" }
-    );
+    const payload = makePayload([makeSystem({ csgId: "CSG-1" })], {
+      foundationHash: "",
+    });
     expect(() => assertFoundationInvariants(payload)).not.toThrow();
   });
 });
@@ -245,7 +248,10 @@ describe("assertFoundationInvariants — Part II count violations", () => {
       csgId: "CSG-PHANTOM",
       isPart2Verified: true,
     });
-    payload.part2EligibleCsgIds = [...payload.part2EligibleCsgIds, "CSG-PHANTOM"];
+    payload.part2EligibleCsgIds = [
+      ...payload.part2EligibleCsgIds,
+      "CSG-PHANTOM",
+    ];
     payload.summaryCounts.part2Verified = 24_275;
 
     expect(() => assertFoundationInvariants(payload)).toThrow(
@@ -375,7 +381,10 @@ describe("assertFoundationInvariants — inputVersions violations", () => {
 describe("assertFoundationInvariants — populatedDatasets violations", () => {
   it("throws when populatedDatasets contains a non-DatasetKey", () => {
     const payload = makePayload([makeSystem({ csgId: "CSG-1" })]);
-    payload.populatedDatasets = ["solarApplications", "notARealKey" as DatasetKey];
+    payload.populatedDatasets = [
+      "solarApplications",
+      "notARealKey" as DatasetKey,
+    ];
     expect(() => assertFoundationInvariants(payload)).toThrow(
       /populatedDatasets contains invalid DatasetKey "notARealKey"/
     );
@@ -384,30 +393,27 @@ describe("assertFoundationInvariants — populatedDatasets violations", () => {
 
 describe("assertFoundationInvariants — foundationHash format", () => {
   it("throws when foundationHash is non-empty but malformed", () => {
-    const payload = makePayload(
-      [makeSystem({ csgId: "CSG-1" })],
-      { foundationHash: "not-a-real-hash" }
-    );
+    const payload = makePayload([makeSystem({ csgId: "CSG-1" })], {
+      foundationHash: "not-a-real-hash",
+    });
     expect(() => assertFoundationInvariants(payload)).toThrow(
       /foundationHash format invalid: "not-a-real-hash"/
     );
   });
 
   it("throws when foundationHash is uppercase hex", () => {
-    const payload = makePayload(
-      [makeSystem({ csgId: "CSG-1" })],
-      { foundationHash: VALID_HASH.toUpperCase() }
-    );
+    const payload = makePayload([makeSystem({ csgId: "CSG-1" })], {
+      foundationHash: VALID_HASH.toUpperCase(),
+    });
     expect(() => assertFoundationInvariants(payload)).toThrow(
       /foundationHash format invalid/
     );
   });
 
   it("accepts the empty hash (placeholder)", () => {
-    const payload = makePayload(
-      [makeSystem({ csgId: "CSG-1" })],
-      { foundationHash: "" }
-    );
+    const payload = makePayload([makeSystem({ csgId: "CSG-1" })], {
+      foundationHash: "",
+    });
     expect(() => assertFoundationInvariants(payload)).not.toThrow();
   });
 });

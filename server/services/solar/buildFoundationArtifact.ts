@@ -32,10 +32,11 @@
  *     half-open, America/Chicago. Zero-production rows do not count.
  *     Transfer history never affects reporting.
  *   - **Ownership status** lifecycle bucket (4 states). Priority:
- *     `terminated` (contract type) > `transferred` (contract type
- *     OR transferHistory unitId match) > `change-of-ownership`
- *     (Zillow sold > contracted) > `active`. Tabs combine this with
- *     `isReporting` for the legacy 6-state UI enum.
+ *     `terminated` (contract type) > `transferred` (contract type)
+ *     > `change-of-ownership` (Zillow sold > contracted) > `active`.
+ *     `srDsTransferHistory` is REC certificate transfer/delivery
+ *     history and must not be treated as system ownership transfer.
+ *     Tabs combine this with `isReporting` for the legacy 6-state UI enum.
  *
  * Still deferred (separate follow-up):
  *   - **GATS ID resolution** + the `CSG_ID_HAS_MULTIPLE_GATS_IDS`
@@ -55,7 +56,6 @@ import {
   srDsContractedDate,
   srDsGenerationEntry,
   srDsSolarApplications,
-  srDsTransferHistory,
 } from "../../../drizzle/schemas/solar";
 import {
   DATASET_KEYS,
@@ -112,9 +112,9 @@ export type FoundationSolarApplicationInput = {
   statusText: string | null;
   /**
    * Tracking-system ref ID — the linkage column that joins solar
-   * applications to generation/transfer rows. Same value appears
+   * applications to generation rows. Same value appears
    * as `gatsGenId` on `srDsAccountSolarGeneration` and `unitId` on
-   * `srDsGenerationEntry` + `srDsTransferHistory`.
+   * `srDsGenerationEntry`.
    */
   trackingSystemRefId: string | null;
   /** Zillow sold date (`Zillow_Sold_Date`) from the row's `rawRow` JSON. */
@@ -164,11 +164,10 @@ export type FoundationGenerationEntryInput = {
 };
 
 /**
- * @deprecated The DB-bound builder no longer materializes transfer-
- * history rows; it streams them and passes `transferUnitIds: Set` on
- * `FoundationBuilderInputs` directly. Kept exported for compatibility
- * with any callers that constructed full rows previously; can be
- * removed in a follow-up.
+ * @deprecated Transfer-history rows are REC certificate transfer /
+ * delivery history, not system ownership transfer. The foundation no
+ * longer consumes this input for ownership state; kept exported for
+ * compatibility with any callers that constructed full rows previously.
  */
 export type FoundationTransferHistoryInput = {
   unitId: string | null;
@@ -182,18 +181,20 @@ export type FoundationContractedDateInput = {
 
 export type FoundationBuilderInputs = {
   scopeId: string;
-  inputVersions: Record<DatasetKey, { batchId: string | null; rowCount: number }>;
+  inputVersions: Record<
+    DatasetKey,
+    { batchId: string | null; rowCount: number }
+  >;
   solarApplications: FoundationSolarApplicationInput[];
   abpReport: FoundationAbpReportInput[];
   abpCsgSystemMapping: FoundationAbpCsgMappingInput[];
   accountSolarGeneration: FoundationAccountSolarGenerationInput[];
   generationEntry: FoundationGenerationEntryInput[];
   /**
-   * Set of `unitId` values seen on `srDsTransferHistory` rows. The
-   * builder only needs presence ("has this unitId ever transferred?"),
-   * not the row-level detail; the DB-bound builder stream-folds the
-   * 600k+ row table directly into this Set so the row array is never
-   * materialized in memory (~95 MB savings on prod-size scopes).
+   * Retained for compatibility with older tests/callers. Ignored by
+   * the current ownership definition because `srDsTransferHistory`
+   * records REC certificate transfer/delivery history, not system
+   * ownership transfer.
    */
   transferUnitIds: ReadonlySet<string>;
   contractedDate: FoundationContractedDateInput[];
@@ -222,15 +223,11 @@ function normalizeContractType(value: string | null | undefined): string {
 const IL_ABP_TERMINATED_CONTRACT_TYPE = "il abp - terminated";
 const IL_ABP_TRANSFERRED_CONTRACT_TYPE = "il abp - transferred";
 
-function isTerminatedContractType(
-  value: string | null | undefined
-): boolean {
+function isTerminatedContractType(value: string | null | undefined): boolean {
   return normalizeContractType(value) === IL_ABP_TERMINATED_CONTRACT_TYPE;
 }
 
-function isTransferredContractType(
-  value: string | null | undefined
-): boolean {
+function isTransferredContractType(value: string | null | undefined): boolean {
   return normalizeContractType(value) === IL_ABP_TRANSFERRED_CONTRACT_TYPE;
 }
 
@@ -336,11 +333,14 @@ function extractGenerationEntryKwh(rawRowJson: string | null): number | null {
 
 /**
  * Extract Zillow status + sold date from a Solar Applications rawRow
- * JSON. Field aliases per the v3 plan:
- *   - status: `Zillow_Status` (flat) or `zillowData.status` (nested)
- *   - sold date: `Zillow_Sold_Date`
+ * JSON blob. Handles the flat legacy names plus the CSG portal's
+ * flattened nested names:
+ *   - status: `Zillow_Status`, `zillowData.status`, or
+ *     `zillowData.last_price_action_event`
+ *   - sold date: `Zillow_Sold_Date`, `zillowData.last_price_action_date`,
+ *     or `zillow_last_price_action_date`
  */
-function extractZillowFromRawRow(rawRowJson: string | null): {
+export function extractZillowFromRawRow(rawRowJson: string | null): {
   zillowStatus: string | null;
   zillowSoldDate: string | null;
 } {
@@ -351,24 +351,54 @@ function extractZillowFromRawRow(rawRowJson: string | null): {
   } catch {
     return { zillowStatus: null, zillowSoldDate: null };
   }
-  let status =
-    typeof raw["Zillow_Status"] === "string"
-      ? (raw["Zillow_Status"] as string).trim()
-      : "";
+  const pickString = (...keys: string[]): string => {
+    for (const key of keys) {
+      const value = raw[key];
+      if (typeof value === "string" && value.trim()) return value.trim();
+    }
+    return "";
+  };
+
+  let status = pickString(
+    "Zillow_Status",
+    "zillowData.status",
+    "zillowData.last_price_action_event"
+  );
   if (!status) {
     const nested = raw["zillowData"];
     if (nested && typeof nested === "object" && !Array.isArray(nested)) {
-      const nestedStatus = (nested as Record<string, unknown>)["status"];
-      if (typeof nestedStatus === "string") status = nestedStatus.trim();
+      const nestedRecord = nested as Record<string, unknown>;
+      for (const key of ["status", "last_price_action_event"]) {
+        const value = nestedRecord[key];
+        if (typeof value === "string" && value.trim()) {
+          status = value.trim();
+          break;
+        }
+      }
     }
   }
-  const soldDate =
-    typeof raw["Zillow_Sold_Date"] === "string"
-      ? (raw["Zillow_Sold_Date"] as string).trim()
-      : "";
+
+  let soldDate = pickFirstValidIsoDate([
+    pickString(
+      "Zillow_Sold_Date",
+      "zillowData.last_price_action_date",
+      "zillow_last_price_action_date"
+    ),
+  ]);
+  if (!soldDate) {
+    const nested = raw["zillowData"];
+    if (nested && typeof nested === "object" && !Array.isArray(nested)) {
+      const value = (nested as Record<string, unknown>)[
+        "last_price_action_date"
+      ];
+      soldDate =
+        typeof value === "string" ? parseFoundationDateIso(value) : null;
+    }
+  }
+
   return {
     zillowStatus: status || null,
-    zillowSoldDate: soldDate || null,
+    zillowSoldDate: soldDate,
   };
 }
 
@@ -416,7 +446,10 @@ export function computeFoundationHash(
   // Sort keys for deterministic hashing across builds.
   const sortedKeys = [...DATASET_KEYS].sort();
   const canonical = sortedKeys
-    .map((k) => `${k}:${inputVersions[k]?.batchId ?? "null"}:${inputVersions[k]?.rowCount ?? 0}`)
+    .map(
+      k =>
+        `${k}:${inputVersions[k]?.batchId ?? "null"}:${inputVersions[k]?.rowCount ?? 0}`
+    )
     .join("|");
   const hashInput = `${canonical}|def${FOUNDATION_DEFINITION_VERSION}`;
   return createHash("sha256").update(hashInput).digest("hex");
@@ -695,7 +728,7 @@ export function buildFoundationFromInputs(
   const contractedDateByCsgId = new Map<string, string>();
   for (const row of inputs.contractedDate) {
     const csgId = (row.csgId ?? "").trim();
-    const date = (row.contractedDate ?? "").trim();
+    const date = parseFoundationDateIso(row.contractedDate);
     if (!csgId || !date) continue;
     if (!contractedDateByCsgId.has(csgId)) {
       contractedDateByCsgId.set(csgId, date);
@@ -811,25 +844,12 @@ export function buildFoundationFromInputs(
   const anchorMonthIso = scopeLatestPositiveGenDate
     ? firstDayOfMonthIso(scopeLatestPositiveGenDate)
     : null;
-  const windowStartIso = anchorMonthIso ? shiftIsoMonth(anchorMonthIso, -2) : null;
+  const windowStartIso = anchorMonthIso
+    ? shiftIsoMonth(anchorMonthIso, -2)
+    : null;
   const windowEndIso = anchorMonthIso ? shiftIsoMonth(anchorMonthIso, 1) : null;
 
-  // -------- Step 8: transferUnitIds → transferSeenByCsgId flag --------
-  // Inputs are a Set<unitId>; DB-bound builder stream-folds the
-  // (very large) transferHistory row table to avoid holding hundreds
-  // of MB of typed row objects in memory. `.forEach` instead of
-  // `for...of` avoids requiring `downlevelIteration` on the project
-  // tsconfig.
-  const transferSeenByCsgId = new Set<string>();
-  inputs.transferUnitIds.forEach((unitId) => {
-    const trackingRef = unitId.trim();
-    if (!trackingRef) return;
-    const csgId = csgIdByTrackingRef.get(trackingRef);
-    if (!csgId) return;
-    transferSeenByCsgId.add(csgId);
-  });
-
-  // -------- Step 9: project per-system reporting + ownership state --------
+  // -------- Step 8: project per-system reporting + ownership state --------
   // Reads come from sibling maps (contractTypeByCsgId, contractedDate,
   // genByCsgId, etc.) rather than per-system fields. The dropped per-
   // system date/contract fields are derived locally only.
@@ -851,7 +871,6 @@ export function buildFoundationFromInputs(
     }
 
     const contractType = contractTypeByCsgId.get(csgId) ?? null;
-    const transferSeen = transferSeenByCsgId.has(csgId);
     const isContractTransferred = isTransferredContractType(contractType);
     const zillowStatus = zillowStatusByCsgId.get(csgId);
     const zillowSoldDate = zillowSoldDateByCsgId.get(csgId);
@@ -866,7 +885,7 @@ export function buildFoundationFromInputs(
 
     if (system.isTerminated) {
       system.ownershipStatus = "terminated";
-    } else if (isContractTransferred || transferSeen) {
+    } else if (isContractTransferred) {
       system.ownershipStatus = "transferred";
     } else if (hasZillowConfirmedOwnershipChange) {
       system.ownershipStatus = "change-of-ownership";
@@ -875,20 +894,20 @@ export function buildFoundationFromInputs(
     }
   }
 
-  // -------- Step 10: lists + summaryCounts --------
+  // -------- Step 9: lists + summaryCounts --------
   const part2EligibleCsgIds = Array.from(part2VerifiedCsgIds).sort();
   const reportingCsgIds = Object.values(systemsByCsgId)
-    .filter((s) => s.isReporting && !s.isTerminated)
-    .map((s) => s.csgId)
+    .filter(s => s.isReporting && !s.isTerminated)
+    .map(s => s.csgId)
     .sort();
   const reportingCsgSet = new Set(reportingCsgIds);
-  const part2VerifiedAndReporting = part2EligibleCsgIds.filter((id) =>
+  const part2VerifiedAndReporting = part2EligibleCsgIds.filter(id =>
     reportingCsgSet.has(id)
   ).length;
 
   const allSystems = Object.values(systemsByCsgId);
-  const totalSystems = allSystems.filter((s) => !s.isTerminated).length;
-  const terminated = allSystems.filter((s) => s.isTerminated).length;
+  const totalSystems = allSystems.filter(s => !s.isTerminated).length;
+  const terminated = allSystems.filter(s => s.isTerminated).length;
 
   // Phase 2.6 (2026-05-01) closes the locked v3 def for "populated
   // dataset": active batch in `solarRecActiveDatasetVersions` with
@@ -897,7 +916,7 @@ export function buildFoundationFromInputs(
   // rowCounts via `solarRecImportBatches`, so the count is
   // authoritative.
   const populatedDatasets: DatasetKey[] = DATASET_KEYS.filter(
-    (k) => (inputs.inputVersions[k]?.rowCount ?? 0) > 0
+    k => (inputs.inputVersions[k]?.rowCount ?? 0) > 0
   );
 
   const foundationHash = computeFoundationHash(inputs.inputVersions);
@@ -983,8 +1002,8 @@ function statusTextFromRawRow(rawRowJson: string | null): string | null {
     raw["Batch_Status"],
   ];
   const cleaned = fields
-    .map((v) => (typeof v === "string" ? v.trim() : ""))
-    .filter((v) => v.length > 0);
+    .map(v => (typeof v === "string" ? v.trim() : ""))
+    .filter(v => v.length > 0);
   return cleaned.length > 0 ? cleaned.join(" | ") : null;
 }
 
@@ -1005,10 +1024,9 @@ function statusTextFromRawRow(rawRowJson: string | null): string | null {
  * dropped before fetching the next one. Peak memory stays at one
  * page (~5 k rows) instead of growing to the full row count.
  *
- * Used for the very large generation/transfer tables on prod-size
- * scopes (633 k transferHistory rows × ~150 bytes/row materialized
- * to ~95 MB; folding into a Set<unitId> of ~25 k entries drops
- * peak by ~90 MB).
+ * Used for the very large generation tables on prod-size scopes so
+ * the builder keeps only a compact per-unit generation accumulator
+ * instead of materializing every raw row.
  */
 export async function streamRowsByPage<TRow extends { id: string }>(
   scopeId: string,
@@ -1106,9 +1124,7 @@ async function loadAllRowsByPage<TRow extends { id: string }>(
  */
 export async function loadInputVersions(
   scopeId: string
-): Promise<
-  Record<DatasetKey, { batchId: string | null; rowCount: number }>
-> {
+): Promise<Record<DatasetKey, { batchId: string | null; rowCount: number }>> {
   const activeRows = await getActiveDatasetVersions(scopeId);
   const batchByKey = new Map<string, string>();
   const batchIds: string[] = [];
@@ -1141,11 +1157,9 @@ export async function loadInputVersions(
   }
 
   const result = Object.fromEntries(
-    DATASET_KEYS.map((k) => {
+    DATASET_KEYS.map(k => {
       const batchId = batchByKey.get(k) ?? null;
-      const rowCount = batchId
-        ? rowCountByBatchId.get(batchId) ?? 0
-        : 0;
+      const rowCount = batchId ? (rowCountByBatchId.get(batchId) ?? 0) : 0;
       return [k, { batchId, rowCount }];
     })
   ) as Record<DatasetKey, { batchId: string | null; rowCount: number }>;
@@ -1178,7 +1192,6 @@ export async function buildFoundationArtifact(
   const mappingBatch = inputVersions.abpCsgSystemMapping.batchId;
   const accountSolarGenBatch = inputVersions.accountSolarGeneration.batchId;
   const generationEntryBatch = inputVersions.generationEntry.batchId;
-  const transferHistoryBatch = inputVersions.transferHistory.batchId;
   const contractedDateBatch = inputVersions.contractedDate.batchId;
 
   // Skip the heavy reads when the upstream datasets aren't
@@ -1193,7 +1206,7 @@ export async function buildFoundationArtifact(
       builtAt: new Date().toISOString(),
       inputVersions,
       populatedDatasets: DATASET_KEYS.filter(
-        (k) => (inputVersions[k]?.rowCount ?? 0) > 0
+        k => (inputVersions[k]?.rowCount ?? 0) > 0
       ),
     };
     assertFoundationInvariants(payload);
@@ -1242,11 +1255,6 @@ export async function buildFoundationArtifact(
     effectiveDate: string | null;
     rawRow: string | null;
   };
-  type TransferHistoryRow = {
-    id: string;
-    unitId: string | null;
-    transferCompletionDate: string | null;
-  };
   type ContractedDateRow = {
     id: string;
     systemId: string | null;
@@ -1283,7 +1291,7 @@ export async function buildFoundationArtifact(
         contractType: srDsSolarApplications.contractType,
         rawRow: srDsSolarApplications.rawRow,
       },
-      (row) => {
+      row => {
         const zillow = extractZillowFromRawRow(row.rawRow);
         solarApplicationsInputs.push({
           csgId: row.systemId,
@@ -1310,11 +1318,16 @@ export async function buildFoundationArtifact(
       })
     : [];
   const mappingRows: MappingRow[] = mappingBatch
-    ? await loadAllRowsByPage<MappingRow>(scopeId, mappingBatch, srDsAbpCsgSystemMapping, {
-        id: srDsAbpCsgSystemMapping.id,
-        csgId: srDsAbpCsgSystemMapping.csgId,
-        systemId: srDsAbpCsgSystemMapping.systemId,
-      })
+    ? await loadAllRowsByPage<MappingRow>(
+        scopeId,
+        mappingBatch,
+        srDsAbpCsgSystemMapping,
+        {
+          id: srDsAbpCsgSystemMapping.id,
+          csgId: srDsAbpCsgSystemMapping.csgId,
+          systemId: srDsAbpCsgSystemMapping.systemId,
+        }
+      )
     : [];
   // Stream-fold accountSolarGeneration + generationEntry into per-key
   // accumulator Maps. The pure builder reduces by `csgId` keyed via
@@ -1362,20 +1375,12 @@ export async function buildFoundationArtifact(
   function synthesizeGenRowsForState<TOut>(
     state: GenStateForKey,
     keyValue: string,
-    makeRow: (
-      key: string,
-      date: string,
-      kWh: number | null
-    ) => TOut
+    makeRow: (key: string, date: string, kWh: number | null) => TOut
   ): TOut[] {
     const out: TOut[] = [];
     if (state.latestMeterReadDate) {
       out.push(
-        makeRow(
-          keyValue,
-          state.latestMeterReadDate,
-          state.latestMeterReadKwh
-        )
+        makeRow(keyValue, state.latestMeterReadDate, state.latestMeterReadKwh)
       );
     }
     // Emit a second row only when the latest positive-gen date isn't
@@ -1386,8 +1391,10 @@ export async function buildFoundationArtifact(
     if (
       state.latestPositiveGenDate &&
       (state.latestPositiveGenDate !== state.latestMeterReadDate ||
-        !(typeof state.latestMeterReadKwh === "number" &&
-          state.latestMeterReadKwh > 0))
+        !(
+          typeof state.latestMeterReadKwh === "number" &&
+          state.latestMeterReadKwh > 0
+        ))
     ) {
       out.push(makeRow(keyValue, state.latestPositiveGenDate, 1));
     }
@@ -1407,7 +1414,7 @@ export async function buildFoundationArtifact(
         lastMeterReadDate: srDsAccountSolarGeneration.lastMeterReadDate,
         lastMeterReadKwh: srDsAccountSolarGeneration.lastMeterReadKwh,
       },
-      (row) => {
+      row => {
         const key = (row.gatsGenId ?? "").trim();
         if (!key) return;
         const date = pickFirstValidIsoDate([
@@ -1434,7 +1441,7 @@ export async function buildFoundationArtifact(
         effectiveDate: srDsGenerationEntry.effectiveDate,
         rawRow: srDsGenerationEntry.rawRow,
       },
-      (row) => {
+      row => {
         const key = (row.unitId ?? "").trim();
         if (!key) return;
         const date = pickFirstValidIsoDate([
@@ -1444,30 +1451,6 @@ export async function buildFoundationArtifact(
         if (!date) return;
         const kWh = extractGenerationEntryKwh(row.rawRow);
         foldGenState(generationEntryStateByUnitId, key, date, kWh);
-      }
-    );
-  }
-
-  // Stream-fold the transferHistory table directly into a Set<unitId>.
-  // This is the largest table in production (633 k rows on the
-  // observed scope). Materializing it as a typed array previously
-  // cost ~95 MB peak heap; now we hold one 5 k-row page at a time
-  // and immediately drop each page after extracting its non-null
-  // unitIds.
-  const transferUnitIds = new Set<string>();
-  if (transferHistoryBatch) {
-    await streamRowsByPage<TransferHistoryRow>(
-      scopeId,
-      transferHistoryBatch,
-      srDsTransferHistory,
-      {
-        id: srDsTransferHistory.id,
-        unitId: srDsTransferHistory.unitId,
-        transferCompletionDate: srDsTransferHistory.transferCompletionDate,
-      },
-      (row) => {
-        const unitId = (row.unitId ?? "").trim();
-        if (unitId) transferUnitIds.add(unitId);
       }
     );
   }
@@ -1489,24 +1472,28 @@ export async function buildFoundationArtifact(
     scopeId,
     inputVersions,
     solarApplications: solarApplicationsInputs,
-    abpReport: abpRows.map((row) => ({
+    abpReport: abpRows.map(row => ({
       applicationId: row.applicationId,
       part2AppVerificationDate: row.part2AppVerificationDate,
       projectName: row.projectName,
     })),
-    abpCsgSystemMapping: mappingRows.map((row) => ({
+    abpCsgSystemMapping: mappingRows.map(row => ({
       csgId: row.csgId,
       abpId: row.systemId,
     })),
     accountSolarGeneration: (() => {
       const out: FoundationAccountSolarGenerationInput[] = [];
       accountSolarGenStateByGatsGenId.forEach((state, gatsGenId) => {
-        for (const r of synthesizeGenRowsForState(state, gatsGenId, (k, d, kWh) => ({
-          gatsGenId: k,
-          monthOfGeneration: null,
-          lastMeterReadDate: d,
-          lastMeterReadKwh: kWh,
-        }))) {
+        for (const r of synthesizeGenRowsForState(
+          state,
+          gatsGenId,
+          (k, d, kWh) => ({
+            gatsGenId: k,
+            monthOfGeneration: null,
+            lastMeterReadDate: d,
+            lastMeterReadKwh: kWh,
+          })
+        )) {
           out.push(r);
         }
       });
@@ -1515,19 +1502,23 @@ export async function buildFoundationArtifact(
     generationEntry: (() => {
       const out: FoundationGenerationEntryInput[] = [];
       generationEntryStateByUnitId.forEach((state, unitId) => {
-        for (const r of synthesizeGenRowsForState(state, unitId, (k, d, kWh) => ({
-          unitId: k,
-          lastMonthOfGen: d,
-          effectiveDate: null,
-          generationKwh: kWh,
-        }))) {
+        for (const r of synthesizeGenRowsForState(
+          state,
+          unitId,
+          (k, d, kWh) => ({
+            unitId: k,
+            lastMonthOfGen: d,
+            effectiveDate: null,
+            generationKwh: kWh,
+          })
+        )) {
           out.push(r);
         }
       });
       return out;
     })(),
-    transferUnitIds,
-    contractedDate: contractedDateRows.map((row) => ({
+    transferUnitIds: new Set<string>(),
+    contractedDate: contractedDateRows.map(row => ({
       csgId: row.systemId,
       contractedDate: row.contractedDate,
     })),

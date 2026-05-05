@@ -36,6 +36,10 @@
  *     Verified ABP IDs without a mapped CSG ID surface as
  *     `UNMATCHED_PART2_ABP_ID` integrity warnings and do NOT count
  *     as systems.
+ *   - **Ownership status** = terminated contract type > transferred
+ *     contract type > Zillow sold after contracted date > active.
+ *     `srDsTransferHistory` is REC certificate transfer/delivery
+ *     history and never marks a system as ownership-transferred.
  *   - **Populated dataset** = active batch in
  *     `solarRecActiveDatasetVersions` with `COUNT(*) > 0` in the
  *     matching `srDs*` table.
@@ -85,8 +89,21 @@ export const FOUNDATION_ARTIFACT_TYPE = "foundation-v1" as const;
  * like `03/01/2026` and comma-formatted kWh like `85,478`. Cached v4
  * artifacts can have `reportingAnchorDateIso=null` and all reporting
  * counts at 0 despite populated generation data.
+ *
+ * v6 (2026-05-05) — ownership transfer classification no longer
+ * treats `srDsTransferHistory.unitId` matches as system ownership
+ * transfers. That table records REC certificate transfer/delivery
+ * history and can match most reporting systems; cached v5 artifacts
+ * can therefore flip transferred/not-transferred ownership counts.
+ *
+ * v7 (2026-05-05) — Zillow change-of-ownership parsing now accepts
+ * the active Solar Applications raw headers
+ * `zillowData.last_price_action_event` and
+ * `zillowData.last_price_action_date`, with date normalization before
+ * sold-vs-contracted comparisons. Cached v6 artifacts can show zero
+ * change-of-ownership systems despite populated Zillow sale events.
  */
-export const FOUNDATION_DEFINITION_VERSION = 5;
+export const FOUNDATION_DEFINITION_VERSION = 7;
 
 /**
  * `_runnerVersion` shipped on every response that surfaces
@@ -117,12 +134,11 @@ export type FoundationWarningCode =
   /**
    * Two or more CSG IDs claim the same `tracking_system_ref_id` in
    * `srDsSolarApplications`. The builder keeps the first claim
-   * (sorted by row order in the typed-column scan) so generation +
-   * transferHistory rows for that trackingRef link to one
-   * deterministic CSG; the losing CSGs are flagged here so they
-   * can be reconciled upstream. Without the warning a losing CSG
-   * would silently appear "not reporting" because its generation
-   * data was attributed to the winner.
+   * (sorted by row order in the typed-column scan) so generation rows
+   * for that trackingRef link to one deterministic CSG; the losing
+   * CSGs are flagged here so they can be reconciled upstream. Without
+   * the warning a losing CSG would silently appear "not reporting"
+   * because its generation data was attributed to the winner.
    */
   | "TRACKING_REF_COLLISION"
   /**
@@ -185,7 +201,7 @@ export type FoundationCanonicalSystem = {
   isPart2Verified: boolean;
   /** Locked def (v2): positive generation in [anchor − 2mo, anchor + 1mo) America/Chicago. */
   isReporting: boolean;
-  /** Lifecycle bucket (v2). Tabs combine with `isReporting` for the legacy 6-state combined enum (`Terminated and Reporting`, etc.). Null only when contractType is unknown AND no transferHistory match AND no Zillow signal. */
+  /** Lifecycle bucket. Tabs combine with `isReporting` for the legacy 6-state combined enum (`Terminated and Reporting`, etc.). */
   ownershipStatus:
     | "active"
     | "transferred"
@@ -274,7 +290,7 @@ export const EMPTY_FOUNDATION_ARTIFACT: FoundationArtifactPayload =
     builtAt: new Date(0).toISOString(),
     reportingAnchorDateIso: null,
     inputVersions: Object.fromEntries(
-      DATASET_KEYS.map((k) => [k, { batchId: null, rowCount: 0 }])
+      DATASET_KEYS.map(k => [k, { batchId: null, rowCount: 0 }])
     ) as Record<DatasetKey, { batchId: string | null; rowCount: number }>,
     canonicalSystemsByCsgId: {},
     part2EligibleCsgIds: [],
@@ -347,7 +363,9 @@ export function assertFoundationInvariants(
   }
 
   // 3. part2 count matches its CSG list.
-  if (payload.summaryCounts.part2Verified !== payload.part2EligibleCsgIds.length) {
+  if (
+    payload.summaryCounts.part2Verified !== payload.part2EligibleCsgIds.length
+  ) {
     throw new Error(
       `[foundation] summaryCounts.part2Verified (${payload.summaryCounts.part2Verified}) !== part2EligibleCsgIds.length (${payload.part2EligibleCsgIds.length})`
     );
@@ -361,8 +379,8 @@ export function assertFoundationInvariants(
   }
 
   // 5 + 6. totalSystems and terminated bucket the canonical map.
-  const expectedTotal = systemsInMap.filter((s) => !s.isTerminated).length;
-  const expectedTerminated = systemsInMap.filter((s) => s.isTerminated).length;
+  const expectedTotal = systemsInMap.filter(s => !s.isTerminated).length;
+  const expectedTerminated = systemsInMap.filter(s => s.isTerminated).length;
   if (payload.summaryCounts.totalSystems !== expectedTotal) {
     throw new Error(
       `[foundation] summaryCounts.totalSystems (${payload.summaryCounts.totalSystems}) !== non-terminated count in map (${expectedTotal})`
@@ -387,9 +405,7 @@ export function assertFoundationInvariants(
   // 8. inputVersions has every DatasetKey.
   for (const key of DATASET_KEYS) {
     if (!(key in payload.inputVersions)) {
-      throw new Error(
-        `[foundation] inputVersions missing DatasetKey "${key}"`
-      );
+      throw new Error(`[foundation] inputVersions missing DatasetKey "${key}"`);
     }
   }
 
@@ -427,7 +443,9 @@ export function assertFoundationInvariants(
   }
 
   // 11. mapped <= total. Backstop after structural checks.
-  if (payload.summaryCounts.part2Verified > payload.summaryCounts.totalSystems) {
+  if (
+    payload.summaryCounts.part2Verified > payload.summaryCounts.totalSystems
+  ) {
     throw new Error(
       `[foundation] part2Verified (${payload.summaryCounts.part2Verified}) > totalSystems (${payload.summaryCounts.totalSystems}) — mapping must dedupe by ABP ID before counting`
     );
