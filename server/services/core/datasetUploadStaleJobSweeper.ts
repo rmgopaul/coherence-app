@@ -4,7 +4,7 @@
  * Background — when a dataset-upload job runner crashes mid-flight
  * (server OOM, container restart, deploy cutover), its
  * `datasetUploadJobs` row stays in a non-terminal status (`queued`,
- * `uploading`, `parsing`, or `writing`) forever. The dashboard's
+ * `uploading`, `parsing`, `preparing`, or `writing`) forever. The dashboard's
  * cloud-sync indicator polls `listDatasetUploadJobs`, sees the
  * stuck row, and reports "Syncing N datasets…" indefinitely.
  *
@@ -17,7 +17,7 @@
  * runtime-crash case (a runner crash without a deploy / restart).
  *
  * Configuration via env vars (all optional):
- *   DATASET_UPLOAD_STALE_AFTER_MS    Threshold for "stuck" jobs.
+ *   DATASET_UPLOAD_STALE_AFTER_MS    Threshold for "stuck since last update" jobs.
  *                                    Default: 10 minutes.
  *   DATASET_UPLOAD_SWEEP_INTERVAL_MS How often to sweep after boot.
  *                                    Default: 5 minutes.

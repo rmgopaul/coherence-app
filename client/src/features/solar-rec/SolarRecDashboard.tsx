@@ -4851,7 +4851,7 @@ export default function SolarRecDashboard() {
   //   - v1 `datasetSyncProgress` (per-dataset chunked-CSV uploads
   //     and the post-write database-sync stage)
   //   - v2 in-flight upload jobs (queued / uploading / parsing /
-  //     writing) from `listDatasetUploadJobs`
+  //     preparing / writing) from `listDatasetUploadJobs`
   // into a single shape that drives the CLOUD SYNC tile's progress
   // bar. When `null`, the tile shows the static "Cloud sync
   // healthy" state. When non-null, the tile shows a percent + dataset
@@ -4884,6 +4884,8 @@ export default function SolarRecDashboard() {
           return sum + 25;
         case "parsing":
           return sum + 55;
+        case "preparing":
+          return sum + 65;
         case "writing": {
           if (typeof j.totalRows === "number" && j.totalRows > 0) {
             const rowsWritten = j.rowsWritten ?? 0;

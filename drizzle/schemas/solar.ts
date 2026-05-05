@@ -1572,7 +1572,8 @@ export type InsertIdWorkset = typeof idWorksets.$inferInsert;
 // Status state machine:
 //   queued    — row created, no chunks uploaded yet
 //   uploading — chunks streaming in
-//   parsing   — runner is stream-parsing the reassembled CSV
+//   parsing   — runner is preparing to stream-parse the reassembled CSV
+//   preparing — append-mode runner is copying prior rows / loading dedupe keys
 //   writing   — runner is batching rows into srDs* (overlap with parsing)
 //   done      — completedAt stamped, batchId became the active version
 //   failed    — errorMessage set; row preserved for diagnostic

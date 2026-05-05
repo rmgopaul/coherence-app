@@ -156,6 +156,38 @@ export async function updateDatasetUploadJob(
 }
 
 /**
+ * Heartbeat an in-flight job without changing user-visible counters.
+ * Long append uploads can spend several minutes copying prior rows
+ * or loading dedupe keys before CSV row counters move; this keeps
+ * `updatedAt` fresh so the stale-job sweeper only fails genuinely
+ * quiet jobs.
+ */
+export async function touchDatasetUploadJob(
+  scopeId: string,
+  id: string
+): Promise<boolean> {
+  const db = await getDb();
+  if (!db) return false;
+  const result = await withDbRetry("touch dataset upload job", async () =>
+    db
+      .update(datasetUploadJobs)
+      .set({ updatedAt: new Date() })
+      .where(
+        and(
+          eq(datasetUploadJobs.scopeId, scopeId),
+          eq(datasetUploadJobs.id, id)
+        )
+      )
+  );
+  const affected =
+    (result as unknown as { affectedRows?: number; rowCount?: number })
+      .affectedRows ??
+    (result as unknown as { rowCount?: number }).rowCount ??
+    0;
+  return affected > 0;
+}
+
+/**
  * Atomic counter increment via SQL `field = field + delta`. Avoids
  * the read-modify-write race when the parser writes per-batch and
  * a concurrent status-update is also touching the row.
@@ -286,8 +318,8 @@ export async function deleteDatasetUploadJob(
 
 /**
  * Sweep stale upload jobs — auto-fail rows in non-terminal status
- * (`queued`, `uploading`, `parsing`, `writing`) whose `createdAt`
- * is older than `staleAfterMs`. Used to clean up jobs whose
+ * (`queued`, `uploading`, `parsing`, `preparing`, `writing`) whose
+ * `updatedAt` is older than `staleAfterMs`. Used to clean up jobs whose
  * runner crashed mid-flight (e.g. the OOM that crashed the Render
  * instance before PRs #302 + #303 landed). Without the sweep,
  * those job rows live forever and the dashboard's cloud-sync
@@ -324,9 +356,10 @@ export async function sweepStaleDatasetUploadJobs(
               "queued",
               "uploading",
               "parsing",
+              "preparing",
               "writing",
             ]),
-            lt(datasetUploadJobs.createdAt, cutoff)
+            lt(datasetUploadJobs.updatedAt, cutoff)
           )
         )
   );
