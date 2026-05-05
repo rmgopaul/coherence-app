@@ -111,7 +111,9 @@ describe("foundation constants", () => {
     // fixes in PR #323 + #324, this drops the cached JSON.parse
     // memory cost ~5x so 8 parallel tab aggregators don't OOM the
     // 4 GB Render Pro container.
-    expect(FOUNDATION_DEFINITION_VERSION).toBe(4);
+    // 2026-05-05 bumped to 5 — accepts production GATS slash dates
+    // and comma-formatted generation kWh values for reporting counts.
+    expect(FOUNDATION_DEFINITION_VERSION).toBe(5);
   });
 
   it("definition version matches the empty artifact's version", () => {

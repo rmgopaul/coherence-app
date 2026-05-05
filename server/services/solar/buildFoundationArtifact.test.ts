@@ -21,6 +21,8 @@ import {
 } from "./aggregatorHelpers";
 import {
   buildFoundationFromInputs,
+  parseFoundationDateIso,
+  parseFoundationKwh,
   type FoundationAbpCsgMappingInput,
   type FoundationAbpReportInput,
   type FoundationAccountSolarGenerationInput,
@@ -714,6 +716,33 @@ describe("buildFoundationFromInputs — invariants pass on all generated payload
 // ============================================================================
 
 describe("buildFoundationFromInputs — reporting anchor (Phase 2.7)", () => {
+  it("parses production GATS slash dates and comma-formatted kWh values", () => {
+    expect(parseFoundationDateIso("03/01/2026")).toBe("2026-03-01");
+    expect(parseFoundationDateIso("04/14/2026")).toBe("2026-04-14");
+    expect(parseFoundationKwh("85,478")).toBe(85478);
+  });
+
+  it("uses slash-format GATS dates for reporting-window math", () => {
+    const payload = buildFoundationFromInputs(
+      makeInputs({
+        solarApplications: [
+          makeSolar("CSG-1", { trackingSystemRefId: "NON270056" }),
+        ],
+        accountSolarGeneration: [
+          makeAccountSolarGen("NON270056", "04/14/2026", 85478, {
+            lastMeterReadDate: "04/14/2026",
+            monthOfGeneration: "03/01/2026",
+          }),
+        ],
+      }),
+      FIXED_BUILT_AT
+    );
+
+    expect(payload.reportingAnchorDateIso).toBe("2026-04-01");
+    expect(payload.reportingCsgIds).toEqual(["CSG-1"]);
+    expect(payload.summaryCounts.reporting).toBe(1);
+  });
+
   it("anchor is the newest valid generation date, not today", () => {
     const payload = buildFoundationFromInputs(
       makeInputs({

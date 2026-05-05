@@ -76,7 +76,12 @@ import { getActiveDatasetVersions } from "../../db/solarRecDatasets";
 import { solarRecImportBatches } from "../../../drizzle/schemas/solar";
 import { inArray } from "drizzle-orm";
 import { isPart2VerifiedSystem } from "./aggregatorHelpers";
-import { parseIsoDate, toNullableNumber } from "./helpers";
+import { parseIsoDate } from "./helpers";
+import {
+  parseDate as parseFlexibleDate,
+  parseNumber as parseFlexibleNumber,
+} from "../../../shared/solarRecPerformanceRatio";
+import { toDateKey } from "../../../shared/dateKey";
 
 export { FOUNDATION_RUNNER_VERSION };
 
@@ -132,8 +137,9 @@ export type FoundationAbpCsgMappingInput = {
 
 /**
  * Account Solar Generation row. `gatsGenId` is the join column to
- * `solarApplications.trackingSystemRefId`. Both date columns are
- * canonical ISO strings (`yyyy-mm-dd`) on production data.
+ * `solarApplications.trackingSystemRefId`. Date columns may be either
+ * ISO strings (`yyyy-mm-dd`) or GATS exports like `03/01/2026`; the
+ * builder normalizes them before reporting-window comparisons.
  */
 export type FoundationAccountSolarGenerationInput = {
   gatsGenId: string | null;
@@ -269,14 +275,30 @@ function shiftIsoMonth(dateIso: string, deltaMonths: number): string | null {
  *
  * Lex comparison on `yyyy-mm-dd` strings is correct for ordering.
  */
+export function parseFoundationDateIso(
+  value: string | null | undefined
+): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (parseIsoDate(trimmed)) return trimmed;
+  const parsed = parseFlexibleDate(trimmed);
+  if (!parsed) return null;
+  return toDateKey(parsed);
+}
+
+export function parseFoundationKwh(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (value === null || value === undefined) return null;
+  return parseFlexibleNumber(String(value));
+}
+
 function pickFirstValidIsoDate(
   candidates: Array<string | null | undefined>
 ): string | null {
   for (const c of candidates) {
-    if (typeof c !== "string") continue;
-    const trimmed = c.trim();
-    if (!trimmed) continue;
-    if (parseIsoDate(trimmed)) return trimmed;
+    const parsed = parseFoundationDateIso(c);
+    if (parsed) return parsed;
   }
   return null;
 }
@@ -306,7 +328,7 @@ function extractGenerationEntryKwh(rawRowJson: string | null): number | null {
     return null;
   }
   for (const header of GENERATION_BASELINE_VALUE_HEADERS) {
-    const parsed = toNullableNumber(raw[header]);
+    const parsed = parseFoundationKwh(raw[header]);
     if (parsed !== null) return parsed;
   }
   return null;
@@ -1393,7 +1415,7 @@ export async function buildFoundationArtifact(
           row.monthOfGeneration,
         ]);
         if (!date) return;
-        const kWh = toNullableNumber(row.lastMeterReadKwh);
+        const kWh = parseFoundationKwh(row.lastMeterReadKwh);
         foldGenState(accountSolarGenStateByGatsGenId, key, date, kWh);
       }
     );
