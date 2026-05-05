@@ -346,7 +346,11 @@ const PROVIDERS = [
   { key: "ekm", label: "EKM", fields: ["apiKey", "baseUrl"] },
   { key: "solarlog", label: "SolarLog", fields: ["deviceUrl", "password"] },
   { key: "growatt", label: "Growatt", fields: ["username", "password"] },
-  { key: "ennexos", label: "EnnexOS (SMA)", fields: ["accessToken", "baseUrl"] },
+  {
+    key: "ennexos",
+    label: "EnnexOS (SMA)",
+    fields: ["accessToken", "baseUrl"],
+  },
   {
     key: "egauge",
     label: "eGauge",
@@ -363,6 +367,7 @@ const PROVIDERS = [
       "tokenUrl",
       "apiBaseUrl",
       "portalBaseUrl",
+      "endpointUrl",
     ],
   },
 ];

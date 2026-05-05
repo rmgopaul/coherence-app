@@ -337,7 +337,9 @@ function redactCredentialMetadata(
 ): string | null {
   if (!metadata) return null;
   const parsed = parseMetadataRecord(metadata);
-  return serializeMetadata(redactCredentialMetadataValue(parsed) as Record<string, unknown>);
+  return serializeMetadata(
+    redactCredentialMetadataValue(parsed) as Record<string, unknown>
+  );
 }
 
 function compactCredentialMetadata(
@@ -345,10 +347,10 @@ function compactCredentialMetadata(
 ): Record<string, unknown> {
   return Object.fromEntries(
     Object.entries(metadata)
-      .map(([key, value]) => [
-        key,
-        typeof value === "string" ? value.trim() : value,
-      ] as const)
+      .map(
+        ([key, value]) =>
+          [key, typeof value === "string" ? value.trim() : value] as const
+      )
       .filter(([, value]) => value !== "")
   );
 }
@@ -366,7 +368,9 @@ function normalizeCredentialConnectInput(input: {
   metadata: string;
 } {
   const provider = input.provider.trim().toLowerCase();
-  const metadata = compactCredentialMetadata(parseMetadataRecord(input.metadata));
+  const metadata = compactCredentialMetadata(
+    parseMetadataRecord(input.metadata)
+  );
   let accessToken = toNonEmptyString(input.accessToken) ?? undefined;
   let refreshToken = toNonEmptyString(input.refreshToken) ?? undefined;
   let expiresAt =
@@ -412,8 +416,7 @@ function normalizeCredentialConnectInput(input: {
     const sanitizedFromAccessToken = accessToken
       ? solarEdgeSanitizeApiKey(accessToken)
       : null;
-    accessToken =
-      sanitizedFromAccessToken || sanitizedFromMeta || accessToken;
+    accessToken = sanitizedFromAccessToken || sanitizedFromMeta || accessToken;
     if (accessToken && !toNonEmptyString(metadata.apiKey)) {
       metadata.apiKey = accessToken;
     }
@@ -1610,11 +1613,16 @@ const monitoringRouter = t.router({
     )
     .query(async ({ ctx, input }) => {
       const { getMonitoringGridPage } = await import("../db");
-      return getMonitoringGridPage(ctx.scopeId, input.startDate, input.endDate, {
-        search: input.search,
-        limit: input.limit,
-        offset: input.offset,
-      });
+      return getMonitoringGridPage(
+        ctx.scopeId,
+        input.startDate,
+        input.endDate,
+        {
+          search: input.search,
+          limit: input.limit,
+          offset: input.offset,
+        }
+      );
     }),
 
   exportGridCsv: solarRecViewerProcedure
@@ -1741,9 +1749,8 @@ const monitoringRouter = t.router({
    */
   testScheduledRun: requirePermission("monitoring-overview", "edit").mutation(
     async ({ ctx }) => {
-      const { startScheduledMonitoringBatchManually } = await import(
-        "../solar/monitoringScheduler"
-      );
+      const { startScheduledMonitoringBatchManually } =
+        await import("../solar/monitoringScheduler");
       return startScheduledMonitoringBatchManually(ctx.userId);
     }
   ),
@@ -2637,7 +2644,9 @@ type GeneracTeamContext = {
   credentialId: string;
 };
 
-function parseGeneracTeamMetadata(raw: string | null): GeneracTeamContext | null {
+function parseGeneracTeamMetadata(
+  raw: string | null
+): GeneracTeamContext | null {
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw);
@@ -2696,7 +2705,7 @@ const generacRouter = t.router({
     const { getSolarRecTeamCredentialsByProvider } = await import("../db");
     const credentials = await getSolarRecTeamCredentialsByProvider("generac");
     const active = credentials.find(
-      (cred) =>
+      cred =>
         parseGeneracTeamMetadata(cred.metadata) !== null ||
         (cred.accessToken?.trim().length ?? 0) > 0
     );
@@ -2726,9 +2735,8 @@ const generacRouter = t.router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const { getSystemProductionSnapshot } = await import(
-        "../services/solar/generac"
-      );
+      const { getSystemProductionSnapshot } =
+        await import("../services/solar/generac");
       const context = await resolveGeneracTeamContext(ctx.scopeId);
       return getSystemProductionSnapshot(
         { apiKey: context.apiKey, baseUrl: context.baseUrl },
@@ -2802,7 +2810,7 @@ const solisRouter = t.router({
     const { getSolarRecTeamCredentialsByProvider } = await import("../db");
     const credentials = await getSolarRecTeamCredentialsByProvider("solis");
     const active = credentials.find(
-      (cred) => parseSolisTeamMetadata(cred.metadata) !== null
+      cred => parseSolisTeamMetadata(cred.metadata) !== null
     );
     return {
       connected: !!active,
@@ -2834,9 +2842,8 @@ const solisRouter = t.router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const { getStationProductionSnapshot } = await import(
-        "../services/solar/solis"
-      );
+      const { getStationProductionSnapshot } =
+        await import("../services/solar/solis");
       const context = await resolveSolisTeamContext(ctx.scopeId);
       return getStationProductionSnapshot(
         {
@@ -2913,7 +2920,7 @@ const goodweRouter = t.router({
     const { getSolarRecTeamCredentialsByProvider } = await import("../db");
     const credentials = await getSolarRecTeamCredentialsByProvider("goodwe");
     const active = credentials.find(
-      (cred) => parseGoodWeTeamMetadata(cred.metadata) !== null
+      cred => parseGoodWeTeamMetadata(cred.metadata) !== null
     );
     return {
       connected: !!active,
@@ -2945,9 +2952,8 @@ const goodweRouter = t.router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const { getStationProductionSnapshot } = await import(
-        "../services/solar/goodwe"
-      );
+      const { getStationProductionSnapshot } =
+        await import("../services/solar/goodwe");
       const context = await resolveGoodWeTeamContext(ctx.scopeId);
       return getStationProductionSnapshot(
         {
@@ -3026,7 +3032,7 @@ const hoymilesRouter = t.router({
     const { getSolarRecTeamCredentialsByProvider } = await import("../db");
     const credentials = await getSolarRecTeamCredentialsByProvider("hoymiles");
     const active = credentials.find(
-      (cred) => parseHoymilesTeamMetadata(cred.metadata) !== null
+      cred => parseHoymilesTeamMetadata(cred.metadata) !== null
     );
     return {
       connected: !!active,
@@ -3058,9 +3064,8 @@ const hoymilesRouter = t.router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const { getStationProductionSnapshot } = await import(
-        "../services/solar/hoymiles"
-      );
+      const { getStationProductionSnapshot } =
+        await import("../services/solar/hoymiles");
       const context = await resolveHoymilesTeamContext(ctx.scopeId);
       return getStationProductionSnapshot(
         {
@@ -3145,7 +3150,7 @@ const locusRouter = t.router({
     const { getSolarRecTeamCredentialsByProvider } = await import("../db");
     const credentials = await getSolarRecTeamCredentialsByProvider("locus");
     const active = credentials.find(
-      (cred) => parseLocusTeamMetadata(cred.metadata) !== null
+      cred => parseLocusTeamMetadata(cred.metadata) !== null
     );
     return {
       connected: !!active,
@@ -3154,18 +3159,16 @@ const locusRouter = t.router({
     };
   }),
 
-  listSites: requirePermission("meter-reads", "read").query(
-    async ({ ctx }) => {
-      const { listSites } = await import("../services/solar/locus");
-      const context = await resolveLocusTeamContext(ctx.scopeId);
-      return listSites({
-        clientId: context.clientId,
-        clientSecret: context.clientSecret,
-        partnerId: context.partnerId,
-        baseUrl: context.baseUrl,
-      });
-    }
-  ),
+  listSites: requirePermission("meter-reads", "read").query(async ({ ctx }) => {
+    const { listSites } = await import("../services/solar/locus");
+    const context = await resolveLocusTeamContext(ctx.scopeId);
+    return listSites({
+      clientId: context.clientId,
+      clientSecret: context.clientSecret,
+      partnerId: context.partnerId,
+      baseUrl: context.baseUrl,
+    });
+  }),
 
   getProductionSnapshot: requirePermission("meter-reads", "edit")
     .input(
@@ -3178,9 +3181,8 @@ const locusRouter = t.router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const { getSiteProductionSnapshot } = await import(
-        "../services/solar/locus"
-      );
+      const { getSiteProductionSnapshot } =
+        await import("../services/solar/locus");
       const context = await resolveLocusTeamContext(ctx.scopeId);
       return getSiteProductionSnapshot(
         {
@@ -3259,10 +3261,9 @@ async function resolveAPsystemsTeamContext(
 const apsystemsRouter = t.router({
   getStatus: requirePermission("meter-reads", "read").query(async () => {
     const { getSolarRecTeamCredentialsByProvider } = await import("../db");
-    const credentials =
-      await getSolarRecTeamCredentialsByProvider("apsystems");
+    const credentials = await getSolarRecTeamCredentialsByProvider("apsystems");
     const active = credentials.find(
-      (cred) => parseAPsystemsTeamMetadata(cred.metadata) !== null
+      cred => parseAPsystemsTeamMetadata(cred.metadata) !== null
     );
     return {
       connected: !!active,
@@ -3294,9 +3295,8 @@ const apsystemsRouter = t.router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const { getSystemProductionSnapshot } = await import(
-        "../services/solar/apsystems"
-      );
+      const { getSystemProductionSnapshot } =
+        await import("../services/solar/apsystems");
       const context = await resolveAPsystemsTeamContext(ctx.scopeId);
       return getSystemProductionSnapshot(
         {
@@ -3371,10 +3371,9 @@ async function resolveSolarLogTeamContext(
 const solarlogRouter = t.router({
   getStatus: requirePermission("meter-reads", "read").query(async () => {
     const { getSolarRecTeamCredentialsByProvider } = await import("../db");
-    const credentials =
-      await getSolarRecTeamCredentialsByProvider("solarlog");
+    const credentials = await getSolarRecTeamCredentialsByProvider("solarlog");
     const active = credentials.find(
-      (cred) => parseSolarLogTeamMetadata(cred.metadata) !== null
+      cred => parseSolarLogTeamMetadata(cred.metadata) !== null
     );
     return {
       connected: !!active,
@@ -3405,9 +3404,8 @@ const solarlogRouter = t.router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const { getDeviceProductionSnapshot } = await import(
-        "../services/solar/solarLog"
-      );
+      const { getDeviceProductionSnapshot } =
+        await import("../services/solar/solarLog");
       const context = await resolveSolarLogTeamContext(ctx.scopeId);
       return getDeviceProductionSnapshot(
         { baseUrl: context.baseUrl, password: context.password },
@@ -3483,7 +3481,7 @@ const growattRouter = t.router({
     const { getSolarRecTeamCredentialsByProvider } = await import("../db");
     const credentials = await getSolarRecTeamCredentialsByProvider("growatt");
     const active = credentials.find(
-      (cred) => parseGrowattTeamMetadata(cred.metadata) !== null
+      cred => parseGrowattTeamMetadata(cred.metadata) !== null
     );
     return {
       connected: !!active,
@@ -3515,9 +3513,8 @@ const growattRouter = t.router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const { getPlantProductionSnapshot } = await import(
-        "../services/solar/growatt"
-      );
+      const { getPlantProductionSnapshot } =
+        await import("../services/solar/growatt");
       const context = await resolveGrowattTeamContext(ctx.scopeId);
       return getPlantProductionSnapshot(
         {
@@ -3587,7 +3584,7 @@ const ekmRouter = t.router({
     const { getSolarRecTeamCredentialsByProvider } = await import("../db");
     const credentials = await getSolarRecTeamCredentialsByProvider("ekm");
     const active = credentials.find(
-      (cred) => parseEkmTeamMetadata(cred.metadata) !== null
+      cred => parseEkmTeamMetadata(cred.metadata) !== null
     );
     return {
       connected: !!active,
@@ -3607,9 +3604,8 @@ const ekmRouter = t.router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const { getMeterProductionSnapshot } = await import(
-        "../services/solar/ekm"
-      );
+      const { getMeterProductionSnapshot } =
+        await import("../services/solar/ekm");
       const context = await resolveEkmTeamContext(ctx.scopeId);
       return getMeterProductionSnapshot(
         { apiKey: context.apiKey, baseUrl: context.baseUrl },
@@ -3687,7 +3683,7 @@ const froniusRouter = t.router({
     const { getSolarRecTeamCredentialsByProvider } = await import("../db");
     const credentials = await getSolarRecTeamCredentialsByProvider("fronius");
     const active = credentials.find(
-      (cred) => parseFroniusTeamMetadata(cred.metadata) !== null
+      cred => parseFroniusTeamMetadata(cred.metadata) !== null
     );
     return {
       connected: !!active,
@@ -3719,9 +3715,8 @@ const froniusRouter = t.router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const { getPvSystemProductionSnapshot } = await import(
-        "../services/solar/fronius"
-      );
+      const { getPvSystemProductionSnapshot } =
+        await import("../services/solar/fronius");
       const context = await resolveFroniusTeamContext(ctx.scopeId);
       return getPvSystemProductionSnapshot(
         {
@@ -3803,7 +3798,7 @@ const ennexOsRouter = t.router({
     const { getSolarRecTeamCredentialsByProvider } = await import("../db");
     const credentials = await getSolarRecTeamCredentialsByProvider("ennexos");
     const active = credentials.find(
-      (cred) =>
+      cred =>
         parseEnnexOsTeamMetadata(cred.metadata) !== null ||
         (cred.accessToken?.trim().length ?? 0) > 0
     );
@@ -3836,9 +3831,8 @@ const ennexOsRouter = t.router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const { getPlantProductionSnapshot } = await import(
-        "../services/solar/ennexos"
-      );
+      const { getPlantProductionSnapshot } =
+        await import("../services/solar/ennexos");
       const context = await resolveEnnexOsTeamContext(ctx.scopeId);
       return getPlantProductionSnapshot(
         { accessToken: context.accessToken, baseUrl: context.baseUrl },
@@ -3964,9 +3958,8 @@ async function resolveEnphaseV4TeamContext(
       });
     }
 
-    const { refreshEnphaseV4AccessToken } = await import(
-      "../services/solar/enphaseV4"
-    );
+    const { refreshEnphaseV4AccessToken } =
+      await import("../services/solar/enphaseV4");
     const refreshed = await refreshEnphaseV4AccessToken({
       clientId: meta.clientId,
       clientSecret: meta.clientSecret,
@@ -3999,7 +3992,7 @@ const enphaseV4Router = t.router({
     const credentials =
       await getSolarRecTeamCredentialsByProvider("enphase-v4");
     const active = credentials.find(
-      (cred) =>
+      cred =>
         parseEnphaseV4TeamMetadata(cred.metadata) !== null &&
         (cred.accessToken?.trim().length ?? 0) > 0
     );
@@ -4030,16 +4023,13 @@ const enphaseV4Router = t.router({
     .input(
       z.object({
         systemId: z.string().min(1),
-        anchorDate: z
-          .string()
-          .regex(/^\d{4}-\d{2}-\d{2}$/),
+        anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
         systemName: z.string().nullish(),
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const { getSystemProductionSnapshot } = await import(
-        "../services/solar/enphaseV4"
-      );
+      const { getSystemProductionSnapshot } =
+        await import("../services/solar/enphaseV4");
       const context = await resolveEnphaseV4TeamContext(ctx.scopeId);
       return getSystemProductionSnapshot(
         {
@@ -4098,10 +4088,11 @@ type SolarEdgeCredentialRow = {
   context: SolarEdgeTeamContext;
 };
 
-async function loadSolarEdgeCredentialRows(): Promise<SolarEdgeCredentialRow[]> {
+async function loadSolarEdgeCredentialRows(): Promise<
+  SolarEdgeCredentialRow[]
+> {
   const { getSolarRecTeamCredentialsByProvider } = await import("../db");
-  const credentials =
-    await getSolarRecTeamCredentialsByProvider("solaredge");
+  const credentials = await getSolarRecTeamCredentialsByProvider("solaredge");
   const out: SolarEdgeCredentialRow[] = [];
   for (const cred of credentials) {
     const parsed = parseSolarEdgeTeamMetadata(cred.metadata);
@@ -4136,7 +4127,7 @@ async function resolveSolarEdgeTeamContext(
   void scopeId;
   const rows = await loadSolarEdgeCredentialRows();
   if (connectionId) {
-    const match = rows.find((row) => row.id === connectionId);
+    const match = rows.find(row => row.id === connectionId);
     if (match) return match.context;
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
@@ -4209,21 +4200,20 @@ function selectSolarEdgeContexts(
 ): SolarEdgeCredentialRow[] {
   if (scope === "all") return rows;
   if (connectionId) {
-    const match = rows.find((row) => row.id === connectionId);
+    const match = rows.find(row => row.id === connectionId);
     if (match) return [match];
   }
   return rows.length > 0 ? [rows[0]] : [];
 }
 
-async function runSolarEdgeBulk<T extends { status: "Found" | "Not Found" | "Error"; error: string | null }>(
+async function runSolarEdgeBulk<
+  T extends { status: "Found" | "Not Found" | "Error"; error: string | null },
+>(
   rows: SolarEdgeCredentialRow[],
   siteIds: string[],
   scope: "active" | "all",
   connectionId: string | null | undefined,
-  fetchOne: (
-    row: SolarEdgeCredentialRow,
-    siteId: string
-  ) => Promise<T>,
+  fetchOne: (row: SolarEdgeCredentialRow, siteId: string) => Promise<T>,
   toBulk: (
     siteId: string,
     matched: SolarEdgeCredentialRow | null,
@@ -4277,11 +4267,7 @@ async function runSolarEdgeBulk<T extends { status: "Found" | "Not Found" | "Err
         }
       }
       const finalStatus: "Found" | "Not Found" | "Error" =
-        matched !== null
-          ? "Found"
-          : lastError
-            ? "Error"
-            : "Not Found";
+        matched !== null ? "Found" : lastError ? "Error" : "Not Found";
       return toBulk(siteId, matched, lastPayload, lastError, checked, foundIn);
     }
   );
@@ -4306,13 +4292,12 @@ const solaredgeRouter = t.router({
   getStatus: requirePermission("meter-reads", "read").query(async () => {
     const rows = await loadSolarEdgeCredentialRows();
     const { getSolarRecTeamCredentialsByProvider } = await import("../db");
-    const credentials =
-      await getSolarRecTeamCredentialsByProvider("solaredge");
+    const credentials = await getSolarRecTeamCredentialsByProvider("solaredge");
     return {
       connected: rows.length > 0,
       connectionCount: credentials.length,
       activeConnectionId: rows[0]?.id ?? null,
-      connections: rows.map((row) => ({
+      connections: rows.map(row => ({
         id: row.id,
         name: row.connectionName,
         baseUrl: row.context.baseUrl,
@@ -4330,20 +4315,19 @@ const solaredgeRouter = t.router({
       void ctx;
       const rows = await loadSolarEdgeCredentialRows();
       const target = input?.connectionId
-        ? rows.find((r) => r.id === input.connectionId)
+        ? rows.find(r => r.id === input.connectionId)
         : rows[0];
       if (!target) {
         return {
           ok: false as const,
           reason: "no-credential" as const,
-          message:
-            "No SolarEdge credential is registered for this scope.",
+          message: "No SolarEdge credential is registered for this scope.",
           connections: rows.length,
         };
       }
       const apiKey = target.context.apiKey;
-      const codepoints = Array.from(apiKey).map((c) => c.charCodeAt(0));
-      const hasNonAscii = codepoints.some((c) => c > 0x7e || c < 0x20);
+      const codepoints = Array.from(apiKey).map(c => c.charCodeAt(0));
+      const hasNonAscii = codepoints.some(c => c > 0x7e || c < 0x20);
       const fingerprint = {
         connectionId: target.id,
         connectionName: target.connectionName,
@@ -4355,9 +4339,8 @@ const solaredgeRouter = t.router({
         apiKeyHasNonAscii: hasNonAscii,
         baseUrlOverride: target.context.baseUrl,
       };
-      const { listSites, SOLAR_EDGE_DEFAULT_BASE_URL } = await import(
-        "../services/solar/solarEdge"
-      );
+      const { listSites, SOLAR_EDGE_DEFAULT_BASE_URL } =
+        await import("../services/solar/solarEdge");
       try {
         const probe = await listSites({
           apiKey: target.context.apiKey,
@@ -4369,7 +4352,7 @@ const solaredgeRouter = t.router({
           effectiveBaseUrl:
             target.context.baseUrl ?? SOLAR_EDGE_DEFAULT_BASE_URL,
           siteCount: probe.sites.length,
-          sample: probe.sites.slice(0, 3).map((s) => ({
+          sample: probe.sites.slice(0, 3).map(s => ({
             siteId: s.siteId,
             siteName: s.siteName,
           })),
@@ -4381,8 +4364,7 @@ const solaredgeRouter = t.router({
           fingerprint,
           effectiveBaseUrl:
             target.context.baseUrl ?? SOLAR_EDGE_DEFAULT_BASE_URL,
-          message:
-            err instanceof Error ? err.message : "Unknown probe error.",
+          message: err instanceof Error ? err.message : "Unknown probe error.",
         };
       }
     }),
@@ -4410,9 +4392,8 @@ const solaredgeRouter = t.router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const { getSiteProductionSnapshot } = await import(
-        "../services/solar/solarEdge"
-      );
+      const { getSiteProductionSnapshot } =
+        await import("../services/solar/solarEdge");
       const context = await resolveSolarEdgeTeamContext(
         ctx.scopeId,
         input.connectionId
@@ -4432,9 +4413,8 @@ const solaredgeRouter = t.router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const { getSiteMeterSnapshot } = await import(
-        "../services/solar/solarEdge"
-      );
+      const { getSiteMeterSnapshot } =
+        await import("../services/solar/solarEdge");
       const context = await resolveSolarEdgeTeamContext(
         ctx.scopeId,
         input.connectionId
@@ -4457,9 +4437,8 @@ const solaredgeRouter = t.router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const { getSiteInverterSnapshot } = await import(
-        "../services/solar/solarEdge"
-      );
+      const { getSiteInverterSnapshot } =
+        await import("../services/solar/solarEdge");
       const context = await resolveSolarEdgeTeamContext(
         ctx.scopeId,
         input.connectionId
@@ -4481,14 +4460,13 @@ const solaredgeRouter = t.router({
       })
     )
     .mutation(async ({ input }) => {
-      const { getSiteProductionSnapshot } = await import(
-        "../services/solar/solarEdge"
-      );
+      const { getSiteProductionSnapshot } =
+        await import("../services/solar/solarEdge");
       const rows = await loadSolarEdgeCredentialRows();
       const scope = input.connectionScope ?? "active";
       return runSolarEdgeBulk(
         rows,
-        input.siteIds.map((s) => s.trim()).filter(Boolean),
+        input.siteIds.map(s => s.trim()).filter(Boolean),
         scope,
         input.connectionId,
         async (row, siteId) =>
@@ -4497,14 +4475,16 @@ const solaredgeRouter = t.router({
             siteId,
             input.anchorDate
           ),
-        (siteId, matched, payload, err, checkedConnections, foundInConnections): SolarEdgeBulkProductionRow => ({
+        (
           siteId,
-          status:
-            matched !== null
-              ? "Found"
-              : err
-                ? "Error"
-                : "Not Found",
+          matched,
+          payload,
+          err,
+          checkedConnections,
+          foundInConnections
+        ): SolarEdgeBulkProductionRow => ({
+          siteId,
+          status: matched !== null ? "Found" : err ? "Error" : "Not Found",
           matchedConnectionId: matched?.id ?? null,
           matchedConnectionName: matched?.connectionName ?? null,
           checkedConnections,
@@ -4528,14 +4508,13 @@ const solaredgeRouter = t.router({
   getMeterSnapshots: requirePermission("meter-reads", "edit")
     .input(solaredgeBulkInputBase)
     .mutation(async ({ input }) => {
-      const { getSiteMeterSnapshot } = await import(
-        "../services/solar/solarEdge"
-      );
+      const { getSiteMeterSnapshot } =
+        await import("../services/solar/solarEdge");
       const rows = await loadSolarEdgeCredentialRows();
       const scope = input.connectionScope ?? "active";
       return runSolarEdgeBulk(
         rows,
-        input.siteIds.map((s) => s.trim()).filter(Boolean),
+        input.siteIds.map(s => s.trim()).filter(Boolean),
         scope,
         input.connectionId,
         async (row, siteId) =>
@@ -4543,14 +4522,16 @@ const solaredgeRouter = t.router({
             { apiKey: row.context.apiKey, baseUrl: row.context.baseUrl },
             siteId
           ),
-        (siteId, matched, payload, err, checkedConnections, foundInConnections): SolarEdgeBulkMeterRow => ({
+        (
           siteId,
-          status:
-            matched !== null
-              ? "Found"
-              : err
-                ? "Error"
-                : "Not Found",
+          matched,
+          payload,
+          err,
+          checkedConnections,
+          foundInConnections
+        ): SolarEdgeBulkMeterRow => ({
+          siteId,
+          status: matched !== null ? "Found" : err ? "Error" : "Not Found",
           matchedConnectionId: matched?.id ?? null,
           matchedConnectionName: matched?.connectionName ?? null,
           checkedConnections,
@@ -4574,14 +4555,13 @@ const solaredgeRouter = t.router({
       })
     )
     .mutation(async ({ input }) => {
-      const { getSiteInverterSnapshot } = await import(
-        "../services/solar/solarEdge"
-      );
+      const { getSiteInverterSnapshot } =
+        await import("../services/solar/solarEdge");
       const rows = await loadSolarEdgeCredentialRows();
       const scope = input.connectionScope ?? "active";
       return runSolarEdgeBulk(
         rows,
-        input.siteIds.map((s) => s.trim()).filter(Boolean),
+        input.siteIds.map(s => s.trim()).filter(Boolean),
         scope,
         input.connectionId,
         async (row, siteId) =>
@@ -4590,14 +4570,16 @@ const solaredgeRouter = t.router({
             siteId,
             input.anchorDate
           ),
-        (siteId, matched, payload, err, checkedConnections, foundInConnections): SolarEdgeBulkInverterRow => ({
+        (
           siteId,
-          status:
-            matched !== null
-              ? "Found"
-              : err
-                ? "Error"
-                : "Not Found",
+          matched,
+          payload,
+          err,
+          checkedConnections,
+          foundInConnections
+        ): SolarEdgeBulkInverterRow => ({
+          siteId,
+          status: matched !== null ? "Found" : err ? "Error" : "Not Found",
           matchedConnectionId: matched?.id ?? null,
           matchedConnectionName: matched?.connectionName ?? null,
           checkedConnections,
@@ -4632,10 +4614,11 @@ const solaredgeRouter = t.router({
 
 type TeslaPowerhubTeamMetadata = {
   clientId: string;
-  groupId: string;
+  groupId: string | null;
   tokenUrl: string | null;
   apiBaseUrl: string | null;
   portalBaseUrl: string | null;
+  endpointUrl: string | null;
   signal: string | null;
 };
 
@@ -4647,10 +4630,18 @@ type TeslaPowerhubTeamContext = {
     apiBaseUrl: string | null;
     portalBaseUrl: string | null;
   };
-  groupId: string;
+  groupId: string | null;
+  endpointUrl: string | null;
   signal: string | null;
   credentialId: string;
 };
+
+function normalizeTeslaPowerhubGroupId(raw: string | null | undefined): string {
+  const trimmed = raw?.trim() ?? "";
+  if (!trimmed) return "";
+  const match = trimmed.match(/\/group\/([a-zA-Z0-9-]+)/i);
+  return match?.[1]?.trim() ?? trimmed;
+}
 
 function parseTeslaPowerhubTeamMetadata(
   raw: string | null
@@ -4666,12 +4657,13 @@ function parseTeslaPowerhubTeamMetadata(
       typeof parsed?.groupId === "string" && parsed.groupId.trim().length > 0
         ? parsed.groupId.trim()
         : null;
-    if (!clientId || !groupId) return null;
+    if (!clientId) return null;
     return {
       clientId,
       groupId,
       tokenUrl:
-        typeof parsed?.tokenUrl === "string" && parsed.tokenUrl.trim().length > 0
+        typeof parsed?.tokenUrl === "string" &&
+        parsed.tokenUrl.trim().length > 0
           ? parsed.tokenUrl.trim()
           : null,
       apiBaseUrl:
@@ -4683,6 +4675,11 @@ function parseTeslaPowerhubTeamMetadata(
         typeof parsed?.portalBaseUrl === "string" &&
         parsed.portalBaseUrl.trim().length > 0
           ? parsed.portalBaseUrl.trim()
+          : null,
+      endpointUrl:
+        typeof parsed?.endpointUrl === "string" &&
+        parsed.endpointUrl.trim().length > 0
+          ? parsed.endpointUrl.trim()
           : null,
       signal:
         typeof parsed?.signal === "string" && parsed.signal.trim().length > 0
@@ -4714,6 +4711,7 @@ async function resolveTeslaPowerhubTeamContext(
         portalBaseUrl: meta.portalBaseUrl,
       },
       groupId: meta.groupId,
+      endpointUrl: meta.endpointUrl,
       signal: meta.signal,
       credentialId: cred.id,
     };
@@ -4721,7 +4719,7 @@ async function resolveTeslaPowerhubTeamContext(
   throw new TRPCError({
     code: "PRECONDITION_FAILED",
     message:
-      "No Tesla Powerhub team credential found. An admin must add one (clientId + clientSecret + groupId) in Solar REC Settings → Credentials.",
+      "No Tesla Powerhub team credential found. An admin must add clientId + clientSecret in Solar REC Settings → Credentials.",
   });
 }
 
@@ -4731,7 +4729,7 @@ const teslaPowerhubRouter = t.router({
     const credentials =
       await getSolarRecTeamCredentialsByProvider("tesla-powerhub");
     const active = credentials.find(
-      (cred) =>
+      cred =>
         parseTeslaPowerhubTeamMetadata(cred.metadata) !== null &&
         (cred.accessToken?.trim().length ?? 0) > 0
     );
@@ -4743,54 +4741,144 @@ const teslaPowerhubRouter = t.router({
       connectionCount: credentials.length,
       activeConnectionId: active?.id ?? null,
       groupId: meta?.groupId ?? null,
+      endpointUrl: meta?.endpointUrl ?? null,
+      signal: meta?.signal ?? null,
     };
   }),
 
+  getServerEgressIpv4: requirePermission("meter-reads", "read")
+    .input(z.object({ forceRefresh: z.boolean().optional() }).optional())
+    .query(async ({ input }) => {
+      const { fetchTeslaPowerhubServerEgressIpv4 } =
+        await import("../services/solar/teslaPowerhubEgress");
+      return fetchTeslaPowerhubServerEgressIpv4({
+        forceRefresh: Boolean(input?.forceRefresh),
+      });
+    }),
+
+  refreshServerEgressIpv4: requirePermission("meter-reads", "read").mutation(
+    async () => {
+      const { fetchTeslaPowerhubServerEgressIpv4 } =
+        await import("../services/solar/teslaPowerhubEgress");
+      return fetchTeslaPowerhubServerEgressIpv4({ forceRefresh: true });
+    }
+  ),
+
   listSites: requirePermission("meter-reads", "read").query(async ({ ctx }) => {
-    const { getTeslaPowerhubGroupProductionMetricsCached } = await import(
-      "../services/solar/teslaPowerhub"
-    );
+    const { getTeslaPowerhubGroupProductionMetricsCached } =
+      await import("../services/solar/teslaPowerhub");
     const team = await resolveTeslaPowerhubTeamContext(ctx.scopeId);
     const result = await getTeslaPowerhubGroupProductionMetricsCached(
       team.apiContext,
       {
         groupId: team.groupId,
-        cacheKey: `solar-rec:${team.credentialId}:${team.groupId}`,
+        cacheKey: JSON.stringify([
+          "solar-rec",
+          team.credentialId,
+          team.groupId,
+          team.endpointUrl ?? "",
+          team.signal ?? "",
+        ]),
+        endpointUrl: team.endpointUrl,
         signal: team.signal,
       }
     );
     return {
-      sites: result.sites.map((site) => ({
+      sites: result.sites.map(site => ({
         siteId: site.siteId,
         siteName: site.siteName ?? site.siteExternalId ?? site.siteId,
+        siteExternalId: site.siteExternalId,
       })),
     };
   }),
 
+  startGroupProductionMetricsJob: requirePermission("meter-reads", "edit")
+    .input(
+      z.object({
+        groupId: z.string().min(1).optional(),
+        endpointUrl: z.string().optional(),
+        signal: z.string().optional(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { startTeslaPowerhubProductionJob } =
+        await import("../services/solar/teslaPowerhubProductionJobs");
+      const team = await resolveTeslaPowerhubTeamContext(ctx.scopeId);
+      const groupId = normalizeTeslaPowerhubGroupId(
+        input.groupId ?? team.groupId
+      );
+      const job = startTeslaPowerhubProductionJob({
+        scopeId: ctx.scopeId,
+        createdBy: ctx.userId,
+        apiContext: team.apiContext,
+        groupId: groupId || null,
+        endpointUrl: input.endpointUrl?.trim() || team.endpointUrl,
+        signal: input.signal?.trim() || team.signal,
+      });
+      return {
+        jobId: job.id,
+        status: job.status,
+        _runnerVersion: job._runnerVersion,
+      };
+    }),
+
+  getGroupProductionMetricsJob: requirePermission("meter-reads", "read")
+    .input(z.object({ jobId: z.string().min(1) }))
+    .query(async ({ ctx, input }) => {
+      const { getTeslaPowerhubProductionJobSnapshot } =
+        await import("../services/solar/teslaPowerhubProductionJobs");
+      const job = getTeslaPowerhubProductionJobSnapshot(
+        ctx.scopeId,
+        input.jobId.trim()
+      );
+      if (!job) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Tesla Powerhub production job not found.",
+        });
+      }
+      return job;
+    }),
+
+  debugProductionJobRaw: requirePermission("meter-reads", "edit").query(
+    async ({ ctx }) => {
+      const { debugTeslaPowerhubProductionJobs } =
+        await import("../services/solar/teslaPowerhubProductionJobs");
+      return debugTeslaPowerhubProductionJobs(ctx.scopeId);
+    }
+  ),
+
   getSiteSnapshot: requirePermission("meter-reads", "edit")
     .input(z.object({ siteId: z.string().min(1) }))
     .mutation(async ({ ctx, input }) => {
-      const { getTeslaPowerhubGroupProductionMetricsCached } = await import(
-        "../services/solar/teslaPowerhub"
-      );
+      const { getTeslaPowerhubGroupProductionMetricsCached } =
+        await import("../services/solar/teslaPowerhub");
       const team = await resolveTeslaPowerhubTeamContext(ctx.scopeId);
       const result = await getTeslaPowerhubGroupProductionMetricsCached(
         team.apiContext,
         {
           groupId: team.groupId,
-          cacheKey: `solar-rec:${team.credentialId}:${team.groupId}`,
+          cacheKey: JSON.stringify([
+            "solar-rec",
+            team.credentialId,
+            team.groupId,
+            team.endpointUrl ?? "",
+            team.signal ?? "",
+          ]),
+          endpointUrl: team.endpointUrl,
           signal: team.signal,
         }
       );
       const trimmed = input.siteId.trim();
       const site = result.sites.find(
-        (s) => s.siteId === trimmed || s.siteExternalId === trimmed
+        s => s.siteId === trimmed || s.siteExternalId === trimmed
       );
       if (!site) {
         return {
           siteId: trimmed,
           status: "Not Found" as const,
           siteName: null,
+          siteExternalId: null,
           dailyKwh: null,
           weeklyKwh: null,
           monthlyKwh: null,
@@ -4804,6 +4892,7 @@ const teslaPowerhubRouter = t.router({
         siteId: site.siteId,
         status: "Found" as const,
         siteName: site.siteName,
+        siteExternalId: site.siteExternalId,
         dailyKwh: site.dailyKwh,
         weeklyKwh: site.weeklyKwh,
         monthlyKwh: site.monthlyKwh,
@@ -4889,9 +4978,7 @@ function parseEgaugeTeamMetadata(
       typeof parsed?.accessType === "string"
         ? parsed.accessType.trim().toLowerCase()
         : "";
-    const accessType:
-      | EgaugeTeamMetadata["accessType"]
-      | null =
+    const accessType: EgaugeTeamMetadata["accessType"] | null =
       accessTypeRaw === "public" ||
       accessTypeRaw === "user_login" ||
       accessTypeRaw === "site_login" ||
@@ -4903,7 +4990,8 @@ function parseEgaugeTeamMetadata(
       baseUrl,
       accessType,
       username:
-        typeof parsed?.username === "string" && parsed.username.trim().length > 0
+        typeof parsed?.username === "string" &&
+        parsed.username.trim().length > 0
           ? parsed.username.trim()
           : null,
       password:
@@ -4930,10 +5018,9 @@ const egaugeRouter = t.router({
         if (!meta) return null;
         return {
           credentialId: cred.id,
-          name:
-            cred.connectionName?.trim().length
-              ? cred.connectionName.trim()
-              : `eGauge ${index + 1}`,
+          name: cred.connectionName?.trim().length
+            ? cred.connectionName.trim()
+            : `eGauge ${index + 1}`,
           baseUrl: meta.baseUrl,
           accessType: meta.accessType,
           username: meta.username,
@@ -4963,7 +5050,7 @@ const egaugeRouter = t.router({
     .mutation(async ({ input }) => {
       const { getSolarRecTeamCredentialsByProvider } = await import("../db");
       const credentials = await getSolarRecTeamCredentialsByProvider("egauge");
-      const cred = credentials.find((c) => c.id === input.credentialId);
+      const cred = credentials.find(c => c.id === input.credentialId);
       if (!cred) {
         throw new TRPCError({
           code: "NOT_FOUND",
@@ -4978,10 +5065,7 @@ const egaugeRouter = t.router({
             "eGauge credential is missing required metadata (baseUrl + accessType).",
         });
       }
-      if (
-        meta.accessType !== "public" &&
-        (!meta.username || !meta.password)
-      ) {
+      if (meta.accessType !== "public" && (!meta.username || !meta.password)) {
         throw new TRPCError({
           code: "PRECONDITION_FAILED",
           message:
@@ -4998,9 +5082,8 @@ const egaugeRouter = t.router({
       }
       const anchorDate =
         input.anchorDate ?? new Date().toISOString().slice(0, 10);
-      const { getMeterProductionSnapshot } = await import(
-        "../services/solar/egauge"
-      );
+      const { getMeterProductionSnapshot } =
+        await import("../services/solar/egauge");
       return getMeterProductionSnapshot(
         {
           baseUrl: meta.baseUrl,
