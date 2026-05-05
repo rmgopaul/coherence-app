@@ -10,6 +10,9 @@ import {
   formatIsoDate,
   shiftIsoDate,
   shiftIsoDateByYears,
+  firstDayOfMonth,
+  firstDayOfPreviousMonth,
+  lastDayOfPreviousMonth,
   safeRound,
   sumKwh,
   isNotFoundError,
@@ -178,6 +181,54 @@ describe("shiftIsoDateByYears", () => {
   });
   it("throws for invalid input", () => {
     expect(() => shiftIsoDateByYears("invalid", 1)).toThrow("YYYY-MM-DD");
+  });
+});
+
+describe("firstDayOfMonth", () => {
+  it("returns the first day of the month containing the input date", () => {
+    expect(firstDayOfMonth("2024-06-15")).toBe("2024-06-01");
+    expect(firstDayOfMonth("2024-06-01")).toBe("2024-06-01");
+    expect(firstDayOfMonth("2024-06-30")).toBe("2024-06-01");
+  });
+  it("handles December (boundary)", () => {
+    expect(firstDayOfMonth("2024-12-25")).toBe("2024-12-01");
+  });
+  it("throws for invalid input", () => {
+    expect(() => firstDayOfMonth("invalid")).toThrow("YYYY-MM-DD");
+    expect(() => firstDayOfMonth("06/15/2024")).toThrow("YYYY-MM-DD");
+  });
+});
+
+describe("firstDayOfPreviousMonth", () => {
+  it("returns the first of the previous month within the same year", () => {
+    expect(firstDayOfPreviousMonth("2024-06-15")).toBe("2024-05-01");
+  });
+  it("rolls back across the January → December boundary", () => {
+    expect(firstDayOfPreviousMonth("2024-01-15")).toBe("2023-12-01");
+  });
+  it("handles March → February (leap-month boundary)", () => {
+    expect(firstDayOfPreviousMonth("2024-03-15")).toBe("2024-02-01");
+  });
+  it("throws for invalid input", () => {
+    expect(() => firstDayOfPreviousMonth("invalid")).toThrow("YYYY-MM-DD");
+  });
+});
+
+describe("lastDayOfPreviousMonth", () => {
+  it("returns the last day of the previous month (31-day prior)", () => {
+    expect(lastDayOfPreviousMonth("2024-02-15")).toBe("2024-01-31");
+  });
+  it("returns Feb 29 in a leap year", () => {
+    expect(lastDayOfPreviousMonth("2024-03-15")).toBe("2024-02-29");
+  });
+  it("returns Feb 28 in a non-leap year", () => {
+    expect(lastDayOfPreviousMonth("2023-03-15")).toBe("2023-02-28");
+  });
+  it("rolls back across the January → December boundary", () => {
+    expect(lastDayOfPreviousMonth("2024-01-15")).toBe("2023-12-31");
+  });
+  it("throws for invalid input", () => {
+    expect(() => lastDayOfPreviousMonth("invalid")).toThrow("YYYY-MM-DD");
   });
 });
 
