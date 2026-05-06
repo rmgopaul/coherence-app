@@ -3523,6 +3523,69 @@ export const solarRecDashboardRouter = t.router({
   }),
 
   /**
+   * Phase 2 PR-C-3-a (OOM rebuild) — paginated read for the
+   * monitoringDetails fact table written by the build runner
+   * (PR-C-2's `monitoringDetailsBuildStep`). This is the eventual
+   * REPLACEMENT for the per-system `monitoringDetailsBySystemKey`
+   * map shape that `getDashboardOfflineMonitoring` ships today
+   * (the largest of the four per-system maps that proc returns,
+   * keyed by ~21k systems on prod).
+   *
+   * Returns one page of fact rows ordered by `systemKey` (ASC) so
+   * the cursor is stable across requests. Caller paginates by
+   * passing the response's `nextCursor` back as the next
+   * request's `cursorAfter`. `nextCursor === null` means the last
+   * page has been reached.
+   *
+   * Wire payload: bounded to 1000 rows × ~20 columns × free-form
+   * text. Worst case ≈ 250 KB at limit=1000; default limit=200
+   * gives ~50-80 KB per page on real data, well under the 1 MB
+   * dashboard response budget.
+   *
+   * **Until the OfflineMonitoringTab migrates onto this** (PR-C-3-b
+   * or follow-up), the table will be EMPTY for any scope that
+   * hasn't had a build run via `startDashboardBuild`. That's a
+   * deliberate transitional state — the read proc returns an
+   * empty page rather than synthesizing facts on demand. Building
+   * is the explicit "rebuild" action the operator initiates.
+   *
+   * Cache key: none. The fact table is the cache. Subsequent
+   * builds replace rows via the UPSERT-then-orphan-sweep pattern
+   * (PR-C-2's orchestration). Reads are sub-second per page given
+   * the composite-PK index on `(scopeId, systemKey)`.
+   */
+  getDashboardMonitoringDetailsPage: dashboardProcedure(
+    "solar-rec-dashboard",
+    "read"
+  )
+    .input(
+      z.object({
+        cursorAfter: z.string().min(1).max(128).nullable().optional(),
+        limit: z.number().int().min(1).max(1000).default(200),
+      })
+    )
+    .query(async ({ ctx, input }) => {
+      const { getMonitoringDetailsFactsPage } = await import(
+        "../db/dashboardMonitoringDetailsFacts"
+      );
+      const rows = await getMonitoringDetailsFactsPage(ctx.scopeId, {
+        cursorAfter: input.cursorAfter ?? null,
+        limit: input.limit,
+      });
+      const nextCursor =
+        rows.length === input.limit
+          ? rows[rows.length - 1]?.systemKey ?? null
+          : null;
+      return {
+        _checkpoint: "monitoring-details-page-v1",
+        _runnerVersion: "phase-2-pr-c-3-a@1" as const,
+        rows,
+        nextCursor,
+        hasMore: nextCursor !== null,
+      };
+    }),
+
+  /**
    * Phase 5e PR (2026-04-29) — server-side aggregator for the
    * `performanceSourceRows` shape consumed by RecPerformanceEvaluation
    * Tab + Snapshot Log + the parent's `recPerformanceSnapshotContracts
