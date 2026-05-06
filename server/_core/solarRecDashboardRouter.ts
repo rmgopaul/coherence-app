@@ -3861,6 +3861,79 @@ export const solarRecDashboardRouter = t.router({
     }),
 
   /**
+   * Phase 2 PR-F-3 (OOM rebuild) — paginated read for the
+   * all-system fact table written by the build runner (PR-F-2's
+   * `systemFactsBuildStep`). This is the OOM-safe replacement path
+   * for the legacy `getSystemSnapshot` response, which ships the
+   * full `SystemRecord[]` payload (~26 MB on prod).
+   *
+   * Returns one page of fact rows ordered by `systemKey` (ASC).
+   * Caller paginates by passing the response's `nextCursor` back
+   * as the next request's `cursor` input. `nextCursor === null`
+   * signals end-of-stream. The input field is named `cursor` so it
+   * works with tRPC v11 `useInfiniteQuery` cursor injection.
+   *
+   * **Three filter axes — independent and combinable.**
+   *   - `ownershipStatus` — the 6-value `OwnershipStatus` union.
+   *   - `sizeBucket` — `<=10 kW AC`, `>10 kW AC`, or `Unknown`.
+   *   - `isReporting` — current reporting state.
+   *
+   * The DB helper applies all filters with AND semantics and reads
+   * from the derived fact table only. It must not call
+   * `getOrBuildSystemSnapshot`; building facts is an explicit
+   * operator action via `startDashboardBuild`.
+   */
+  getDashboardSystemsPage: dashboardProcedure(
+    "solar-rec-dashboard",
+    "read"
+  )
+    .input(
+      z.object({
+        cursor: z.string().min(1).max(128).nullable().optional(),
+        limit: z.number().int().min(1).max(1000).default(200),
+        ownershipStatus: z
+          .enum([
+            "Transferred and Reporting",
+            "Transferred and Not Reporting",
+            "Not Transferred and Reporting",
+            "Not Transferred and Not Reporting",
+            "Terminated and Reporting",
+            "Terminated and Not Reporting",
+          ])
+          .nullable()
+          .optional(),
+        sizeBucket: z
+          .enum(["<=10 kW AC", ">10 kW AC", "Unknown"])
+          .nullable()
+          .optional(),
+        isReporting: z.boolean().nullable().optional(),
+      })
+    )
+    .query(async ({ ctx, input }) => {
+      const { getSystemFactsPage } = await import(
+        "../db/dashboardSystemFacts"
+      );
+      const rows = await getSystemFactsPage(ctx.scopeId, {
+        cursorAfter: input.cursor ?? null,
+        limit: input.limit,
+        status: input.ownershipStatus ?? null,
+        sizeBucket: input.sizeBucket ?? null,
+        isReporting: input.isReporting ?? null,
+      });
+      const nextCursor =
+        rows.length === input.limit
+          ? rows[rows.length - 1]?.systemKey ?? null
+          : null;
+      return {
+        _checkpoint: "systems-page-v1",
+        _runnerVersion: "phase-2-pr-f-3@1" as const,
+        rows,
+        nextCursor,
+        hasMore: nextCursor !== null,
+      };
+    }),
+
+  /**
    * Phase 5e PR (2026-04-29) — server-side aggregator for the
    * `performanceSourceRows` shape consumed by RecPerformanceEvaluation
    * Tab + Snapshot Log + the parent's `recPerformanceSnapshotContracts
