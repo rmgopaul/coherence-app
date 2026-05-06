@@ -19,6 +19,11 @@
  * (e.g. `"solarRecDashboard.getSystemSnapshot"`) so a same-named
  * procedure on a different router is not silently allowlisted.
  *
+ * The middleware also records lightweight request-level heap
+ * telemetry. That path never serializes `result.data`; it only logs
+ * small scalar fields when the request crosses heap thresholds or an
+ * explicit diagnostic env flag is enabled.
+ *
  * **Allowlisted procedures in warn mode are not measured.** Running
  * `JSON.stringify` on a 20–60 MB allowlisted response would itself
  * make a full extra copy in the heap — exactly the heap pressure
@@ -38,6 +43,10 @@ import { t, requirePermission } from "./solarRecBase";
 import type { ModuleKey } from "../../shared/solarRecModules";
 
 export const DASHBOARD_RESPONSE_LIMIT_BYTES_DEFAULT = 1024 * 1024;
+export const DASHBOARD_REQUEST_HEAP_DELTA_WARN_BYTES_DEFAULT =
+  64 * 1024 * 1024;
+export const DASHBOARD_REQUEST_HEAP_AFTER_WARN_BYTES_DEFAULT =
+  700 * 1024 * 1024;
 
 /**
  * Procedures known to exceed the response budget on production-shaped
@@ -76,14 +85,24 @@ export const DASHBOARD_OVERSIZE_ALLOWLIST: ReadonlySet<string> = new Set([
 
 export type DashboardResponseEnforcement = "warn" | "throw" | "off";
 
-export function getDashboardResponseLimitBytes(): number {
-  const raw = process.env.DASHBOARD_RESPONSE_LIMIT_BYTES?.trim();
-  if (!raw) return DASHBOARD_RESPONSE_LIMIT_BYTES_DEFAULT;
+function getPositiveIntegerEnv(
+  key: string,
+  defaultValue: number
+): number {
+  const raw = process.env[key]?.trim();
+  if (!raw) return defaultValue;
   const parsed = Number(raw);
   if (!Number.isFinite(parsed) || parsed <= 0) {
-    return DASHBOARD_RESPONSE_LIMIT_BYTES_DEFAULT;
+    return defaultValue;
   }
   return Math.floor(parsed);
+}
+
+export function getDashboardResponseLimitBytes(): number {
+  return getPositiveIntegerEnv(
+    "DASHBOARD_RESPONSE_LIMIT_BYTES",
+    DASHBOARD_RESPONSE_LIMIT_BYTES_DEFAULT
+  );
 }
 
 export function getDashboardResponseEnforcement(): DashboardResponseEnforcement {
@@ -92,6 +111,26 @@ export function getDashboardResponseEnforcement(): DashboardResponseEnforcement 
   // Default: throw in dev/test so any new regression fails fast in CI;
   // warn in production until the per-tab paginated replacements ship.
   return process.env.NODE_ENV === "production" ? "warn" : "throw";
+}
+
+export function getDashboardRequestHeapDeltaWarnBytes(): number {
+  return getPositiveIntegerEnv(
+    "DASHBOARD_REQUEST_HEAP_DELTA_WARN_BYTES",
+    DASHBOARD_REQUEST_HEAP_DELTA_WARN_BYTES_DEFAULT
+  );
+}
+
+export function getDashboardRequestHeapAfterWarnBytes(): number {
+  return getPositiveIntegerEnv(
+    "DASHBOARD_REQUEST_HEAP_AFTER_WARN_BYTES",
+    DASHBOARD_REQUEST_HEAP_AFTER_WARN_BYTES_DEFAULT
+  );
+}
+
+export function getDashboardRequestHeapLogAll(): boolean {
+  const raw =
+    process.env.DASHBOARD_REQUEST_HEAP_LOG_ALL?.trim().toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
 }
 
 export type DashboardResponseSizeCheck =
@@ -127,12 +166,96 @@ export function checkDashboardResponseSize(
   return { ok: false, bytes, limit, allowlisted: allowlist.has(path) };
 }
 
+type DashboardRequestHeapOutcome = "success" | "failed";
+
+function formatErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "string") return error;
+  return String(error);
+}
+
+function maybeLogDashboardRequestHeap(input: {
+  path: string;
+  outcome: DashboardRequestHeapOutcome;
+  startedAt: number;
+  heapBeforeBytes: number;
+  heapAfterBytes: number;
+  enforcement: DashboardResponseEnforcement;
+  allowlisted: boolean;
+  error?: unknown;
+}): void {
+  const heapDeltaBytes = input.heapAfterBytes - input.heapBeforeBytes;
+  const heapDeltaWarnBytes = getDashboardRequestHeapDeltaWarnBytes();
+  const heapAfterWarnBytes = getDashboardRequestHeapAfterWarnBytes();
+  const reasons: string[] = [];
+
+  if (heapDeltaBytes > heapDeltaWarnBytes) {
+    reasons.push("heap-delta");
+  }
+  if (input.heapAfterBytes > heapAfterWarnBytes) {
+    reasons.push("heap-after");
+  }
+  if (getDashboardRequestHeapLogAll()) {
+    reasons.push("log-all");
+  }
+  if (reasons.length === 0) return;
+
+  const payload: Record<string, unknown> = {
+    path: input.path,
+    outcome: input.outcome,
+    elapsedMs: Date.now() - input.startedAt,
+    enforcement: input.enforcement,
+    allowlisted: input.allowlisted,
+    heapBeforeBytes: input.heapBeforeBytes,
+    heapAfterBytes: input.heapAfterBytes,
+    heapDeltaBytes,
+    heapDeltaWarnBytes,
+    heapAfterWarnBytes,
+    reasons,
+  };
+  if (input.error !== undefined) {
+    payload.error = formatErrorMessage(input.error);
+  }
+
+  console.warn(`[dashboard:request-heap] ${JSON.stringify(payload)}`);
+}
+
 const dashboardResponseGuardMiddleware = t.middleware(
   async ({ next, path }) => {
-    const result = await next();
+    const heapBeforeBytes = process.memoryUsage().heapUsed;
+    const startedAt = Date.now();
+    const allowlisted = DASHBOARD_OVERSIZE_ALLOWLIST.has(path);
+    let result: Awaited<ReturnType<typeof next>>;
+    try {
+      result = await next();
+    } catch (error) {
+      maybeLogDashboardRequestHeap({
+        path,
+        outcome: "failed",
+        startedAt,
+        heapBeforeBytes,
+        heapAfterBytes: process.memoryUsage().heapUsed,
+        enforcement: getDashboardResponseEnforcement(),
+        allowlisted,
+        error,
+      });
+      throw error;
+    }
+    const enforcement = getDashboardResponseEnforcement();
+
+    maybeLogDashboardRequestHeap({
+      path,
+      outcome: result.ok ? "success" : "failed",
+      startedAt,
+      heapBeforeBytes,
+      heapAfterBytes: process.memoryUsage().heapUsed,
+      enforcement,
+      allowlisted,
+      error: result.ok ? undefined : result.error,
+    });
+
     if (!result.ok) return result;
 
-    const enforcement = getDashboardResponseEnforcement();
     if (enforcement === "off") return result;
 
     // In warn mode, allowlisted oversized responses are accepted as a
@@ -142,7 +265,7 @@ const dashboardResponseGuardMiddleware = t.middleware(
     // change. Skip the measurement entirely. Prod observability for
     // these procedures comes from the global `largeResponseLogger`
     // (5 MB streaming-byte threshold; no double serialization).
-    if (enforcement === "warn" && DASHBOARD_OVERSIZE_ALLOWLIST.has(path)) {
+    if (enforcement === "warn" && allowlisted) {
       return result;
     }
 
