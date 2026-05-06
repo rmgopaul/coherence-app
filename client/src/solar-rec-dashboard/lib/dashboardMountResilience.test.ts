@@ -768,7 +768,10 @@ describe("Solar REC dashboard mount: heavy-query gates", () => {
 
   it("Ownership Status tab reads the paginated fact proc instead of parent SystemRecord rows", () => {
     expect(OWNERSHIP_TAB_SOURCE).toMatch(/getDashboardOwnershipPage\.useQuery/);
-    expect(OWNERSHIP_TAB_SOURCE).toMatch(/startDashboardBuild\.useMutation/);
+    expect(OWNERSHIP_TAB_SOURCE).toMatch(/useDashboardBuildControl/);
+    expect(OWNERSHIP_TAB_SOURCE).not.toMatch(
+      /startDashboardBuild\.useMutation/
+    );
     expect(OWNERSHIP_TAB_SOURCE).not.toMatch(
       /part2EligibleSystemsForSizeReporting/
     );
