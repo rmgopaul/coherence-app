@@ -335,7 +335,7 @@ import { superjsonSerde, withArtifactCache } from "./withArtifactCache";
 const PERFORMANCE_RATIO_ARTIFACT_TYPE = "performanceRatio";
 
 export const PERFORMANCE_RATIO_RUNNER_VERSION =
-  "phase-5d-pr1-performance-ratio@1";
+  "phase-5d-pr1-performance-ratio@2";
 
 function computePerformanceRatioInputHash(
   batchIds: PerformanceRatioInputBatchIds
