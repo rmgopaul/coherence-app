@@ -26,6 +26,7 @@ describe("fact-backed tab build controls", () => {
     const offlineMonitoringTab = readSource(
       "../components/OfflineMonitoringTab.tsx",
     );
+    const comparisonsTab = readSource("../components/ComparisonsTab.tsx");
 
     expect(ownershipTab).toMatch(/useDashboardBuildControl/);
     expect(ownershipTab).not.toMatch(/startDashboardBuild\.useMutation/);
@@ -41,5 +42,9 @@ describe("fact-backed tab build controls", () => {
       /getDashboardMonitoringDetailsPage\.invalidate/,
     );
     expect(offlineMonitoringTab).toMatch(/Rebuild table/);
+
+    expect(comparisonsTab).toMatch(/useDashboardBuildControl/);
+    expect(comparisonsTab).toMatch(/getDashboardSystemsPage\.invalidate/);
+    expect(comparisonsTab).toMatch(/Rebuild table/);
   });
 });
