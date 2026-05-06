@@ -212,6 +212,29 @@ export async function buildOwnershipTileCsvFile(
 }
 
 /**
+ * Streaming file-backed variant for fact-table export paths. The
+ * caller supplies already-paginated chunks, so this writes matching
+ * rows directly to disk instead of materializing the full export.
+ *
+ * Fact-table pages are already stable cursor pages; this path
+ * preserves page order to keep memory bounded rather than sorting
+ * globally by system name.
+ */
+export async function buildOwnershipTileCsvFileFromChunks(
+  ownershipRowChunks: AsyncIterable<readonly OwnershipTileCsvRow[]>,
+  tile: OwnershipTileKey,
+  generatedAtIso: string = new Date().toISOString()
+): Promise<FileBackedTileCsvResult> {
+  return writeCsvFileArtifactFromChunks(
+    OWNERSHIP_HEADERS,
+    ownershipRowChunks,
+    ownershipTileFileName(tile, generatedAtIso),
+    ownershipRowToCsvRecord,
+    ownershipTileMatcher(tile)
+  );
+}
+
+/**
  * Build the CSV for a Change-Ownership status filter. Same pattern
  * as ownership — filter, sort, map to CSV columns.
  */
@@ -246,6 +269,30 @@ export async function buildChangeOwnershipTileCsvFile(
     filtered,
     changeOwnershipTileFileName(status, generatedAtIso),
     changeOwnershipRowToCsvRecord
+  );
+}
+
+/**
+ * Streaming file-backed variant for fact-table export paths. Keeps
+ * the legacy CSV shape while avoiding a full in-memory row array.
+ *
+ * Fact-table pages are already stable cursor pages; this path
+ * preserves page order to keep memory bounded rather than sorting
+ * globally by system name.
+ */
+export async function buildChangeOwnershipTileCsvFileFromChunks(
+  changeOwnershipRowChunks: AsyncIterable<
+    readonly ChangeOwnershipTileCsvRow[]
+  >,
+  status: ChangeOwnershipStatus,
+  generatedAtIso: string = new Date().toISOString()
+): Promise<FileBackedTileCsvResult> {
+  return writeCsvFileArtifactFromChunks(
+    CHANGE_OWNERSHIP_HEADERS,
+    changeOwnershipRowChunks,
+    changeOwnershipTileFileName(status, generatedAtIso),
+    changeOwnershipRowToCsvRecord,
+    row => row.changeOwnershipStatus === status
   );
 }
 
@@ -389,6 +436,76 @@ async function writeCsvFileArtifact<Row>(
       filePath,
       fileName,
       rowCount: rows.length,
+      csvBytes,
+      cleanup,
+    };
+  } catch (err) {
+    if (tempDir) {
+      await rm(tempDir, { recursive: true, force: true }).catch(
+        () => undefined
+      );
+    }
+    throw err;
+  }
+}
+
+async function writeCsvFileArtifactFromChunks<Row>(
+  headers: readonly string[],
+  rowChunks: AsyncIterable<readonly Row[]>,
+  fileName: string,
+  mapRow: (row: Row) => Record<string, string>,
+  includeRow: (row: Row) => boolean = () => true
+): Promise<FileBackedTileCsvResult> {
+  let tempDir: string | null = null;
+  let bufferedLines: string[] = [];
+  let rowCount = 0;
+
+  const flushBufferedLines = async (filePath: string) => {
+    if (bufferedLines.length === 0) return;
+    await appendFile(filePath, `\n${bufferedLines.join("\n")}`, "utf8");
+    bufferedLines = [];
+  };
+
+  try {
+    tempDir = await mkdtemp(path.join(tmpdir(), "solar-rec-tile-csv-"));
+    const filePath = path.join(tempDir, fileName);
+    await writeFile(filePath, buildCsvHeaderLine(headers), "utf8");
+
+    for await (const chunk of rowChunks) {
+      for (const row of chunk) {
+        if (!includeRow(row)) continue;
+        bufferedLines.push(buildCsvRowLine(headers, mapRow(row)));
+        rowCount += 1;
+        if (bufferedLines.length >= CSV_FILE_WRITE_CHUNK_ROWS) {
+          await flushBufferedLines(filePath);
+        }
+      }
+    }
+    await flushBufferedLines(filePath);
+
+    if (rowCount === 0) {
+      const csv = buildCsvString(headers, []);
+      await rm(tempDir, { recursive: true, force: true });
+      tempDir = null;
+      return {
+        csv,
+        fileName,
+        rowCount: 0,
+        csvBytes: Buffer.byteLength(csv, "utf8"),
+      };
+    }
+
+    const csvBytes = (await stat(filePath)).size;
+    const cleanup = async () => {
+      if (!tempDir) return;
+      await rm(tempDir, { recursive: true, force: true });
+      tempDir = null;
+    };
+
+    return {
+      filePath,
+      fileName,
+      rowCount,
       csvBytes,
       cleanup,
     };

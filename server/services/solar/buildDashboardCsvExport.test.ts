@@ -18,11 +18,21 @@ import type { OwnershipOverviewExportRow } from "./buildOverviewSummaryAggregate
 import {
   buildChangeOwnershipTileCsv,
   buildChangeOwnershipTileCsvFile,
+  buildChangeOwnershipTileCsvFileFromChunks,
   buildOwnershipTileCsv,
   buildOwnershipTileCsvFile,
+  buildOwnershipTileCsvFileFromChunks,
 } from "./buildDashboardCsvExport";
 
 const FROZEN_TIME = "2026-05-02T12:34:56.000Z";
+
+async function* rowChunks<Row>(
+  chunks: readonly (readonly Row[])[]
+): AsyncGenerator<readonly Row[]> {
+  for (const chunk of chunks) {
+    yield chunk;
+  }
+}
 
 function makeOwnershipRow(
   partial: Partial<OwnershipOverviewExportRow> & {
@@ -228,6 +238,32 @@ describe("buildOwnershipTileCsv", () => {
 
     await expect(stat(filePath)).rejects.toMatchObject({ code: "ENOENT" });
   });
+
+  it("streaming file-backed helper writes paged rows without returning a full CSV string", async () => {
+    const expected = buildOwnershipTileCsv(rows, "reporting", FROZEN_TIME);
+    const artifact = await buildOwnershipTileCsvFileFromChunks(
+      rowChunks([
+        [rows[0]],
+        [rows[1], rows[2]],
+      ]),
+      "reporting",
+      FROZEN_TIME
+    );
+    const filePath = artifact.filePath!;
+
+    expect(artifact.rowCount).toBe(expected.rowCount);
+    expect(artifact.fileName).toBe(expected.fileName);
+    expect(artifact.csv).toBeUndefined();
+    expect(artifact.csvBytes).toBeGreaterThan(0);
+
+    try {
+      await expect(readFile(filePath, "utf8")).resolves.toBe(expected.csv);
+    } finally {
+      await artifact.cleanup?.();
+    }
+
+    await expect(stat(filePath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
 });
 
 describe("buildChangeOwnershipTileCsv", () => {
@@ -317,6 +353,36 @@ describe("buildChangeOwnershipTileCsv", () => {
     );
     const artifact = await buildChangeOwnershipTileCsvFile(
       rows,
+      "Transferred and Reporting",
+      FROZEN_TIME
+    );
+    const filePath = artifact.filePath!;
+
+    expect(artifact.rowCount).toBe(expected.rowCount);
+    expect(artifact.fileName).toBe(expected.fileName);
+    expect(artifact.csv).toBeUndefined();
+    expect(artifact.csvBytes).toBeGreaterThan(0);
+
+    try {
+      await expect(readFile(filePath, "utf8")).resolves.toBe(expected.csv);
+    } finally {
+      await artifact.cleanup?.();
+    }
+
+    await expect(stat(filePath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("streaming file-backed helper writes paged rows without returning a full CSV string", async () => {
+    const expected = buildChangeOwnershipTileCsv(
+      rows,
+      "Transferred and Reporting",
+      FROZEN_TIME
+    );
+    const artifact = await buildChangeOwnershipTileCsvFileFromChunks(
+      rowChunks([
+        [rows[0]],
+        [rows[1], rows[2]],
+      ]),
       "Transferred and Reporting",
       FROZEN_TIME
     );
