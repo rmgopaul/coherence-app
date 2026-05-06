@@ -838,11 +838,13 @@ removed two parent-level useMemos
 that became orphaned when Salvage PR B dropped their consumer props.
 
 Pattern for any new tab aggregate:
-- Aggregates → extend `getSystemSnapshot` to include the per-tab
-  pre-aggregate (monthly bucket map, alert list, etc.) OR add a
-  dedicated `getDashboard<TabName>Aggregates` query backed by a
-  shared aggregator + `solarRecComputedArtifacts` cache. The
-  canonical templates are `buildDeliveryTrackerData.ts` (single-
+- Aggregates → add a dedicated `getDashboard<TabName>Aggregates`
+  query backed by a shared aggregator + `solarRecComputedArtifacts`
+  cache, or add a paginated fact-table read when the response would
+  otherwise be row-shaped / high-cardinality. Do **not** extend
+  `getSystemSnapshot` for new tab work; it is one of the remaining
+  allowlisted oversized payloads and is being retired, not expanded.
+  The canonical templates are `buildDeliveryTrackerData.ts` (single-
   dataset, Date round-trip via superjson) and
   `buildContractVintageAggregates.ts` (multi-dataset, joins through
   the system snapshot's eligibility filter).
@@ -1007,16 +1009,19 @@ expected post-upload state even with no chunked blob present.
    is for normal-but-noteworthy events; persistence failures are
    `console.error` and surface to the client response.
 5. **Default Overview mount must not enable any allowlisted heavy
-   procedure.** The 4 currently allowlisted procs are
-   `getSystemSnapshot`, `getDashboardOverviewSummary`,
-   `getDashboardChangeOwnership`, and
-   `getDashboardOfflineMonitoring`. They are gated behind tab-active flags +
-   `hasUserInteractedWithDashboard`. `getDashboardFinancials` is
-   not on the allowlist (its response is bounded), but it's heavy
-   enough that it follows the same gating: enabled only on
-   Financials/Pipeline tab activation. The Overview mount path
-   reads only `getDashboardSummary` + `getDashboardFinancialKpiSummary`
-   (slim, cache-only). Regression rails live in
+   procedure.** The 2 currently allowlisted procs are
+   `getSystemSnapshot` and `getDashboardOfflineMonitoring`.
+   `getDashboardOverviewSummary` and `getDashboardChangeOwnership`
+   are retired from the allowlist; do not re-add them as live heavy
+   mount paths. The remaining allowlisted procedures are gated
+   behind tab-active flags + `hasUserInteractedWithDashboard`, or
+   behind a narrower tab-specific predicate when generic interaction
+   would be too broad. `getDashboardFinancials` is not on the
+   allowlist (its response is bounded), but it's heavy enough that
+   it follows the same gating: enabled only on Financials/Pipeline
+   tab activation. The Overview mount path reads only
+   `getDashboardSummary` + `getDashboardFinancialKpiSummary` (slim,
+   cache-only). Regression rails live in
    `client/src/solar-rec-dashboard/lib/dashboardMountResilience.test.ts`.
 6. **CSV export procs do not flip
    `hasUserInteractedWithDashboard`.** A CSV-tile click is a

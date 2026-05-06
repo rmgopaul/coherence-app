@@ -800,6 +800,27 @@ describe("CLAUDE.md drift", () => {
     expect(claudeMd).toMatch(sentence);
   });
 
+  it("documents the same live allowlist entries in hard rule 5", () => {
+    const hardRule = claudeMd.match(
+      /5\. \*\*Default Overview mount must not enable any allowlisted heavy[\s\S]*?(?=\n6\. \*\*)/
+    )?.[0];
+    expect(hardRule).toBeDefined();
+
+    const currentSentence = hardRule!.match(
+      /The\s+(?:\d+|[A-Z][a-z]+)\s+currently allowlisted procs are([\s\S]*?)\./
+    )?.[1];
+    expect(currentSentence).toBeDefined();
+
+    const liveProcNames = [...DASHBOARD_OVERSIZE_ALLOWLIST].map(
+      (path) => path.split(".").at(-1)!
+    );
+    for (const procName of liveProcNames) {
+      expect(currentSentence).toContain(`\`${procName}\``);
+    }
+    expect(currentSentence).not.toContain("getDashboardOverviewSummary");
+    expect(currentSentence).not.toContain("getDashboardChangeOwnership");
+  });
+
   it("does NOT reference the retired CSV export procs as live", () => {
     // A future PR adding a NEW table row that names these procs as
     // current would re-confuse readers. The prose may mention them
@@ -821,6 +842,13 @@ describe("CLAUDE.md drift", () => {
   it("documents the new background-job procs as the replacement", () => {
     expect(claudeMd).toMatch(/startDashboardCsvExport/);
     expect(claudeMd).toMatch(/getDashboardCsvExportJobStatus/);
+  });
+
+  it("does not tell future tab work to expand getSystemSnapshot", () => {
+    expect(claudeMd).not.toMatch(
+      /Aggregates\s+→\s+extend\s+`getSystemSnapshot`/
+    );
+    expect(claudeMd).toMatch(/Do \*\*not\*\* extend\s+`getSystemSnapshot`/);
   });
 });
 
