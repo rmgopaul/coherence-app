@@ -3273,6 +3273,9 @@ export const solarRecDashboardRouter = t.router({
         z.object({
           exportType: z.literal("deliveryTrackerDetailCsv"),
         }),
+        z.object({
+          exportType: z.literal("deliveryTrackerUnmatchedTransfersCsv"),
+        }),
       ])
     )
     .mutation(async ({ ctx, input }) => {

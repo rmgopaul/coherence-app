@@ -3927,6 +3927,23 @@ export default function SolarRecDashboard() {
     });
   }, [runDashboardCsvExport]);
 
+  const downloadDeliveryTrackerUnmatchedTransfersCsv = useCallback(async () => {
+    await runDashboardCsvExport({
+      input: { exportType: "deliveryTrackerUnmatchedTransfersCsv" },
+      initialMessage:
+        "Preparing Delivery Tracker unmatched-transfer export...",
+      preparingMessage:
+        "Still preparing Delivery Tracker unmatched-transfer export - this can take a few minutes.",
+      successLabel: "Delivery Tracker unmatched transfers",
+      noun: "row",
+      noRowsMessage:
+        "No unmatched Delivery Tracker transfer rows are available to export.",
+      failureMessage:
+        "Failed to export Delivery Tracker unmatched-transfer CSV.",
+      consoleTag: "delivery-tracker-unmatched-csv-export",
+    });
+  }, [runDashboardCsvExport]);
+
   // downloadChangeOwnershipDetailFilteredCsv — moved to @/solar-rec-dashboard/components/ChangeOwnershipTab
 
   // zeroReportingInstallerPlatformRows, downloadOfflineSystemsCsv, downloadOfflineDetailFilteredCsv
@@ -6225,6 +6242,9 @@ const aiDataContext = useMemo(() => {
                 <DeliveryTrackerTabLazy
                   deliveryTrackerData={deliveryTrackerData}
                   onExportDetailCsv={downloadDeliveryTrackerDetailCsv}
+                  onExportUnmatchedTransfersCsv={
+                    downloadDeliveryTrackerUnmatchedTransfersCsv
+                  }
                   scheduleBImportSlot={
                   <>
                     {/* ── Schedule B PDF Import ────────────────────────── */}

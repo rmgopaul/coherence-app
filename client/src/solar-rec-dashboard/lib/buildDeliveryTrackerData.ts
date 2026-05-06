@@ -85,27 +85,6 @@ export type FlaggedSchedule = {
   outOfBoundsYears: OutOfBoundsYear[];
 };
 
-/**
- * String-union of every transfer-classification bucket the export
- * (and UI) can emit. Use the `BUCKET` constant below rather than the
- * bare string literal so typos are caught by the compiler.
- */
-export type TransferBucket =
-  | "missing_schedule_b"
-  | "pre_delivery_schedule"
-  | "year_mismatch";
-
-/**
- * Canonical names for each transfer-classification bucket. Referenced
- * by the CSV export, the card description, and any consumer that has
- * to emit / compare the bucket name.
- */
-export const BUCKET = {
-  missingScheduleB: "missing_schedule_b",
-  preDeliverySchedule: "pre_delivery_schedule",
-  yearMismatch: "year_mismatch",
-} as const satisfies Record<string, TransferBucket>;
-
 export type DeliveryTrackerData = {
   rows: DeliveryTrackerRow[];
   /**
@@ -128,6 +107,12 @@ export type DeliveryTrackerData = {
   scheduleIdSample: string[];
   transferIdSample: string[];
   scheduleCount: number;
+  diagnosticRowLimit: number | null;
+  diagnosticRowsTruncated: boolean;
+  missingObligationTrackingIdCount: number;
+  unmatchedByYearTrackingIdCount: number;
+  preDeliveryScheduleTrackingIdCount: number;
+  schedulesWithYearsOutsideBoundsCount: number;
   /**
    * Distinct tracking IDs that have at least one transfer in GATS
    * Transfer History but NO matching Schedule B obligation. These are
@@ -170,6 +155,12 @@ export const EMPTY_DELIVERY_TRACKER_DATA: DeliveryTrackerData = Object.freeze({
   scheduleIdSample: [],
   transferIdSample: [],
   scheduleCount: 0,
+  diagnosticRowLimit: null,
+  diagnosticRowsTruncated: false,
+  missingObligationTrackingIdCount: 0,
+  unmatchedByYearTrackingIdCount: 0,
+  preDeliveryScheduleTrackingIdCount: 0,
+  schedulesWithYearsOutsideBoundsCount: 0,
   transfersMissingObligation: [],
   transfersUnmatchedByYear: [],
   transfersPreDeliverySchedule: [],
@@ -465,6 +456,13 @@ export function buildDeliveryTrackerData(input: {
     scheduleIdSample,
     transferIdSample,
     scheduleCount: systemSchedules.size,
+    diagnosticRowLimit: null,
+    diagnosticRowsTruncated: false,
+    missingObligationTrackingIdCount: transfersMissingObligationCounts.size,
+    unmatchedByYearTrackingIdCount: transfersUnmatchedByYearCounts.size,
+    preDeliveryScheduleTrackingIdCount: transfersPreDeliveryScheduleCounts.size,
+    schedulesWithYearsOutsideBoundsCount:
+      schedulesWithYearsOutsideBoundsList.length,
     transfersMissingObligation: toSortedBucket(
       transfersMissingObligationCounts,
     ),
