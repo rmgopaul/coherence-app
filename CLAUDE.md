@@ -744,12 +744,12 @@ PR-A migration 0058). Implications:
   then uploaded from that temp file. The next storage-layer hardening
   step would stream directly into proxy storage without a local temp
   artifact.
-- **`storageDelete` proxy-mode is a logged no-op.** The Forge proxy
-  does not currently expose a DELETE endpoint in this repo
-  (`v1/storage/upload` and `v1/storage/downloadUrl` are wired;
-  `v1/storage/delete` is not). Local-mode deletes work. Until proxy-
-  mode delete lands, pruned-job artifacts persist in proxy mode
-  until the storage lifecycle policy reclaims them.
+- **Proxy-mode `storageDelete` remains best-effort.** Local-mode
+  deletes remove files immediately. Proxy-mode deletes call
+  `DELETE v1/storage/delete?path=...` with the Forge API key; if the
+  proxy rejects the call or the endpoint is unavailable, cleanup logs
+  and returns `{ deleted: false }` so callers keep operating and the
+  storage lifecycle policy can reclaim the artifact later.
 - **Heavy aggregator dependency.** Ownership/change-ownership exports invoke
   `getOrBuildOverviewSummary` / `getOrBuildChangeOwnership` to get
   the source rows. On a cold cache that re-scans the raw `srDs*`
