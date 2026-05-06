@@ -47,6 +47,7 @@ import {
   buildEgaugeRegisterTimeExpression,
   EGAUGE_DEFAULT_BASE_URL,
   EGAUGE_PORTFOLIO_BASE_URL,
+  getEgaugeRegisterLatest,
   getEgaugeSystemInfo,
   normalizeEgaugeBaseUrl,
   normalizeEgaugePortfolioBaseUrl,
@@ -1396,6 +1397,250 @@ describe("getEgaugeSystemInfo (integration)", () => {
     );
     await expect(getEgaugeSystemInfo(CREDENTIAL_CONTEXT)).rejects.toThrow(
       /500/
+    );
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────
+// getEgaugeRegisterLatest — integration tests w/ fetch mock
+// (Concern #1 slice 4e PR-A — eGauge `/api/register` endpoint, the
+//  data path the monitoring scheduler hits per meter)
+// ────────────────────────────────────────────────────────────────────
+
+describe("getEgaugeRegisterLatest (integration)", () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  // ── public access mode (single fetch) ────────────────────────────
+
+  it("public mode: single GET to /api/register returns parsed register data", async () => {
+    fetchMock.mockResolvedValueOnce(
+      buildEgaugeResponse({
+        ok: true,
+        body: JSON.stringify({
+          registers: [
+            { name: "Solar+", value: 1234567 },
+            { name: "Grid", value: 9876 },
+          ],
+        }),
+      })
+    );
+    const result = await getEgaugeRegisterLatest(PUBLIC_CONTEXT);
+    expect(result.registerCount).toBe(2);
+    expect(result.accessType).toBe("public");
+    expect(result.baseUrl).toBe("https://meter.d.egauge.net");
+    expect(result.register).toBeNull();
+    expect(result.includeRate).toBe(false);
+    expect(result.raw).toEqual({
+      registers: [
+        { name: "Solar+", value: 1234567 },
+        { name: "Grid", value: 9876 },
+      ],
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("public mode: hits /api/register (NOT /api/auth/* in public mode)", async () => {
+    fetchMock.mockResolvedValueOnce(
+      buildEgaugeResponse({
+        ok: true,
+        body: JSON.stringify({ registers: [] }),
+      })
+    );
+    await getEgaugeRegisterLatest(PUBLIC_CONTEXT);
+    const [url, init] = fetchMock.mock.calls[0];
+    const parsed = new URL(url as string);
+    expect(parsed.pathname).toBe("/api/register");
+    const headers = (init as RequestInit).headers as Record<string, string>;
+    expect(headers["Authorization"]).toBeUndefined();
+    expect(headers["Accept"]).toBe("application/json");
+  });
+
+  it("public mode: passes `reg` query param when register option is set", async () => {
+    fetchMock.mockResolvedValueOnce(
+      buildEgaugeResponse({
+        ok: true,
+        body: JSON.stringify({ registers: [] }),
+      })
+    );
+    await getEgaugeRegisterLatest(PUBLIC_CONTEXT, { register: "Solar+" });
+    const url = new URL(fetchMock.mock.calls[0][0] as string);
+    expect(url.searchParams.get("reg")).toBe("Solar+");
+    // No `rate` param when includeRate is unset.
+    expect(url.searchParams.has("rate")).toBe(false);
+  });
+
+  it("public mode: passes `rate=1` query param when includeRate is true", async () => {
+    fetchMock.mockResolvedValueOnce(
+      buildEgaugeResponse({
+        ok: true,
+        body: JSON.stringify({ registers: [] }),
+      })
+    );
+    await getEgaugeRegisterLatest(PUBLIC_CONTEXT, { includeRate: true });
+    const url = new URL(fetchMock.mock.calls[0][0] as string);
+    expect(url.searchParams.get("rate")).toBe("1");
+  });
+
+  it("public mode: omits empty `reg` param (no '?reg=' in URL)", async () => {
+    // Defends against a regression where an empty `register` value
+    // sends `?reg=` to the meter, which some firmware versions treat
+    // as "select an empty register" and return 400.
+    fetchMock.mockResolvedValueOnce(
+      buildEgaugeResponse({
+        ok: true,
+        body: JSON.stringify({ registers: [] }),
+      })
+    );
+    await getEgaugeRegisterLatest(PUBLIC_CONTEXT, { register: "   " });
+    const url = new URL(fetchMock.mock.calls[0][0] as string);
+    expect(url.searchParams.has("reg")).toBe(false);
+  });
+
+  it("public mode: registerCount extracted from top-level array payload", async () => {
+    fetchMock.mockResolvedValueOnce(
+      buildEgaugeResponse({
+        ok: true,
+        body: JSON.stringify([1, 2, 3, 4, 5]),
+      })
+    );
+    const result = await getEgaugeRegisterLatest(PUBLIC_CONTEXT);
+    expect(result.registerCount).toBe(5);
+  });
+
+  it("public mode: registerCount extracted from `regs` field (alternate shape)", async () => {
+    fetchMock.mockResolvedValueOnce(
+      buildEgaugeResponse({
+        ok: true,
+        body: JSON.stringify({ regs: [1, 2, 3] }),
+      })
+    );
+    const result = await getEgaugeRegisterLatest(PUBLIC_CONTEXT);
+    expect(result.registerCount).toBe(3);
+  });
+
+  it("public mode: registerCount extracted from `values` field (alternate shape)", async () => {
+    fetchMock.mockResolvedValueOnce(
+      buildEgaugeResponse({
+        ok: true,
+        body: JSON.stringify({ values: [10, 20] }),
+      })
+    );
+    const result = await getEgaugeRegisterLatest(PUBLIC_CONTEXT);
+    expect(result.registerCount).toBe(2);
+  });
+
+  it("public mode: registerCount extracted from nested `data.registers` envelope", async () => {
+    fetchMock.mockResolvedValueOnce(
+      buildEgaugeResponse({
+        ok: true,
+        body: JSON.stringify({ data: { registers: [1, 2, 3, 4] } }),
+      })
+    );
+    const result = await getEgaugeRegisterLatest(PUBLIC_CONTEXT);
+    expect(result.registerCount).toBe(4);
+  });
+
+  it("public mode: registerCount is null when payload has no recognizable list", async () => {
+    fetchMock.mockResolvedValueOnce(
+      buildEgaugeResponse({
+        ok: true,
+        body: JSON.stringify({ unrelated: "value" }),
+      })
+    );
+    const result = await getEgaugeRegisterLatest(PUBLIC_CONTEXT);
+    expect(result.registerCount).toBeNull();
+  });
+
+  it("public mode: surfaces non-OK response as a thrown error", async () => {
+    fetchMock.mockResolvedValueOnce(
+      buildEgaugeResponse({
+        ok: false,
+        status: 503,
+        statusText: "Service Unavailable",
+      })
+    );
+    await expect(getEgaugeRegisterLatest(PUBLIC_CONTEXT)).rejects.toThrow(
+      /503/
+    );
+  });
+
+  // ── credential mode (auth flow already covered exhaustively in
+  //    the getEgaugeSystemInfo block; here we just verify the auth
+  //    flow chains correctly into /api/register specifically)
+
+  it("credential mode: completes the 3-step auth flow ending in GET /api/register with Bearer JWT", async () => {
+    // 1. Challenge
+    fetchMock.mockResolvedValueOnce(
+      buildEgaugeResponse({
+        ok: true,
+        body: JSON.stringify({ rlm: "egauge", nnc: "srv-nonce-1" }),
+      })
+    );
+    // 2. Login
+    fetchMock.mockResolvedValueOnce(
+      buildEgaugeResponse({
+        ok: true,
+        body: JSON.stringify({ jwt: "tok-register-1" }),
+      })
+    );
+    // 3. /api/register
+    fetchMock.mockResolvedValueOnce(
+      buildEgaugeResponse({
+        ok: true,
+        body: JSON.stringify({ registers: [{ name: "Solar+" }] }),
+      })
+    );
+    const result = await getEgaugeRegisterLatest(CREDENTIAL_CONTEXT, {
+      register: "Solar+",
+      includeRate: true,
+    });
+    expect(result.registerCount).toBe(1);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+
+    // Step 3 URL: /api/register with reg + rate query params + Bearer.
+    const sysUrl = new URL(fetchMock.mock.calls[2][0] as string);
+    expect(sysUrl.pathname).toBe("/api/register");
+    expect(sysUrl.searchParams.get("reg")).toBe("Solar+");
+    expect(sysUrl.searchParams.get("rate")).toBe("1");
+    const sysHeaders = (fetchMock.mock.calls[2][1] as RequestInit)
+      .headers as Record<string, string>;
+    expect(sysHeaders["Authorization"]).toBe("Bearer tok-register-1");
+  });
+
+  it("credential mode: surfaces /api/register 401 after successful auth as a thrown error", async () => {
+    // Auth succeeds, but the register endpoint returns 401 (e.g. token
+    // expired between login and the register call). The client doesn't
+    // retry on 401 — it surfaces the error.
+    fetchMock.mockResolvedValueOnce(
+      buildEgaugeResponse({
+        ok: true,
+        body: JSON.stringify({ rlm: "r", nnc: "n" }),
+      })
+    );
+    fetchMock.mockResolvedValueOnce(
+      buildEgaugeResponse({
+        ok: true,
+        body: JSON.stringify({ jwt: "tok" }),
+      })
+    );
+    fetchMock.mockResolvedValueOnce(
+      buildEgaugeResponse({
+        ok: false,
+        status: 401,
+        statusText: "Unauthorized",
+      })
+    );
+    await expect(getEgaugeRegisterLatest(CREDENTIAL_CONTEXT)).rejects.toThrow(
+      /401/
     );
   });
 });
