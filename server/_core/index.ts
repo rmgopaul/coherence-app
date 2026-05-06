@@ -12,6 +12,7 @@ import { serveStatic, setupVite } from "./vite";
 import { startNightlySnapshotScheduler } from "./nightlySnapshotScheduler";
 import { startMonitoringScheduler } from "../solar/monitoringScheduler";
 import { startDatasetUploadStaleJobSweeper } from "../services/core/datasetUploadStaleJobSweeper";
+import { registerMonitoringDetailsBuildStep } from "../services/solar/buildDashboardMonitoringDetailsFacts";
 import { registerPinGate } from "./pinGate";
 import { registerSecurityMiddleware } from "./security";
 import {
@@ -155,6 +156,15 @@ async function createSolarRecMainContext(
 async function startServer() {
   assertServerRuntimeSafety();
   installFetchBandwidthDiagnostics();
+
+  // Phase 2 PR-C-2 (OOM rebuild) — register the dashboard build
+  // steps. The build runner is reactive (only fires when a tRPC
+  // mutation invokes `startDashboardBuild`), not periodic, so this
+  // registration is independent of `shouldMutateProdState()` —
+  // there's a human gate (the explicit "rebuild" action) that
+  // protects local-dev from accidental writes. Idempotent: subsequent
+  // server restarts re-register the same step without duplicating.
+  void registerMonitoringDetailsBuildStep();
 
   // Concern #4 PR-2 (per docs/triage/local-dev-prod-mutation-findings.md):
   // schedulers + the orphan-batch cleanup mutate prod state on every
