@@ -3118,8 +3118,17 @@ export const solarRecDashboardRouter = t.router({
    * `ownershipStackedChartRows` over in OverviewTab.
    *
    * Cache key bundles `abpReport` batch + system snapshot hash.
-   * superjson serde because `rows[i].{contractedDate,
-   * zillowSoldDate, latestReportingDate}` are `Date | null`.
+   *
+   * **Slim wire shape (Phase 2 PR-D-4, 2026-05-06).** The aggregator
+   * still computes per-system `rows: ChangeOwnershipExportRow[]`
+   * internally (the fact-table builder in PR-D-2 reads them) but
+   * the proc strips them from the wire response. The change-
+   * ownership tab + snapshot-log creation flow now read those rows
+   * via `getDashboardChangeOwnershipPage` (paginated, fact-table
+   * backed) instead of pulling them through this aggregator. The
+   * removal retires the `getDashboardChangeOwnership` entry from
+   * `DASHBOARD_OVERSIZE_ALLOWLIST`: pre-PR ~19 MB on prod →
+   * post-PR a few KB (summary + chart + counter).
    */
   getDashboardChangeOwnership: dashboardProcedure(
     "solar-rec-dashboard",
@@ -3136,8 +3145,15 @@ export const solarRecDashboardRouter = t.router({
       ctx.scopeId
     );
 
+    // Strip `rows` at the wire boundary: the aggregator still
+    // returns them (the fact-table builder + tests read them
+    // in-process), but no client path walks `result.rows` after
+    // this PR. Underscore-prefix on the discarded binding keeps
+    // tsc happy without changing the aggregator's return type.
+    const { rows: _rows, ...rest } = result;
+
     return {
-      ...result,
+      ...rest,
       fromCache,
       _runnerVersion: CHANGE_OWNERSHIP_RUNNER_VERSION,
     };
@@ -3540,8 +3556,11 @@ export const solarRecDashboardRouter = t.router({
    * Returns one page of fact rows ordered by `systemKey` (ASC) so
    * the cursor is stable across requests. Caller paginates by
    * passing the response's `nextCursor` back as the next
-   * request's `cursorAfter`. `nextCursor === null` means the last
-   * page has been reached.
+   * request's `cursor` input. `nextCursor === null` means the last
+   * page has been reached. The input field is named `cursor` (not
+   * `cursorAfter`) so the proc plays cleanly with tRPC v11's
+   * `useInfiniteQuery`, which auto-injects the cursor into the
+   * `cursor` field by convention (matches `getDatasetRowsPage`).
    *
    * Wire payload: bounded to 1000 rows × ~20 columns × free-form
    * text. Worst case ≈ 250 KB at limit=1000; default limit=200
@@ -3566,7 +3585,7 @@ export const solarRecDashboardRouter = t.router({
   )
     .input(
       z.object({
-        cursorAfter: z.string().min(1).max(128).nullable().optional(),
+        cursor: z.string().min(1).max(128).nullable().optional(),
         limit: z.number().int().min(1).max(1000).default(200),
       })
     )
@@ -3575,7 +3594,7 @@ export const solarRecDashboardRouter = t.router({
         "../db/dashboardMonitoringDetailsFacts"
       );
       const rows = await getMonitoringDetailsFactsPage(ctx.scopeId, {
-        cursorAfter: input.cursorAfter ?? null,
+        cursorAfter: input.cursor ?? null,
         limit: input.limit,
       });
       const nextCursor =
@@ -3602,8 +3621,11 @@ export const solarRecDashboardRouter = t.router({
    *
    * Returns one page of fact rows ordered by `systemKey` (ASC).
    * Caller paginates by passing the response's `nextCursor` back
-   * as the next request's `cursorAfter`. `nextCursor === null`
-   * signals end-of-stream.
+   * as the next request's `cursor` input. `nextCursor === null`
+   * signals end-of-stream. The input field is named `cursor` (not
+   * `cursorAfter`) so the proc plays cleanly with tRPC v11's
+   * `useInfiniteQuery`, which auto-injects the cursor into the
+   * `cursor` field by convention.
    *
    * **Status filter axis.** The ChangeOwnershipTab's primary
    * control is "show me X status" (Transferred and Reporting,
@@ -3631,7 +3653,7 @@ export const solarRecDashboardRouter = t.router({
   )
     .input(
       z.object({
-        cursorAfter: z.string().min(1).max(128).nullable().optional(),
+        cursor: z.string().min(1).max(128).nullable().optional(),
         limit: z.number().int().min(1).max(1000).default(200),
         // Match the wider ChangeOwnershipStatus union shipped by
         // the existing `startDashboardCsvExport` proc — same 7
@@ -3658,7 +3680,7 @@ export const solarRecDashboardRouter = t.router({
         "../db/dashboardChangeOwnershipFacts"
       );
       const rows = await getChangeOwnershipFactsPage(ctx.scopeId, {
-        cursorAfter: input.cursorAfter ?? null,
+        cursorAfter: input.cursor ?? null,
         limit: input.limit,
         status: input.status ?? null,
       });
@@ -3686,8 +3708,11 @@ export const solarRecDashboardRouter = t.router({
    *
    * Returns one page of fact rows ordered by `systemKey` (ASC).
    * Caller paginates by passing the response's `nextCursor` back
-   * as the next request's `cursorAfter`. `nextCursor === null`
-   * signals end-of-stream.
+   * as the next request's `cursor` input. `nextCursor === null`
+   * signals end-of-stream. The input field is named `cursor` (not
+   * `cursorAfter`) so the proc plays cleanly with tRPC v11's
+   * `useInfiniteQuery`, which auto-injects the cursor into the
+   * `cursor` field by convention.
    *
    * **Two filter axes — independent and combinable.**
    *   - `status` — the OverviewTab's primary control (Transferred
@@ -3724,7 +3749,7 @@ export const solarRecDashboardRouter = t.router({
   )
     .input(
       z.object({
-        cursorAfter: z.string().min(1).max(128).nullable().optional(),
+        cursor: z.string().min(1).max(128).nullable().optional(),
         limit: z.number().int().min(1).max(1000).default(200),
         // Match the 6-value `OwnershipStatus` union exactly. The DB
         // filter is an exact-match `WHERE ownershipStatus = ?`, so
@@ -3757,7 +3782,7 @@ export const solarRecDashboardRouter = t.router({
         "../db/dashboardOwnershipFacts"
       );
       const rows = await getOwnershipFactsPage(ctx.scopeId, {
-        cursorAfter: input.cursorAfter ?? null,
+        cursorAfter: input.cursor ?? null,
         limit: input.limit,
         status: input.status ?? null,
         source: input.source ?? null,

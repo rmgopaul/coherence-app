@@ -182,9 +182,14 @@ describe("dashboard request heap env helpers", () => {
 
 describe("DASHBOARD_OVERSIZE_ALLOWLIST", () => {
   it("contains exactly the documented set of known-oversized procedures", () => {
+    // `getDashboardChangeOwnership` was retired from this set in
+    // Phase 2 PR-D-4 (2026-05-06): PR strips `rows` at the wire
+    // boundary, slimming the response from ~19 MB to a few KB.
+    // The ChangeOwnershipTab + the snapshot-log creation flow now
+    // read those rows via `getDashboardChangeOwnershipPage`'s
+    // `useInfiniteQuery` walk.
     expect([...DASHBOARD_OVERSIZE_ALLOWLIST].sort()).toEqual(
       [
-        "solarRecDashboard.getDashboardChangeOwnership",
         "solarRecDashboard.getDashboardOfflineMonitoring",
         "solarRecDashboard.getDashboardOverviewSummary",
         "solarRecDashboard.getSystemSnapshot",

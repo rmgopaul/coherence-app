@@ -46,6 +46,7 @@ const OfflineMonitoringTabLazy = lazy(
 const ChangeOwnershipTabLazy = lazy(
   () => import("@/solar-rec-dashboard/components/ChangeOwnershipTab")
 );
+import type { ChangeOwnershipExportRow } from "@/solar-rec-dashboard/components/ChangeOwnershipTab";
 const OwnershipTabLazy = lazy(
   () => import("@/solar-rec-dashboard/components/OwnershipTab")
 );
@@ -527,6 +528,21 @@ function buildSystemSnapshotKey(system: {
   if (system.systemId) return `id:${system.systemId}`;
   if (system.trackingSystemRefId) return `tracking:${system.trackingSystemRefId}`;
   return `name:${system.systemName.toLowerCase()}`;
+}
+
+/**
+ * Convert a Drizzle `decimal(p, s)` wire value (`string | null`)
+ * back to `number | null` for the export-row contract the
+ * change-ownership tab + snapshot-log creation already consume.
+ *
+ * Mirrors the inverse of `numberToDecimalString` from PR-D-2's
+ * fact-table builder. Non-finite values nullify rather than
+ * silently coerce to NaN.
+ */
+function parseDecimalString(value: string | null): number | null {
+  if (value === null || value === undefined) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 // getMonitoringDetailsForSystem — moved to @/solar-rec-dashboard/lib/helpers
@@ -3462,14 +3478,34 @@ export default function SolarRecDashboard() {
 
   // filteredOwnershipRows — moved to @/solar-rec-dashboard/components/OwnershipTab
 
-  // Heavy change-ownership aggregator. Carries the full per-project
-  // `rows` array (~19 MB on prod, allowlisted). Slim mount summary
-  // already provides the counts/chart/headline `cooNot...` value
-  // Overview needs on first paint, so this query only fires when:
-  //   1. The Change Ownership tab is active (rows feed the tab's
-  //      detail table + CSV export), AND
-  //   2. The user has interacted (deep link to ?tab=change-ownership
-  //      does NOT auto-fire the all-row response on first paint).
+  // Change-ownership data flow (Phase 2 PR-D-4, 2026-05-06).
+  //
+  // Two queries, both gated on the Change Ownership tab being
+  // active AND the user having interacted with the dashboard:
+  //
+  //   1. `changeOwnershipQuery` — slim summary aggregator. Used to
+  //      ship `rows: ChangeOwnershipExportRow[]` (~19 MB on prod,
+  //      allowlisted). PR-D-4 strips `rows` at the wire boundary
+  //      so the response is now just summary/chart/headline (a
+  //      few KB). The slim mount summary still provides the same
+  //      headline fields for first paint, so this query only adds
+  //      project-level fidelity once the tab activates.
+  //
+  //   2. `changeOwnershipPagesQuery` — paginated read off the
+  //      `solarRecDashboardChangeOwnershipFacts` table the build
+  //      runner populates (PR-D-2). Auto-walks every page until
+  //      end-of-stream so the tab + snapshot-log creation get the
+  //      full row set without any single tRPC response exceeding
+  //      the 1 MB dashboard budget. Pages are flattened +
+  //      decimal-string-to-number-converted client-side back into
+  //      `ChangeOwnershipExportRow[]` shape so the tab API +
+  //      `createLogEntry` consumers don't change.
+  //
+  // The two queries fire together (same `enabled`) — the slim
+  // proc is cheap and warmth-of-cache decoupled from the page
+  // walk. Deep link to `?tab=change-ownership` does NOT auto-fire
+  // either response on first paint thanks to the
+  // `hasUserInteractedWithDashboard` gate.
   const changeOwnershipQuery =
     solarRecTrpc.solarRecDashboard.getDashboardChangeOwnership.useQuery(
       undefined,
@@ -3480,50 +3516,44 @@ export default function SolarRecDashboard() {
       }
     );
   type ChangeOwnershipData = NonNullable<typeof changeOwnershipQuery.data>;
-  const EMPTY_CHANGE_OWNERSHIP = useMemo<ChangeOwnershipData>(
+  const EMPTY_CHANGE_OWNERSHIP_SUMMARY = useMemo<
+    ChangeOwnershipData["summary"]
+  >(
     () => ({
-      rows: [],
-      summary: {
-        total: 0,
-        reporting: 0,
-        notReporting: 0,
-        reportingPercent: null,
-        contractedValueTotal: 0,
-        contractedValueReporting: 0,
-        contractedValueNotReporting: 0,
-        counts: CHANGE_OWNERSHIP_ORDER.map((status) => ({
-          status,
-          count: 0,
-          percent: null,
-        })),
-      },
-      cooNotTransferredNotReportingCurrentCount: 0,
-      ownershipStackedChartRows: [
-        {
-          label: "Reporting" as const,
-          notTransferred: 0,
-          transferred: 0,
-          changeOwnership: 0,
-        },
-        {
-          label: "Not Reporting" as const,
-          notTransferred: 0,
-          transferred: 0,
-          changeOwnership: 0,
-        },
-      ],
-      fromCache: false,
-      _runnerVersion: "client-empty",
+      total: 0,
+      reporting: 0,
+      notReporting: 0,
+      reportingPercent: null,
+      contractedValueTotal: 0,
+      contractedValueReporting: 0,
+      contractedValueNotReporting: 0,
+      counts: CHANGE_OWNERSHIP_ORDER.map((status) => ({
+        status,
+        count: 0,
+        percent: null,
+      })),
     }),
     []
   );
-  const changeOwnershipData = useMemo(
-    () => changeOwnershipQuery.data ?? EMPTY_CHANGE_OWNERSHIP,
-    [changeOwnershipQuery.data, EMPTY_CHANGE_OWNERSHIP]
+  const EMPTY_CHANGE_OWNERSHIP_CHART_ROWS = useMemo<
+    ChangeOwnershipData["ownershipStackedChartRows"]
+  >(
+    () => [
+      {
+        label: "Reporting" as const,
+        notTransferred: 0,
+        transferred: 0,
+        changeOwnership: 0,
+      },
+      {
+        label: "Not Reporting" as const,
+        notTransferred: 0,
+        transferred: 0,
+        changeOwnership: 0,
+      },
+    ],
+    []
   );
-  // `rows` is heavy detail (~19 MB on prod) — only present when the
-  // Change Ownership tab has activated and loaded the heavy query.
-  const changeOwnershipRows = changeOwnershipData.rows;
   // Summary / chart / headline fields prefer the heavy aggregator's
   // values when loaded (project-level fidelity for the Change
   // Ownership tab) and fall back to the slim mount summary's
@@ -3534,7 +3564,7 @@ export default function SolarRecDashboard() {
   // caveat docstring.
   const changeOwnershipSummary = changeOwnershipQuery.data
     ? changeOwnershipQuery.data.summary
-    : (slimSummary?.changeOwnership.summary ?? EMPTY_CHANGE_OWNERSHIP.summary);
+    : (slimSummary?.changeOwnership.summary ?? EMPTY_CHANGE_OWNERSHIP_SUMMARY);
   const cooNotTransferredNotReportingCurrentCount = changeOwnershipQuery.data
     ? changeOwnershipQuery.data.cooNotTransferredNotReportingCurrentCount
     : (slimSummary?.changeOwnership.cooNotTransferredNotReportingCurrentCount ??
@@ -3542,7 +3572,81 @@ export default function SolarRecDashboard() {
   const ownershipStackedChartRows = changeOwnershipQuery.data
     ? changeOwnershipQuery.data.ownershipStackedChartRows
     : (slimSummary?.changeOwnership.ownershipStackedChartRows ??
-      EMPTY_CHANGE_OWNERSHIP.ownershipStackedChartRows);
+      EMPTY_CHANGE_OWNERSHIP_CHART_ROWS);
+
+  // Paginated read of the change-ownership fact table. tRPC v11
+  // auto-injects the cursor into the proc's `cursor` input field
+  // (matches `getDatasetRowsPage` convention). The auto-fetch
+  // useEffect below walks every page until `hasNextPage === false`
+  // so consumers see a single flattened row set, just like before
+  // PR-D-4 — but the wire payload per response stays under 1 MB.
+  const changeOwnershipPagesQuery =
+    solarRecTrpc.solarRecDashboard.getDashboardChangeOwnershipPage.useInfiniteQuery(
+      { limit: 500 },
+      {
+        staleTime: 60_000,
+        enabled:
+          isChangeOwnershipTabActive && hasUserInteractedWithDashboard,
+        getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
+        initialCursor: null,
+      }
+    );
+  useEffect(() => {
+    if (
+      changeOwnershipPagesQuery.hasNextPage &&
+      !changeOwnershipPagesQuery.isFetchingNextPage
+    ) {
+      void changeOwnershipPagesQuery.fetchNextPage();
+    }
+  }, [
+    changeOwnershipPagesQuery.hasNextPage,
+    changeOwnershipPagesQuery.isFetchingNextPage,
+    changeOwnershipPagesQuery.fetchNextPage,
+  ]);
+
+  // Convert `decimal(18,4)` columns from the fact table's wire
+  // shape (`string | null`) back to `number | null` for the export
+  // row contract the tab + `createLogEntry` already consume. NaN
+  // and Infinity protection mirrors the server-side
+  // `numberToDecimalString` shim from PR-D-2 in reverse.
+  const changeOwnershipRows = useMemo<ChangeOwnershipExportRow[]>(() => {
+    const pages = changeOwnershipPagesQuery.data?.pages ?? [];
+    const result: ChangeOwnershipExportRow[] = [];
+    for (const page of pages) {
+      for (const row of page.rows) {
+        result.push({
+          key: row.systemKey,
+          systemName: row.systemName,
+          systemId: row.systemId,
+          trackingSystemRefId: row.trackingSystemRefId,
+          installedKwAc: parseDecimalString(row.installedKwAc),
+          contractType: row.contractType,
+          contractStatusText: row.contractStatusText,
+          contractedDate: row.contractedDate,
+          zillowStatus: row.zillowStatus,
+          zillowSoldDate: row.zillowSoldDate,
+          latestReportingDate: row.latestReportingDate,
+          changeOwnershipStatus: row.changeOwnershipStatus as ChangeOwnershipStatus,
+          ownershipStatus: row.ownershipStatus as OwnershipStatus,
+          isReporting: row.isReporting,
+          isTerminated: row.isTerminated,
+          isTransferred: row.isTransferred,
+          hasChangedOwnership: row.hasChangedOwnership,
+          totalContractAmount: parseDecimalString(row.totalContractAmount),
+          contractedValue: parseDecimalString(row.contractedValue),
+        });
+      }
+    }
+    return result;
+  }, [changeOwnershipPagesQuery.data]);
+
+  // Snapshot-log creation needs the full row set. Treat the
+  // infinite query as "ready" only when the walk has reached
+  // end-of-stream — `hasNextPage` flips to `false` and the query
+  // is in a success state.
+  const isChangeOwnershipPagesComplete =
+    changeOwnershipPagesQuery.status === "success" &&
+    !changeOwnershipPagesQuery.hasNextPage;
 
   // filteredChangeOwnershipRows — moved to @/solar-rec-dashboard/components/ChangeOwnershipTab
 
@@ -4840,6 +4944,19 @@ export default function SolarRecDashboard() {
         ready: false,
         reason:
           "Open the Change Ownership tab to load project rows before snapshotting.",
+      };
+    }
+    // Snapshot needs the FULL flattened row set (createLogEntry
+    // walks `cooRows` to derive `cooStatuses`). The infinite query
+    // walks pages until `hasNextPage` flips to false; the readiness
+    // discriminator gates on that terminal state — not just
+    // `status === "success"`, which would fire after the first page
+    // alone.
+    if (!isChangeOwnershipPagesComplete) {
+      return {
+        ready: false,
+        reason:
+          "Loading change-ownership rows… try again in a moment.",
       };
     }
     if (offlineMonitoringQuery.status !== "success") {

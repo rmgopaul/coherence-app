@@ -65,6 +65,16 @@ export const DASHBOARD_REQUEST_HEAP_AFTER_WARN_BYTES_DEFAULT =
  *     background-job flow with `exportType: "datasetCsv"`. The full
  *     raw dataset CSV is written to storage and downloaded by URL
  *     instead of crossing tRPC as a string.
+ *   - `solarRecDashboard.getDashboardChangeOwnership` — Phase 2
+ *     PR-D-4 stripped `rows: ChangeOwnershipExportRow[]` from the
+ *     wire shape (~19 MB on prod). The ChangeOwnershipTab + the
+ *     snapshot-log creation flow now read those rows via
+ *     `getDashboardChangeOwnershipPage`'s `useInfiniteQuery` walk
+ *     (each page bounded under 1 MB; backed by the
+ *     `solarRecDashboardChangeOwnershipFacts` table the build
+ *     runner populates). The slim aggregator response is now a
+ *     few KB (summary + chart + counter) and stays well under the
+ *     1 MB budget without an allowlist entry.
  */
 export const DASHBOARD_OVERSIZE_ALLOWLIST: ReadonlySet<string> = new Set([
   // Returns the full pre-computed system record set; rebuild plan replaces
@@ -74,9 +84,6 @@ export const DASHBOARD_OVERSIZE_ALLOWLIST: ReadonlySet<string> = new Set([
   // Embeds `ownershipRows: OwnershipOverviewExportRow[]`; rebuild plan
   // splits into `getDashboardSummary` + `getDashboardOwnershipRowsPage`.
   "solarRecDashboard.getDashboardOverviewSummary",
-  // Embeds the full Change-of-Ownership row set; rebuild plan splits into
-  // `getDashboardChangeOwnershipRowsPage`.
-  "solarRecDashboard.getDashboardChangeOwnership",
   // Ships per-system lookup objects keyed by ~21k systems
   // (`monitoringDetailsBySystemKey` etc.); rebuild plan paginates via
   // `getDashboardMonitoringDetailsPage`.

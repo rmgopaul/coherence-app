@@ -670,7 +670,7 @@ in prod). Bounded responses look like this:
 | `debugDatasetPersistenceRaw` | Raw rows from every layer + verdict | ~2 KB |
 | `getDashboard<TabName>Aggregates` (DeliveryTracker / TrendDeliveryPace / TrendsProduction / ContractVintage / AppPipelineMonthly / AppPipelineCashFlow / PerformanceRatio / Forecast / Financials) | Per-tab aggregate result | ~10–500 KB |
 
-**Transitional reality: 4 procedures still ship oversized
+**Transitional reality: Three procedures still ship oversized
 responses.** They live in `DASHBOARD_OVERSIZE_ALLOWLIST`
 (`server/_core/dashboardResponseGuard.ts`) and are accepted as
 known regressions in warn mode. None of them fire on Overview
@@ -678,7 +678,7 @@ default mount — they're scoped behind tab-active gates +
 `hasUserInteractedWithDashboard`. Each entry is **unscheduled
 transitional debt** — a sketch of the replacement shape, NOT a
 committed delivery plan. None has a tracking issue or a target
-sprint as of 2026-05-04. Mark a row with the issue / phase / PR
+sprint as of 2026-05-06. Mark a row with the issue / phase / PR
 number when work actually gets scheduled; until then assume the
 sketch may stay aspirational indefinitely.
 
@@ -686,8 +686,19 @@ sketch may stay aspirational indefinitely.
 |---|---|---|
 | `solarRecDashboard.getSystemSnapshot` | Full pre-computed `SystemRecord[]` (~26 MB on prod) | Paginated `getDashboardSystemsPage` + a derived `solarRecDashboardSystemFacts` table; tab-specific reads would target only the columns they need. |
 | `solarRecDashboard.getDashboardOverviewSummary` | Heavy summary embedding `ownershipRows: OwnershipOverviewExportRow[]` (~5–15 MB) | Slim `getDashboardSummary` (already shipped, default mount) + a paginated `getDashboardOwnershipRowsPage` for the detail table. CSV export already moved off this proc — see the retired procs below. |
-| `solarRecDashboard.getDashboardChangeOwnership` | Per-project `rows: ChangeOwnershipExportRow[]` (~19 MB) | Slim Change-Ownership rollup (already in `getDashboardSummary`) + paginated `getDashboardChangeOwnershipRowsPage`. |
 | `solarRecDashboard.getDashboardOfflineMonitoring` | Per-system maps keyed by ~21k systems (`monitoringDetailsBySystemKey` etc.) | Paginated `getDashboardMonitoringDetailsPage` + per-system endpoint for drill-in. |
+
+**`getDashboardChangeOwnership` retired from the allowlist (Phase 2
+PR-D-4, 2026-05-06).** The proc previously embedded a per-project
+`rows: ChangeOwnershipExportRow[]` array (~19 MB on prod). PR-D-4
+strips `rows` at the wire boundary; the slim response (summary +
+chart + headline counter) is now a few KB. The ChangeOwnershipTab +
+the snapshot-log creation flow read those rows via
+`getDashboardChangeOwnershipPage`'s `useInfiniteQuery` walk
+(each page bounded under 1 MB; backed by the
+`solarRecDashboardChangeOwnershipFacts` table the build runner
+populates). The wire-payload regression that drove the allowlist
+entry is gone; the entry is removed.
 
 **Retired CSV-export procs** (PR #346, #347, follow-up):
 `exportOwnershipTileCsv` and `exportChangeOwnershipTileCsv` were
