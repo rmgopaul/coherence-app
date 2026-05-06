@@ -32,12 +32,19 @@ const DELIVERY_TRACKER_TAB_FILE = resolve(
   "components",
   "DeliveryTrackerTab.tsx"
 );
+const OWNERSHIP_TAB_FILE = resolve(
+  __dirname,
+  "..",
+  "components",
+  "OwnershipTab.tsx"
+);
 
 const SOURCE = readFileSync(DASHBOARD_FILE, "utf8");
 const DELIVERY_TRACKER_TAB_SOURCE = readFileSync(
   DELIVERY_TRACKER_TAB_FILE,
   "utf8"
 );
+const OWNERSHIP_TAB_SOURCE = readFileSync(OWNERSHIP_TAB_FILE, "utf8");
 
 /** Strip block + line comments so prose docstrings don't confuse the regex. */
 function codeOnly(): string {
@@ -77,6 +84,13 @@ describe("Solar REC dashboard mount: heavy-query gates", () => {
     // `isOfflineMonitoringHeavyNeeded` — that the gate references.
     expect(block!).toMatch(/isOfflineMonitoringHeavyNeeded/);
     expect(block!).toMatch(/hasUserInteractedWithDashboard/);
+  });
+
+  it("Ownership Status does not trigger the legacy offline-monitoring heavy query", () => {
+    const start = code.indexOf("const isOfflineMonitoringHeavyNeeded");
+    expect(start).toBeGreaterThan(-1);
+    const block = code.slice(start, start + 500);
+    expect(block).not.toMatch(/activeTab\s*===\s*["']ownership["']/);
   });
 
   it("getDashboardChangeOwnership is gated on isChangeOwnershipTabActive AND hasUserInteractedWithDashboard", () => {
@@ -719,6 +733,22 @@ describe("Solar REC dashboard mount: heavy-query gates", () => {
     expect(DELIVERY_TRACKER_TAB_SOURCE).not.toMatch(/BUCKET/);
     expect(DELIVERY_TRACKER_TAB_SOURCE).not.toMatch(
       /delivery-tracker-unmatched-transfers-/
+    );
+  });
+
+  it("Ownership Status tab reads the paginated fact proc instead of parent SystemRecord rows", () => {
+    expect(OWNERSHIP_TAB_SOURCE).toMatch(/getDashboardOwnershipPage\.useQuery/);
+    expect(OWNERSHIP_TAB_SOURCE).toMatch(/startDashboardBuild\.useMutation/);
+    expect(OWNERSHIP_TAB_SOURCE).not.toMatch(
+      /part2EligibleSystemsForSizeReporting/
+    );
+    expect(OWNERSHIP_TAB_SOURCE).not.toMatch(/SystemRecord/);
+    expect(OWNERSHIP_TAB_SOURCE).not.toMatch(
+      /\.slice\s*\(\s*0\s*,\s*500\s*\)/
+    );
+    expect(code).toMatch(/<OwnershipTabLazy\s*\/>/);
+    expect(code).not.toMatch(
+      /<OwnershipTabLazy[\s\S]{0,200}part2EligibleSystemsForSizeReporting/
     );
   });
 });
