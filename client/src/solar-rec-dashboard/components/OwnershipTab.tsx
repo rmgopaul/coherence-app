@@ -87,7 +87,12 @@ export default memo(function OwnershipTab() {
   const ownershipPageQuery =
     solarRecTrpc.solarRecDashboard.getDashboardOwnershipPage.useQuery(
       {
-        cursorAfter,
+        // Wire-level field is `cursor` (PR-D-4 renamed
+        // `cursorAfter` → `cursor` to match
+        // `getDatasetRowsPage` + the tRPC v11 `useInfiniteQuery`
+        // convention). Keep the local state name unchanged —
+        // it's an internal handle, not the wire contract.
+        cursor: cursorAfter,
         limit: OWNERSHIP_PAGE_SIZE,
         status: ownershipFilter === "All" ? null : ownershipFilter,
         source: sourceFilter === "All" ? null : sourceFilter,
