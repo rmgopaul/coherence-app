@@ -13,7 +13,7 @@
  *   - Auth gate regressions (e.g., a refactor that drops the
  *     `requirePermission("solar-rec-dashboard", "read")` gate).
  *   - Cursor-pagination contract drift (the client + server have
- *     to agree on `cursorAfter` / `nextCursor` / `hasMore`).
+ *     to agree on `cursor` / `nextCursor` / `hasMore`).
  *   - Missing `_runnerVersion` (Hard Rule #3 from CLAUDE.md).
  *   - Wire-payload-budget regressions (the limit max must stay
  *     bounded so no caller can request 50k rows).
@@ -47,8 +47,12 @@ describe("getDashboardMonitoringDetailsPage (source rail)", () => {
     );
   });
 
-  it("declares cursorAfter as a nullable optional string with maxLength 128 (matches systemKey column)", () => {
-    expect(proc!).toMatch(/cursorAfter:\s*z\.string\(\)/);
+  it("declares cursor as a nullable optional string with maxLength 128 (matches systemKey column)", () => {
+    // Field name `cursor` (not `cursorAfter`) so the proc plays
+    // cleanly with tRPC v11's `useInfiniteQuery`, which auto-injects
+    // the cursor into the input field whose name matches the
+    // convention.
+    expect(proc!).toMatch(/cursor:\s*z\.string\(\)/);
     expect(proc!).toMatch(/\.max\(128\)/);
     expect(proc!).toMatch(/\.nullable\(\)/);
   });

@@ -44,8 +44,12 @@ describe("getDashboardOwnershipPage (source rail)", () => {
     );
   });
 
-  it("declares cursorAfter as a nullable optional string with maxLength 128 (matches systemKey column)", () => {
-    expect(proc!).toMatch(/cursorAfter:\s*z\.string\(\)/);
+  it("declares cursor as a nullable optional string with maxLength 128 (matches systemKey column)", () => {
+    // Field name `cursor` (not `cursorAfter`) so the proc plays
+    // cleanly with tRPC v11's `useInfiniteQuery`, which auto-injects
+    // the cursor into the input field whose name matches the
+    // convention.
+    expect(proc!).toMatch(/cursor:\s*z\.string\(\)/);
     expect(proc!).toMatch(/\.max\(128\)/);
     expect(proc!).toMatch(/\.nullable\(\)/);
   });

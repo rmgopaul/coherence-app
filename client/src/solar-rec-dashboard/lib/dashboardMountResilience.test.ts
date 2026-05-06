@@ -89,6 +89,34 @@ describe("Solar REC dashboard mount: heavy-query gates", () => {
     expect(block!).toMatch(/hasUserInteractedWithDashboard/);
   });
 
+  it("getDashboardChangeOwnershipPage is gated on isChangeOwnershipTabActive AND hasUserInteractedWithDashboard (Phase 2 PR-D-4)", () => {
+    // PR-D-4 retired the heavy `rows` field from
+    // `getDashboardChangeOwnership` and moved row hydration onto
+    // a `useInfiniteQuery` walk of `getDashboardChangeOwnershipPage`.
+    // Both queries must stay gated identically — letting the
+    // paginated query slip past the interaction gate would re-
+    // ship the equivalent payload (just split across pages) on
+    // every dashboard mount.
+    const block = extractUseQueryBlock(
+      code,
+      "getDashboardChangeOwnershipPage.useInfiniteQuery"
+    );
+    expect(block).not.toBeNull();
+    expect(block!).toMatch(/isChangeOwnershipTabActive/);
+    expect(block!).toMatch(/hasUserInteractedWithDashboard/);
+  });
+
+  it("change-ownership snapshot readiness gates on the paginated walk reaching end-of-stream", () => {
+    // The infinite query reports `success` after the first page;
+    // createLogEntry needs the FULL flattened set. Gate must
+    // additionally check `!hasNextPage` (encoded as
+    // `isChangeOwnershipPagesComplete`) before the snapshot fires.
+    expect(code).toMatch(
+      /isChangeOwnershipPagesComplete\s*=[\s\S]{0,200}status\s*===\s*"success"[\s\S]{0,200}!\s*[\s\S]{0,40}hasNextPage/
+    );
+    expect(code).toMatch(/!\s*isChangeOwnershipPagesComplete/);
+  });
+
   it("useSystemSnapshot is invoked with a narrow tab-specific predicate, not generic interaction", () => {
     // Generic-interaction gates re-enable the legacy 26 MB
     // SystemRecord[] payload as soon as the user clicks anything.
