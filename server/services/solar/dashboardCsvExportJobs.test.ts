@@ -479,17 +479,26 @@ describe("dashboardCsvExportJobs — start (DB-backed)", () => {
 });
 
 describe("dashboardCsvExportJobs — runner: ownership-tile (DB-backed)", () => {
-  it("claims, runs aggregator + CSV builder + storagePut, marks succeeded", async () => {
+  it("claims, runs aggregator + CSV builder + storagePutFile, marks succeeded", async () => {
+    const storageMod = await import("../../storage");
     const jobId = await startAndRun(SCOPE, {
       exportType: "ownershipTile",
       tile: "reporting",
     });
     const status = await getCsvExportJobStatus(SCOPE, jobId);
     expect(status?.status).toBe("succeeded");
-    expect(status?.fileName).toMatch(/^ownership-status-reporting-\d{14}\.csv$/);
+    expect(status?.fileName).toMatch(
+      /^ownership-status-reporting-\d{14}\.csv$/
+    );
     expect(status?.url).toContain(`solar-rec-dashboard/${SCOPE}/exports/`);
     expect(status?.rowCount).toBe(1);
     expect(status?.error).toBeNull();
+    expect(storageMod.storagePutFile).toHaveBeenCalledWith(
+      expect.stringContaining(`${jobId}-`),
+      expect.stringContaining("ownership-status-reporting-"),
+      "text/csv; charset=utf-8"
+    );
+    expect(storageMod.storagePut).not.toHaveBeenCalled();
   });
 
   it("succeeds with rowCount=0 and url=null when the tile filter matches no rows", async () => {
@@ -501,12 +510,15 @@ describe("dashboardCsvExportJobs — runner: ownership-tile (DB-backed)", () => 
     expect(status?.status).toBe("succeeded");
     expect(status?.rowCount).toBe(0);
     expect(status?.url).toBeNull();
-    expect(status?.fileName).toMatch(/^ownership-status-terminated-\d{14}\.csv$/);
+    expect(status?.fileName).toMatch(
+      /^ownership-status-terminated-\d{14}\.csv$/
+    );
   });
 });
 
 describe("dashboardCsvExportJobs — runner: change-ownership-tile (DB-backed)", () => {
-  it("claims, runs change-ownership aggregator + CSV builder + storagePut", async () => {
+  it("claims, runs change-ownership aggregator + CSV builder + storagePutFile", async () => {
+    const storageMod = await import("../../storage");
     const jobId = await startAndRun(SCOPE, {
       exportType: "changeOwnershipTile",
       status: "Transferred and Reporting",
@@ -515,6 +527,12 @@ describe("dashboardCsvExportJobs — runner: change-ownership-tile (DB-backed)",
     expect(status?.status).toBe("succeeded");
     expect(status?.rowCount).toBe(1);
     expect(status?.url).toContain(`solar-rec-dashboard/${SCOPE}/exports/`);
+    expect(storageMod.storagePutFile).toHaveBeenCalledWith(
+      expect.stringContaining(`${jobId}-`),
+      expect.stringContaining("change-ownership-transferred-and-reporting-"),
+      "text/csv; charset=utf-8"
+    );
+    expect(storageMod.storagePut).not.toHaveBeenCalled();
   });
 
   it("legacy split-Terminated input resolves to rowCount=0 (no aggregator rows match)", async () => {
@@ -788,9 +806,9 @@ describe("dashboardCsvExportJobs — sweepStaleAndPruned", () => {
 });
 
 describe("dashboardCsvExportJobs — runner version + claim id", () => {
-  it("exports the v6 file-backed dataset CSV runner version", () => {
+  it("exports the v7 file-backed tile CSV runner version", () => {
     expect(DASHBOARD_CSV_EXPORT_RUNNER_VERSION).toBe(
-      "dashboard-csv-export-jobs-v6-file-backed-dataset-csv"
+      "dashboard-csv-export-jobs-v7-file-backed-tile-csv"
     );
   });
 
@@ -1286,25 +1304,27 @@ describe("dashboardCsvExportJobs — Codex P2: lost-claim success path cleans st
     expect(fakeFindById("completion-throws-after-put")?.status).toBe("failed");
   });
 
-  it("cleans a late storagePut artifact when the upload resolves after runner timeout", async () => {
+  it("cleans a late file-backed artifact when the upload resolves after runner timeout", async () => {
     vi.useFakeTimers();
     const storageMod = await import("../../storage");
-    const storagePut = storageMod.storagePut as unknown as ReturnType<
+    const storagePutFile = storageMod.storagePutFile as unknown as ReturnType<
       typeof vi.fn
     >;
     const storageDelete = storageMod.storageDelete as unknown as ReturnType<
       typeof vi.fn
     >;
     storageDelete.mockClear();
-    let resolveStoragePut: ((value: { key: string; url: string }) => void) | null =
-      null;
-    storagePut.mockImplementationOnce(
+    let resolveStoragePutFile:
+      | ((value: { key: string; url: string; bytes: number }) => void)
+      | null = null;
+    storagePutFile.mockImplementationOnce(
       (key: string) =>
         new Promise((resolve) => {
-          resolveStoragePut = () =>
+          resolveStoragePutFile = () =>
             resolve({
               key,
               url: `/_local_uploads/${key}`,
+              bytes: 395,
             });
         })
     );
@@ -1312,29 +1332,29 @@ describe("dashboardCsvExportJobs — Codex P2: lost-claim success path cleans st
     await dbHelpers.insertDashboardCsvExportJob({
       id: "late-put-timeout",
       scopeId: SCOPE,
-      input: { exportType: "ownershipTile", tile: "reporting" },
+      input: { exportType: "datasetCsv", datasetKey: "transferHistory" },
       status: "queued",
       runnerVersion: DASHBOARD_CSV_EXPORT_RUNNER_VERSION,
     });
 
     const runPromise = runCsvExportJob("late-put-timeout");
     await flushMicrotasks();
-    expect(resolveStoragePut).not.toBeNull();
+    expect(resolveStoragePutFile).not.toBeNull();
     await vi.advanceTimersByTimeAsync(__TEST_ONLY__.EXPORT_RUNNER_TIMEOUT_MS);
     await runPromise;
     expect(fakeFindById("late-put-timeout")?.status).toBe("failed");
     expect(storageDelete).not.toHaveBeenCalled();
 
-    resolveStoragePut!({
+    resolveStoragePutFile!({
       key: "unused",
       url: "/unused",
+      bytes: 395,
     });
     await flushMicrotasks();
     expect(
       storageDelete.mock.calls.some(
         (args) =>
-          typeof args[0] === "string" &&
-          args[0].includes("late-put-timeout")
+          typeof args[0] === "string" && args[0].includes("late-put-timeout")
       )
     ).toBe(true);
   });
@@ -1363,7 +1383,7 @@ describe("dashboardCsvExportJobs — Codex P2: lost-claim success path cleans st
     await dbHelpers.insertDashboardCsvExportJob({
       id: "late-complete-timeout",
       scopeId: SCOPE,
-      input: { exportType: "ownershipTile", tile: "reporting" },
+      input: { exportType: "datasetCsv", datasetKey: "transferHistory" },
       status: "queued",
       runnerVersion: DASHBOARD_CSV_EXPORT_RUNNER_VERSION,
     });

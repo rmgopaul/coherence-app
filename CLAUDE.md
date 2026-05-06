@@ -702,6 +702,11 @@ The worker pages through the active `srDs*` batch, spools the CSV to
 a temp file, uploads that file to storage, and returns only a slim
 status snapshot through tRPC.
 
+Ownership and change-ownership tile exports also upload file-backed
+artifacts from the worker. They still depend on the heavy cached
+aggregators for source rows, but the CSV artifact itself is no longer
+allocated as one full-size JS string before storage upload.
+
 | Replacement proc | Wire shape | Notes |
 |---|---|---|
 | `solarRecDashboard.startDashboardCsvExport` | Mutation, returns `{ jobId, _runnerVersion }` (~200 B). | Enqueues a CSV export job for the ownership tile, change-ownership tile, or raw dataset CSV. The MB-scale CSV no longer crosses tRPC. |
@@ -734,11 +739,11 @@ PR-A migration 0058). Implications:
 
 **Remaining background-job transitional debt:**
 
-- **Ownership/change-ownership exports still build the CSV string in
-  memory** before `storagePut`. Raw dataset CSV exports now spool
-  pages to a temp file and upload that file, so they no longer keep
-  the full CSV text in JS heap. True direct streaming to proxy
-  storage is still a future hardening step.
+- **True direct streaming to proxy storage is still future hardening.**
+  Dashboard CSV export artifacts are file-backed in the worker today,
+  then uploaded from that temp file. The next storage-layer hardening
+  step would stream directly into proxy storage without a local temp
+  artifact.
 - **`storageDelete` proxy-mode is a logged no-op.** The Forge proxy
   does not currently expose a DELETE endpoint in this repo
   (`v1/storage/upload` and `v1/storage/downloadUrl` are wired;

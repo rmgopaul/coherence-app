@@ -7,6 +7,7 @@
  * produces an empty CSV.
  */
 
+import { readFile, stat } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import type {
   ChangeOwnershipExportRow,
@@ -16,7 +17,9 @@ import type {
 import type { OwnershipOverviewExportRow } from "./buildOverviewSummaryAggregates";
 import {
   buildChangeOwnershipTileCsv,
+  buildChangeOwnershipTileCsvFile,
   buildOwnershipTileCsv,
+  buildOwnershipTileCsvFile,
 } from "./buildDashboardCsvExport";
 
 const FROZEN_TIME = "2026-05-02T12:34:56.000Z";
@@ -147,7 +150,11 @@ describe("buildOwnershipTileCsv", () => {
         ownershipStatus: "Terminated and Reporting",
       }),
     ];
-    const result = buildOwnershipTileCsv(onlyTerminated, "reporting", FROZEN_TIME);
+    const result = buildOwnershipTileCsv(
+      onlyTerminated,
+      "reporting",
+      FROZEN_TIME
+    );
     expect(result.rowCount).toBe(0);
     // Header line still present so the CSV is well-formed.
     expect(result.csv).toMatch(/^system_name,/);
@@ -197,6 +204,29 @@ describe("buildOwnershipTileCsv", () => {
     // The opening quote-escape applies because the cell contains
     // both a comma and a quote.
     expect(result.csv).toContain('"O\'Connor ""Solar"", LLC"');
+  });
+
+  it("file-backed helper writes the same CSV without returning a full CSV string", async () => {
+    const expected = buildOwnershipTileCsv(rows, "reporting", FROZEN_TIME);
+    const artifact = await buildOwnershipTileCsvFile(
+      rows,
+      "reporting",
+      FROZEN_TIME
+    );
+    const filePath = artifact.filePath!;
+
+    expect(artifact.rowCount).toBe(expected.rowCount);
+    expect(artifact.fileName).toBe(expected.fileName);
+    expect(artifact.csv).toBeUndefined();
+    expect(artifact.csvBytes).toBeGreaterThan(0);
+
+    try {
+      await expect(readFile(filePath, "utf8")).resolves.toBe(expected.csv);
+    } finally {
+      await artifact.cleanup?.();
+    }
+
+    await expect(stat(filePath)).rejects.toMatchObject({ code: "ENOENT" });
   });
 });
 
@@ -277,5 +307,32 @@ describe("buildChangeOwnershipTileCsv", () => {
     );
     expect(result.rowCount).toBe(0);
     expect(result.csv).toMatch(/^system_name,/);
+  });
+
+  it("file-backed helper writes the same CSV without returning a full CSV string", async () => {
+    const expected = buildChangeOwnershipTileCsv(
+      rows,
+      "Transferred and Reporting",
+      FROZEN_TIME
+    );
+    const artifact = await buildChangeOwnershipTileCsvFile(
+      rows,
+      "Transferred and Reporting",
+      FROZEN_TIME
+    );
+    const filePath = artifact.filePath!;
+
+    expect(artifact.rowCount).toBe(expected.rowCount);
+    expect(artifact.fileName).toBe(expected.fileName);
+    expect(artifact.csv).toBeUndefined();
+    expect(artifact.csvBytes).toBeGreaterThan(0);
+
+    try {
+      await expect(readFile(filePath, "utf8")).resolves.toBe(expected.csv);
+    } finally {
+      await artifact.cleanup?.();
+    }
+
+    await expect(stat(filePath)).rejects.toMatchObject({ code: "ENOENT" });
   });
 });
