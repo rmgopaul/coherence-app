@@ -36,15 +36,16 @@ const transferRow = (overrides: Partial<CsvRow> = {}): CsvRow => ({
 });
 
 describe("buildDeliveryTrackerData (server-side parity)", () => {
-  it("server entrypoint uses paged transferHistory reads and a compact detail preview", () => {
+  it("server entrypoint pages Schedule B + transferHistory and returns a compact detail preview", () => {
     const source = readFileSync(
       resolve(__dirname, "buildDeliveryTrackerData.ts"),
       "utf8"
     );
-    expect(source).toContain("deliveryTracker_compact_v3");
+    expect(source).toContain("deliveryTracker_compact_v4");
     expect(source).toContain("DELIVERY_TRACKER_DETAIL_PREVIEW_LIMIT");
+    expect(source).toContain("DELIVERY_TRACKER_SCHEDULE_PAGE_SIZE");
     expect(source).toContain("loadDatasetRowsPage(");
-    expect(source).not.toMatch(/loadDatasetRows\([\s\S]{0,160}srDsTransferHistory/);
+    expect(source).not.toMatch(/\bloadDatasetRows\s*\(/);
     expect(source).not.toContain("Promise.all([");
   });
 
@@ -132,6 +133,29 @@ describe("buildDeliveryTrackerData (server-side parity)", () => {
     });
     const accumulator = createDeliveryTrackerAccumulator(scheduleRows);
     transferRows.forEach((row) => accumulator.processTransferRow(row));
+    expect(accumulator.finish()).toEqual(arrayResult);
+  });
+
+  it("streaming accumulator accepts Schedule B rows incrementally", () => {
+    const scheduleRows = [
+      scheduleRow({ tracking_system_ref_id: "NON100" }),
+      scheduleRow({
+        tracking_system_ref_id: "NON101",
+        year1_quantity_required: "20",
+      }),
+    ];
+    const transferRows = [
+      transferRow({ "Unit ID": "NON100", Quantity: "5" }),
+      transferRow({ "Unit ID": "NON101", Quantity: "7" }),
+    ];
+    const arrayResult = buildDeliveryTrackerData({
+      scheduleRows,
+      transferRows,
+    });
+    const accumulator = createDeliveryTrackerAccumulator([]);
+    scheduleRows.forEach((row) => accumulator.processScheduleRow(row));
+    transferRows.forEach((row) => accumulator.processTransferRow(row));
+
     expect(accumulator.finish()).toEqual(arrayResult);
   });
 
