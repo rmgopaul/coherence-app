@@ -40,6 +40,9 @@ const fakeDb: FakeRow[] = [];
 const datasetCsvExportMocks = vi.hoisted(() => ({
   cleanup: vi.fn(async () => undefined),
 }));
+const deliveryTrackerDetailExportMocks = vi.hoisted(() => ({
+  cleanup: vi.fn(async () => undefined),
+}));
 
 function fakeReset(): void {
   fakeDb.length = 0;
@@ -302,6 +305,16 @@ vi.mock("./dashboardDatasetCsvExport", () => {
   };
 });
 
+vi.mock("./buildDeliveryTrackerData", () => ({
+  buildDeliveryTrackerDetailCsvExport: vi.fn(async (_scopeId: string) => ({
+    filePath: "/tmp/delivery-tracker-detail.csv",
+    fileName: "delivery-tracker-detail-20260506123456.csv",
+    rowCount: 2,
+    csvBytes: 123,
+    cleanup: deliveryTrackerDetailExportMocks.cleanup,
+  })),
+}));
+
 // Mock the db/_core import the service uses for the
 // `getDashboardCsvExportJobById` worker helper. The service
 // fetches by ID directly via Drizzle for that one path; we
@@ -352,6 +365,7 @@ import {
   type DashboardCsvExportInput,
 } from "./dashboardCsvExportJobs";
 import { buildDatasetCsvExport } from "./dashboardDatasetCsvExport";
+import { buildDeliveryTrackerDetailCsvExport } from "./buildDeliveryTrackerData";
 
 const SCOPE = "scope-A";
 const OTHER_SCOPE = "scope-B";
@@ -632,6 +646,30 @@ describe("dashboardCsvExportJobs — runner: dataset CSV (DB-backed)", () => {
   });
 });
 
+describe("dashboardCsvExportJobs — runner: Delivery Tracker detail CSV (DB-backed)", () => {
+  it("claims, runs the Delivery Tracker detail builder + file-backed storagePut", async () => {
+    const storageMod = await import("../../storage");
+    const jobId = await startAndRun(SCOPE, {
+      exportType: "deliveryTrackerDetailCsv",
+    });
+    const status = await getCsvExportJobStatus(SCOPE, jobId);
+
+    expect(buildDeliveryTrackerDetailCsvExport).toHaveBeenCalledWith(SCOPE);
+    expect(status?.status).toBe("succeeded");
+    expect(status?.fileName).toBe(
+      "delivery-tracker-detail-20260506123456.csv"
+    );
+    expect(status?.rowCount).toBe(2);
+    expect(status?.url).toContain(`solar-rec-dashboard/${SCOPE}/exports/`);
+    expect(storageMod.storagePutFile).toHaveBeenCalledWith(
+      expect.stringContaining(`${jobId}-`),
+      "/tmp/delivery-tracker-detail.csv",
+      "text/csv; charset=utf-8"
+    );
+    expect(deliveryTrackerDetailExportMocks.cleanup).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("dashboardCsvExportJobs — scope isolation (DB-backed)", () => {
   it("returns null when reading a job from a different scope", async () => {
     const jobId = await startAndRun(SCOPE, {
@@ -823,9 +861,9 @@ describe("dashboardCsvExportJobs — sweepStaleAndPruned", () => {
 });
 
 describe("dashboardCsvExportJobs — runner version + claim id", () => {
-  it("exports the v7 file-backed tile CSV runner version", () => {
+  it("exports the v8 Delivery Tracker detail CSV runner version", () => {
     expect(DASHBOARD_CSV_EXPORT_RUNNER_VERSION).toBe(
-      "dashboard-csv-export-jobs-v7-file-backed-tile-csv"
+      "dashboard-csv-export-jobs-v8-delivery-tracker-detail"
     );
   });
 
@@ -907,6 +945,13 @@ describe("dashboardCsvExportJobs — input JSON parsing", () => {
       exportType: "datasetCsv",
       datasetKey: "transferHistory",
     });
+  });
+
+  it("accepts deliveryTrackerDetailCsv shape", () => {
+    const result = __TEST_ONLY__.parseInputJson({
+      exportType: "deliveryTrackerDetailCsv",
+    });
+    expect(result).toEqual({ exportType: "deliveryTrackerDetailCsv" });
   });
 
   it("rejects unknown shapes", () => {

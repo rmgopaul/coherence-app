@@ -116,6 +116,49 @@ describe("buildDeliveryTrackerData (server-side parity)", () => {
     expect(accumulator.finish()).toEqual(arrayResult);
   });
 
+  it("writes full detail CSV from the accumulator even when preview rows are capped", async () => {
+    const accumulator = createDeliveryTrackerAccumulator(
+      [
+        scheduleRow({
+          tracking_system_ref_id: "NON100",
+          year1_quantity_required: "10",
+        }),
+        scheduleRow({
+          tracking_system_ref_id: "NON101",
+          year1_quantity_required: "20",
+          utility_contract_number: "493",
+        }),
+      ],
+      { detailRowLimit: 1 }
+    );
+    accumulator.processTransferRow(transferRow({ Quantity: "4" }));
+
+    const preview = accumulator.finish();
+    expect(preview.rows).toHaveLength(1);
+    expect(preview.detailRowCount).toBe(2);
+    expect(preview.detailRowsTruncated).toBe(true);
+
+    const artifact = await accumulator.writeDetailCsvFile(
+      "2026-05-06T12:34:56.000Z"
+    );
+    try {
+      expect(artifact.fileName).toBe(
+        "delivery-tracker-detail-20260506123456.csv"
+      );
+      expect(artifact.rowCount).toBe(2);
+      expect(artifact.csvBytes).toBeGreaterThan(0);
+      expect(artifact.filePath).toBeDefined();
+      const csv = readFileSync(artifact.filePath!, "utf8");
+      expect(csv).toContain(
+        "system_name,unit_id,contract,year,start_date,end_date,obligated,delivered,gap"
+      );
+      expect(csv).toContain("Test System,NON100,493,2024-2025");
+      expect(csv).toContain("Test System,NON101,493,2024-2025");
+    } finally {
+      await artifact.cleanup?.();
+    }
+  });
+
   it("regression guard: Schedule-B-style row without dates still emits obligation", () => {
     const data = buildDeliveryTrackerData({
       scheduleRows: [

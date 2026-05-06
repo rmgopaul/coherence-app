@@ -707,9 +707,15 @@ artifacts from the worker. They still depend on the heavy cached
 aggregators for source rows, but the CSV artifact itself is no longer
 allocated as one full-size JS string before storage upload.
 
+Delivery Tracker full System x Year detail export also uses the same
+background-job pair with
+`startDashboardCsvExport({ exportType: "deliveryTrackerDetailCsv" })`.
+The tab itself receives only a bounded preview; the full detail CSV is
+spooled server-side from `deliveryScheduleBase` + `transferHistory`.
+
 | Replacement proc | Wire shape | Notes |
 |---|---|---|
-| `solarRecDashboard.startDashboardCsvExport` | Mutation, returns `{ jobId, _runnerVersion }` (~200 B). | Enqueues a CSV export job for the ownership tile, change-ownership tile, or raw dataset CSV. The MB-scale CSV no longer crosses tRPC. |
+| `solarRecDashboard.startDashboardCsvExport` | Mutation, returns `{ jobId, _runnerVersion }` (~200 B). | Enqueues a CSV export job for the ownership tile, change-ownership tile, raw dataset CSV, or Delivery Tracker full detail CSV. The MB-scale CSV no longer crosses tRPC. |
 | `solarRecDashboard.getDashboardCsvExportJobStatus` | Query, returns a slim status snapshot (`status` ∈ `queued`/`running`/`succeeded`/`failed`/`notFound`, plus `fileName?`/`url?`/`rowCount?`/`error?`/timestamps). ~1 KB. | Client polls until terminal status, then `triggerUrlDownload`s the artifact URL. Cross-scope job IDs read as `notFound`. |
 
 **Phase 6 PR-B (DB-backed registry — DONE).** The

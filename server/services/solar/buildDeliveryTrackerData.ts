@@ -24,11 +24,15 @@
  */
 
 import { createHash } from "node:crypto";
+import { appendFile, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import {
   srDsDeliverySchedule,
   srDsTransferHistory,
 } from "../../../drizzle/schemas/solar";
 import { getActiveVersionsForKeys } from "../../db/solarRecDatasets";
+import { buildCsvText } from "../../routers/helpers/scheduleB";
 import {
   type CsvRow,
   clean,
@@ -173,6 +177,15 @@ type BuildDeliveryTrackerOptions = {
   detailRowLimit?: number | null;
 };
 
+export interface DeliveryTrackerDetailCsvArtifact {
+  csv?: string;
+  filePath?: string;
+  fileName: string;
+  rowCount: number;
+  csvBytes: number;
+  cleanup?: () => Promise<void>;
+}
+
 // ---------------------------------------------------------------------------
 // Pure aggregator — identical logic to the client version. Tested by the
 // sibling `.test.ts`.
@@ -202,6 +215,9 @@ export function createDeliveryTrackerAccumulator(
 ): {
   processTransferRow: (row: CsvRow) => void;
   finish: () => DeliveryTrackerData;
+  writeDetailCsvFile: (
+    generatedAtIso?: string
+  ) => Promise<DeliveryTrackerDetailCsvArtifact>;
 } {
   const detailRowLimit = options.detailRowLimit ?? null;
 
@@ -394,18 +410,7 @@ export function createDeliveryTrackerAccumulator(
 
     systemSchedules.forEach((schedule) => {
       for (const year of schedule.years) {
-        const gap = year.obligated - year.delivered;
-        const detailRow: DeliveryTrackerRow = {
-          systemName: schedule.systemName,
-          unitId: schedule.unitId,
-          contractId: schedule.contractId,
-          yearLabel: year.yearLabel,
-          yearStart: year.yearStart,
-          yearEnd: year.yearEnd,
-          obligated: year.obligated,
-          delivered: year.delivered,
-          gap,
-        };
+        const detailRow = buildDetailRow(schedule, year);
         detailRowCount += 1;
         if (detailRowLimit === null || rows.length < detailRowLimit) {
           rows.push(detailRow);
@@ -421,7 +426,7 @@ export function createDeliveryTrackerAccumulator(
         };
         c.totalObligated += year.obligated;
         c.totalDelivered += year.delivered;
-        c.totalGap += gap;
+        c.totalGap += detailRow.gap;
         contractAgg.set(schedule.contractId, c);
       }
       const c = contractAgg.get(schedule.contractId);
@@ -462,7 +467,125 @@ export function createDeliveryTrackerAccumulator(
     };
   };
 
-  return { processTransferRow, finish };
+  const writeDetailCsvFile = async (
+    generatedAtIso: string = new Date().toISOString()
+  ): Promise<DeliveryTrackerDetailCsvArtifact> => {
+    const fileName = `delivery-tracker-detail-${timestampForCsvFileName(
+      generatedAtIso
+    )}.csv`;
+    if (systemSchedules.size === 0) {
+      return { csv: "", fileName, rowCount: 0, csvBytes: 0 };
+    }
+
+    let tempDir: string | null = null;
+    let wroteFirstChunk = false;
+    let rowCount = 0;
+    const buffer: Record<string, string>[] = [];
+
+    async function flush(): Promise<void> {
+      if (!tempDir || buffer.length === 0) return;
+      const text = buildCsvText(DELIVERY_TRACKER_DETAIL_CSV_HEADERS, buffer);
+      if (!wroteFirstChunk) {
+        await writeFile(path.join(tempDir, fileName), text, "utf8");
+        wroteFirstChunk = true;
+      } else {
+        const newlineIdx = text.indexOf("\n");
+        const body = newlineIdx >= 0 ? text.slice(newlineIdx + 1) : "";
+        await appendFile(path.join(tempDir, fileName), `\n${body}`, "utf8");
+      }
+      buffer.length = 0;
+    }
+
+    try {
+      tempDir = await mkdtemp(path.join(tmpdir(), "solar-rec-delivery-detail-"));
+      const schedules = Array.from(systemSchedules.values());
+      for (const schedule of schedules) {
+        for (const year of schedule.years) {
+          buffer.push(detailRowToCsvRecord(buildDetailRow(schedule, year)));
+          rowCount += 1;
+          if (buffer.length >= DELIVERY_TRACKER_DETAIL_CSV_CHUNK_ROWS) {
+            await flush();
+          }
+        }
+      }
+      await flush();
+
+      if (rowCount === 0 || !wroteFirstChunk) {
+        await rm(tempDir, { recursive: true, force: true });
+        tempDir = null;
+        return { csv: "", fileName, rowCount: 0, csvBytes: 0 };
+      }
+
+      const filePath = path.join(tempDir, fileName);
+      const csvBytes = (await stat(filePath)).size;
+      const cleanup = async () => {
+        if (!tempDir) return;
+        await rm(tempDir, { recursive: true, force: true });
+        tempDir = null;
+      };
+
+      return { filePath, fileName, rowCount, csvBytes, cleanup };
+    } catch (err) {
+      if (tempDir) {
+        await rm(tempDir, { recursive: true, force: true }).catch(
+          () => undefined
+        );
+      }
+      throw err;
+    }
+  };
+
+  return { processTransferRow, finish, writeDetailCsvFile };
+}
+
+function buildDetailRow(
+  schedule: SystemSchedule,
+  year: YearSlot
+): DeliveryTrackerRow {
+  const gap = year.obligated - year.delivered;
+  return {
+    systemName: schedule.systemName,
+    unitId: schedule.unitId,
+    contractId: schedule.contractId,
+    yearLabel: year.yearLabel,
+    yearStart: year.yearStart,
+    yearEnd: year.yearEnd,
+    obligated: year.obligated,
+    delivered: year.delivered,
+    gap,
+  };
+}
+
+const DELIVERY_TRACKER_DETAIL_CSV_HEADERS = [
+  "system_name",
+  "unit_id",
+  "contract",
+  "year",
+  "start_date",
+  "end_date",
+  "obligated",
+  "delivered",
+  "gap",
+];
+
+const DELIVERY_TRACKER_DETAIL_CSV_CHUNK_ROWS = 1000;
+
+function detailRowToCsvRecord(row: DeliveryTrackerRow): Record<string, string> {
+  return {
+    system_name: row.systemName,
+    unit_id: row.unitId,
+    contract: row.contractId,
+    year: row.yearLabel,
+    start_date: row.yearStart?.toISOString().slice(0, 10) ?? "",
+    end_date: row.yearEnd?.toISOString().slice(0, 10) ?? "",
+    obligated: String(row.obligated),
+    delivered: String(row.delivered),
+    gap: String(row.gap),
+  };
+}
+
+function timestampForCsvFileName(iso: string): string {
+  return iso.replace(/[^0-9]/g, "").slice(0, 14);
 }
 
 function toSortedBucket(counts: Map<string, number>): TransferBucketEntry[] {
@@ -571,4 +694,51 @@ export async function getOrBuildDeliveryTrackerData(
   });
 
   return { ...result, fromCache };
+}
+
+export async function buildDeliveryTrackerDetailCsvExport(
+  scopeId: string,
+  generatedAtIso: string = new Date().toISOString()
+): Promise<DeliveryTrackerDetailCsvArtifact> {
+  const { versionMap } = await computeDeliveryTrackerInputHash(scopeId);
+  const deliveryScheduleBatchId = versionMap.get("deliveryScheduleBase") ?? null;
+  const transferHistoryBatchId = versionMap.get("transferHistory") ?? null;
+  const fileName = `delivery-tracker-detail-${timestampForCsvFileName(
+    generatedAtIso
+  )}.csv`;
+
+  if (!deliveryScheduleBatchId) {
+    return { csv: "", fileName, rowCount: 0, csvBytes: 0 };
+  }
+
+  const scheduleRows = await loadDatasetRows(
+    scopeId,
+    deliveryScheduleBatchId,
+    srDsDeliverySchedule
+  );
+  const accumulator = createDeliveryTrackerAccumulator(scheduleRows, {
+    detailRowLimit: 0,
+  });
+
+  if (transferHistoryBatchId) {
+    let cursor: string | null = null;
+    for (;;) {
+      const page = await loadDatasetRowsPage(
+        scopeId,
+        transferHistoryBatchId,
+        srDsTransferHistory,
+        {
+          cursor,
+          limit: DELIVERY_TRACKER_TRANSFER_PAGE_SIZE,
+        }
+      );
+      for (const row of page.rows) {
+        accumulator.processTransferRow(row);
+      }
+      if (!page.nextCursor) break;
+      cursor = page.nextCursor;
+    }
+  }
+
+  return accumulator.writeDetailCsvFile(generatedAtIso);
 }
