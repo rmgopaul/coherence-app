@@ -24,18 +24,16 @@
  * small scalar fields when the request crosses heap thresholds or an
  * explicit diagnostic env flag is enabled.
  *
- * **Allowlisted procedures in warn mode are not measured.** Running
- * `JSON.stringify` on a 20–60 MB allowlisted response would itself
- * make a full extra copy in the heap — exactly the heap pressure
- * the guard is supposed to protect against. In warn mode we
- * already accept that the response is oversized; measuring it adds
- * memory cost without changing behavior. In `throw` mode (dev/test)
- * we still measure: a regression that pushes a non-allowlisted
- * proc over the budget must fail loudly, and dev/test traffic is
- * low enough that the measurement cost is irrelevant. The global
- * `largeResponseLogger` already covers prod observability for
- * responses ≥ 5 MB by streaming-byte counting (no double
- * serialization).
+ * **Warn-mode measurement must not worsen heap pressure.** Running
+ * `JSON.stringify` on a 20–60 MB response would itself make a full
+ * extra copy in the heap — exactly the pressure this guard is
+ * supposed to surface. In warn mode, allowlisted procedures skip
+ * measurement entirely, and non-allowlisted procedures skip
+ * measurement when request heap thresholds have already been
+ * crossed. In `throw` mode (dev/test) we still measure so regressions
+ * fail loudly. The global `largeResponseLogger` already covers prod
+ * observability for responses ≥ 5 MB by streaming-byte counting (no
+ * double serialization).
  */
 
 import { TRPCError } from "@trpc/server";
@@ -169,11 +167,27 @@ export function checkDashboardResponseSize(
 }
 
 type DashboardRequestHeapOutcome = "success" | "failed";
+type DashboardHeapWarningReason = "heap-delta" | "heap-after";
 
 function formatErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
   if (typeof error === "string") return error;
   return String(error);
+}
+
+function getDashboardHeapWarningReasons(input: {
+  heapBeforeBytes: number;
+  heapAfterBytes: number;
+}): DashboardHeapWarningReason[] {
+  const heapDeltaBytes = input.heapAfterBytes - input.heapBeforeBytes;
+  const reasons: DashboardHeapWarningReason[] = [];
+  if (heapDeltaBytes > getDashboardRequestHeapDeltaWarnBytes()) {
+    reasons.push("heap-delta");
+  }
+  if (input.heapAfterBytes > getDashboardRequestHeapAfterWarnBytes()) {
+    reasons.push("heap-after");
+  }
+  return reasons;
 }
 
 function maybeLogDashboardRequestHeap(input: {
@@ -189,14 +203,7 @@ function maybeLogDashboardRequestHeap(input: {
   const heapDeltaBytes = input.heapAfterBytes - input.heapBeforeBytes;
   const heapDeltaWarnBytes = getDashboardRequestHeapDeltaWarnBytes();
   const heapAfterWarnBytes = getDashboardRequestHeapAfterWarnBytes();
-  const reasons: string[] = [];
-
-  if (heapDeltaBytes > heapDeltaWarnBytes) {
-    reasons.push("heap-delta");
-  }
-  if (input.heapAfterBytes > heapAfterWarnBytes) {
-    reasons.push("heap-after");
-  }
+  const reasons: string[] = getDashboardHeapWarningReasons(input);
   if (getDashboardRequestHeapLogAll()) {
     reasons.push("log-all");
   }
@@ -220,6 +227,33 @@ function maybeLogDashboardRequestHeap(input: {
   }
 
   console.warn(`[dashboard:request-heap] ${JSON.stringify(payload)}`);
+}
+
+function maybeSkipDashboardResponseMeasurementForHeap(input: {
+  path: string;
+  enforcement: DashboardResponseEnforcement;
+  allowlisted: boolean;
+  heapBeforeBytes: number;
+  heapAfterBytes: number;
+}): boolean {
+  if (input.enforcement !== "warn" || input.allowlisted) return false;
+  const reasons = getDashboardHeapWarningReasons(input);
+  if (reasons.length === 0) return false;
+  const heapDeltaBytes = input.heapAfterBytes - input.heapBeforeBytes;
+  console.warn(
+    `[dashboard:response-size-skip] ${JSON.stringify({
+      path: input.path,
+      enforcement: input.enforcement,
+      allowlisted: input.allowlisted,
+      heapBeforeBytes: input.heapBeforeBytes,
+      heapAfterBytes: input.heapAfterBytes,
+      heapDeltaBytes,
+      heapDeltaWarnBytes: getDashboardRequestHeapDeltaWarnBytes(),
+      heapAfterWarnBytes: getDashboardRequestHeapAfterWarnBytes(),
+      reasons,
+    })}`
+  );
+  return true;
 }
 
 const dashboardResponseGuardMiddleware = t.middleware(
@@ -291,6 +325,18 @@ const dashboardResponseGuardMiddleware = t.middleware(
     // these procedures comes from the global `largeResponseLogger`
     // (5 MB streaming-byte threshold; no double serialization).
     if (enforcement === "warn" && allowlisted) {
+      return result;
+    }
+
+    if (
+      maybeSkipDashboardResponseMeasurementForHeap({
+        path,
+        enforcement,
+        allowlisted,
+        heapBeforeBytes,
+        heapAfterBytes,
+      })
+    ) {
       return result;
     }
 
