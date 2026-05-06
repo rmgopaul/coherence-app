@@ -1,6 +1,6 @@
 /**
  * Source-level regression rails proving the Solar REC dashboard
- * default-Overview mount path does NOT enable the four legacy
+ * default-Overview mount path does NOT enable the remaining legacy
  * oversized procedures or the legacy SystemRecord[] snapshot.
  *
  * Strategy: read the dashboard parent's source verbatim and assert
@@ -865,6 +865,19 @@ describe("Solar REC dashboard mount: high-cardinality fields stay off mount path
   it("reads abpEligibleTotalSystems from slimSummary first, offlineMonitoring second", () => {
     expect(code).toMatch(
       /abpEligibleTotalSystems\s*=\s*[\s\S]*?slimSummary\?\.[A-Za-z]+\s*\?\?\s*offlineMonitoringQuery/
+    );
+  });
+
+  it("does not rebuild dead offline-monitoring application-id maps in the parent", () => {
+    // These two maps used to be hydrated from
+    // `getDashboardOfflineMonitoring` for the old client-side
+    // performance-ratio fallback. That fallback is gone, so reading
+    // the maps here would reintroduce dead high-cardinality payload.
+    expect(code).not.toMatch(
+      /offlineMonitoringQuery\.data\?\.abpAcSizeKwByApplicationId/
+    );
+    expect(code).not.toMatch(
+      /offlineMonitoringQuery\.data\?\.abpPart2VerificationDateByApplicationId/
     );
   });
 

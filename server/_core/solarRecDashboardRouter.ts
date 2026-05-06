@@ -3553,12 +3553,19 @@ export const solarRecDashboardRouter = t.router({
    * backed). The aggregator still computes them internally for
    * any code path that runs the full output in-process.
    *
-   * The remaining 6 fields (`eligiblePart2*` ID arrays,
-   * `abp*ByApplicationId` lookups, `part2VerifiedSystemIds`,
-   * 2 scalars) ship together at ~1–2 MB on prod; the proc stays
+   * **Slim wire shape follow-up (2026-05-06).** The two
+   * application-ID maps (`abpAcSizeKwByApplicationId`,
+   * `abpPart2VerificationDateByApplicationId`) became dead client
+   * payload after PerformanceRatio moved fully server-side. Strip
+   * them here too. The aggregator still computes them internally
+   * for in-process callers/tests, but the browser no longer pays to
+   * receive maps it does not read.
+   *
+   * The remaining wire fields are the Part-II ID arrays,
+   * `part2VerifiedSystemIds`, and 2 scalar counts; the proc stays
    * on `DASHBOARD_OVERSIZE_ALLOWLIST` with a smaller residual
-   * footprint until a future PR slims those further. The OOM
-   * driver — the per-system maps — is gone after this PR.
+   * footprint until a future PR slims those further. The OOM driver
+   * — the per-system maps — is gone.
    */
   getDashboardOfflineMonitoring: dashboardProcedure(
     "solar-rec-dashboard",
@@ -3584,6 +3591,9 @@ export const solarRecDashboardRouter = t.router({
       monitoringDetailsBySystemKey: _monitoringDetailsBySystemKey,
       abpApplicationIdBySystemKey: _abpApplicationIdBySystemKey,
       abpAcSizeKwBySystemKey: _abpAcSizeKwBySystemKey,
+      abpAcSizeKwByApplicationId: _abpAcSizeKwByApplicationId,
+      abpPart2VerificationDateByApplicationId:
+        _abpPart2VerificationDateByApplicationId,
       ...rest
     } = result;
 

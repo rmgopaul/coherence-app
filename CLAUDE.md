@@ -685,7 +685,7 @@ sketch may stay aspirational indefinitely.
 | Allowlisted procedure | Wire shape today | Sketch of future replacement (unscheduled) |
 |---|---|---|
 | `solarRecDashboard.getSystemSnapshot` | Full pre-computed `SystemRecord[]` (~26 MB on prod) | Paginated `getDashboardSystemsPage` + a derived `solarRecDashboardSystemFacts` table; tab-specific reads would target only the columns they need. |
-| `solarRecDashboard.getDashboardOfflineMonitoring` | After Phase 2 PR-C-3-b the per-system maps are gone (~12 MB OOM driver retired). Residual ~1–2 MB of application-keyed lookups + ID arrays + scalars (`eligiblePart2*`, `abp*ByApplicationId`, `part2VerifiedSystemIds`, 2 scalars) derived from `srDsAbpReport`. | A fact table is the wrong shape (these aren't per-system snapshots). Slim dedicated aggregator endpoint OR paginated `srDsAbpReport` reads — both keep the row table canonical. Triggered when prod data shows the residual is still painful. |
+| `solarRecDashboard.getDashboardOfflineMonitoring` | After Phase 2 PR-C-3-b the per-system maps are gone (~12 MB OOM driver retired), and a follow-up stripped the two dead `abp*ByApplicationId` maps from the wire response. Residual high-cardinality payload is now Part-II ID arrays + `part2VerifiedSystemIds` + 2 scalar counts derived from `srDsAbpReport`. | A fact table is the wrong shape (these aren't per-system snapshots). Slim dedicated aggregator endpoint OR paginated `srDsAbpReport` reads — both keep the row table canonical. Triggered when prod data shows the residual is still painful. |
 
 **`getDashboardChangeOwnership` retired from the allowlist (Phase 2
 PR-D-4, 2026-05-06).** The proc previously embedded a per-project

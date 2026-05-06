@@ -98,9 +98,9 @@ export const DASHBOARD_OVERSIZE_ALLOWLIST: ReadonlySet<string> = new Set([
   // `abpAcSizeKwBySystemKey`) at the wire boundary — those drove the
   // ~12 MB OOM payload and are now derived from
   // `getDashboardMonitoringDetailsPage`'s `useInfiniteQuery` walk
-  // (PR-C-3-a, fact-table backed). The proc still ships ~1–2 MB of
-  // application-keyed lookups + ID arrays + scalars
-  // (`eligiblePart2*`, `abp*ByApplicationId`, `part2VerifiedSystemIds`)
+  // (PR-C-3-a, fact-table backed). The proc still ships residual
+  // high-cardinality ID arrays + scalars
+  // (`eligiblePart2*`, `part2VerifiedSystemIds`, count fields)
   // that derive from `srDsAbpReport`. Those fields are NOT
   // per-system snapshots, so a fact table is the wrong shape for
   // them — a future slim-aggregator pass (or a paginated read of
