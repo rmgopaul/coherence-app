@@ -3586,6 +3586,90 @@ export const solarRecDashboardRouter = t.router({
     }),
 
   /**
+   * Phase 2 PR-D-3 (OOM rebuild) — paginated read for the
+   * changeOwnership fact table written by the build runner
+   * (PR-D-2's `changeOwnershipBuildStep`). The eventual
+   * REPLACEMENT for the per-row `ChangeOwnershipExportRow[]`
+   * payload that `getDashboardChangeOwnership` ships today
+   * (~19 MB on prod, the largest of the three remaining oversize-
+   * allowlist entries).
+   *
+   * Returns one page of fact rows ordered by `systemKey` (ASC).
+   * Caller paginates by passing the response's `nextCursor` back
+   * as the next request's `cursorAfter`. `nextCursor === null`
+   * signals end-of-stream.
+   *
+   * **Status filter axis.** The ChangeOwnershipTab's primary
+   * control is "show me X status" (Transferred and Reporting,
+   * Terminated, etc). The optional `status` input narrows the
+   * server-side query via the covering index `(scopeId,
+   * changeOwnershipStatus)` PR-D-1 added — making status-filtered
+   * reads efficient without paginating the full table client-
+   * side. When omitted, all rows for the scope are returned.
+   *
+   * Wire payload: bounded to 1000 rows × ~22 columns (~150-200
+   * KB at limit=1000); default limit=200 gives ~30-40 KB per
+   * page on real data, well under the 1 MB dashboard response
+   * budget.
+   *
+   * Empty-table behavior: until the ChangeOwnershipTab migrates
+   * onto this proc, the table is EMPTY for any scope that
+   * hasn't had a build run via `startDashboardBuild`. The proc
+   * returns an empty page rather than synthesizing facts on
+   * demand — building is the explicit "rebuild" action the
+   * operator initiates.
+   */
+  getDashboardChangeOwnershipPage: dashboardProcedure(
+    "solar-rec-dashboard",
+    "read"
+  )
+    .input(
+      z.object({
+        cursorAfter: z.string().min(1).max(128).nullable().optional(),
+        limit: z.number().int().min(1).max(1000).default(200),
+        // Match the wider ChangeOwnershipStatus union shipped by
+        // the existing `startDashboardCsvExport` proc — same 7
+        // values incl. legacy split-Terminated. The DB filter is
+        // an exact-match `WHERE changeOwnershipStatus = ?`, so a
+        // value the builder doesn't write resolves to an empty
+        // page (consistent with "no projects match" UX).
+        status: z
+          .enum([
+            "Transferred and Reporting",
+            "Transferred and Not Reporting",
+            "Terminated",
+            "Terminated and Reporting",
+            "Terminated and Not Reporting",
+            "Change of Ownership - Not Transferred and Reporting",
+            "Change of Ownership - Not Transferred and Not Reporting",
+          ])
+          .nullable()
+          .optional(),
+      })
+    )
+    .query(async ({ ctx, input }) => {
+      const { getChangeOwnershipFactsPage } = await import(
+        "../db/dashboardChangeOwnershipFacts"
+      );
+      const rows = await getChangeOwnershipFactsPage(ctx.scopeId, {
+        cursorAfter: input.cursorAfter ?? null,
+        limit: input.limit,
+        status: input.status ?? null,
+      });
+      const nextCursor =
+        rows.length === input.limit
+          ? rows[rows.length - 1]?.systemKey ?? null
+          : null;
+      return {
+        _checkpoint: "change-ownership-page-v1",
+        _runnerVersion: "phase-2-pr-d-3@1" as const,
+        rows,
+        nextCursor,
+        hasMore: nextCursor !== null,
+      };
+    }),
+
+  /**
    * Phase 5e PR (2026-04-29) — server-side aggregator for the
    * `performanceSourceRows` shape consumed by RecPerformanceEvaluation
    * Tab + Snapshot Log + the parent's `recPerformanceSnapshotContracts
