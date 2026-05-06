@@ -3163,12 +3163,24 @@ export const solarRecDashboardRouter = t.router({
    * Phase 5e Followup #4 step 4 PR-C2 (2026-04-30) — server-side
    * aggregator for the Overview tab `summary` shape. Replaces the
    * 208-line `summary` useMemo in `SolarRecDashboard.tsx` that
-   * walked `part2VerifiedAbpRows × systems`. Returns the full
-   * shape including `ownershipRows` (used for CSV export).
+   * walked `part2VerifiedAbpRows × systems`.
    *
    * Cache key bundles `abpReport` batch + system snapshot hash.
-   * superjson serde because `ownershipRows[i].{latestReportingDate,
-   * contractedDate, zillowSoldDate}` are `Date | null`.
+   *
+   * **Slim wire shape (Phase 2 PR-E-4-supplement, 2026-05-06).**
+   * The aggregator's `ownershipRows: OwnershipOverviewExportRow[]`
+   * field — ~5–15 MB on prod and the entire reason this proc was
+   * on `DASHBOARD_OVERSIZE_ALLOWLIST` — is stripped at the wire
+   * boundary. The OwnershipTab moved onto the paginated
+   * `getDashboardOwnershipPage` proc in PR #434, and no other
+   * client path reads `summary.ownershipRows`. The aggregator
+   * still computes the array internally — the dashboard CSV
+   * export job + the `ownership` fact builder (PR-E-2) read it
+   * in-process. Only the wire output shrinks.
+   *
+   * After this PR the response is a few KB of scalars + the small
+   * `ownershipOverview` count object — the proc retires from
+   * `DASHBOARD_OVERSIZE_ALLOWLIST`.
    */
   getDashboardOverviewSummary: dashboardProcedure(
     "solar-rec-dashboard",
@@ -3185,8 +3197,16 @@ export const solarRecDashboardRouter = t.router({
       ctx.scopeId
     );
 
+    // Strip `ownershipRows` at the wire boundary: the aggregator
+    // still returns them (the CSV export job + the ownership fact
+    // builder read them in-process), but no client path walks
+    // `summary.ownershipRows` after PR-E-4-supplement. Underscore-
+    // prefix on the discarded binding keeps tsc happy without
+    // changing the aggregator's return type.
+    const { ownershipRows: _ownershipRows, ...rest } = result;
+
     return {
-      ...result,
+      ...rest,
       fromCache,
       _runnerVersion: OVERVIEW_SUMMARY_RUNNER_VERSION,
     };

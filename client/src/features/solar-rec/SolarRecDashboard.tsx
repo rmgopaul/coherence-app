@@ -3258,14 +3258,14 @@ export default function SolarRecDashboard() {
   );
 
 
-  // Heavy overview-summary aggregator. Carries `ownershipRows` (~5-15
-  // MB on prod) used only by the Overview tab's CSV export. NOT
-  // fetched on initial mount even when the default tab is Overview —
-  // the slim summary above already covers every tile-value field the
-  // parent renders. Enables once the user has interacted (navigated
-  // tabs OR triggered an action that needs ownership rows). After
-  // first interaction, stays gated on `isOverviewTabActive` so it
-  // stops firing once the user moves away.
+  // Overview-summary aggregator. Pre-PR-E-4-supplement this carried
+  // `ownershipRows` (~5-15 MB on prod) and was the entire reason this
+  // proc lived on `DASHBOARD_OVERSIZE_ALLOWLIST`. PR-E-4-supplement
+  // strips that field at the wire boundary; the response is now a
+  // few KB of scalars + the small `ownershipOverview` count object.
+  // Still gated tightly so the aggregator's cold build doesn't fire
+  // on first paint — the slim summary above already covers tile
+  // values for the default mount.
   const overviewSummaryQuery =
     solarRecTrpc.solarRecDashboard.getDashboardOverviewSummary.useQuery(
       undefined,
@@ -3294,7 +3294,6 @@ export default function SolarRecDashboard() {
         terminatedNotReporting: 0,
         terminatedTotal: 0,
       },
-      ownershipRows: [],
       withValueDataCount: 0,
       totalContractedValue: 0,
       totalDeliveredValue: 0,
@@ -3652,11 +3651,11 @@ export default function SolarRecDashboard() {
 
   // `ownershipCountTileRows` was a client-side per-system filter over
   // `summary.ownershipRows`. It was never consumed (the tile CSV
-  // export goes through `exportOwnershipTileCsv` server-side, see
-  // `downloadOwnershipCountTileCsv`) and `ownershipRows` is heavy-
-  // only — unavailable on the slim path. Removed to keep the data
-  // boundary explicit; slim consumers do not synthesize a fake
-  // empty-array fallback.
+  // export goes through the background-job CSV flow, see
+  // `downloadOwnershipCountTileCsv`). PR-E-4-supplement (2026-05-06)
+  // stripped `ownershipRows` from the heavy proc's wire shape too —
+  // no client path consumes it on either the slim OR the heavy
+  // path. Removed to keep the data boundary explicit.
 
   // offlineBaseSystems, offlineSystems, offlineMonitoringOptions, offlinePlatformOptions,
   // offlineInstallerOptions, offlineMonitoringBreakdownRows, offlineInstallerBreakdownRows,

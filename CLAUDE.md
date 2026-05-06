@@ -670,14 +670,14 @@ in prod). Bounded responses look like this:
 | `debugDatasetPersistenceRaw` | Raw rows from every layer + verdict | ~2 KB |
 | `getDashboard<TabName>Aggregates` (DeliveryTracker / TrendDeliveryPace / TrendsProduction / ContractVintage / AppPipelineMonthly / AppPipelineCashFlow / PerformanceRatio / Forecast / Financials) | Per-tab aggregate result | ~10–500 KB |
 
-**Transitional reality: Three procedures still ship oversized
+**Transitional reality: Two procedures still ship oversized
 responses.** They live in `DASHBOARD_OVERSIZE_ALLOWLIST`
 (`server/_core/dashboardResponseGuard.ts`) and are accepted as
-known regressions in warn mode. None of them fire on Overview
+known regressions in warn mode. Neither fires on Overview
 default mount — they're scoped behind tab-active gates +
 `hasUserInteractedWithDashboard`. Each entry is **unscheduled
 transitional debt** — a sketch of the replacement shape, NOT a
-committed delivery plan. None has a tracking issue or a target
+committed delivery plan. Neither has a tracking issue or a target
 sprint as of 2026-05-06. Mark a row with the issue / phase / PR
 number when work actually gets scheduled; until then assume the
 sketch may stay aspirational indefinitely.
@@ -685,8 +685,7 @@ sketch may stay aspirational indefinitely.
 | Allowlisted procedure | Wire shape today | Sketch of future replacement (unscheduled) |
 |---|---|---|
 | `solarRecDashboard.getSystemSnapshot` | Full pre-computed `SystemRecord[]` (~26 MB on prod) | Paginated `getDashboardSystemsPage` + a derived `solarRecDashboardSystemFacts` table; tab-specific reads would target only the columns they need. |
-| `solarRecDashboard.getDashboardOverviewSummary` | Heavy summary embedding `ownershipRows: OwnershipOverviewExportRow[]` (~5–15 MB) | Slim `getDashboardSummary` (already shipped, default mount) + a paginated `getDashboardOwnershipRowsPage` for the detail table. CSV export already moved off this proc — see the retired procs below. |
-| `solarRecDashboard.getDashboardOfflineMonitoring` | Per-system maps keyed by ~21k systems (`monitoringDetailsBySystemKey` etc.) | Paginated `getDashboardMonitoringDetailsPage` + per-system endpoint for drill-in. |
+| `solarRecDashboard.getDashboardOfflineMonitoring` | After Phase 2 PR-C-3-b the per-system maps are gone (~12 MB OOM driver retired). Residual ~1–2 MB of application-keyed lookups + ID arrays + scalars (`eligiblePart2*`, `abp*ByApplicationId`, `part2VerifiedSystemIds`, 2 scalars) derived from `srDsAbpReport`. | A fact table is the wrong shape (these aren't per-system snapshots). Slim dedicated aggregator endpoint OR paginated `srDsAbpReport` reads — both keep the row table canonical. Triggered when prod data shows the residual is still painful. |
 
 **`getDashboardChangeOwnership` retired from the allowlist (Phase 2
 PR-D-4, 2026-05-06).** The proc previously embedded a per-project
@@ -699,6 +698,19 @@ the snapshot-log creation flow read those rows via
 `solarRecDashboardChangeOwnershipFacts` table the build runner
 populates). The wire-payload regression that drove the allowlist
 entry is gone; the entry is removed.
+
+**`getDashboardOverviewSummary` retired from the allowlist (Phase 2
+PR-E-4-supplement, 2026-05-06).** The proc previously embedded
+`ownershipRows: OwnershipOverviewExportRow[]` (~5–15 MB on prod).
+PR-E-4-supplement strips it at the wire boundary; the response is
+now a few KB of scalars + the small `ownershipOverview` count
+object. The OwnershipTab moved onto the paginated
+`getDashboardOwnershipPage` proc in PR #434, and no other client
+path was reading `summary.ownershipRows` — the field was vestigial
+after that migration. The aggregator still computes the array
+internally; the dashboard CSV export job + the `ownership` fact
+builder (PR-E-2) read it in-process. Only the wire output shrunk;
+the wire-payload regression is gone and the entry is removed.
 
 **Retired CSV-export procs** (PR #346, #347, follow-up):
 `exportOwnershipTileCsv` and `exportChangeOwnershipTileCsv` were
