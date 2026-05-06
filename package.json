@@ -10,6 +10,7 @@
     "check": "tsc --noEmit",
     "format": "prettier --write .",
     "test": "vitest run",
+    "test:solar-rec-dashboard-guardrails": "vitest run server/_core/dashboardResponseGuard.test.ts client/src/solar-rec-dashboard/lib/dashboardMountResilience.test.ts server/services/solar/dashboardJobMetrics.test.ts",
     "db:push": "drizzle-kit generate && drizzle-kit migrate",
     "scheduleb:reconcile": "tsx server/scripts/reconcileScheduleBImportState.ts",
     "solarrec:migrate-scope": "tsx server/scripts/migrateSolarRecDashboardToScope.ts",
