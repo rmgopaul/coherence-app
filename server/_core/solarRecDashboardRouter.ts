@@ -3522,6 +3522,23 @@ export const solarRecDashboardRouter = t.router({
    * Cache key bundles 2 dataset batch IDs (abpReport,
    * solarApplications). Plain JSON serde — output is all strings
    * and string-keyed records.
+   *
+   * **Slim wire shape (Phase 2 PR-C-3-b, 2026-05-06).** The 3 big
+   * per-system maps that drove the ~13 MB allowlisted payload —
+   * `monitoringDetailsBySystemKey`, `abpApplicationIdBySystemKey`,
+   * `abpAcSizeKwBySystemKey` — are stripped at the wire boundary.
+   * The OfflineMonitoringTab + every parent consumer now derives
+   * those maps from a `useInfiniteQuery` walk of
+   * `getDashboardMonitoringDetailsPage` (PR-C-3-a, fact-table
+   * backed). The aggregator still computes them internally for
+   * any code path that runs the full output in-process.
+   *
+   * The remaining 6 fields (`eligiblePart2*` ID arrays,
+   * `abp*ByApplicationId` lookups, `part2VerifiedSystemIds`,
+   * 2 scalars) ship together at ~1–2 MB on prod; the proc stays
+   * on `DASHBOARD_OVERSIZE_ALLOWLIST` with a smaller residual
+   * footprint until a future PR slims those further. The OOM
+   * driver — the per-system maps — is gone after this PR.
    */
   getDashboardOfflineMonitoring: dashboardProcedure(
     "solar-rec-dashboard",
@@ -3537,8 +3554,21 @@ export const solarRecDashboardRouter = t.router({
     const { result, fromCache } =
       await getOrBuildOfflineMonitoringAggregates(ctx.scopeId);
 
+    // Strip the per-system maps at the wire boundary. The
+    // aggregator's return type still carries them (the underlying
+    // computation paths haven't changed), but no client path reads
+    // them from this proc after PR-C-3-b. Underscore-prefix on
+    // the discarded bindings keeps tsc happy without changing
+    // the aggregator's shape.
+    const {
+      monitoringDetailsBySystemKey: _monitoringDetailsBySystemKey,
+      abpApplicationIdBySystemKey: _abpApplicationIdBySystemKey,
+      abpAcSizeKwBySystemKey: _abpAcSizeKwBySystemKey,
+      ...rest
+    } = result;
+
     return {
-      ...result,
+      ...rest,
       fromCache,
       _runnerVersion: OFFLINE_MONITORING_RUNNER_VERSION,
     };

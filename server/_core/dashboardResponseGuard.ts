@@ -84,9 +84,19 @@ export const DASHBOARD_OVERSIZE_ALLOWLIST: ReadonlySet<string> = new Set([
   // Embeds `ownershipRows: OwnershipOverviewExportRow[]`; rebuild plan
   // splits into `getDashboardSummary` + `getDashboardOwnershipRowsPage`.
   "solarRecDashboard.getDashboardOverviewSummary",
-  // Ships per-system lookup objects keyed by ~21k systems
-  // (`monitoringDetailsBySystemKey` etc.); rebuild plan paginates via
-  // `getDashboardMonitoringDetailsPage`.
+  // Phase 2 PR-C-3-b (2026-05-06) stripped the 3 per-system maps
+  // (`monitoringDetailsBySystemKey`, `abpApplicationIdBySystemKey`,
+  // `abpAcSizeKwBySystemKey`) at the wire boundary — those drove the
+  // ~12 MB OOM payload and are now derived from
+  // `getDashboardMonitoringDetailsPage`'s `useInfiniteQuery` walk
+  // (PR-C-3-a, fact-table backed). The proc still ships ~1–2 MB of
+  // application-keyed lookups + ID arrays + scalars
+  // (`eligiblePart2*`, `abp*ByApplicationId`, `part2VerifiedSystemIds`)
+  // that derive from `srDsAbpReport`. Those fields are NOT
+  // per-system snapshots, so a fact table is the wrong shape for
+  // them — a future slim-aggregator pass (or a paginated read of
+  // `srDsAbpReport`) is the next pressure-relief step. The OOM
+  // driver is gone; the entry stays for the residual.
   "solarRecDashboard.getDashboardOfflineMonitoring",
 ]);
 

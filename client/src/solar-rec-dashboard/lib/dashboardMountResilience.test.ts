@@ -86,6 +86,36 @@ describe("Solar REC dashboard mount: heavy-query gates", () => {
     expect(block!).toMatch(/hasUserInteractedWithDashboard/);
   });
 
+  it("getDashboardMonitoringDetailsPage is gated on isOfflineMonitoringHeavyNeeded AND hasUserInteractedWithDashboard (Phase 2 PR-C-3-b)", () => {
+    // PR-C-3-b stripped the 3 per-system maps from
+    // `getDashboardOfflineMonitoring` (~12 MB on prod) and moved
+    // their hydration onto a `useInfiniteQuery` walk of
+    // `getDashboardMonitoringDetailsPage`. Both queries must stay
+    // gated on the SAME `isOfflineMonitoringHeavyNeeded` predicate —
+    // letting the paginated query fire on a tab where the heavy
+    // proc isn't needed would re-ship the equivalent payload (just
+    // split across pages) on first paint.
+    const block = extractUseQueryBlock(
+      code,
+      "getDashboardMonitoringDetailsPage.useInfiniteQuery"
+    );
+    expect(block).not.toBeNull();
+    expect(block!).toMatch(/isOfflineMonitoringHeavyNeeded/);
+    expect(block!).toMatch(/hasUserInteractedWithDashboard/);
+  });
+
+  it("offline-monitoring snapshot readiness gates on the paginated walk reaching end-of-stream", () => {
+    // The infinite query reports `success` after the first page;
+    // `snapshotPart2ValueSummary` needs the full per-system map
+    // set. Gate must additionally check `!hasNextPage` (encoded
+    // as `isMonitoringDetailsPagesComplete`) before the snapshot
+    // fires. Mirrors the change-ownership readiness rail (PR-D-4).
+    expect(code).toMatch(
+      /isMonitoringDetailsPagesComplete\s*=[\s\S]{0,200}status\s*===\s*"success"[\s\S]{0,200}!\s*[\s\S]{0,40}hasNextPage/
+    );
+    expect(code).toMatch(/!\s*isMonitoringDetailsPagesComplete/);
+  });
+
   it("Ownership Status does not trigger the legacy offline-monitoring heavy query", () => {
     const start = code.indexOf("const isOfflineMonitoringHeavyNeeded");
     expect(start).toBeGreaterThan(-1);
