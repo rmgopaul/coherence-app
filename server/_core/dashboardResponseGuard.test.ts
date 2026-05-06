@@ -182,16 +182,19 @@ describe("dashboard request heap env helpers", () => {
 
 describe("DASHBOARD_OVERSIZE_ALLOWLIST", () => {
   it("contains exactly the documented set of known-oversized procedures", () => {
-    // `getDashboardChangeOwnership` was retired from this set in
-    // Phase 2 PR-D-4 (2026-05-06): PR strips `rows` at the wire
-    // boundary, slimming the response from ~19 MB to a few KB.
-    // The ChangeOwnershipTab + the snapshot-log creation flow now
-    // read those rows via `getDashboardChangeOwnershipPage`'s
-    // `useInfiniteQuery` walk.
+    // Recently retired entries:
+    //   - `getDashboardChangeOwnership` — Phase 2 PR-D-4 (2026-05-06):
+    //     stripped `rows` (~19 MB) at the wire boundary; consumers
+    //     moved to paginated `getDashboardChangeOwnershipPage`.
+    //   - `getDashboardOverviewSummary` — Phase 2 PR-E-4-supplement
+    //     (2026-05-06): stripped `ownershipRows` (~5–15 MB) at the
+    //     wire boundary. PR #434 already moved the OwnershipTab
+    //     onto paginated `getDashboardOwnershipPage`; no other
+    //     client path was reading the field, so this PR was a
+    //     pure wire-strip.
     expect([...DASHBOARD_OVERSIZE_ALLOWLIST].sort()).toEqual(
       [
         "solarRecDashboard.getDashboardOfflineMonitoring",
-        "solarRecDashboard.getDashboardOverviewSummary",
         "solarRecDashboard.getSystemSnapshot",
       ].sort()
     );
@@ -780,6 +783,7 @@ describe("CLAUDE.md drift", () => {
     // an exact procedure count. Keep it in sync with the Set.
     const claimedCount = DASHBOARD_OVERSIZE_ALLOWLIST.size;
     const numberToWord: Record<number, string> = {
+      2: "Two",
       3: "Three",
       4: "Four",
       5: "Five",

@@ -75,15 +75,24 @@ export const DASHBOARD_REQUEST_HEAP_AFTER_WARN_BYTES_DEFAULT =
  *     runner populates). The slim aggregator response is now a
  *     few KB (summary + chart + counter) and stays well under the
  *     1 MB budget without an allowlist entry.
+ *   - `solarRecDashboard.getDashboardOverviewSummary` — Phase 2
+ *     PR-E-4-supplement (2026-05-06) stripped
+ *     `ownershipRows: OwnershipOverviewExportRow[]` from the wire
+ *     shape (~5–15 MB on prod). The OwnershipTab moved onto the
+ *     paginated `getDashboardOwnershipPage` proc in PR #434 and no
+ *     other client path read `summary.ownershipRows` — the field
+ *     was vestigial after that migration. The aggregator still
+ *     computes the array internally (the dashboard CSV export job
+ *     + the `ownership` fact builder read it in-process); only the
+ *     wire output shrinks. The slim response is now a few KB of
+ *     scalars + the small `ownershipOverview` count object — well
+ *     under the 1 MB budget.
  */
 export const DASHBOARD_OVERSIZE_ALLOWLIST: ReadonlySet<string> = new Set([
   // Returns the full pre-computed system record set; rebuild plan replaces
   // with `getDashboardSystemsPage` + a derived `solarRecDashboardSystemFacts`
   // table.
   "solarRecDashboard.getSystemSnapshot",
-  // Embeds `ownershipRows: OwnershipOverviewExportRow[]`; rebuild plan
-  // splits into `getDashboardSummary` + `getDashboardOwnershipRowsPage`.
-  "solarRecDashboard.getDashboardOverviewSummary",
   // Phase 2 PR-C-3-b (2026-05-06) stripped the 3 per-system maps
   // (`monitoringDetailsBySystemKey`, `abpApplicationIdBySystemKey`,
   // `abpAcSizeKwBySystemKey`) at the wire boundary — those drove the
