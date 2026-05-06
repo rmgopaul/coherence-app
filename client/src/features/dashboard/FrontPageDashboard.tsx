@@ -8,8 +8,9 @@
  *
  * Spec: handoff/web-spec.md
  */
-import { useEffect, useState } from "react";
-import { KingOfTheDayHero } from "@/components/dashboard/KingOfTheDayHero";
+import { useEffect, useMemo, useState } from "react";
+import { BriefingHero } from "@/components/BriefingHero";
+import { selectTopTask } from "@/components/briefing/selectTopTask";
 import { Masthead } from "./frontpage/Masthead";
 import { DashboardViewsNav } from "./DashboardViewsNav";
 import { DropDock } from "./frontpage/DropDock";
@@ -23,24 +24,26 @@ import { FocusModeRail } from "./frontpage/FocusModeRail";
 import { PinDialog } from "./frontpage/PinDialog";
 import { useDashboardData } from "./useDashboardData";
 import { useFocusMode } from "@/contexts/FocusModeContext";
-import { trpc } from "@/lib/trpc";
 import { AskAiPanel } from "@/components/AskAiPanel";
 import "./frontpage/dashboard.css";
 
 export default function FrontPageDashboard() {
   const data = useDashboardData();
   const { focusMode } = useFocusMode();
-  const utils = trpc.useUtils();
-  const unpinKing = trpc.kingOfDay.unpin.useMutation({
-    onSuccess: () => {
-      utils.kingOfDay.get.invalidate();
-    },
-  });
 
   // Phase C.2 — pin dialog. Opens via the `k` keyboard shortcut, a
   // right-click on the hero headline, or the long-press context menu
   // on touch devices.
   const [pinDialogOpen, setPinDialogOpen] = useState(false);
+
+  const topTask = useMemo(
+    () => selectTopTask(data.tasks.dueToday),
+    [data.tasks.dueToday]
+  );
+  const todoistUrl = topTask
+    ? `https://app.todoist.com/app/task/${topTask.id}`
+    : null;
+  const recoveryScore = data.health.whoop?.recoveryScore ?? null;
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       const target = e.target as HTMLElement | null;
@@ -79,28 +82,34 @@ export default function FrontPageDashboard() {
 
       <DashboardViewsNav />
 
-      {!focusMode && <DropDock />}
       {!focusMode && <DockReminders />}
 
       <main id="fp-main" tabIndex={-1}>
-      <KingOfTheDayHero
+      <BriefingHero
         userName={data.userName}
-        todayTasks={data.tasks.dueToday}
-        completedCount={data.tasks.completedCount}
-        whoopSummary={data.health.whoop}
-        marketQuotes={data.market?.quotes ?? []}
-        dailyBrief={data.dailyBrief}
+        tasks={data.tasks.dueToday}
+        totalTasksToday={
+          data.tasks.dueToday.length + data.tasks.completedCount
+        }
         calendarEvents={data.calendar}
-        unreadGmailCount={data.unreadGmailCount}
-        kingOfDay={data.kingOfDay}
-        onUnpin={() => unpinKing.mutate({ dateKey: data.todayKey })}
-        onRequestPin={() => setPinDialogOpen(true)}
-        // Regenerate = unpin (deletes the persisted row) + refetch.
-        // `ensureKing` re-runs the selector end-to-end, which hits
-        // the AI layer again when SMART_KING_AI_ENABLED.
-        onRegenerate={() => unpinKing.mutate({ dateKey: data.todayKey })}
-        regenerating={unpinKing.isPending}
+        gmailMessages={data.inbox}
+        recovery={
+          recoveryScore !== null
+            ? { value: recoveryScore, source: "Whoop" }
+            : undefined
+        }
+        topTaskSource={
+          todoistUrl ? { kind: "todoist", url: todoistUrl } : undefined
+        }
+        onStartTopTask={() => {
+          if (todoistUrl) window.open(todoistUrl, "_blank", "noopener");
+        }}
+        onOpenTopTaskSource={() => {
+          if (todoistUrl) window.open(todoistUrl, "_blank", "noopener");
+        }}
       />
+
+      {!focusMode && <DropDock />}
 
       <PinDialog
         open={pinDialogOpen}
