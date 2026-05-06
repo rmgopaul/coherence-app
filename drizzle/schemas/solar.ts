@@ -1943,3 +1943,132 @@ export type TeslaPowerhubProductionJobRow =
   typeof teslaPowerhubProductionJobs.$inferSelect;
 export type InsertTeslaPowerhubProductionJobRow =
   typeof teslaPowerhubProductionJobs.$inferInsert;
+
+// ────────────────────────────────────────────────────────────────────
+// Solar REC dashboard build jobs — Phase 2 PR-A (the OOM rebuild
+// "keystone" piece per `docs/execution-plan.md`).
+//
+// Replaces the on-the-fly cache-miss recompute in
+// `withArtifactCache` for the heavy dashboard aggregators with an
+// explicit DB-backed build job. A "build" reads the canonical
+// `srDs*` row tables for a scope and produces typed derived rows
+// (the per-aggregate fact tables that PR-B onwards will add —
+// `solarRecDashboardSystemFacts`, `solarRecDashboardOwnership`,
+// `solarRecDashboardChangeOwnership`, `solarRecDashboardMonitoringDetails`).
+// Once those derived tables are populated, the 5 oversize-allowlist
+// procs (`getSystemSnapshot`, `getDashboardOverviewSummary`,
+// `getDashboardChangeOwnership`, `getDashboardOfflineMonitoring`,
+// `getDatasetCsv`) can be replaced by paginated reads over the
+// derived rows — closing the OOM exposure that crashed Render
+// processes on production-sized data.
+//
+// Hard Rule #8 in CLAUDE.md ("Dashboard background-job registries
+// must be DB-backed") mandates this shape. PR-A is **schema +
+// helpers ONLY**. There is no runner, no procs, no derived tables
+// yet — they ship in PR-B onwards. This deploys safely independently
+// because nothing reads or writes the table at runtime.
+//
+// Mirrors the proven `dashboardCsvExportJobs` shape:
+//   - `id` PK + `scopeId` for tenant scoping (every read filters
+//     by scope; cross-scope ids surface as "not found").
+//   - `inputVersionsJson` records the source-batch IDs used as
+//     input to the build (e.g. the active solarApplications +
+//     transferHistory + abpReport batches at start time). The
+//     keystone reason this column exists: Phase 6's
+//     `inputVersionHash` already ties artifact cache keys to
+//     source versions, but the DB-backed build registry needs to
+//     STORE those versions on the row so a poll can verify the
+//     build was for the same input the caller's reading from.
+//   - Cross-process claim fields (`claimedBy` + `claimedAt`)
+//     identical to `dashboardCsvExportJobs` so the same
+//     atomic-claim / stale-sweep / TTL-prune pattern applies.
+//
+// Status state machine:
+//   queued    — row created, no worker has claimed it yet
+//   running   — claimedBy + claimedAt set; worker is mid-flight
+//   succeeded — completedAt stamped; derived tables populated
+//   failed    — completedAt stamped; errorMessage set
+//
+// Error shape on `failed`: `errorMessage` mirrors
+// `dashboardCsvExportJobs` exactly. The runner records the message
+// of whatever exception bubbled out of the per-fact-table builder.
+//
+// `runnerVersion` lets a deploy distinguish builds whose derived
+// rows were produced by an older runner shape — when a regression
+// in a builder ships and gets reverted, operators can identify
+// (and re-build) the affected scopes by `runnerVersion < shipDate`.
+// ────────────────────────────────────────────────────────────────────
+
+export const solarRecDashboardBuilds = mysqlTable(
+  "solarRecDashboardBuilds",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    scopeId: varchar("scopeId", { length: 64 }).notNull(),
+    // Initiating user. Nullable because PR-B+ will support
+    // scheduler-driven builds (cron / dataset-upload completion
+    // hooks) that have no human caller.
+    createdBy: int("createdBy"),
+    // Source-batch IDs captured at build start. Today's shape (as
+    // PR-B will define it):
+    //   { solarApplications: string | null,
+    //     transferHistory: string | null,
+    //     abpReport: string | null,
+    //     ... etc per dataset key }
+    // Stored as JSON so adding a new dataset to the snapshot
+    // doesn't require a schema migration. The runner re-validates
+    // the shape on read.
+    inputVersionsJson: json("inputVersionsJson").notNull(),
+    // Status state machine: "queued" | "running" | "succeeded" |
+    // "failed". varchar (not mysqlEnum) so adding a state in a
+    // code-only PR doesn't require a schema migration; matches
+    // the `dashboardCsvExportJobs` choice.
+    status: varchar("status", { length: 32 }).default("queued").notNull(),
+    // Optional progress snapshot (debounced writes from the worker
+    // — every ~5 s, not every onProgress tick). PR-A reserves the
+    // column; PR-B onwards populates it. Shape:
+    //   { currentStep, totalSteps, percent, message,
+    //     factTable: "systemFacts" | "ownership" | "changeOwnership"
+    //                | "monitoringDetails" }
+    progressJson: json("progressJson"),
+    // Lifecycle timestamps.
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    startedAt: timestamp("startedAt"),
+    completedAt: timestamp("completedAt"),
+    // Failure field (populated on failed). Mirrors the existing
+    // `errorMessage` convention from `dashboardCsvExportJobs`.
+    errorMessage: text("errorMessage"),
+    // Cross-process claim fields. Mirror `dashboardCsvExportJobs`
+    // 1:1 — same heartbeat / stale-claim / TTL semantics.
+    // `claimedBy` is a per-attempt identifier including process
+    // metadata (e.g. `pid-${pid}-host-${hostname}-${suffix}`).
+    // `claimedAt` is refreshed periodically as a liveness
+    // heartbeat. Stale claims (a process restarted mid-build) are
+    // re-claimable by the next runner once `claimedAt` exceeds
+    // the heartbeat threshold.
+    claimedBy: varchar("claimedBy", { length: 128 }),
+    claimedAt: timestamp("claimedAt"),
+    runnerVersion: varchar("runnerVersion", { length: 64 }).notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    // Active-job lookup: "what's queued or running for this scope?"
+    // — bounds the worker's claim search and supports the
+    // `getDashboardBuildStatus` proc Phase 3 will add.
+    scopeStatusCreatedIdx: index(
+      "solar_rec_dashboard_builds_scope_status_created_idx"
+    ).on(table.scopeId, table.status, table.createdAt),
+    // TTL prune: terminal rows older than X.
+    completedAtIdx: index(
+      "solar_rec_dashboard_builds_completed_at_idx"
+    ).on(table.completedAt),
+    // Stale-claim detection: status = 'running' AND claimedAt < ?
+    statusClaimedAtIdx: index(
+      "solar_rec_dashboard_builds_status_claimed_at_idx"
+    ).on(table.status, table.claimedAt),
+  })
+);
+
+export type SolarRecDashboardBuild =
+  typeof solarRecDashboardBuilds.$inferSelect;
+export type InsertSolarRecDashboardBuild =
+  typeof solarRecDashboardBuilds.$inferInsert;
