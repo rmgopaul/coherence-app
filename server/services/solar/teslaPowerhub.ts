@@ -3409,22 +3409,25 @@ export async function getTeslaPowerhubGroupProductionMetricsCached(
 //   `fetchAccessibleGroups` also has an early-return for endpointUrl
 //   that already encodes a group ID.
 //
-// Slice 4c PR-A (this PR): adds `fetchSingleSiteTelemetryTotal` —
-//   the simplest telemetry entry. Single fetch (or two, if a
-//   fallback signal is configured) against `/telemetry/history`.
-//   Builds the URL with the canonical query-string params
-//   (`target_id`, `signals`, `start_datetime`, `end_datetime`,
-//   `period`, `rollup`, `fill`), parses the cumulative-meter
-//   payload via `computeSiteDeltasByTelemetryPayload` to derive a
-//   max-min delta in kWh. Primary→fallback signal logic exists so a
-//   site with `solar_energy_exported_rgm` (RGM meter) can fall back
-//   to `solar_energy_exported` (inverter) when the RGM signal is
-//   absent or returns a zero-delta window.
+// Slice 4c PR-A (#403): adds `fetchSingleSiteTelemetryTotal` — the
+//   simplest telemetry entry. Single fetch (or two, fallback) against
+//   `/telemetry/history`; builds canonical query params; parses
+//   cumulative-meter payload via `computeSiteDeltasByTelemetryPayload`
+//   to derive max-min delta in kWh; primary→fallback signal logic
+//   for RGM-meter → inverter graceful degradation.
 //
-// Still to come: window-loop orchestration
-// (`fetchTelemetryWindowTotals` — daily/weekly/monthly/yearly/
-// lifetime windows × N sites with concurrency + rate-limiting),
-// then the top-level `getTeslaPowerhubProductionMetrics`.
+// Slice 4c PR-B (this PR): adds `fetchSiteExternalIds` — STE ID
+//   extraction across N sites with concurrency + rate-limiting. Tesla
+//   stores the STE identifier (e.g. `STE20250403-01158`) in
+//   inconsistent fields, so the function uses a 3-priority scan: (1)
+//   18 candidate fields (top-level + nested `data`) matching the STE
+//   pattern; (2) any string value in record/data matching the
+//   pattern; (3) `site_name` as last-resort fallback. Errors per site
+//   are tolerated (logged via `onProgress` count, not thrown).
+//
+// Still to come: telemetry window orchestration
+// (`fetchTelemetryWindowTotals`), then the top-level
+// `getTeslaPowerhubProductionMetrics`.
 // ────────────────────────────────────────────────────────────────────
 export const __TEST_ONLY__ = {
   normalizeTimeoutMs,
@@ -3441,4 +3444,5 @@ export const __TEST_ONLY__ = {
   fetchAccessibleGroups,
   fetchGroupSites,
   fetchSingleSiteTelemetryTotal,
+  fetchSiteExternalIds,
 };
