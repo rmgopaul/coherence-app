@@ -51,8 +51,8 @@ import {
   storagePutFile,
 } from "../../storage";
 import {
-  buildChangeOwnershipTileCsv,
-  buildOwnershipTileCsv,
+  buildChangeOwnershipTileCsvFile,
+  buildOwnershipTileCsvFile,
   type OwnershipTileKey,
 } from "./buildDashboardCsvExport";
 import {
@@ -81,7 +81,7 @@ import type { DashboardCsvExportJob } from "../../../drizzle/schema";
 const METRIC_PREFIX = "[dashboard:csv-export-jobs]";
 
 export const DASHBOARD_CSV_EXPORT_RUNNER_VERSION =
-  "dashboard-csv-export-jobs-v6-file-backed-dataset-csv";
+  "dashboard-csv-export-jobs-v7-file-backed-tile-csv";
 const LEGACY_DETERMINISTIC_ARTIFACT_RUNNER_VERSION =
   "dashboard-csv-export-jobs-v3-heartbeat";
 
@@ -259,7 +259,7 @@ export async function startCsvExportJob(
   scopeId: string,
   input: DashboardCsvExportInput,
   runner: (jobId: string) => Promise<void> = runCsvExportJob,
-  scheduler: (cb: () => void) => void = (cb) => setImmediate(cb)
+  scheduler: (cb: () => void) => void = cb => setImmediate(cb)
 ): Promise<{ jobId: string }> {
   const jobId = newJobId();
   await insertDashboardCsvExportJob({
@@ -481,9 +481,9 @@ export async function runCsvExportJob(jobId: string): Promise<void> {
     let buildTimedOut = false;
     const buildPromise = buildExport(input, row.scopeId);
     void buildPromise.then(
-      (lateBuilt) => {
+      lateBuilt => {
         if (!buildTimedOut) return;
-        void lateBuilt.cleanup?.().catch((cleanupErr) => {
+        void lateBuilt.cleanup?.().catch(cleanupErr => {
           console.warn(
             `${METRIC_PREFIX} late temp CSV cleanup failed for jobId=${jobId}: ${
               cleanupErr instanceof Error
@@ -493,7 +493,7 @@ export async function runCsvExportJob(jobId: string): Promise<void> {
           );
         });
       },
-      (lateErr) => {
+      lateErr => {
         if (!buildTimedOut) return;
         console.warn(
           `${METRIC_PREFIX} CSV build rejected after runner timeout ` +
@@ -505,7 +505,7 @@ export async function runCsvExportJob(jobId: string): Promise<void> {
     );
     const built = await Promise.race([
       buildPromise,
-      deadline.promise.catch((err) => {
+      deadline.promise.catch(err => {
         if (err instanceof DashboardCsvExportTimeoutError) {
           buildTimedOut = true;
         }
@@ -550,9 +550,7 @@ export async function runCsvExportJob(jobId: string): Promise<void> {
       DASHBOARD_CSV_EXPORT_RUNNER_VERSION
     );
     if (!key) {
-      throw new Error(
-        "storageKeyForJob returned null after fileName was set"
-      );
+      throw new Error("storageKeyForJob returned null after fileName was set");
     }
     let storagePutTimedOut = false;
     const csvBytes = getBuiltCsvBytes(built);
@@ -560,7 +558,7 @@ export async function runCsvExportJob(jobId: string): Promise<void> {
     void storagePutPromise.then(
       () => {
         if (storagePutTimedOut) {
-          void built.cleanup?.().catch((cleanupErr) => {
+          void built.cleanup?.().catch(cleanupErr => {
             console.warn(
               `${METRIC_PREFIX} late temp CSV cleanup failed after ` +
                 `storagePut timeout for jobId=${jobId}: ${
@@ -578,9 +576,9 @@ export async function runCsvExportJob(jobId: string): Promise<void> {
           "late-storage-put-after-timeout"
         );
       },
-      (lateErr) => {
+      lateErr => {
         if (storagePutTimedOut) {
-          void built.cleanup?.().catch((cleanupErr) => {
+          void built.cleanup?.().catch(cleanupErr => {
             console.warn(
               `${METRIC_PREFIX} late temp CSV cleanup failed after ` +
                 `storagePut rejection for jobId=${jobId}: ${
@@ -602,7 +600,7 @@ export async function runCsvExportJob(jobId: string): Promise<void> {
     );
     await Promise.race([
       storagePutPromise,
-      deadline.promise.catch((err) => {
+      deadline.promise.catch(err => {
         if (err instanceof DashboardCsvExportTimeoutError) {
           storagePutTimedOut = true;
           deferBuiltCleanupUntilUploadSettles = Boolean(built.filePath);
@@ -628,17 +626,15 @@ export async function runCsvExportJob(jobId: string): Promise<void> {
       }
     );
     void successCompletionPromise.then(
-      (ok) => {
+      ok => {
         if (!successCompletionTimedOut || ok) return;
         void cleanupCurrentUploadedArtifact(
           "late-success-completion-lost-claim"
         );
       },
-      (lateErr) => {
+      lateErr => {
         if (!successCompletionTimedOut) return;
-        void cleanupCurrentUploadedArtifact(
-          "late-success-completion-error"
-        );
+        void cleanupCurrentUploadedArtifact("late-success-completion-error");
         console.warn(
           `${METRIC_PREFIX} success completion rejected after runner ` +
             `timeout for jobId=${jobId}: ${
@@ -649,7 +645,7 @@ export async function runCsvExportJob(jobId: string): Promise<void> {
     );
     const ok = await Promise.race([
       successCompletionPromise,
-      deadline.promise.catch((err) => {
+      deadline.promise.catch(err => {
         if (err instanceof DashboardCsvExportTimeoutError) {
           successCompletionTimedOut = true;
         }
@@ -709,7 +705,7 @@ export async function runCsvExportJob(jobId: string): Promise<void> {
     metric.fail(err);
   } finally {
     if (builtForCleanup?.cleanup && !deferBuiltCleanupUntilUploadSettles) {
-      await builtForCleanup.cleanup().catch((cleanupErr) => {
+      await builtForCleanup.cleanup().catch(cleanupErr => {
         console.warn(
           `${METRIC_PREFIX} temp CSV cleanup failed for jobId=${jobId}: ${
             cleanupErr instanceof Error
@@ -731,7 +727,7 @@ export async function runCsvExportJob(jobId: string): Promise<void> {
 function scheduleCsvExportRunner(
   jobId: string,
   runner: (jobId: string) => Promise<void> = runCsvExportJob,
-  scheduler: (cb: () => void) => void = (cb) => setImmediate(cb)
+  scheduler: (cb: () => void) => void = cb => setImmediate(cb)
 ): boolean {
   if (pendingRunnerJobIdSet.has(jobId) || activeRunnerJobIds.has(jobId)) {
     return false;
@@ -746,7 +742,7 @@ function scheduleCsvExportRunner(
 }
 
 function drainScheduledRunnerQueue(
-  scheduler: (cb: () => void) => void = (cb) => setImmediate(cb)
+  scheduler: (cb: () => void) => void = cb => setImmediate(cb)
 ): void {
   runnerDrainScheduled = false;
   while (
@@ -760,7 +756,7 @@ function drainScheduledRunnerQueue(
     activeRunnerJobIds.add(next.jobId);
     Promise.resolve()
       .then(() => next.runner(next.jobId))
-      .catch((err) => {
+      .catch(err => {
         console.error(
           `${METRIC_PREFIX} runner threw for jobId=${next.jobId}: ${
             err instanceof Error ? err.message : String(err)
@@ -813,7 +809,7 @@ async function completeFailureBestEffort(
   context: string
 ): Promise<boolean> {
   let timer: ReturnType<typeof setTimeout> | null = null;
-  const timeout = new Promise<false>((resolve) => {
+  const timeout = new Promise<false>(resolve => {
     timer = setTimeout(() => resolve(false), TERMINAL_UPDATE_TIMEOUT_MS);
     const maybeUnref = timer as ReturnType<typeof setTimeout> & {
       unref?: () => void;
@@ -935,9 +931,8 @@ function parseInputJson(rawInput: unknown): DashboardCsvExportInput | null {
   if (candidate.exportType === "changeOwnershipTile") {
     // Trust the discriminator; a future addition to the
     // ChangeOwnershipStatus union doesn't break older readers
-    // because the worker's only consumer is
-    // `buildChangeOwnershipTileCsv` which already filters by
-    // exact-string equality.
+    // because the worker's only consumer is the tile CSV file
+    // builder, which already filters by exact-string equality.
     if (typeof candidate.status === "string") {
       return {
         exportType: "changeOwnershipTile",
@@ -973,18 +968,19 @@ async function buildExport(
 ): Promise<BuiltCsvArtifact> {
   if (input.exportType === "ownershipTile") {
     const { result } = await getOrBuildOverviewSummary(scopeId);
-    return buildOwnershipTileCsv(result.ownershipRows, input.tile);
+    return buildOwnershipTileCsvFile(result.ownershipRows, input.tile);
   }
   if (input.exportType === "datasetCsv") {
     return buildDatasetCsvExport(scopeId, input.datasetKey);
   }
   const { result } = await getOrBuildChangeOwnership(scopeId);
-  return buildChangeOwnershipTileCsv(result.rows, input.status);
+  return buildChangeOwnershipTileCsvFile(result.rows, input.status);
 }
 
 function getBuiltCsvBytes(built: BuiltCsvArtifact): number {
   if (typeof built.csvBytes === "number") return built.csvBytes;
-  if (typeof built.csv === "string") return Buffer.byteLength(built.csv, "utf8");
+  if (typeof built.csv === "string")
+    return Buffer.byteLength(built.csv, "utf8");
   throw new Error("CSV export artifact has neither csvBytes nor csv text");
 }
 
@@ -1043,7 +1039,7 @@ async function sweepStaleAndPruned(): Promise<void> {
         continue;
       }
       // Fire-and-forget; don't block the sweep on storage IO.
-      storageDelete(key).catch((err) => {
+      storageDelete(key).catch(err => {
         console.warn(
           `${METRIC_PREFIX} cleanup storageDelete failed for jobId=${row.id}: ${
             err instanceof Error ? err.message : String(err)
@@ -1069,7 +1065,7 @@ export const __TEST_ONLY__ = {
   parseInputJson,
   storageKeyForJob,
   getRunnerSchedulerState: () => ({
-    pendingJobIds: pendingRunnerJobs.map((job) => job.jobId),
+    pendingJobIds: pendingRunnerJobs.map(job => job.jobId),
     pendingJobIdSet: Array.from(pendingRunnerJobIdSet),
     activeJobIds: Array.from(activeRunnerJobIds),
     runnerDrainScheduled,
