@@ -123,6 +123,20 @@ describe("Solar REC dashboard mount: heavy-query gates", () => {
     expect(block).not.toMatch(/activeTab\s*===\s*["']ownership["']/);
   });
 
+  it("Performance Ratio does not trigger the legacy offline-monitoring heavy query", () => {
+    const start = code.indexOf("const isOfflineMonitoringHeavyNeeded");
+    expect(start).toBeGreaterThan(-1);
+    const block = code.slice(start, start + 500);
+    expect(block).not.toMatch(/activeTab\s*===\s*["']performance-ratio["']/);
+    expect(code).toMatch(/<PerformanceRatioTabLazy/);
+    expect(code).not.toMatch(
+      /<PerformanceRatioTabLazy[\s\S]{0,500}part2EligibleSystemsForSizeReporting/
+    );
+    expect(code).not.toMatch(
+      /<PerformanceRatioTabLazy[\s\S]{0,500}abpAcSizeKwBySystemKey/
+    );
+  });
+
   it("getDashboardChangeOwnership is gated on isChangeOwnershipTabActive AND hasUserInteractedWithDashboard", () => {
     const block = extractUseQueryBlock(
       code,
@@ -879,6 +893,25 @@ describe("Solar REC dashboard mount: high-cardinality fields stay off mount path
     expect(code).not.toMatch(
       /offlineMonitoringQuery\.data\?\.abpPart2VerificationDateByApplicationId/
     );
+  });
+
+  it("Performance Ratio auto-compliant sources derive from its server rows, not parent Part-II system props", () => {
+    const performanceRatioSource = readFileSync(
+      resolve(
+        __dirname,
+        "..",
+        "components",
+        "PerformanceRatioTab.tsx"
+      ),
+      "utf8"
+    );
+    expect(performanceRatioSource).toMatch(
+      /performanceRatioResult\.rows\.forEach/
+    );
+    expect(performanceRatioSource).not.toMatch(
+      /part2EligibleSystemsForSizeReporting/
+    );
+    expect(performanceRatioSource).not.toMatch(/abpAcSizeKwBySystemKey/);
   });
 
   it("cumulativeKwAcPart2 / cumulativeKwDcPart2 flow into OverviewTab from the slim summary", () => {

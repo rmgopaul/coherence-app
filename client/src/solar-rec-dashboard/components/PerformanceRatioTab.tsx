@@ -10,10 +10,10 @@
  *   - compliant-source CRUD, localStorage sync, and CSV import/export
  *
  * The heavy performance-ratio computation now runs server-side; this tab
- * receives only small existence sentinels plus the remaining size-reporting
- * inputs used by the compliant-source section. This keeps the tab isolated
- * to its own mount lifecycle: switching tabs unmounts it, and its local
- * memos are garbage collected until you come back.
+ * receives only small dataset-existence sentinels and derives compliant-source
+ * auto labels from the server aggregate rows. This keeps the tab isolated to
+ * its own mount lifecycle: switching tabs unmounts it, and its local memos are
+ * garbage collected until you come back.
  *
  * Do NOT re-introduce `isPerformanceRatioTabActive` gates inside this
  * component — the gate IS the mount.
@@ -92,7 +92,6 @@ import type {
   CompliantSourceTableRow,
   PerformanceRatioMatchType,
   PerformanceRatioRow,
-  SystemRecord,
 } from "@/solar-rec-dashboard/state/types";
 
 // ---------------------------------------------------------------------------
@@ -121,10 +120,6 @@ export interface PerformanceRatioTabProps {
   convertedReadsLabel: string;
   annualProductionEstimatesLabel: string;
 
-  // Upstream computed data still needed for the size-reporting
-  // sub-memo (separate from the server aggregator).
-  part2EligibleSystemsForSizeReporting: SystemRecord[];
-  abpAcSizeKwBySystemKey: Map<string, number>;
 }
 
 // ---------------------------------------------------------------------------
@@ -206,8 +201,6 @@ export default memo(function PerformanceRatioTab(props: PerformanceRatioTabProps
     hasAnnualProductionEstimates,
     convertedReadsLabel,
     annualProductionEstimatesLabel,
-    part2EligibleSystemsForSizeReporting,
-    abpAcSizeKwBySystemKey,
   } = props;
 
   // --- Filter / sort / pagination state ---
@@ -518,43 +511,30 @@ export default memo(function PerformanceRatioTab(props: PerformanceRatioTabProps
 
   const autoCompliantSourceByPortalId = useMemo(() => {
     const mapping = new Map<string, string>();
-    part2EligibleSystemsForSizeReporting.forEach((system) => {
-      if (!system.systemId) return;
-      const keyById = system.systemId ? `id:${system.systemId}` : "";
-      const keyByTracking = system.trackingSystemRefId
-        ? `tracking:${system.trackingSystemRefId}`
-        : "";
-      const keyByName = `name:${system.systemName.toLowerCase()}`;
-      const abpAcSizeKw =
-        (keyById ? abpAcSizeKwBySystemKey.get(keyById) : undefined) ??
-        (keyByTracking
-          ? abpAcSizeKwBySystemKey.get(keyByTracking)
-          : undefined) ??
-        abpAcSizeKwBySystemKey.get(keyByName) ??
-        null;
-
+    performanceRatioResult.rows.forEach((row) => {
+      if (!row.systemId) return;
       const monitoringPlatformCompliantSource =
-        resolveMonitoringPlatformCompliantSource(system.monitoringPlatform);
+        resolveMonitoringPlatformCompliantSource(row.monitoringPlatform);
       const isTenKwCompliant = isTenKwAcOrLess(
-        system.installedKwAc,
-        abpAcSizeKw,
+        row.portalAcSizeKw,
+        row.abpAcSizeKw,
       );
       const candidateSource =
         monitoringPlatformCompliantSource ??
         (isTenKwCompliant ? TEN_KW_COMPLIANT_SOURCE : null);
       if (!candidateSource) return;
 
-      const existingSource = mapping.get(system.systemId);
+      const existingSource = mapping.get(row.systemId);
       if (
         !existingSource ||
         getAutoCompliantSourcePriority(candidateSource) >
           getAutoCompliantSourcePriority(existingSource)
       ) {
-        mapping.set(system.systemId, candidateSource);
+        mapping.set(row.systemId, candidateSource);
       }
     });
     return mapping;
-  }, [abpAcSizeKwBySystemKey, part2EligibleSystemsForSizeReporting]);
+  }, [performanceRatioResult.rows]);
 
   const compliantSourcesTableRows = useMemo<CompliantSourceTableRow[]>(() => {
     const mapping = new Map<string, CompliantSourceTableRow>();
