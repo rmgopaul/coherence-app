@@ -30,6 +30,7 @@
 
 import type { DashboardBuildStep } from "./dashboardBuildJobRunner";
 import { getOrBuildSystemSnapshot } from "./buildSystemSnapshot";
+import { getOrBuildOfflineMonitoringAggregates } from "./buildOfflineMonitoringAggregates";
 import {
   upsertSystemFacts,
   deleteOrphanedSystemFacts,
@@ -87,11 +88,36 @@ export interface SystemRecordSubset {
 }
 
 /**
+ * Eligible-Part-2 ID sets sourced from the offline-monitoring
+ * aggregator. Passed as Sets (not arrays) so per-system membership
+ * checks in `buildSystemFactRows` are O(1).
+ *
+ * A system is Part-2 eligible if ANY of its 3 IDs is in the
+ * matching set:
+ *   - `systemId` ∈ portalSystemIds
+ *   - `stateApplicationRefId` ∈ applicationIds
+ *   - `trackingSystemRefId` ∈ trackingIds
+ *
+ * Mirrors the per-system filter the OverviewTab's parent currently
+ * runs over `systems` (`part2EligibleSystemsForSizeReporting`).
+ */
+export interface Part2EligibilityIdSets {
+  applicationIds: ReadonlySet<string>;
+  portalSystemIds: ReadonlySet<string>;
+  trackingIds: ReadonlySet<string>;
+}
+
+/**
  * Pure transformation: SystemRecord → fact-row.
  *
  * `buildId` is required because every fact row carries the build
  * that wrote it (the orphan-sweep mechanism in
  * `deleteOrphanedSystemFacts` keys on this).
+ *
+ * `eligibility` carries the 3 ID sets the offline-monitoring
+ * aggregator computes from `srDsAbpReport`. PR-F-4-f-1 added
+ * `isPart2Eligible` to the fact-table schema so the OverviewTab's
+ * parent-level filter can be satisfied at the proc layer instead.
  *
  * Decimal serialization: 10 `decimal()` columns map to `string`
  * at the Drizzle wire level. Convert numerically-finite values
@@ -104,8 +130,9 @@ export function buildSystemFactRows(args: {
   scopeId: string;
   buildId: string;
   rows: readonly SystemRecordSubset[];
+  eligibility: Part2EligibilityIdSets;
 }): InsertSolarRecDashboardSystemFact[] {
-  const { scopeId, buildId, rows } = args;
+  const { scopeId, buildId, rows, eligibility } = args;
   return rows.map(row => ({
     scopeId,
     systemKey: row.key,
@@ -140,8 +167,31 @@ export function buildSystemFactRows(args: {
     monitoringPlatform: row.monitoringPlatform,
     installerName: row.installerName,
     part2VerificationDate: row.part2VerificationDate,
+    isPart2Eligible: isSystemPart2Eligible(row, eligibility),
     buildId,
   }));
+}
+
+function isSystemPart2Eligible(
+  row: SystemRecordSubset,
+  eligibility: Part2EligibilityIdSets
+): boolean {
+  if (row.systemId && eligibility.portalSystemIds.has(row.systemId)) {
+    return true;
+  }
+  if (
+    row.stateApplicationRefId &&
+    eligibility.applicationIds.has(row.stateApplicationRefId)
+  ) {
+    return true;
+  }
+  if (
+    row.trackingSystemRefId &&
+    eligibility.trackingIds.has(row.trackingSystemRefId)
+  ) {
+    return true;
+  }
+  return false;
 }
 
 function numberToDecimalString(value: number | null): string | null {
@@ -169,9 +219,28 @@ async function runSystemStep(args: {
   const startedAt = Date.now();
 
   if (signal.aborted) throw new Error("aborted before aggregate fetch");
+  // Fetch both aggregators sequentially. `getOrBuildOfflineMonitoring
+  // Aggregates` reads `srDsAbpReport` to compute the 3 eligible-Part-2
+  // ID sets; `getOrBuildSystemSnapshot` reads the full system list.
+  // Both are cached via `withArtifactCache`, so the second of two
+  // back-to-back builds for the same scope hits the cache for both.
+  const offlineMonitoring = await getOrBuildOfflineMonitoringAggregates(
+    scopeId
+  );
+  if (signal.aborted) throw new Error("aborted after offline-monitoring fetch");
   const { systems, fromCache } = await getOrBuildSystemSnapshot(scopeId);
 
   if (signal.aborted) throw new Error("aborted after aggregate fetch");
+
+  const eligibility: Part2EligibilityIdSets = {
+    applicationIds: new Set(
+      offlineMonitoring.result.eligiblePart2ApplicationIds
+    ),
+    portalSystemIds: new Set(
+      offlineMonitoring.result.eligiblePart2PortalSystemIds
+    ),
+    trackingIds: new Set(offlineMonitoring.result.eligiblePart2TrackingIds),
+  };
 
   // Cast `unknown[]` → `SystemRecordSubset[]`. The aggregator IS
   // the source of these rows; this is the validated boundary
@@ -180,6 +249,7 @@ async function runSystemStep(args: {
     scopeId,
     buildId,
     rows: systems as readonly SystemRecordSubset[],
+    eligibility,
   });
 
   if (signal.aborted) throw new Error("aborted before upsert");
@@ -189,12 +259,17 @@ async function runSystemStep(args: {
 
   const heapAfter = process.memoryUsage().heapUsed;
   const elapsedMs = Date.now() - startedAt;
+  let part2EligibleCount = 0;
+  for (const row of rows) {
+    if (row.isPart2Eligible) part2EligibleCount += 1;
+  }
   // eslint-disable-next-line no-console
   console.log(
     `${METRIC_PREFIX} metric ${JSON.stringify({
       scopeId,
       buildId,
       rowsWritten: rows.length,
+      part2EligibleCount,
       orphanedDeleted,
       fromCache,
       elapsedMs,

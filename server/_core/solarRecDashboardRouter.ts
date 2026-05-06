@@ -3873,10 +3873,17 @@ export const solarRecDashboardRouter = t.router({
    * signals end-of-stream. The input field is named `cursor` so it
    * works with tRPC v11 `useInfiniteQuery` cursor injection.
    *
-   * **Three filter axes — independent and combinable.**
+   * **Four filter axes — independent and combinable.**
    *   - `ownershipStatus` — the 6-value `OwnershipStatus` union.
    *   - `sizeBucket` — `<=10 kW AC`, `>10 kW AC`, or `Unknown`.
    *   - `isReporting` — current reporting state.
+   *   - `isPart2Eligible` — Phase 2 PR-F-4-f-1 axis. Replaces the
+   *     OverviewTab's parent-level `part2EligibleSystemsForSize
+   *     Reporting` filter (which walked `systems` against the 3
+   *     ID sets returned by `getDashboardOfflineMonitoring`). The
+   *     fact-table column is populated by the build runner; reads
+   *     here go straight to the covering index `(scopeId,
+   *     isPart2Eligible)`.
    *
    * The DB helper applies all filters with AND semantics and reads
    * from the derived fact table only. It must not call
@@ -3907,6 +3914,7 @@ export const solarRecDashboardRouter = t.router({
           .nullable()
           .optional(),
         isReporting: z.boolean().nullable().optional(),
+        isPart2Eligible: z.boolean().nullable().optional(),
       })
     )
     .query(async ({ ctx, input }) => {
@@ -3919,6 +3927,7 @@ export const solarRecDashboardRouter = t.router({
         status: input.ownershipStatus ?? null,
         sizeBucket: input.sizeBucket ?? null,
         isReporting: input.isReporting ?? null,
+        isPart2Eligible: input.isPart2Eligible ?? null,
       });
       const nextCursor =
         rows.length === input.limit
@@ -3926,7 +3935,7 @@ export const solarRecDashboardRouter = t.router({
           : null;
       return {
         _checkpoint: "systems-page-v1",
-        _runnerVersion: "phase-2-pr-f-3@1" as const,
+        _runnerVersion: "phase-2-pr-f-3@2" as const,
         rows,
         nextCursor,
         hasMore: nextCursor !== null,

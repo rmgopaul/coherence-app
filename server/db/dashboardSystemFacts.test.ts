@@ -187,7 +187,8 @@ describe("upsertSystemFacts", () => {
     const insertCall = stub.calls.find(c => c.kind === "insert");
     expect(insertCall?.insertValues).toEqual(rows);
     const set = insertCall?.onDuplicateSet ?? {};
-    // All 31 SystemRecord fields + buildId = 32 keys.
+    // 31 SystemRecord fields + isPart2Eligible (PR-F-4-f-1) +
+    // buildId = 33 keys.
     expect(Object.keys(set)).toContain("systemName");
     expect(Object.keys(set)).toContain("installedKwAc");
     expect(Object.keys(set)).toContain("installedKwDc");
@@ -202,6 +203,7 @@ describe("upsertSystemFacts", () => {
     expect(Object.keys(set)).toContain("monitoringPlatform");
     expect(Object.keys(set)).toContain("installerName");
     expect(Object.keys(set)).toContain("part2VerificationDate");
+    expect(Object.keys(set)).toContain("isPart2Eligible");
     expect(Object.keys(set)).toContain("buildId");
     // PK columns + auto-managed timestamps NOT in update set.
     expect(Object.keys(set)).not.toContain("scopeId");
@@ -324,8 +326,30 @@ describe("getSystemFactsPage", () => {
     expect(selectCall?.whereCalled).toBe(1);
   });
 
-  it("combines status + sizeBucket + isReporting filters into a single WHERE", async () => {
-    // All three axes ANDed into one where clause; SELECT issues
+  it("applies isPart2Eligible=true filter when provided (PR-F-4-f-1)", async () => {
+    const stub = makeDbStub({ selectRows: [[]] });
+    mocks.getDb.mockResolvedValue(stub);
+    await getSystemFactsPage("scope-1", {
+      isPart2Eligible: true,
+      limit: 100,
+    });
+    const selectCall = stub.calls.find(c => c.kind === "select");
+    expect(selectCall?.whereCalled).toBe(1);
+  });
+
+  it("applies isPart2Eligible=false filter (defends against truthy-only check)", async () => {
+    const stub = makeDbStub({ selectRows: [[]] });
+    mocks.getDb.mockResolvedValue(stub);
+    await getSystemFactsPage("scope-1", {
+      isPart2Eligible: false,
+      limit: 100,
+    });
+    const selectCall = stub.calls.find(c => c.kind === "select");
+    expect(selectCall?.whereCalled).toBe(1);
+  });
+
+  it("combines all 4 filters into a single WHERE", async () => {
+    // All four axes ANDed into one where clause; SELECT issues
     // exactly one filtered query.
     const stub = makeDbStub({ selectRows: [[]] });
     mocks.getDb.mockResolvedValue(stub);
@@ -333,6 +357,7 @@ describe("getSystemFactsPage", () => {
       status: "Terminated and Reporting",
       sizeBucket: ">10 kW AC",
       isReporting: true,
+      isPart2Eligible: true,
       limit: 100,
     });
     const selectCall = stub.calls.find(c => c.kind === "select");
@@ -422,7 +447,17 @@ describe("getSystemFactsCount", () => {
     ).toBe(7);
   });
 
-  it("combines all 3 filter axes", async () => {
+  it("applies isPart2Eligible filter when provided (PR-F-4-f-1)", async () => {
+    const stub = makeDbStub({ selectRows: [[{ n: 19 }]] });
+    mocks.getDb.mockResolvedValue(stub);
+    expect(
+      await getSystemFactsCount("scope-1", {
+        isPart2Eligible: true,
+      })
+    ).toBe(19);
+  });
+
+  it("combines all 4 filter axes", async () => {
     const stub = makeDbStub({ selectRows: [[{ n: 2 }]] });
     mocks.getDb.mockResolvedValue(stub);
     expect(
@@ -430,6 +465,7 @@ describe("getSystemFactsCount", () => {
         status: "Transferred and Reporting",
         sizeBucket: ">10 kW AC",
         isReporting: true,
+        isPart2Eligible: true,
       })
     ).toBe(2);
   });

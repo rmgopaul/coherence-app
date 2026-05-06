@@ -99,6 +99,7 @@ export async function upsertSystemFacts(
               monitoringPlatform: sql`VALUES(\`monitoringPlatform\`)`,
               installerName: sql`VALUES(\`installerName\`)`,
               part2VerificationDate: sql`VALUES(\`part2VerificationDate\`)`,
+              isPart2Eligible: sql`VALUES(\`isPart2Eligible\`)`,
               buildId: sql`VALUES(\`buildId\`)`,
               // updatedAt auto-bumps via onUpdateNow.
             },
@@ -136,19 +137,19 @@ export async function deleteOrphanedSystemFacts(
 
 /**
  * Fetch a paginated page of fact rows for a scope, optionally
- * filtered by `ownershipStatus`, `sizeBucket`, and/or
- * `isReporting`. Cursor is `systemKey`; rows are sorted by
- * `systemKey ASC` for stable pagination across requests.
+ * filtered by `ownershipStatus`, `sizeBucket`, `isReporting`,
+ * and/or `isPart2Eligible`. Cursor is `systemKey`; rows are
+ * sorted by `systemKey ASC` for stable pagination across requests.
  *
- * All three filter axes can be applied independently or together.
+ * All four filter axes can be applied independently or together.
  * The covering indexes `(scopeId, ownershipStatus)`,
- * `(scopeId, sizeBucket)`, `(scopeId, isReporting)` make any
- * single-axis filter efficient; combined filters fall back to one
- * of the indexes + a post-index filter on the remaining
- * column(s).
+ * `(scopeId, sizeBucket)`, `(scopeId, isReporting)`,
+ * `(scopeId, isPart2Eligible)` make any single-axis filter
+ * efficient; combined filters fall back to one of the indexes +
+ * a post-index filter on the remaining column(s).
  *
- * `limit` is bounded server-side. PR-F-3's proc layer will
- * additionally clamp at the wire-payload contract.
+ * `limit` is bounded server-side. The proc layer additionally
+ * clamps at the wire-payload contract.
  */
 export async function getSystemFactsPage(
   scopeId: string,
@@ -158,11 +159,19 @@ export async function getSystemFactsPage(
     status?: string | null;
     sizeBucket?: string | null;
     isReporting?: boolean | null;
+    isPart2Eligible?: boolean | null;
   }
 ): Promise<SolarRecDashboardSystemFact[]> {
   const db = await getDb();
   if (!db) return [];
-  const { cursorAfter, limit, status, sizeBucket, isReporting } = options;
+  const {
+    cursorAfter,
+    limit,
+    status,
+    sizeBucket,
+    isReporting,
+    isPart2Eligible,
+  } = options;
   const safeLimit = Math.max(1, Math.min(1000, Math.floor(limit)));
 
   const conditions = [eq(solarRecDashboardSystemFacts.scopeId, scopeId)];
@@ -182,6 +191,11 @@ export async function getSystemFactsPage(
   if (typeof isReporting === "boolean") {
     conditions.push(
       eq(solarRecDashboardSystemFacts.isReporting, isReporting)
+    );
+  }
+  if (typeof isPart2Eligible === "boolean") {
+    conditions.push(
+      eq(solarRecDashboardSystemFacts.isPart2Eligible, isPart2Eligible)
     );
   }
 
@@ -226,8 +240,9 @@ export async function getSystemFactsBySystemKeys(
 
 /**
  * Count fact rows for a scope, optionally narrowed by
- * `ownershipStatus`, `sizeBucket`, and/or `isReporting`. Useful
- * for first-page totalCount + per-axis counts.
+ * `ownershipStatus`, `sizeBucket`, `isReporting`, and/or
+ * `isPart2Eligible`. Useful for first-page totalCount + per-axis
+ * counts.
  */
 export async function getSystemFactsCount(
   scopeId: string,
@@ -235,6 +250,7 @@ export async function getSystemFactsCount(
     status?: string | null;
     sizeBucket?: string | null;
     isReporting?: boolean | null;
+    isPart2Eligible?: boolean | null;
   }
 ): Promise<number> {
   const db = await getDb();
@@ -253,6 +269,14 @@ export async function getSystemFactsCount(
   if (typeof options?.isReporting === "boolean") {
     conditions.push(
       eq(solarRecDashboardSystemFacts.isReporting, options.isReporting)
+    );
+  }
+  if (typeof options?.isPart2Eligible === "boolean") {
+    conditions.push(
+      eq(
+        solarRecDashboardSystemFacts.isPart2Eligible,
+        options.isPart2Eligible
+      )
     );
   }
   const rows = await withDbRetry(
