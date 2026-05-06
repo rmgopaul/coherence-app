@@ -390,6 +390,23 @@ async function flushMicrotasks(times = 32): Promise<void> {
   }
 }
 
+async function waitForFakeJobStatus(
+  id: string,
+  status: FakeRow["status"],
+  attempts = 50
+): Promise<void> {
+  for (let i = 0; i < attempts; i += 1) {
+    if (fakeFindById(id)?.status === status) return;
+    await flushMicrotasks(8);
+    await new Promise((r) => setTimeout(r, 0));
+  }
+  throw new Error(
+    `expected fake job ${id} to reach ${status}, got ${
+      fakeFindById(id)?.status ?? "missing"
+    }`
+  );
+}
+
 describe("dashboardCsvExportJobs — start (DB-backed)", () => {
   it("returns a unique 32-hex-char jobId per call", async () => {
     const a = await startCsvExportJob(
@@ -944,15 +961,7 @@ describe("dashboardCsvExportJobs — Codex P1: queued-job resume on status read"
     // Status read returns the pre-resume snapshot (still queued).
     expect(snap!.status).toBe("queued");
 
-    // Wait for setImmediate + runner work to flush.
-    await new Promise((r) => setImmediate(r));
-    await new Promise((r) => setImmediate(r));
-    // A microtask plus an event-loop turn is enough to drain the
-    // chained awaits inside runCsvExportJob in the test
-    // environment (no real DB latency).
-    await new Promise((r) => setTimeout(r, 0));
-
-    expect(fakeFindById(id)?.status).toBe("succeeded");
+    await waitForFakeJobStatus(id, "succeeded");
   });
 
   it("dedupes repeated queued status polls before the local runner drains", async () => {
