@@ -70,10 +70,12 @@ export interface DeliveryTrackerTabProps {
   scheduleBImportSlot: ReactNode;
   /** Computed by the parent's `deliveryTrackerData` useMemo. */
   deliveryTrackerData: DeliveryTrackerData;
+  /** Starts the server-side full detail CSV export job. */
+  onExportDetailCsv?: () => void;
 }
 
 export default memo(function DeliveryTrackerTab(props: DeliveryTrackerTabProps) {
-  const { scheduleBImportSlot, deliveryTrackerData } = props;
+  const { scheduleBImportSlot, deliveryTrackerData, onExportDetailCsv } = props;
   const detailRowCount =
     deliveryTrackerData.detailRowCount ?? deliveryTrackerData.rows.length;
   const detailRowsTruncated =
@@ -434,7 +436,7 @@ export default memo(function DeliveryTrackerTab(props: DeliveryTrackerTabProps) 
         </CardContent>
       </Card>
 
-      {/* System-level detail (paginated) */}
+      {/* System-level detail preview */}
       {detailRowCount > 0 && (
         <Card>
           <CardHeader>
@@ -449,42 +451,55 @@ export default memo(function DeliveryTrackerTab(props: DeliveryTrackerTabProps) 
                 </CardDescription>
               </div>
               {deliveryTrackerData.rows.length > 0 ? (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => {
-                    const csv = buildCsv(
-                      [
-                        "system_name",
-                        "unit_id",
-                        "contract",
-                        "year",
-                        "start_date",
-                        "end_date",
-                        "obligated",
-                        "delivered",
-                        "gap",
-                      ],
-                      deliveryTrackerData.rows.map((r) => ({
-                        system_name: r.systemName,
-                        unit_id: r.unitId,
-                        contract: r.contractId,
-                        year: r.yearLabel,
-                        start_date: r.yearStart?.toISOString().slice(0, 10) ?? "",
-                        end_date: r.yearEnd?.toISOString().slice(0, 10) ?? "",
-                        obligated: r.obligated,
-                        delivered: r.delivered,
-                        gap: r.gap,
-                      })),
-                    );
-                    triggerCsvDownload(
-                      `delivery-tracker-detail-preview-${timestampForCsvFileName()}.csv`,
-                      csv,
-                    );
-                  }}
-                >
-                  Export preview CSV
-                </Button>
+                <div className="flex items-center gap-2">
+                  {onExportDetailCsv ? (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={onExportDetailCsv}
+                    >
+                      Export full CSV
+                    </Button>
+                  ) : null}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      const csv = buildCsv(
+                        [
+                          "system_name",
+                          "unit_id",
+                          "contract",
+                          "year",
+                          "start_date",
+                          "end_date",
+                          "obligated",
+                          "delivered",
+                          "gap",
+                        ],
+                        deliveryTrackerData.rows.map((r) => ({
+                          system_name: r.systemName,
+                          unit_id: r.unitId,
+                          contract: r.contractId,
+                          year: r.yearLabel,
+                          start_date:
+                            r.yearStart?.toISOString().slice(0, 10) ?? "",
+                          end_date:
+                            r.yearEnd?.toISOString().slice(0, 10) ?? "",
+                          obligated: r.obligated,
+                          delivered: r.delivered,
+                          gap: r.gap,
+                        })),
+                      );
+                      triggerCsvDownload(
+                        `delivery-tracker-detail-preview-${timestampForCsvFileName()}.csv`,
+                        csv,
+                      );
+                    }}
+                  >
+                    Export preview CSV
+                  </Button>
+                </div>
               ) : null}
             </div>
           </CardHeader>
@@ -503,7 +518,7 @@ export default memo(function DeliveryTrackerTab(props: DeliveryTrackerTabProps) 
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {deliveryTrackerData.rows.slice(0, 200).map((r, i) => (
+                  {deliveryTrackerData.rows.map((r, i) => (
                     <TableRow key={i}>
                       <TableCell className="text-sm">{r.systemName}</TableCell>
                       <TableCell className="text-xs text-slate-500">{r.unitId}</TableCell>
@@ -529,7 +544,8 @@ export default memo(function DeliveryTrackerTab(props: DeliveryTrackerTabProps) 
               <p className="text-xs text-slate-500 mt-2 text-center">
                 Showing first {formatNumber(deliveryTrackerData.rows.length)} of{" "}
                 {formatNumber(detailRowCount)} rows to keep the dashboard responsive.
-                Contract totals above are computed from the full dataset.
+                Contract totals above are computed from the full dataset. Export
+                full CSV for every System x Year row.
               </p>
             )}
           </CardContent>

@@ -3729,7 +3729,7 @@ export default function SolarRecDashboard() {
       initialMessage: string;
       preparingMessage: string;
       successLabel: string;
-      noun: "system" | "project";
+      noun: "system" | "project" | "row";
       noRowsMessage: string;
       failureMessage: string;
       consoleTag: string;
@@ -3911,6 +3911,21 @@ export default function SolarRecDashboard() {
     },
     [runDashboardCsvExport]
   );
+
+  const downloadDeliveryTrackerDetailCsv = useCallback(async () => {
+    await runDashboardCsvExport({
+      input: { exportType: "deliveryTrackerDetailCsv" },
+      initialMessage: "Preparing Delivery Tracker detail export...",
+      preparingMessage:
+        "Still preparing Delivery Tracker detail export - this can take a few minutes.",
+      successLabel: "Delivery Tracker detail",
+      noun: "row",
+      noRowsMessage:
+        "No Delivery Tracker detail rows are available to export. Import or apply Schedule B first.",
+      failureMessage: "Failed to export Delivery Tracker detail CSV.",
+      consoleTag: "delivery-tracker-detail-csv-export",
+    });
+  }, [runDashboardCsvExport]);
 
   // downloadChangeOwnershipDetailFilteredCsv — moved to @/solar-rec-dashboard/components/ChangeOwnershipTab
 
@@ -6209,6 +6224,7 @@ const aiDataContext = useMemo(() => {
               <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading delivery tracker tab...</div>}>
                 <DeliveryTrackerTabLazy
                   deliveryTrackerData={deliveryTrackerData}
+                  onExportDetailCsv={downloadDeliveryTrackerDetailCsv}
                   scheduleBImportSlot={
                   <>
                     {/* ── Schedule B PDF Import ────────────────────────── */}

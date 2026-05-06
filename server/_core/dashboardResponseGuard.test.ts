@@ -683,6 +683,9 @@ describe("solarRecDashboardRouter wiring", () => {
       /getDashboardCsvExportJobStatus\s*:\s*dashboardProcedure\s*\(/
     );
     expect(source).toMatch(/exportType:\s*z\.literal\("datasetCsv"\)/);
+    expect(source).toMatch(
+      /exportType:\s*z\.literal\("deliveryTrackerDetailCsv"\)/
+    );
     expect(source).toMatch(/datasetKey:\s*z\.enum\(/);
   });
 

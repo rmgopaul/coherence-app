@@ -64,6 +64,7 @@ import {
   isDashboardDatasetCsvExportKey,
   type DashboardDatasetCsvExportKey,
 } from "./dashboardDatasetCsvExport";
+import { buildDeliveryTrackerDetailCsvExport } from "./buildDeliveryTrackerData";
 import { getOrBuildOverviewSummary } from "./buildOverviewSummaryAggregates";
 import { startDashboardJobMetric } from "./dashboardJobMetrics";
 import {
@@ -81,7 +82,7 @@ import type { DashboardCsvExportJob } from "../../../drizzle/schema";
 const METRIC_PREFIX = "[dashboard:csv-export-jobs]";
 
 export const DASHBOARD_CSV_EXPORT_RUNNER_VERSION =
-  "dashboard-csv-export-jobs-v7-file-backed-tile-csv";
+  "dashboard-csv-export-jobs-v8-delivery-tracker-detail";
 const LEGACY_DETERMINISTIC_ARTIFACT_RUNNER_VERSION =
   "dashboard-csv-export-jobs-v3-heartbeat";
 
@@ -150,7 +151,8 @@ class DashboardCsvExportTimeoutError extends Error {
 export type DashboardCsvExportInput =
   | { exportType: "ownershipTile"; tile: OwnershipTileKey }
   | { exportType: "changeOwnershipTile"; status: ChangeOwnershipStatus }
-  | { exportType: "datasetCsv"; datasetKey: DashboardDatasetCsvExportKey };
+  | { exportType: "datasetCsv"; datasetKey: DashboardDatasetCsvExportKey }
+  | { exportType: "deliveryTrackerDetailCsv" };
 
 export type DashboardCsvExportStatus =
   | "queued"
@@ -950,6 +952,9 @@ function parseInputJson(rawInput: unknown): DashboardCsvExportInput | null {
     }
     return null;
   }
+  if (candidate.exportType === "deliveryTrackerDetailCsv") {
+    return { exportType: "deliveryTrackerDetailCsv" };
+  }
   return null;
 }
 
@@ -972,6 +977,9 @@ async function buildExport(
   }
   if (input.exportType === "datasetCsv") {
     return buildDatasetCsvExport(scopeId, input.datasetKey);
+  }
+  if (input.exportType === "deliveryTrackerDetailCsv") {
+    return buildDeliveryTrackerDetailCsvExport(scopeId);
   }
   const { result } = await getOrBuildChangeOwnership(scopeId);
   return buildChangeOwnershipTileCsvFile(result.rows, input.status);

@@ -3270,6 +3270,9 @@ export const solarRecDashboardRouter = t.router({
           exportType: z.literal("datasetCsv"),
           datasetKey: z.enum(DASHBOARD_DATASET_CSV_EXPORT_KEYS),
         }),
+        z.object({
+          exportType: z.literal("deliveryTrackerDetailCsv"),
+        }),
       ])
     )
     .mutation(async ({ ctx, input }) => {
