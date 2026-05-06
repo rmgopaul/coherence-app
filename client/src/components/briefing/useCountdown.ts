@@ -15,20 +15,21 @@ const ONE_HOUR_MS = 60 * ONE_MIN_MS;
 export function useCountdown(dueDate: Date | null): CountdownState {
   const [now, setNow] = useState(() => Date.now());
 
-  const msRemaining = dueDate ? Math.max(0, dueDate.getTime() - now) : 0;
-  const severity: CountdownSeverity = dueDate
-    ? deriveSeverity(msRemaining)
-    : "none";
-  const isPastDue = dueDate ? dueDate.getTime() <= now : false;
+  const dueMs =
+    dueDate && !Number.isNaN(dueDate.getTime()) ? dueDate.getTime() : null;
+  const msRemaining = dueMs !== null ? Math.max(0, dueMs - now) : 0;
+  const severity: CountdownSeverity =
+    dueMs !== null ? deriveSeverity(msRemaining) : "none";
+  const isPastDue = dueMs !== null ? dueMs <= now : false;
 
   useEffect(() => {
-    if (!dueDate || isPastDue) return;
+    if (dueMs === null || isPastDue) return;
     const tickMs = severity === "critical" ? 1_000 : ONE_MIN_MS;
     const id = window.setInterval(() => setNow(Date.now()), tickMs);
     return () => window.clearInterval(id);
-  }, [dueDate, severity, isPastDue]);
+  }, [dueMs, severity, isPastDue]);
 
-  if (!dueDate) {
+  if (dueMs === null) {
     return { label: "—", severity: "none", msRemaining: 0 };
   }
   return {

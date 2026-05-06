@@ -17,17 +17,22 @@ export function selectTopTask(tasks: TodoistTask[]): TodoistTask | null {
 }
 
 export function getTopTaskDueDate(task: TodoistTask | null): Date | null {
-  if (!task?.due) return null;
-  if (task.due.datetime) return new Date(task.due.datetime);
-  if (task.due.date) {
-    return new Date(`${task.due.date}T${pad2(FALLBACK_TASK_DUE_HOUR)}:00:00`);
-  }
-  return null;
+  const due = task?.due;
+  if (!due) return null;
+  let raw: string | null = null;
+  if (due.datetime) raw = due.datetime;
+  else if (due.date)
+    raw = `${due.date}T${pad2(FALLBACK_TASK_DUE_HOUR)}:00:00`;
+  if (!raw) return null;
+  const d = new Date(raw);
+  return Number.isNaN(d.getTime()) ? null : d;
 }
 
 function taskDueMs(task: TodoistTask): number {
   const d = getTopTaskDueDate(task);
-  return d ? d.getTime() : Number.POSITIVE_INFINITY;
+  return d && !Number.isNaN(d.getTime())
+    ? d.getTime()
+    : Number.POSITIVE_INFINITY;
 }
 
 export function getEventStart(event: CalendarEvent): Date | null {
@@ -140,6 +145,7 @@ export function getEventTitle(event: CalendarEvent): string {
 }
 
 export function formatTime(d: Date): string {
+  if (Number.isNaN(d.getTime())) return "—";
   return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
 
