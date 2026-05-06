@@ -3676,6 +3676,106 @@ export const solarRecDashboardRouter = t.router({
     }),
 
   /**
+   * Phase 2 PR-E-3 (OOM rebuild) — paginated read for the
+   * ownership fact table written by the build runner (PR-E-2's
+   * `ownershipBuildStep`). The eventual REPLACEMENT for the
+   * per-row `ownershipRows: OwnershipOverviewExportRow[]` payload
+   * embedded in `getDashboardOverviewSummary` (~5–15 MB on prod;
+   * one of the three remaining heavy entries on
+   * `DASHBOARD_OVERSIZE_ALLOWLIST`).
+   *
+   * Returns one page of fact rows ordered by `systemKey` (ASC).
+   * Caller paginates by passing the response's `nextCursor` back
+   * as the next request's `cursorAfter`. `nextCursor === null`
+   * signals end-of-stream.
+   *
+   * **Two filter axes — independent and combinable.**
+   *   - `status` — the OverviewTab's primary control (Transferred
+   *     and Reporting / Not Reporting / Not Transferred and …
+   *     Terminated and …). 6-value enum matching
+   *     `OwnershipStatus` from
+   *     `server/services/solar/buildOverviewSummaryAggregates.ts`.
+   *     Backed by the covering index `(scopeId, ownershipStatus)`
+   *     PR-E-1 added.
+   *   - `source` — the Matched System vs Part II Unmatched toggle.
+   *     2-value enum. Backed by the covering index `(scopeId,
+   *     source)` PR-E-1 added.
+   *
+   * Combining both filters falls back to one of the two indexes +
+   * a post-index filter on the other column. The DB helper
+   * (`getOwnershipFactsPage`) handles the AND composition. A
+   * filter value the builder doesn't write resolves to an empty
+   * page (consistent with "no projects match" UX).
+   *
+   * Wire payload: bounded to 1000 rows × ~24 columns (~150-200 KB
+   * at limit=1000); default limit=200 gives ~30-40 KB per page on
+   * real data, well under the 1 MB dashboard response budget.
+   *
+   * Empty-table behavior: until the OverviewTab migrates onto
+   * this proc, the table is EMPTY for any scope that hasn't had
+   * a build run via `startDashboardBuild`. The proc returns an
+   * empty page rather than synthesizing facts on demand —
+   * building is the explicit "rebuild" action the operator
+   * initiates.
+   */
+  getDashboardOwnershipPage: dashboardProcedure(
+    "solar-rec-dashboard",
+    "read"
+  )
+    .input(
+      z.object({
+        cursorAfter: z.string().min(1).max(128).nullable().optional(),
+        limit: z.number().int().min(1).max(1000).default(200),
+        // Match the 6-value `OwnershipStatus` union exactly. The DB
+        // filter is an exact-match `WHERE ownershipStatus = ?`, so
+        // a value the builder doesn't write resolves to an empty
+        // page.
+        status: z
+          .enum([
+            "Transferred and Reporting",
+            "Transferred and Not Reporting",
+            "Not Transferred and Reporting",
+            "Not Transferred and Not Reporting",
+            "Terminated and Reporting",
+            "Terminated and Not Reporting",
+          ])
+          .nullable()
+          .optional(),
+        // Discriminator: matched-system rows came from the system
+        // snapshot ⨝ Part II report; unmatched rows came from the
+        // Part II report alone. Two values; storing as varchar in
+        // the schema means a future "third source" is a code-only
+        // PR — this enum mirrors today's contract.
+        source: z
+          .enum(["Matched System", "Part II Unmatched"])
+          .nullable()
+          .optional(),
+      })
+    )
+    .query(async ({ ctx, input }) => {
+      const { getOwnershipFactsPage } = await import(
+        "../db/dashboardOwnershipFacts"
+      );
+      const rows = await getOwnershipFactsPage(ctx.scopeId, {
+        cursorAfter: input.cursorAfter ?? null,
+        limit: input.limit,
+        status: input.status ?? null,
+        source: input.source ?? null,
+      });
+      const nextCursor =
+        rows.length === input.limit
+          ? rows[rows.length - 1]?.systemKey ?? null
+          : null;
+      return {
+        _checkpoint: "ownership-page-v1",
+        _runnerVersion: "phase-2-pr-e-3@1" as const,
+        rows,
+        nextCursor,
+        hasMore: nextCursor !== null,
+      };
+    }),
+
+  /**
    * Phase 5e PR (2026-04-29) — server-side aggregator for the
    * `performanceSourceRows` shape consumed by RecPerformanceEvaluation
    * Tab + Snapshot Log + the parent's `recPerformanceSnapshotContracts
