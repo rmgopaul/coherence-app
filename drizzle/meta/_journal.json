@@ -407,6 +407,13 @@
       "when": 1778086090221,
       "tag": "0061_add_dashboard_monitoring_details_facts",
       "breakpoints": true
+    },
+    {
+      "idx": 62,
+      "version": "5",
+      "when": 1778095004259,
+      "tag": "0062_add_dashboard_change_ownership_facts",
+      "breakpoints": true
     }
   ]
 }

@@ -10,6 +10,7 @@ import {
   index,
   double,
   decimal,
+  date,
   boolean,
   json,
   primaryKey,
@@ -2184,3 +2185,105 @@ export type SolarRecDashboardMonitoringDetailsFact =
   typeof solarRecDashboardMonitoringDetailsFacts.$inferSelect;
 export type InsertSolarRecDashboardMonitoringDetailsFact =
   typeof solarRecDashboardMonitoringDetailsFacts.$inferInsert;
+
+// ────────────────────────────────────────────────────────────────────
+// Solar REC dashboard fact table — change-of-ownership per system
+// (Phase 2 PR-D-1, the second derived fact table).
+//
+// Replaces the per-row `ChangeOwnershipExportRow[]` payload that
+// `getDashboardChangeOwnership` ships today (~19 MB on prod, the
+// largest of the three remaining oversize-allowlist entries).
+// PR-D-2 will add the builder that populates this table from the
+// system snapshot. PR-D-3 will add the paginated read proc that the
+// ChangeOwnershipTab migrates onto.
+//
+// Same architectural shape as `solarRecDashboardMonitoringDetailsFacts`
+// (PR-C-1):
+//   - PK `(scopeId, systemKey)` where `systemKey` is the
+//     `ChangeOwnershipExportRow.key` from the existing aggregator
+//     (the system's stable identifier from the snapshot).
+//   - Build versioning via `buildId` + `(scopeId, buildId)` index
+//     for the orphan-sweep query.
+//   - UPSERT-then-orphan-sweep: PR-D-2 will write rows tagged with
+//     the new buildId, then DELETE WHERE buildId != current.
+//
+// Field layout: 1:1 mapping to `ChangeOwnershipExportRow` (19
+// fields). Numeric fields use `decimal(18, 4)` for currency/kW
+// values that need precision. Date fields use `date` (4-byte,
+// date-without-time matches the source domain). Status enums
+// stored as varchar(64) — flexible vs. mysqlEnum, matches the
+// existing convention in `dashboardCsvExportJobs.status`.
+//
+// PR-D-1 is helpers ONLY — no caller wires these in until PR-D-2.
+// ────────────────────────────────────────────────────────────────────
+
+export const solarRecDashboardChangeOwnershipFacts = mysqlTable(
+  "solarRecDashboardChangeOwnershipFacts",
+  {
+    scopeId: varchar("scopeId", { length: 64 }).notNull(),
+    // ChangeOwnershipExportRow.key — system's stable identifier from
+    // the snapshot. Capping varchar at 128 keeps the unique index
+    // well under MySQL's 3072-byte limit.
+    systemKey: varchar("systemKey", { length: 128 }).notNull(),
+
+    // 19 ChangeOwnershipExportRow fields, mirrors the type 1:1.
+    systemName: text("systemName").notNull(),
+    systemId: varchar("systemId", { length: 128 }),
+    trackingSystemRefId: varchar("trackingSystemRefId", { length: 128 }),
+    installedKwAc: decimal("installedKwAc", { precision: 18, scale: 4 }),
+    contractType: varchar("contractType", { length: 64 }),
+    contractStatusText: text("contractStatusText").notNull(),
+    contractedDate: date("contractedDate"),
+    zillowStatus: varchar("zillowStatus", { length: 64 }),
+    zillowSoldDate: date("zillowSoldDate"),
+    latestReportingDate: date("latestReportingDate"),
+    // Status enums stored as varchar so adding a new status is a
+    // code-only PR. The aggregator already validates against a
+    // hard-coded set; this column captures whatever the validator
+    // produced.
+    changeOwnershipStatus: varchar("changeOwnershipStatus", {
+      length: 64,
+    }).notNull(),
+    ownershipStatus: varchar("ownershipStatus", { length: 64 }).notNull(),
+    isReporting: boolean("isReporting").notNull(),
+    isTerminated: boolean("isTerminated").notNull(),
+    isTransferred: boolean("isTransferred").notNull(),
+    hasChangedOwnership: boolean("hasChangedOwnership").notNull(),
+    totalContractAmount: decimal("totalContractAmount", {
+      precision: 18,
+      scale: 4,
+    }),
+    contractedValue: decimal("contractedValue", {
+      precision: 18,
+      scale: 4,
+    }),
+
+    // Build versioning + observability. Same shape as PR-C-1.
+    buildId: varchar("buildId", { length: 64 }).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    pk: primaryKey({
+      columns: [table.scopeId, table.systemKey],
+      name: "solar_rec_dashboard_change_ownership_facts_pk",
+    }),
+    // Build sweep covers the orphan-deletion query
+    // (WHERE scopeId=? AND buildId != currentBuildId).
+    scopeBuildIdx: index(
+      "solar_rec_dashboard_change_ownership_facts_scope_build_idx"
+    ).on(table.scopeId, table.buildId),
+    // Status filter: ChangeOwnershipTab filters by
+    // `changeOwnershipStatus`. Index covers `WHERE scopeId=? AND
+    // changeOwnershipStatus=? ORDER BY systemKey LIMIT N` which is
+    // PR-D-3's read pattern.
+    scopeStatusIdx: index(
+      "solar_rec_dashboard_change_ownership_facts_scope_status_idx"
+    ).on(table.scopeId, table.changeOwnershipStatus),
+  })
+);
+
+export type SolarRecDashboardChangeOwnershipFact =
+  typeof solarRecDashboardChangeOwnershipFacts.$inferSelect;
+export type InsertSolarRecDashboardChangeOwnershipFact =
+  typeof solarRecDashboardChangeOwnershipFacts.$inferInsert;
