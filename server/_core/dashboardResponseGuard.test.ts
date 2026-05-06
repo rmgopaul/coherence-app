@@ -700,6 +700,22 @@ describe("solarRecDashboardRouter wiring", () => {
     expect(source).toMatch(/datasetKey:\s*z\.enum\(/);
   });
 
+  it("strips dead Offline Monitoring application-id maps at the wire boundary", () => {
+    const filePath = resolve(__dirname, "solarRecDashboardRouter.ts");
+    const source = readFileSync(filePath, "utf8");
+    const procBlock =
+      /getDashboardOfflineMonitoring\s*:\s*dashboardProcedure[\s\S]*?\n  \/\*\*\n   \* Phase 2 PR-C-3-a/.exec(
+        source
+      )?.[0];
+    expect(procBlock).toBeDefined();
+    expect(procBlock!).toMatch(
+      /abpAcSizeKwByApplicationId:\s*_abpAcSizeKwByApplicationId/
+    );
+    expect(procBlock!).toMatch(
+      /abpPart2VerificationDateByApplicationId:\s*\n\s*_abpPart2VerificationDateByApplicationId/
+    );
+  });
+
   it("registers getSnapshotLogs as a dashboardProcedure (read-only recovery surface)", () => {
     const filePath = resolve(__dirname, "solarRecDashboardRouter.ts");
     const source = readFileSync(filePath, "utf8");
@@ -849,6 +865,16 @@ describe("CLAUDE.md drift", () => {
       /Aggregates\s+→\s+extend\s+`getSystemSnapshot`/
     );
     expect(claudeMd).toMatch(/Do \*\*not\*\* extend\s+`getSystemSnapshot`/);
+  });
+
+  it("does not document abp application-id maps as residual Offline Monitoring wire payload", () => {
+    const offlineMonitoringRow = claudeMd.match(
+      /\|\s*`solarRecDashboard\.getDashboardOfflineMonitoring`[\s\S]*?\n/
+    )?.[0];
+    expect(offlineMonitoringRow).toBeDefined();
+    expect(offlineMonitoringRow!).not.toMatch(
+      /Residual[^|]*`abp\*ByApplicationId`/
+    );
   });
 });
 

@@ -3190,13 +3190,16 @@ export default function SolarRecDashboard() {
     });
   const slimSummary = dashboardSummaryQuery.data;
 
-  // Heavy offline-monitoring aggregator. Carries per-system maps
-  // (~2-5 MB on prod, allowlisted). Only fetched when:
-  //   1. The active tab consumes per-system data (Offline Monitoring,
-  //      Size, performance-ratio cluster), AND
+  // Heavy offline-monitoring aggregator. The largest per-system maps
+  // were stripped from its wire response and moved behind paginated
+  // fact-table reads, but the proc still carries high-cardinality
+  // Part-II ID arrays and remains allowlisted. Only fetched when:
+  //   1. The active tab consumes those Part-II arrays (Offline
+  //      Monitoring, Size, performance-ratio cluster), AND
   //   2. The user has interacted with the dashboard (deep links to
-  //      heavy tabs do NOT auto-fire the all-row response — the user
-  //      must navigate at least once, which counts as interaction).
+  //      heavy tabs do NOT auto-fire the residual all-array response —
+  //      the user must navigate at least once, which counts as
+  //      interaction).
   const isOfflineMonitoringHeavyNeeded =
     isOfflineMonitoringTabActive ||
     activeTab === "size" ||
@@ -3723,26 +3726,6 @@ export default function SolarRecDashboard() {
     }
     return map;
   }, [monitoringDetailsPagesQuery.data]);
-
-  const abpAcSizeKwByApplicationId = useMemo(() => {
-    return new Map<string, number>(
-      Object.entries(
-        offlineMonitoringQuery.data?.abpAcSizeKwByApplicationId ?? {}
-      )
-    );
-  }, [offlineMonitoringQuery.data]);
-
-  const abpPart2VerificationDateByApplicationId = useMemo(() => {
-    const isoByAppId =
-      offlineMonitoringQuery.data?.abpPart2VerificationDateByApplicationId ??
-      {};
-    const out = new Map<string, Date>();
-    for (const [appId, iso] of Object.entries(isoByAppId)) {
-      const date = new Date(iso);
-      if (!Number.isNaN(date.getTime())) out.set(appId, date);
-    }
-    return out;
-  }, [offlineMonitoringQuery.data]);
 
   // Drizzle column names (camelCase) → MonitoringDetailsRecord
   // field names (snake_case) at the boundary. Null defaults to
@@ -6259,18 +6242,12 @@ const aiDataContext = useMemo(() => {
                   {/* Salvage PR B (2026-04-29) — 6 prop forwards
                       dropped (`generatorDetails`,
                       `monitoringDetailsBySystemKey`,
-                      `abpAcSizeKwByApplicationId`,
-                      `abpPart2VerificationDateByApplicationId`,
                       `annualProductionByTrackingId`,
                       `generationBaselineByTrackingId`). The tab
-                      consumes exclusively from the server
-                      `getDashboardPerformanceRatio` aggregator. The
-                      parent memos still feed RecPerformanceEvaluation
-                      + Snapshot Log; only the PerformanceRatio
-                      forwarding is dropped here. The remaining 4
-                      dataset / 2 lookup props feed the dataset-
-                      existence empty-state check + the size-reporting
-                      sub-memo. */}
+                      consumes the performance-ratio result from the
+                      server `getDashboardPerformanceRatio` aggregator.
+                      The remaining props feed the dataset-existence
+                      empty-state check + the size-reporting sub-memo. */}
                   <PerformanceRatioTabLazy
                     hasConvertedReads={
                       (datasetSummariesByKey.convertedReads?.rowCount ?? 0) > 0

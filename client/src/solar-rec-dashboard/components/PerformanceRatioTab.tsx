@@ -9,11 +9,11 @@
  *     (16 useMemos, including the triple-nested index builder)
  *   - compliant-source CRUD, localStorage sync, and CSV import/export
  *
- * Upstream computed data (systems, ABP maps, annual production, generation
- * baselines) is passed in via props — those lookups are shared with the
- * Forecast tab and stay in the parent. This keeps the perf-ratio tab
- * isolated to its own mount lifecycle: switching tabs unmounts it, and
- * all 16 memos are garbage collected until you come back.
+ * The heavy performance-ratio computation now runs server-side; this tab
+ * receives only small existence sentinels plus the remaining size-reporting
+ * inputs used by the compliant-source section. This keeps the tab isolated
+ * to its own mount lifecycle: switching tabs unmounts it, and its local
+ * memos are garbage collected until you come back.
  *
  * Do NOT re-introduce `isPerformanceRatioTabActive` gates inside this
  * component — the gate IS the mount.
@@ -102,8 +102,6 @@ import type {
 export interface PerformanceRatioTabProps {
   // Salvage PR B (2026-04-29) — props for the client fallback compute
   // (`generatorDetails`, `monitoringDetailsBySystemKey`,
-  // `abpAcSizeKwByApplicationId`,
-  // `abpPart2VerificationDateByApplicationId`,
   // `annualProductionByTrackingId`,
   // `generationBaselineByTrackingId`) are gone. The tab now reads
   // exclusively from `getDashboardPerformanceRatio`.
@@ -300,8 +298,6 @@ export default memo(function PerformanceRatioTab(props: PerformanceRatioTabProps
   // backed tab on the dashboard. The 7 dataset props the fallback
   // depended on (`convertedReads`, `annualProductionEstimates`,
   // `generatorDetails`, `monitoringDetailsBySystemKey`,
-  // `abpAcSizeKwByApplicationId`,
-  // `abpPart2VerificationDateByApplicationId`,
   // `annualProductionByTrackingId`,
   // `generationBaselineByTrackingId`) are dropped along with it.
   // The dataset-existence empty-state check below (`!convertedReads
