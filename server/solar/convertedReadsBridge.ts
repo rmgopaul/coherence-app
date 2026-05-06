@@ -122,6 +122,13 @@ export type MonitoringRunRow = {
   status: string;
 };
 
+export type ConvertedReadsManifestSourceSummary = {
+  jobId: string;
+  fileName: string;
+  uploadedAt: string | null;
+  rowCount: number | null;
+};
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -515,12 +522,12 @@ async function writeSourceToManifest(
  * cheapest way to keep the row table consistent without touching
  * the bridge's existing manifest semantics.
  */
-function scheduleConvertedReadsRowTableSync(userId: number): void {
-  // scopeId convention is `scope-user-${ownerUserId}` (single-scope
-  // model — see `resolveSolarRecScopeId` in `server/_core/solarRecAuth.ts`).
-  const scopeId = `scope-user-${userId}`;
+export function scheduleConvertedReadsRowTableSync(
+  userId: number,
+  scopeId = `scope-user-${userId}`
+): string | null {
   try {
-    startSyncJob(scopeId, DATASET_KEY, (reportProgress) =>
+    return startSyncJob(scopeId, DATASET_KEY, (reportProgress) =>
       syncOneCoreDatasetFromStorage(scopeId, DATASET_KEY, userId, reportProgress)
     );
   } catch (err) {
@@ -531,6 +538,7 @@ function scheduleConvertedReadsRowTableSync(userId: number): void {
       "[convertedReadsBridge] failed to schedule srDs* sync:",
       err instanceof Error ? err.message : err
     );
+    return null;
   }
 }
 
@@ -550,7 +558,8 @@ export async function pushMonitoringRunsToConvertedReads(
   userId: number,
   providerKey: string,
   providerLabel: string,
-  runs: MonitoringRunRow[]
+  runs: MonitoringRunRow[],
+  options: { scheduleRowTableSync?: boolean; scopeId?: string } = {}
 ): Promise<{ pushed: number; skipped: number; sourceId: string } | null> {
   const validRuns = runs.filter(
     (r) => r.status === "success" && r.lifetimeKwh != null && r.lifetimeKwh > 0
@@ -597,10 +606,9 @@ export async function pushMonitoringRunsToConvertedReads(
     mergedRows
   );
 
-  // Schedule the chunked-CSV → srDsConvertedReads sync. Single-flight
-  // coalesces this with the other monitoring-batch providers' writes
-  // into one sync per scope.
-  scheduleConvertedReadsRowTableSync(userId);
+  if (options.scheduleRowTableSync !== false) {
+    scheduleConvertedReadsRowTableSync(userId, options.scopeId);
+  }
 
   return {
     pushed: uniqueNewRows.length,
@@ -692,6 +700,66 @@ export function isServerManagedConvertedReadsSourceId(sourceId: string): boolean
     sourceId.startsWith("individual_") ||
     sourceId === LEGACY_PLAIN_CSV_SOURCE_ID
   );
+}
+
+export function summarizeServerManagedConvertedReadsSources(
+  payload: string | null
+): ConvertedReadsManifestSourceSummary[] {
+  if (!payload) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(payload);
+  } catch {
+    return [];
+  }
+
+  if (
+    !parsed ||
+    typeof parsed !== "object" ||
+    (parsed as { _rawSourcesV1?: unknown })._rawSourcesV1 !== true ||
+    !Array.isArray((parsed as { sources?: unknown }).sources)
+  ) {
+    return [];
+  }
+
+  return ((parsed as { sources: unknown[] }).sources ?? [])
+    .filter(
+      (
+        source
+      ): source is {
+        id: string;
+        fileName?: unknown;
+        uploadedAt?: unknown;
+        rowCount?: unknown;
+      } => {
+        return (
+          Boolean(source) &&
+          typeof source === "object" &&
+          typeof (source as { id?: unknown }).id === "string" &&
+          isServerManagedConvertedReadsSourceId((source as { id: string }).id)
+        );
+      }
+    )
+    .map((source) => ({
+      jobId: source.id,
+      fileName:
+        typeof source.fileName === "string" && source.fileName
+          ? source.fileName
+          : source.id,
+      uploadedAt:
+        typeof source.uploadedAt === "string" && source.uploadedAt
+          ? source.uploadedAt
+          : null,
+      rowCount:
+        typeof source.rowCount === "number" && Number.isFinite(source.rowCount)
+          ? source.rowCount
+          : null,
+    }))
+    .sort((a, b) => {
+      const aTime = a.uploadedAt ? new Date(a.uploadedAt).getTime() : 0;
+      const bTime = b.uploadedAt ? new Date(b.uploadedAt).getTime() : 0;
+      return bTime - aTime;
+    });
 }
 
 /**

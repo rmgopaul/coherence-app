@@ -170,6 +170,34 @@ function loadPersistedCompliantSources(): CompliantSourceEntry[] {
   }
 }
 
+function reviveNullableDate(value: unknown): Date | null {
+  if (!value) return null;
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value;
+  }
+  if (typeof value === "string" || typeof value === "number") {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+  return null;
+}
+
+export function revivePerformanceRatioRows(
+  rows: unknown
+): PerformanceRatioRow[] {
+  if (!Array.isArray(rows)) return [];
+  return rows
+    .filter((row): row is Record<string, unknown> => {
+      return Boolean(row) && typeof row === "object";
+    })
+    .map((row) => ({
+      ...(row as unknown as PerformanceRatioRow),
+      readDate: reviveNullableDate(row.readDate),
+      part2VerificationDate: reviveNullableDate(row.part2VerificationDate),
+      baselineDate: reviveNullableDate(row.baselineDate),
+    }));
+}
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -296,7 +324,7 @@ export default memo(function PerformanceRatioTab(props: PerformanceRatioTabProps
       };
     }
     return {
-      rows: data.rows as unknown as PerformanceRatioRow[],
+      rows: revivePerformanceRatioRows(data.rows),
       convertedReadCount: data.convertedReadCount,
       matchedConvertedReads: data.matchedConvertedReads,
       unmatchedConvertedReads: data.unmatchedConvertedReads,
