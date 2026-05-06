@@ -46,6 +46,11 @@ const deliveryTrackerDetailExportMocks = vi.hoisted(() => ({
 const deliveryTrackerUnmatchedExportMocks = vi.hoisted(() => ({
   cleanup: vi.fn(async () => undefined),
 }));
+const ownershipFactsMockState = vi.hoisted(() => ({
+  rows: [] as Array<Record<string, unknown>>,
+  getOwnershipFactsCount: vi.fn(),
+  getOwnershipFactsPage: vi.fn(),
+}));
 
 function fakeReset(): void {
   fakeDb.length = 0;
@@ -232,6 +237,11 @@ vi.mock("../../storage", () => ({
   storageDelete: vi.fn(async () => ({ deleted: true, mode: "local" as const })),
 }));
 
+vi.mock("../../db/dashboardOwnershipFacts", () => ({
+  getOwnershipFactsCount: ownershipFactsMockState.getOwnershipFactsCount,
+  getOwnershipFactsPage: ownershipFactsMockState.getOwnershipFactsPage,
+}));
+
 vi.mock("./buildOverviewSummaryAggregates", () => ({
   getOrBuildOverviewSummary: vi.fn(async () => ({
     result: {
@@ -387,6 +397,39 @@ const OTHER_SCOPE = "scope-B";
 
 beforeEach(() => {
   fakeReset();
+  ownershipFactsMockState.rows = [];
+  ownershipFactsMockState.getOwnershipFactsCount.mockReset();
+  ownershipFactsMockState.getOwnershipFactsPage.mockReset();
+  ownershipFactsMockState.getOwnershipFactsCount.mockImplementation(
+    async (scopeId: string) =>
+      ownershipFactsMockState.rows.filter(row => row.scopeId === scopeId)
+        .length
+  );
+  ownershipFactsMockState.getOwnershipFactsPage.mockImplementation(
+    async (
+      scopeId: string,
+      options: {
+        cursorAfter?: string | null;
+        limit: number;
+        status?: string | null;
+      }
+    ) => {
+      return ownershipFactsMockState.rows
+        .filter(row => row.scopeId === scopeId)
+        .filter(row =>
+          options.status ? row.ownershipStatus === options.status : true
+        )
+        .filter(row =>
+          options.cursorAfter
+            ? String(row.systemKey) > options.cursorAfter
+            : true
+        )
+        .sort((a, b) =>
+          String(a.systemKey).localeCompare(String(b.systemKey))
+        )
+        .slice(0, options.limit);
+    }
+  );
   __TEST_ONLY__.resetRunnerSchedulerState();
 });
 
@@ -434,6 +477,39 @@ async function waitForFakeJobStatus(
       fakeFindById(id)?.status ?? "missing"
     }`
   );
+}
+
+function makeOwnershipFact(
+  systemKey: string,
+  overrides: Record<string, unknown> = {}
+): Record<string, unknown> {
+  return {
+    scopeId: SCOPE,
+    systemKey,
+    part2ProjectName: `Project ${systemKey}`,
+    part2ApplicationId: null,
+    part2SystemId: null,
+    part2TrackingId: null,
+    source: "Matched System",
+    systemName: `System ${systemKey}`,
+    systemId: `sys-${systemKey}`,
+    stateApplicationRefId: null,
+    trackingSystemRefId: `trk-${systemKey}`,
+    ownershipStatus: "Transferred and Reporting",
+    isReporting: true,
+    isTransferred: true,
+    isTerminated: false,
+    contractType: "REC",
+    contractStatusText: "Active",
+    latestReportingDate: new Date("2026-04-01T00:00:00Z"),
+    contractedDate: new Date("2024-01-01T00:00:00Z"),
+    zillowStatus: null,
+    zillowSoldDate: null,
+    buildId: "bld-1",
+    createdAt: new Date("2026-05-01T00:00:00Z"),
+    updatedAt: new Date("2026-05-01T00:00:00Z"),
+    ...overrides,
+  };
 }
 
 describe("dashboardCsvExportJobs — start (DB-backed)", () => {
@@ -525,6 +601,76 @@ describe("dashboardCsvExportJobs — start (DB-backed)", () => {
 });
 
 describe("dashboardCsvExportJobs — runner: ownership-tile (DB-backed)", () => {
+  it("prefers paginated ownership fact rows and skips the heavy overview aggregator", async () => {
+    ownershipFactsMockState.rows = [
+      makeOwnershipFact("key-b", {
+        ownershipStatus: "Transferred and Reporting",
+      }),
+      makeOwnershipFact("key-a", {
+        ownershipStatus: "Not Transferred and Reporting",
+      }),
+      makeOwnershipFact("key-z", {
+        ownershipStatus: "Transferred and Not Reporting",
+      }),
+    ];
+    const overviewMod = await import("./buildOverviewSummaryAggregates");
+    const getOverview =
+      overviewMod.getOrBuildOverviewSummary as unknown as ReturnType<
+        typeof vi.fn
+      >;
+    getOverview.mockClear();
+
+    const jobId = await startAndRun(SCOPE, {
+      exportType: "ownershipTile",
+      tile: "reporting",
+    });
+
+    const status = await getCsvExportJobStatus(SCOPE, jobId);
+    expect(status?.status).toBe("succeeded");
+    expect(status?.rowCount).toBe(2);
+    expect(getOverview).not.toHaveBeenCalled();
+    expect(
+      ownershipFactsMockState.getOwnershipFactsCount
+    ).toHaveBeenCalledWith(SCOPE);
+    expect(
+      ownershipFactsMockState.getOwnershipFactsPage
+    ).toHaveBeenCalledWith(
+      SCOPE,
+      expect.objectContaining({
+        status: "Not Transferred and Reporting",
+        limit: 1000,
+      })
+    );
+    expect(
+      ownershipFactsMockState.getOwnershipFactsPage
+    ).toHaveBeenCalledWith(
+      SCOPE,
+      expect.objectContaining({
+        status: "Transferred and Reporting",
+        limit: 1000,
+      })
+    );
+  });
+
+  it("falls back to the overview aggregator when ownership facts have not been built", async () => {
+    const overviewMod = await import("./buildOverviewSummaryAggregates");
+    const getOverview =
+      overviewMod.getOrBuildOverviewSummary as unknown as ReturnType<
+        typeof vi.fn
+      >;
+    getOverview.mockClear();
+
+    const jobId = await startAndRun(SCOPE, {
+      exportType: "ownershipTile",
+      tile: "reporting",
+    });
+
+    const status = await getCsvExportJobStatus(SCOPE, jobId);
+    expect(status?.status).toBe("succeeded");
+    expect(status?.rowCount).toBe(1);
+    expect(getOverview).toHaveBeenCalledWith(SCOPE);
+  });
+
   it("claims, runs aggregator + CSV builder + storagePutFile, marks succeeded", async () => {
     const storageMod = await import("../../storage");
     const jobId = await startAndRun(SCOPE, {
@@ -902,9 +1048,9 @@ describe("dashboardCsvExportJobs — sweepStaleAndPruned", () => {
 });
 
 describe("dashboardCsvExportJobs — runner version + claim id", () => {
-  it("exports the v9 Delivery Tracker unmatched-transfer CSV runner version", () => {
+  it("exports the v10 ownership-fact CSV runner version", () => {
     expect(DASHBOARD_CSV_EXPORT_RUNNER_VERSION).toBe(
-      "dashboard-csv-export-jobs-v9-delivery-tracker-unmatched"
+      "dashboard-csv-export-jobs-v10-ownership-fact-export"
     );
   });
 

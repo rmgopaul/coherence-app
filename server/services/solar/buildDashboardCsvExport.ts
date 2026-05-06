@@ -31,9 +31,30 @@ import type {
   ChangeOwnershipStatus,
   OwnershipStatus,
 } from "./buildChangeOwnershipAggregates";
-import type { OwnershipOverviewExportRow } from "./buildOverviewSummaryAggregates";
 
 export type OwnershipTileKey = "reporting" | "notReporting" | "terminated";
+
+export interface OwnershipTileCsvRow {
+  systemName: string;
+  systemId: string | null;
+  trackingSystemRefId: string | null;
+  stateApplicationRefId: string | null;
+  part2ProjectName: string;
+  part2ApplicationId: string | null;
+  part2SystemId: string | null;
+  part2TrackingId: string | null;
+  source: string;
+  ownershipStatus: string;
+  isReporting: boolean;
+  isTransferred: boolean;
+  isTerminated: boolean;
+  contractType: string | null;
+  contractStatusText: string;
+  latestReportingDate: Date | string | null;
+  contractedDate: Date | string | null;
+  zillowStatus: string | null;
+  zillowSoldDate: Date | string | null;
+}
 
 export interface OwnershipTileCsvResult {
   csv: string;
@@ -117,14 +138,17 @@ const CSV_FILE_WRITE_CHUNK_ROWS = 1000;
 
 function ownershipTileMatcher(
   tile: OwnershipTileKey
-): (row: OwnershipOverviewExportRow) => boolean {
+): (row: OwnershipTileCsvRow) => boolean {
   if (tile === "reporting") {
-    return row => REPORTING_TILE_STATUSES.has(row.ownershipStatus);
+    return row =>
+      REPORTING_TILE_STATUSES.has(row.ownershipStatus as OwnershipStatus);
   }
   if (tile === "notReporting") {
-    return row => NOT_REPORTING_TILE_STATUSES.has(row.ownershipStatus);
+    return row =>
+      NOT_REPORTING_TILE_STATUSES.has(row.ownershipStatus as OwnershipStatus);
   }
-  return row => TERMINATED_TILE_STATUSES.has(row.ownershipStatus);
+  return row =>
+    TERMINATED_TILE_STATUSES.has(row.ownershipStatus as OwnershipStatus);
 }
 
 /**
@@ -137,7 +161,7 @@ function ownershipTileMatcher(
  * matches exist (smoke-tested at the client by the toast layer).
  */
 export function buildOwnershipTileCsv(
-  ownershipRows: readonly OwnershipOverviewExportRow[],
+  ownershipRows: readonly OwnershipTileCsvRow[],
   tile: OwnershipTileKey,
   generatedAtIso: string = new Date().toISOString()
 ): OwnershipTileCsvResult {
@@ -158,7 +182,7 @@ export function buildOwnershipTileCsv(
  * CSV string before `storagePutFile`.
  */
 export async function buildOwnershipTileCsvFile(
-  ownershipRows: readonly OwnershipOverviewExportRow[],
+  ownershipRows: readonly OwnershipTileCsvRow[],
   tile: OwnershipTileKey,
   generatedAtIso: string = new Date().toISOString()
 ): Promise<FileBackedTileCsvResult> {
@@ -214,9 +238,9 @@ export async function buildChangeOwnershipTileCsvFile(
 // ---------------------------------------------------------------------------
 
 function filterOwnershipTileRows(
-  ownershipRows: readonly OwnershipOverviewExportRow[],
+  ownershipRows: readonly OwnershipTileCsvRow[],
   tile: OwnershipTileKey
-): OwnershipOverviewExportRow[] {
+): OwnershipTileCsvRow[] {
   const matcher = ownershipTileMatcher(tile);
   return ownershipRows.filter(matcher).slice().sort(compareBySystemName);
 }
@@ -242,7 +266,7 @@ function compareBySystemName(
 }
 
 function ownershipRowToCsvRecord(
-  row: OwnershipOverviewExportRow
+  row: OwnershipTileCsvRow
 ): Record<string, string> {
   return {
     system_name: row.systemName,
@@ -362,8 +386,9 @@ async function writeCsvFileArtifact<Row>(
   }
 }
 
-function isoDateOnly(value: Date | null | undefined): string {
+function isoDateOnly(value: Date | string | null | undefined): string {
   if (!value) return "";
+  if (typeof value === "string") return value.slice(0, 10);
   if (Number.isNaN(value.getTime())) return "";
   return value.toISOString().slice(0, 10);
 }
