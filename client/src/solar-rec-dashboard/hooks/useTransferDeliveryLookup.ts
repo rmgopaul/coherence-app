@@ -52,8 +52,11 @@ function revive(
 /**
  * Fetch the transfer-based delivery lookup from the server.
  */
-export function useTransferDeliveryLookup(): TransferDeliveryLookupState {
+export function useTransferDeliveryLookup(
+  enabled = true
+): TransferDeliveryLookupState {
   const scopeQuery = trpc.solarRecDashboard.getScopeId.useQuery(undefined, {
+    enabled,
     staleTime: Infinity,
     retry: 1,
   });
@@ -62,7 +65,7 @@ export function useTransferDeliveryLookup(): TransferDeliveryLookupState {
   const lookupQuery = trpc.solarRecDashboard.getTransferDeliveryLookup.useQuery(
     { scopeId: scopeId ?? "" },
     {
-      enabled: !!scopeId,
+      enabled: enabled && !!scopeId,
       staleTime: 60_000,
       retry: 1,
     }

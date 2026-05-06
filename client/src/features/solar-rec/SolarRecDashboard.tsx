@@ -3948,7 +3948,9 @@ export default function SolarRecDashboard() {
   // comment immediately below for the rationale. Empty Map while
   // the server query is in flight; matches pre-Phase-5a behavior
   // for "transferHistory not uploaded."
-  const serverTransferDeliveryLookup = useTransferDeliveryLookup();
+  const serverTransferDeliveryLookup = useTransferDeliveryLookup(
+    isDeliveryTrackerTabActive
+  );
 
   // Phase 5b (2026-04-28) of the IndexedDB-removal refactor: the
   // client-side fallback that walked `datasets.transferHistory?.rows`

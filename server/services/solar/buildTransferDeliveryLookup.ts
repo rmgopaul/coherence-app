@@ -17,7 +17,7 @@
  * row production dataset.
  */
 
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, gt, sql } from "drizzle-orm";
 import { getDb, withDbRetry } from "../../db/_core";
 import {
   srDsTransferHistory,
@@ -106,26 +106,28 @@ async function getActiveTransferHistoryBatchId(
   return rows[0]?.batchId ?? null;
 }
 
-/**
- * Load only the 5 columns we need. Skipping rawRow saves ~450MB of
- * transfer on the 579k-row production dataset.
- */
-async function loadTransferRows(batchId: string): Promise<
-  Array<{
-    transactionId: string | null;
-    unitId: string | null;
-    transferor: string | null;
-    transferee: string | null;
-    transferCompletionDate: string | null;
-    quantity: number | null;
-  }>
-> {
-  const db = await getDb();
-  if (!db) return [];
+const TRANSFER_LOOKUP_PAGE_SIZE = 25_000;
 
-  return withDbRetry("load transferHistory rows", () =>
+type TransferRowWithId = TypedTransferRow & { id: string };
+
+async function loadTransferRowsPage(
+  batchId: string,
+  cursor: string | null
+): Promise<{ rows: TransferRowWithId[]; nextCursor: string | null }> {
+  const db = await getDb();
+  if (!db) return { rows: [], nextCursor: null };
+
+  const whereClause = cursor
+    ? and(
+        eq(srDsTransferHistory.batchId, batchId),
+        gt(srDsTransferHistory.id, cursor)
+      )
+    : eq(srDsTransferHistory.batchId, batchId);
+
+  const rows = await withDbRetry("load transferHistory rows page", () =>
     db
       .select({
+        id: srDsTransferHistory.id,
         transactionId: srDsTransferHistory.transactionId,
         unitId: srDsTransferHistory.unitId,
         transferor: srDsTransferHistory.transferor,
@@ -134,8 +136,41 @@ async function loadTransferRows(batchId: string): Promise<
         quantity: srDsTransferHistory.quantity,
       })
       .from(srDsTransferHistory)
-      .where(eq(srDsTransferHistory.batchId, batchId))
+      .where(whereClause)
+      .orderBy(srDsTransferHistory.id)
+      .limit(TRANSFER_LOOKUP_PAGE_SIZE + 1)
   );
+
+  const fetched = rows as TransferRowWithId[];
+  const hasMore = fetched.length > TRANSFER_LOOKUP_PAGE_SIZE;
+  const pageRows = hasMore
+    ? fetched.slice(0, TRANSFER_LOOKUP_PAGE_SIZE)
+    : fetched;
+
+  return {
+    rows: pageRows,
+    nextCursor: hasMore ? pageRows[pageRows.length - 1]?.id ?? null : null,
+  };
+}
+
+async function forEachTransferRowsPage(
+  batchId: string,
+  onRows: (rows: readonly TypedTransferRow[]) => void | Promise<void>
+): Promise<number> {
+  let cursor: string | null = null;
+  let totalRows = 0;
+
+  for (;;) {
+    const page = await loadTransferRowsPage(batchId, cursor);
+    if (page.rows.length > 0) {
+      await onRows(page.rows);
+      totalRows += page.rows.length;
+    }
+    if (!page.nextCursor) break;
+    cursor = page.nextCursor;
+  }
+
+  return totalRows;
 }
 
 // v2: adds compute-time txId dedup — prior version double-counted
@@ -205,44 +240,7 @@ export function computeTransferDeliveryLookupFromRows(
   const seenTransactionIds = new Set<string>();
 
   for (const row of rows) {
-    const unitId = clean(row.unitId);
-    if (!unitId) continue;
-    const qty = row.quantity ?? parseQuantity(row.quantity);
-    if (qty === 0) continue;
-
-    const txId = clean(row.transactionId);
-    if (txId) {
-      if (seenTransactionIds.has(txId)) continue;
-      seenTransactionIds.add(txId);
-    }
-
-    const transferor = clean(row.transferor).toLowerCase();
-    const transferee = clean(row.transferee).toLowerCase();
-    const isFromCS = transferor.includes(CARBON_SOLUTIONS);
-    const isToCS = transferee.includes(CARBON_SOLUTIONS);
-    const transfereeIsUtility = UTILITY_PATTERNS.some((u) =>
-      transferee.includes(u)
-    );
-    const transferorIsUtility = UTILITY_PATTERNS.some((u) =>
-      transferor.includes(u)
-    );
-
-    let direction = 0;
-    if (isFromCS && transfereeIsUtility) direction = 1;
-    else if (transferorIsUtility && isToCS) direction = -1;
-    else continue;
-
-    const completionDate = parseCompletionDate(row.transferCompletionDate);
-    if (!completionDate) continue;
-
-    const month = completionDate.getMonth();
-    const year = completionDate.getFullYear();
-    const eyStartYear = month >= 5 ? year : year - 1;
-
-    const key = unitId.toLowerCase();
-    const yearMap = byTrackingId[key] ?? (byTrackingId[key] = {});
-    const yearKey = String(eyStartYear);
-    yearMap[yearKey] = (yearMap[yearKey] ?? 0) + qty * direction;
+    accumulateTransferDeliveryLookupRow(row, byTrackingId, seenTransactionIds);
   }
 
   return {
@@ -252,11 +250,70 @@ export function computeTransferDeliveryLookupFromRows(
   };
 }
 
+function accumulateTransferDeliveryLookupRow(
+  row: TypedTransferRow,
+  byTrackingId: Record<string, Record<string, number>>,
+  seenTransactionIds: Set<string>
+): void {
+  const unitId = clean(row.unitId);
+  if (!unitId) return;
+  const qty = row.quantity ?? parseQuantity(row.quantity);
+  if (qty === 0) return;
+
+  const txId = clean(row.transactionId);
+  if (txId) {
+    if (seenTransactionIds.has(txId)) return;
+    seenTransactionIds.add(txId);
+  }
+
+  const transferor = clean(row.transferor).toLowerCase();
+  const transferee = clean(row.transferee).toLowerCase();
+  const isFromCS = transferor.includes(CARBON_SOLUTIONS);
+  const isToCS = transferee.includes(CARBON_SOLUTIONS);
+  const transfereeIsUtility = UTILITY_PATTERNS.some((u) =>
+    transferee.includes(u)
+  );
+  const transferorIsUtility = UTILITY_PATTERNS.some((u) =>
+    transferor.includes(u)
+  );
+
+  let direction = 0;
+  if (isFromCS && transfereeIsUtility) direction = 1;
+  else if (transferorIsUtility && isToCS) direction = -1;
+  else return;
+
+  const completionDate = parseCompletionDate(row.transferCompletionDate);
+  if (!completionDate) return;
+
+  const month = completionDate.getMonth();
+  const year = completionDate.getFullYear();
+  const eyStartYear = month >= 5 ? year : year - 1;
+
+  const key = unitId.toLowerCase();
+  const yearMap = byTrackingId[key] ?? (byTrackingId[key] = {});
+  const yearKey = String(eyStartYear);
+  yearMap[yearKey] = (yearMap[yearKey] ?? 0) + qty * direction;
+}
+
 async function computeFresh(
   batchId: string
 ): Promise<TransferDeliveryLookupPayload> {
-  const rows = await loadTransferRows(batchId);
-  return computeTransferDeliveryLookupFromRows(rows, batchId);
+  const byTrackingId: Record<string, Record<string, number>> = {};
+  const seenTransactionIds = new Set<string>();
+  await forEachTransferRowsPage(batchId, async (rows) => {
+    for (const row of rows) {
+      accumulateTransferDeliveryLookupRow(
+        row,
+        byTrackingId,
+        seenTransactionIds
+      );
+    }
+  });
+  return {
+    byTrackingId,
+    inputVersionHash: batchId,
+    transferHistoryBatchId: batchId,
+  };
 }
 
 export async function buildTransferDeliveryLookupForScope(

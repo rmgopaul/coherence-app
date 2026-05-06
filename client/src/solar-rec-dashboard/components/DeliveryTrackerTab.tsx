@@ -74,6 +74,11 @@ export interface DeliveryTrackerTabProps {
 
 export default memo(function DeliveryTrackerTab(props: DeliveryTrackerTabProps) {
   const { scheduleBImportSlot, deliveryTrackerData } = props;
+  const detailRowCount =
+    deliveryTrackerData.detailRowCount ?? deliveryTrackerData.rows.length;
+  const detailRowsTruncated =
+    deliveryTrackerData.detailRowsTruncated ??
+    deliveryTrackerData.rows.length < detailRowCount;
 
   return (
     <div className="space-y-4 mt-4">
@@ -430,52 +435,57 @@ export default memo(function DeliveryTrackerTab(props: DeliveryTrackerTabProps) 
       </Card>
 
       {/* System-level detail (paginated) */}
-      {deliveryTrackerData.rows.length > 0 && (
+      {detailRowCount > 0 && (
         <Card>
           <CardHeader>
             <div className="flex items-center justify-between">
               <div>
                 <CardTitle className="text-base">System × Year Detail</CardTitle>
                 <CardDescription>
-                  {formatNumber(deliveryTrackerData.rows.length)} system-year rows
+                  {formatNumber(detailRowCount)} system-year rows
+                  {detailRowsTruncated
+                    ? `; showing first ${formatNumber(deliveryTrackerData.rows.length)}`
+                    : ""}
                 </CardDescription>
               </div>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  const csv = buildCsv(
-                    [
-                      "system_name",
-                      "unit_id",
-                      "contract",
-                      "year",
-                      "start_date",
-                      "end_date",
-                      "obligated",
-                      "delivered",
-                      "gap",
-                    ],
-                    deliveryTrackerData.rows.map((r) => ({
-                      system_name: r.systemName,
-                      unit_id: r.unitId,
-                      contract: r.contractId,
-                      year: r.yearLabel,
-                      start_date: r.yearStart?.toISOString().slice(0, 10) ?? "",
-                      end_date: r.yearEnd?.toISOString().slice(0, 10) ?? "",
-                      obligated: r.obligated,
-                      delivered: r.delivered,
-                      gap: r.gap,
-                    })),
-                  );
-                  triggerCsvDownload(
-                    `delivery-tracker-detail-${timestampForCsvFileName()}.csv`,
-                    csv,
-                  );
-                }}
-              >
-                Export CSV
-              </Button>
+              {deliveryTrackerData.rows.length > 0 ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    const csv = buildCsv(
+                      [
+                        "system_name",
+                        "unit_id",
+                        "contract",
+                        "year",
+                        "start_date",
+                        "end_date",
+                        "obligated",
+                        "delivered",
+                        "gap",
+                      ],
+                      deliveryTrackerData.rows.map((r) => ({
+                        system_name: r.systemName,
+                        unit_id: r.unitId,
+                        contract: r.contractId,
+                        year: r.yearLabel,
+                        start_date: r.yearStart?.toISOString().slice(0, 10) ?? "",
+                        end_date: r.yearEnd?.toISOString().slice(0, 10) ?? "",
+                        obligated: r.obligated,
+                        delivered: r.delivered,
+                        gap: r.gap,
+                      })),
+                    );
+                    triggerCsvDownload(
+                      `delivery-tracker-detail-preview-${timestampForCsvFileName()}.csv`,
+                      csv,
+                    );
+                  }}
+                >
+                  Export preview CSV
+                </Button>
+              ) : null}
             </div>
           </CardHeader>
           <CardContent>
@@ -515,10 +525,11 @@ export default memo(function DeliveryTrackerTab(props: DeliveryTrackerTabProps) 
                 </TableBody>
               </Table>
             </div>
-            {deliveryTrackerData.rows.length > 200 && (
+            {detailRowsTruncated && (
               <p className="text-xs text-slate-500 mt-2 text-center">
-                Showing first 200 of {formatNumber(deliveryTrackerData.rows.length)} rows.
-                Export CSV for full data.
+                Showing first {formatNumber(deliveryTrackerData.rows.length)} of{" "}
+                {formatNumber(detailRowCount)} rows to keep the dashboard responsive.
+                Contract totals above are computed from the full dataset.
               </p>
             )}
           </CardContent>
@@ -531,7 +542,8 @@ export default memo(function DeliveryTrackerTab(props: DeliveryTrackerTabProps) 
         contextGetter={() => ({
           totals: {
             contracts: deliveryTrackerData.contracts.length,
-            rows: deliveryTrackerData.rows.length,
+            rows: detailRowCount,
+            previewRows: deliveryTrackerData.rows.length,
             totalSystems: deliveryTrackerData.contracts.reduce(
               (a, c) => a + c.systems,
               0
