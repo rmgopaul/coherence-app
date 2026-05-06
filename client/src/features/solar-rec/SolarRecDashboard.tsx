@@ -1720,6 +1720,7 @@ export default function SolarRecDashboard() {
         solarRecTrpcUtils.solarRecDashboard.getSystemSnapshotHash.invalidate({
           scopeId: sid,
         }),
+        solarRecTrpcUtils.solarRecDashboard.getDashboardSystemsPage.invalidate(),
         solarRecTrpcUtils.solarRecDashboard.listDatasetUploadJobs.invalidate(),
       ];
 
@@ -2031,10 +2032,9 @@ export default function SolarRecDashboard() {
   const isOfflineMonitoringTabActive = activeTab === "offline-monitoring";
   const isChangeOwnershipTabActive = activeTab === "change-ownership";
   const isAlertsTabActive = activeTab === "alerts";
-  const isComparisonsTabActive = activeTab === "comparisons";
   // Removed dead flags whose consumer memos moved out of the parent:
-  // isTrendsTabActive, isAlertsTabActive, isComparisonsTabActive,
-  // isDataQualityTabActive, isOfflineTabActive,
+  // isTrendsTabActive, isComparisonsTabActive, isDataQualityTabActive,
+  // isOfflineTabActive,
   // isPerformanceRatioTabActive (Phase 5e — its only memos were the
   // two tracking-ID-keyed maps deleted alongside this).
   const handleActiveTabChange = useCallback(
@@ -3240,13 +3240,13 @@ export default function SolarRecDashboard() {
   //
   // Generic interaction is too broad: a user clicking through tabs
   // would re-enable the 26 MB fetch even if they never visited an
-  // Alerts/Comparisons/Financials/Forecast tab. The predicate below
+  // Alerts/Financials/Forecast tab. The predicate below
   // is the narrow contract — only the tabs that walk full system
   // records, plus the SystemDetailSheet drill-in (which needs a
-  // selected system to render at all).
+  // selected system to render at all). Comparisons reads the
+  // paginated `getDashboardSystemsPage` fact table directly.
   const isSystemSnapshotNeeded =
     isAlertsTabActive ||
-    isComparisonsTabActive ||
     isFinancialsTabActive ||
     isForecastTabActive ||
     selectedSystemKey !== null;
@@ -6352,7 +6352,7 @@ const aiDataContext = useMemo(() => {
             <div style={{ display: activeTab === "comparisons" ? "contents" : "none" }}>
               <TabErrorBoundary tabLabel="Comparisons">
                 <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading comparisons tab...</div>}>
-                  <ComparisonsTabLazy systems={systems} />
+                  <ComparisonsTabLazy isActive={activeTab === "comparisons"} />
                 </Suspense>
               </TabErrorBoundary>
             </div>

@@ -2,13 +2,16 @@
  * Comparisons tab.
  *
  * Extracted from SolarRecDashboard.tsx (2026-04-14). Phase 7 of the
- * god-component decomposition. Owns:
+ * god-component decomposition. Now reads the derived
+ * `getDashboardSystemsPage` fact table directly instead of receiving
+ * the parent legacy all-systems snapshot. Owns:
  *   - 2 useMemos (comparisonInstallers, comparisonPlatforms)
  *   - 2 charts + 2 tables comparing reporting + delivery rates by
  *     installer and by monitoring platform
  */
 
-import { memo, useMemo } from "react";
+import { memo, useCallback, useEffect, useMemo } from "react";
+import type { inferRouterOutputs } from "@trpc/server";
 import { AskAiPanel } from "@/components/AskAiPanel";
 import {
   Bar,
@@ -44,14 +47,30 @@ import {
   formatNumber,
   toPercentValue,
 } from "@/solar-rec-dashboard/lib/helpers";
-import type { SystemRecord } from "@/solar-rec-dashboard/state/types";
+import { solarRecTrpc } from "@/solar-rec/solarRecTrpc";
+import { useDashboardBuildControl } from "@/solar-rec-dashboard/hooks/useDashboardBuildControl";
+import type { SolarRecAppRouter } from "@server/_core/solarRecRouter";
 
 // ---------------------------------------------------------------------------
-// Props
+// Types/constants
 // ---------------------------------------------------------------------------
+
+type RouterOutputs = inferRouterOutputs<SolarRecAppRouter>;
+type SystemsPageOutput =
+  RouterOutputs["solarRecDashboard"]["getDashboardSystemsPage"];
+type SystemsPageRow = SystemsPageOutput["rows"][number];
+
+const SYSTEMS_PAGE_SIZE = 500;
 
 export interface ComparisonsTabProps {
-  systems: SystemRecord[];
+  isActive: boolean;
+}
+
+function parseDecimalString(value: string | number | null): number | null {
+  if (value === null) return null;
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -59,7 +78,60 @@ export interface ComparisonsTabProps {
 // ---------------------------------------------------------------------------
 
 export default memo(function ComparisonsTab(props: ComparisonsTabProps) {
-  const { systems } = props;
+  const { isActive } = props;
+  const utils = solarRecTrpc.useUtils();
+  const systemsPageQuery =
+    solarRecTrpc.solarRecDashboard.getDashboardSystemsPage.useInfiniteQuery(
+      { limit: SYSTEMS_PAGE_SIZE },
+      {
+        enabled: isActive,
+        staleTime: 60_000,
+        retry: false,
+        getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
+        initialCursor: null,
+      },
+    );
+
+  useEffect(() => {
+    if (!isActive) return;
+    if (
+      systemsPageQuery.hasNextPage &&
+      !systemsPageQuery.isFetchingNextPage
+    ) {
+      void systemsPageQuery.fetchNextPage();
+    }
+  }, [
+    isActive,
+    systemsPageQuery.hasNextPage,
+    systemsPageQuery.isFetchingNextPage,
+    systemsPageQuery.fetchNextPage,
+  ]);
+
+  const resetSystemsPageCache = useCallback(
+    () => utils.solarRecDashboard.getDashboardSystemsPage.invalidate(),
+    [utils],
+  );
+
+  const { buildErrorMessage, isBuildRunning, startBuild } =
+    useDashboardBuildControl({
+      onSucceeded: resetSystemsPageCache,
+    });
+
+  const systemRows = useMemo<SystemsPageRow[]>(() => {
+    const rows: SystemsPageRow[] = [];
+    const seen = new Set<string>();
+    for (const page of systemsPageQuery.data?.pages ?? []) {
+      for (const row of page.rows) {
+        if (seen.has(row.systemKey)) continue;
+        seen.add(row.systemKey);
+        rows.push(row);
+      }
+    }
+    return rows;
+  }, [systemsPageQuery.data]);
+
+  const hasLoadedAllRows =
+    systemsPageQuery.status === "success" && !systemsPageQuery.hasNextPage;
 
   const comparisonInstallers = useMemo(() => {
     const groups = new Map<
@@ -73,7 +145,7 @@ export default memo(function ComparisonsTab(props: ComparisonsTabProps) {
       }
     >();
 
-    systems.forEach((sys) => {
+    systemRows.forEach((sys) => {
       const name = sys.installerName || "Unknown";
       const g = groups.get(name) ?? {
         name,
@@ -84,8 +156,8 @@ export default memo(function ComparisonsTab(props: ComparisonsTabProps) {
       };
       g.total += 1;
       if (sys.isReporting) g.reporting += 1;
-      g.totalValue += sys.contractedValue ?? 0;
-      g.deliveredValue += sys.deliveredValue ?? 0;
+      g.totalValue += parseDecimalString(sys.contractedValue) ?? 0;
+      g.deliveredValue += parseDecimalString(sys.deliveredValue) ?? 0;
       groups.set(name, g);
     });
 
@@ -96,7 +168,7 @@ export default memo(function ComparisonsTab(props: ComparisonsTabProps) {
         deliveryPercent: toPercentValue(g.deliveredValue, g.totalValue),
       }))
       .sort((a, b) => b.total - a.total);
-  }, [systems]);
+  }, [systemRows]);
 
   const comparisonPlatforms = useMemo(() => {
     const groups = new Map<
@@ -110,7 +182,7 @@ export default memo(function ComparisonsTab(props: ComparisonsTabProps) {
       }
     >();
 
-    systems.forEach((sys) => {
+    systemRows.forEach((sys) => {
       const name = sys.monitoringPlatform || "Unknown";
       const g = groups.get(name) ?? {
         name,
@@ -124,7 +196,7 @@ export default memo(function ComparisonsTab(props: ComparisonsTabProps) {
         g.reporting += 1;
       } else {
         g.offline += 1;
-        g.offlineValue += sys.contractedValue ?? 0;
+        g.offlineValue += parseDecimalString(sys.contractedValue) ?? 0;
       }
       groups.set(name, g);
     });
@@ -136,10 +208,43 @@ export default memo(function ComparisonsTab(props: ComparisonsTabProps) {
         offlinePercent: toPercentValue(g.offline, g.total),
       }))
       .sort((a, b) => b.total - a.total);
-  }, [systems]);
+  }, [systemRows]);
 
   return (
     <div className="space-y-4 mt-4">
+      <Card>
+        <CardContent className="flex flex-wrap items-center justify-between gap-3 p-3 text-sm">
+          <div className="text-slate-700">
+            Loaded {formatNumber(systemRows.length)} systems
+            {hasLoadedAllRows ? "" : " so far"} for comparison.
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void resetSystemsPageCache()}
+              disabled={systemsPageQuery.isFetching}
+            >
+              Refresh
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={startBuild}
+              disabled={isBuildRunning}
+            >
+              {isBuildRunning ? "Building..." : "Rebuild table"}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      {buildErrorMessage ? (
+        <div className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-900">
+          {buildErrorMessage}
+        </div>
+      ) : null}
+
       <Card>
         <CardHeader>
           <div className="flex items-center justify-between">
@@ -364,7 +469,7 @@ export default memo(function ComparisonsTab(props: ComparisonsTabProps) {
         moduleKey="solar-rec-comparisons"
         title="Ask AI about installer + platform comparisons"
         contextGetter={() => ({
-          totals: { systems: systems.length },
+          totals: { systems: systemRows.length },
           installers: comparisonInstallers.slice(0, 30),
           platforms: comparisonPlatforms.slice(0, 30),
         })}
