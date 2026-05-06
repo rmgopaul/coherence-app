@@ -1,3 +1,4 @@
+import { readFile, stat } from "node:fs/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -47,6 +48,7 @@ describe("buildDatasetCsvExport", () => {
       csv: "",
       fileName: "dataset-transfer-history-20260506123456.csv",
       rowCount: 0,
+      csvBytes: 0,
     });
     expect(mocks.loadDatasetRowsPage).not.toHaveBeenCalled();
   });
@@ -88,8 +90,16 @@ describe("buildDatasetCsvExport", () => {
     expect(result.fileName).toBe(
       "dataset-solar-applications-20260506123456.csv"
     );
-    expect(result.csv).toBe(["alpha,beta", "1,", "2,B"].join("\n"));
+    expect(result.csv).toBeUndefined();
+    expect(result.filePath).toBeTruthy();
+    expect(result.csvBytes).toBeGreaterThan(0);
+    const csv = await readFile(result.filePath!, "utf8");
+    expect(csv).toBe(["alpha,beta", "1,", "2,B"].join("\n"));
     expect(mocks.loadDatasetRowsPage).toHaveBeenCalledTimes(4);
+    await result.cleanup?.();
+    await expect(stat(result.filePath!)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
   });
 });
 

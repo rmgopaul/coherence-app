@@ -1,3 +1,6 @@
+import { mkdtemp, rm, stat, writeFile, appendFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import {
   srDsAbpCsgPortalDatabaseRows,
   srDsAbpCsgSystemMapping,
@@ -74,9 +77,12 @@ const TABLES_BY_DATASET_KEY = {
 const DATASET_CSV_EXPORT_PAGE_SIZE = 1000;
 
 export interface DatasetCsvExportArtifact {
-  csv: string;
+  csv?: string;
+  filePath?: string;
   fileName: string;
   rowCount: number;
+  csvBytes: number;
+  cleanup?: () => Promise<void>;
 }
 
 export function isDashboardDatasetCsvExportKey(
@@ -95,7 +101,7 @@ export async function buildDatasetCsvExport(
   const activeBatch = await getActiveBatchForDataset(scopeId, datasetKey);
   const fileName = `dataset-${toCsvFileSlug(datasetKey)}-${timestampForCsvFileName(generatedAtIso)}.csv`;
   if (!activeBatch) {
-    return { csv: "", fileName, rowCount: 0 };
+    return { csv: "", fileName, rowCount: 0, csvBytes: 0 };
   }
 
   const table = TABLES_BY_DATASET_KEY[datasetKey];
@@ -121,34 +127,59 @@ export async function buildDatasetCsvExport(
   }
 
   if (totalRows === 0) {
-    return { csv: "", fileName, rowCount: 0 };
+    return { csv: "", fileName, rowCount: 0, csvBytes: 0 };
   }
 
   const headers = Array.from(headerSet);
-  const segments: string[] = [];
+  let tempDir: string | null = null;
+  let wroteFirstPage = false;
   cursor = null;
-  while (true) {
-    const page = await loadDatasetRowsPage(scopeId, activeBatch.id, table, {
-      cursor,
-      limit: DATASET_CSV_EXPORT_PAGE_SIZE,
-    });
-    if (page.rows.length === 0) break;
-    const text = buildCsvText(headers, page.rows);
-    if (segments.length === 0) {
-      segments.push(text);
-    } else {
-      const newlineIdx = text.indexOf("\n");
-      segments.push(newlineIdx >= 0 ? text.slice(newlineIdx + 1) : "");
-    }
-    cursor = page.nextCursor;
-    if (cursor === null) break;
-  }
 
-  return {
-    csv: segments.join("\n"),
-    fileName,
-    rowCount: totalRows,
-  };
+  try {
+    tempDir = await mkdtemp(path.join(tmpdir(), "solar-rec-dataset-csv-"));
+    const filePath = path.join(tempDir, fileName);
+
+    while (true) {
+      const page = await loadDatasetRowsPage(scopeId, activeBatch.id, table, {
+        cursor,
+        limit: DATASET_CSV_EXPORT_PAGE_SIZE,
+      });
+      if (page.rows.length === 0) break;
+      const text = buildCsvText(headers, page.rows);
+      if (!wroteFirstPage) {
+        await writeFile(filePath, text, "utf8");
+        wroteFirstPage = true;
+      } else {
+        const newlineIdx = text.indexOf("\n");
+        const body = newlineIdx >= 0 ? text.slice(newlineIdx + 1) : "";
+        await appendFile(filePath, `\n${body}`, "utf8");
+      }
+      cursor = page.nextCursor;
+      if (cursor === null) break;
+    }
+
+    const csvBytes = (await stat(filePath)).size;
+    const cleanup = async () => {
+      if (!tempDir) return;
+      await rm(tempDir, { recursive: true, force: true });
+      tempDir = null;
+    };
+
+    return {
+      filePath,
+      fileName,
+      rowCount: totalRows,
+      csvBytes,
+      cleanup,
+    };
+  } catch (err) {
+    if (tempDir) {
+      await rm(tempDir, { recursive: true, force: true }).catch(
+        () => undefined
+      );
+    }
+    throw err;
+  }
 }
 
 function toCsvFileSlug(value: string): string {
