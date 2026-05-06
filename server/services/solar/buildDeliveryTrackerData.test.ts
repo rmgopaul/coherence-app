@@ -46,6 +46,8 @@ describe("buildDeliveryTrackerData (server-side parity)", () => {
     expect(source).toContain("DELIVERY_TRACKER_SCHEDULE_PAGE_SIZE");
     expect(source).toContain("loadDatasetRowsPage(");
     expect(source).not.toMatch(/\bloadDatasetRows\s*\(/);
+    expect(source).not.toContain("buildUnmatchedTransferCsvRows");
+    expect(source).not.toContain("unmatchedTransferCsvRowsForBucket");
     expect(source).not.toContain("Promise.all([");
   });
 
@@ -250,9 +252,12 @@ describe("buildDeliveryTrackerData (server-side parity)", () => {
       expect(artifact.filePath).toBeDefined();
       const csv = readFileSync(artifact.filePath!, "utf8");
       expect(csv).toContain("tracking_system_ref_id,bucket,transfer_count");
-      expect(csv).toContain("NON999,missing_schedule_b,1");
-      expect(csv).toContain("NON100,pre_delivery_schedule,1");
-      expect(csv).toContain("NON200,year_mismatch,1");
+      expect(csv.split("\n")).toEqual([
+        "tracking_system_ref_id,bucket,transfer_count",
+        "NON999,missing_schedule_b,1",
+        "NON100,pre_delivery_schedule,1",
+        "NON200,year_mismatch,1",
+      ]);
     } finally {
       await artifact.cleanup?.();
     }

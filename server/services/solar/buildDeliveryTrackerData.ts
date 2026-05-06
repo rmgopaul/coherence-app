@@ -603,30 +603,24 @@ export function createDeliveryTrackerAccumulator(
       `delivery-tracker-unmatched-transfers-${timestampForCsvFileName(
         generatedAtIso
       )}.csv`;
-    return writeCsvFileArtifact({
+    return writeUnmatchedTransferCsvFileArtifact({
       fileName,
-      headers: DELIVERY_TRACKER_UNMATCHED_TRANSFER_CSV_HEADERS,
-      rows: buildUnmatchedTransferCsvRows(),
-      tempPrefix: "solar-rec-delivery-unmatched-",
+      buckets: [
+        {
+          counts: transfersMissingObligationCounts,
+          bucket: DELIVERY_TRACKER_TRANSFER_BUCKETS.missingScheduleB,
+        },
+        {
+          counts: transfersPreDeliveryScheduleCounts,
+          bucket: DELIVERY_TRACKER_TRANSFER_BUCKETS.preDeliverySchedule,
+        },
+        {
+          counts: transfersUnmatchedByYearCounts,
+          bucket: DELIVERY_TRACKER_TRANSFER_BUCKETS.yearMismatch,
+        },
+      ],
     });
   };
-
-  function buildUnmatchedTransferCsvRows(): Record<string, string>[][] {
-    return [
-      unmatchedTransferCsvRowsForBucket(
-        transfersMissingObligationCounts,
-        DELIVERY_TRACKER_TRANSFER_BUCKETS.missingScheduleB
-      ),
-      unmatchedTransferCsvRowsForBucket(
-        transfersPreDeliveryScheduleCounts,
-        DELIVERY_TRACKER_TRANSFER_BUCKETS.preDeliverySchedule
-      ),
-      unmatchedTransferCsvRowsForBucket(
-        transfersUnmatchedByYearCounts,
-        DELIVERY_TRACKER_TRANSFER_BUCKETS.yearMismatch
-      ),
-    ];
-  }
 
   return {
     processScheduleRow,
@@ -684,6 +678,11 @@ const DELIVERY_TRACKER_TRANSFER_BUCKETS = {
 type DeliveryTrackerTransferBucket =
   (typeof DELIVERY_TRACKER_TRANSFER_BUCKETS)[keyof typeof DELIVERY_TRACKER_TRANSFER_BUCKETS];
 
+type DeliveryTrackerUnmatchedTransferBucketSource = {
+  counts: ReadonlyMap<string, number>;
+  bucket: DeliveryTrackerTransferBucket;
+};
+
 function detailRowToCsvRecord(row: DeliveryTrackerRow): Record<string, string> {
   return {
     system_name: row.systemName,
@@ -702,11 +701,9 @@ function timestampForCsvFileName(iso: string): string {
   return iso.replace(/[^0-9]/g, "").slice(0, 14);
 }
 
-async function writeCsvFileArtifact(input: {
+async function writeUnmatchedTransferCsvFileArtifact(input: {
   fileName: string;
-  headers: string[];
-  rows: Record<string, string>[][];
-  tempPrefix: string;
+  buckets: readonly DeliveryTrackerUnmatchedTransferBucketSource[];
 }): Promise<DeliveryTrackerDetailCsvArtifact> {
   let tempDir: string | null = null;
   let wroteFirstChunk = false;
@@ -714,7 +711,10 @@ async function writeCsvFileArtifact(input: {
 
   async function flush(buffer: Record<string, string>[]): Promise<void> {
     if (!tempDir || buffer.length === 0) return;
-    const text = buildCsvText(input.headers, buffer);
+    const text = buildCsvText(
+      DELIVERY_TRACKER_UNMATCHED_TRANSFER_CSV_HEADERS,
+      buffer
+    );
     if (!wroteFirstChunk) {
       await writeFile(path.join(tempDir, input.fileName), text, "utf8");
       wroteFirstChunk = true;
@@ -727,12 +727,18 @@ async function writeCsvFileArtifact(input: {
   }
 
   try {
-    tempDir = await mkdtemp(path.join(tmpdir(), input.tempPrefix));
+    tempDir = await mkdtemp(path.join(tmpdir(), "solar-rec-delivery-unmatched-"));
     const buffer: Record<string, string>[] = [];
-    for (let bucketIndex = 0; bucketIndex < input.rows.length; bucketIndex++) {
-      const bucketRows = input.rows[bucketIndex];
-      for (let rowIndex = 0; rowIndex < bucketRows.length; rowIndex++) {
-        buffer.push(bucketRows[rowIndex]);
+    for (const source of input.buckets) {
+      const entries = Array.from(source.counts.entries()).sort(
+        ([left], [right]) => left.localeCompare(right)
+      );
+      for (const [trackingId, transferCount] of entries) {
+        buffer.push({
+          tracking_system_ref_id: trackingId,
+          bucket: source.bucket,
+          transfer_count: String(transferCount),
+        });
         rowCount += 1;
         if (buffer.length >= DELIVERY_TRACKER_DETAIL_CSV_CHUNK_ROWS) {
           await flush(buffer);
@@ -785,22 +791,6 @@ function toSortedBucket(
     transferCount,
   })).sort((a, b) => a.trackingId.localeCompare(b.trackingId));
   return limitRows(rows, limit);
-}
-
-function unmatchedTransferCsvRowsForBucket(
-  counts: Map<string, number>,
-  bucket: DeliveryTrackerTransferBucket
-): Record<string, string>[] {
-  const entries = Array.from(counts.entries()).sort(([left], [right]) =>
-    left.localeCompare(right)
-  );
-  return entries.map(([trackingId, transferCount]) => {
-    return {
-      tracking_system_ref_id: trackingId,
-      bucket,
-      transfer_count: String(transferCount),
-    };
-  });
 }
 
 // ---------------------------------------------------------------------------
