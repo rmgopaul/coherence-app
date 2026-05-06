@@ -3177,13 +3177,12 @@ export default function SolarRecDashboard() {
   // Heavy offline-monitoring aggregator. Carries per-system maps
   // (~2-5 MB on prod, allowlisted). Only fetched when:
   //   1. The active tab consumes per-system data (Offline Monitoring,
-  //      Ownership, Size, performance-ratio cluster), AND
+  //      Size, performance-ratio cluster), AND
   //   2. The user has interacted with the dashboard (deep links to
   //      heavy tabs do NOT auto-fire the all-row response — the user
   //      must navigate at least once, which counts as interaction).
   const isOfflineMonitoringHeavyNeeded =
     isOfflineMonitoringTabActive ||
-    activeTab === "ownership" ||
     activeTab === "size" ||
     activeTab === "performance-ratio" ||
     isPerformanceEvalTabActive;
@@ -6024,9 +6023,7 @@ const aiDataContext = useMemo(() => {
             <div style={{ display: activeTab === "ownership" ? "contents" : "none" }}>
               <TabErrorBoundary tabLabel="Ownership Status">
                 <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading ownership tab...</div>}>
-                  <OwnershipTabLazy
-                    part2EligibleSystemsForSizeReporting={part2EligibleSystemsForSizeReporting}
-                  />
+                  <OwnershipTabLazy />
                 </Suspense>
               </TabErrorBoundary>
             </div>
