@@ -15,6 +15,7 @@ import { startDatasetUploadStaleJobSweeper } from "../services/core/datasetUploa
 import { registerMonitoringDetailsBuildStep } from "../services/solar/buildDashboardMonitoringDetailsFacts";
 import { registerChangeOwnershipBuildStep } from "../services/solar/buildDashboardChangeOwnershipFacts";
 import { registerOwnershipBuildStep } from "../services/solar/buildDashboardOwnershipFacts";
+import { registerSystemBuildStep } from "../services/solar/buildDashboardSystemFacts";
 import { registerPinGate } from "./pinGate";
 import { registerSecurityMiddleware } from "./security";
 import {
@@ -167,11 +168,12 @@ async function startServer() {
   // protects local-dev from accidental writes. Idempotent:
   // subsequent server restarts re-register the same steps without
   // duplicating. Order: monitoringDetails → changeOwnership →
-  // ownership (each step writes to a distinct fact table; no
-  // dependency between them).
+  // ownership → system (each step writes to a distinct fact
+  // table; no dependency between them).
   void registerMonitoringDetailsBuildStep();
   void registerChangeOwnershipBuildStep();
   void registerOwnershipBuildStep();
+  void registerSystemBuildStep();
 
   // Concern #4 PR-2 (per docs/triage/local-dev-prod-mutation-findings.md):
   // schedulers + the orphan-batch cleanup mutate prod state on every
