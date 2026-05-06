@@ -52,8 +52,12 @@ import {
 } from "../../storage";
 import {
   buildChangeOwnershipTileCsvFile,
+  buildChangeOwnershipTileCsvFileFromChunks,
   buildOwnershipTileCsvFile,
+  buildOwnershipTileCsvFileFromChunks,
+  type ChangeOwnershipTileCsvRow,
   type OwnershipTileKey,
+  type OwnershipTileCsvRow,
 } from "./buildDashboardCsvExport";
 import {
   getOrBuildChangeOwnership,
@@ -88,16 +92,12 @@ import {
   pruneTerminalDashboardCsvExportJobs,
   refreshDashboardCsvExportJobClaim,
 } from "../../db/dashboardCsvExportJobs";
-import type {
-  DashboardCsvExportJob,
-  SolarRecDashboardChangeOwnershipFact,
-  SolarRecDashboardOwnershipFact,
-} from "../../../drizzle/schema";
+import type { DashboardCsvExportJob } from "../../../drizzle/schema";
 
 const METRIC_PREFIX = "[dashboard:csv-export-jobs]";
 
 export const DASHBOARD_CSV_EXPORT_RUNNER_VERSION =
-  "dashboard-csv-export-jobs-v11-change-ownership-fact-export";
+  "dashboard-csv-export-jobs-v12-stream-fact-export";
 const LEGACY_DETERMINISTIC_ARTIFACT_RUNNER_VERSION =
   "dashboard-csv-export-jobs-v3-heartbeat";
 const OWNERSHIP_FACT_EXPORT_PAGE_SIZE = 1000;
@@ -1053,7 +1053,16 @@ async function buildOwnershipTileCsvFromFacts(
   const totalFacts = await getOwnershipFactsCount(scopeId);
   if (totalFacts <= 0) return null;
 
-  const rows: SolarRecDashboardOwnershipFact[] = [];
+  return buildOwnershipTileCsvFileFromChunks(
+    streamOwnershipFactCsvRows(scopeId, tile),
+    tile
+  );
+}
+
+async function* streamOwnershipFactCsvRows(
+  scopeId: string,
+  tile: OwnershipTileKey
+): AsyncGenerator<readonly OwnershipTileCsvRow[]> {
   for (const status of OWNERSHIP_TILE_STATUS_FILTERS[tile]) {
     let cursorAfter: string | null = null;
     while (true) {
@@ -1062,7 +1071,9 @@ async function buildOwnershipTileCsvFromFacts(
         limit: OWNERSHIP_FACT_EXPORT_PAGE_SIZE,
         status,
       });
-      rows.push(...page);
+      if (page.length > 0) {
+        yield page as readonly OwnershipTileCsvRow[];
+      }
 
       if (page.length < OWNERSHIP_FACT_EXPORT_PAGE_SIZE) break;
       const nextCursor = page[page.length - 1]?.systemKey ?? null;
@@ -1070,8 +1081,6 @@ async function buildOwnershipTileCsvFromFacts(
       cursorAfter = nextCursor;
     }
   }
-
-  return buildOwnershipTileCsvFile(rows, tile);
 }
 
 async function buildChangeOwnershipTileCsvFromFacts(
@@ -1081,7 +1090,16 @@ async function buildChangeOwnershipTileCsvFromFacts(
   const totalFacts = await getChangeOwnershipFactsCount(scopeId);
   if (totalFacts <= 0) return null;
 
-  const rows: SolarRecDashboardChangeOwnershipFact[] = [];
+  return buildChangeOwnershipTileCsvFileFromChunks(
+    streamChangeOwnershipFactCsvRows(scopeId, status),
+    status
+  );
+}
+
+async function* streamChangeOwnershipFactCsvRows(
+  scopeId: string,
+  status: ChangeOwnershipStatus
+): AsyncGenerator<readonly ChangeOwnershipTileCsvRow[]> {
   let cursorAfter: string | null = null;
   while (true) {
     const page = await getChangeOwnershipFactsPage(scopeId, {
@@ -1089,15 +1107,15 @@ async function buildChangeOwnershipTileCsvFromFacts(
       limit: CHANGE_OWNERSHIP_FACT_EXPORT_PAGE_SIZE,
       status,
     });
-    rows.push(...page);
+    if (page.length > 0) {
+      yield page as readonly ChangeOwnershipTileCsvRow[];
+    }
 
     if (page.length < CHANGE_OWNERSHIP_FACT_EXPORT_PAGE_SIZE) break;
     const nextCursor = page[page.length - 1]?.systemKey ?? null;
     if (!nextCursor || nextCursor === cursorAfter) break;
     cursorAfter = nextCursor;
   }
-
-  return buildChangeOwnershipTileCsvFile(rows, status);
 }
 
 function getBuiltCsvBytes(built: BuiltCsvArtifact): number {
