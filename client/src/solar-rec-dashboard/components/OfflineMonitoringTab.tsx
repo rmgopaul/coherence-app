@@ -20,7 +20,14 @@
  * Switching away unmounts the whole subtree.
  */
 
-import { memo, useCallback, useDeferredValue, useEffect, useMemo, useState } from "react";
+import {
+  memo,
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 import { AskAiPanel } from "@/components/AskAiPanel";
 import { formatCurrency, formatPercent } from "@/lib/helpers";
 import {
@@ -56,6 +63,8 @@ import type {
   OfflineBreakdownRow,
   SystemRecord,
 } from "@/solar-rec-dashboard/state/types";
+import { solarRecTrpc } from "@/solar-rec/solarRecTrpc";
+import { useDashboardBuildControl } from "@/solar-rec-dashboard/hooks/useDashboardBuildControl";
 
 // ---------------------------------------------------------------------------
 // Props
@@ -94,7 +103,9 @@ type OfflineDetailSortKey =
 // Component
 // ---------------------------------------------------------------------------
 
-export default memo(function OfflineMonitoringTab(props: OfflineMonitoringTabProps) {
+export default memo(function OfflineMonitoringTab(
+  props: OfflineMonitoringTabProps,
+) {
   const {
     part2EligibleSystemsForSizeReporting,
     abpEligibleTrackingIdsStrict,
@@ -136,6 +147,19 @@ export default memo(function OfflineMonitoringTab(props: OfflineMonitoringTabPro
     "asc" | "desc"
   >("desc");
   const [offlineDetailPage, setOfflineDetailPage] = useState(1);
+  const utils = solarRecTrpc.useUtils();
+
+  const refreshOfflineMonitoringRows = useCallback(() => {
+    return Promise.all([
+      utils.solarRecDashboard.getDashboardOfflineMonitoring.invalidate(),
+      utils.solarRecDashboard.getDashboardMonitoringDetailsPage.invalidate(),
+    ]).then(() => undefined);
+  }, [utils]);
+
+  const { buildErrorMessage, isBuildRunning, startBuild } =
+    useDashboardBuildControl({
+      onSucceeded: refreshOfflineMonitoringRows,
+    });
 
   // -------------------------------------------------------------------------
   // Universe: ABP-Part-2-verified + has trackingSystemRefId
@@ -160,7 +184,9 @@ export default memo(function OfflineMonitoringTab(props: OfflineMonitoringTabPro
     () =>
       Array.from(
         new Set(
-          offlineBaseSystems.map((system) => system.monitoringType || "Unknown"),
+          offlineBaseSystems.map(
+            (system) => system.monitoringType || "Unknown",
+          ),
         ),
       ).sort((a, b) =>
         a.localeCompare(b, undefined, { sensitivity: "base", numeric: true }),
@@ -241,7 +267,10 @@ export default memo(function OfflineMonitoringTab(props: OfflineMonitoringTabPro
         label: group.label,
         totalSystems: group.totalSystems,
         offlineSystems: group.offlineSystems,
-        offlinePercent: toPercentValue(group.offlineSystems, group.totalSystems),
+        offlinePercent: toPercentValue(
+          group.offlineSystems,
+          group.totalSystems,
+        ),
         offlineContractValue: group.offlineContractValue,
         totalContractValue: group.totalContractValue,
         offlineContractValuePercent: toPercentValue(
@@ -331,7 +360,9 @@ export default memo(function OfflineMonitoringTab(props: OfflineMonitoringTabPro
     });
 
     return Array.from(groups.values())
-      .filter((group) => group.totalSystems > 10 && group.reportingSystems === 0)
+      .filter(
+        (group) => group.totalSystems > 10 && group.reportingSystems === 0,
+      )
       .map((group) => ({
         ...group,
         reportingPercent: toPercentValue(
@@ -612,7 +643,8 @@ export default memo(function OfflineMonitoringTab(props: OfflineMonitoringTabPro
             monitoringDetails?.online_monitoring_website_api_link ?? "",
           online_monitoring_entry_method:
             monitoringDetails?.online_monitoring_entry_method ?? "",
-          online_monitoring_notes: monitoringDetails?.online_monitoring_notes ?? "",
+          online_monitoring_notes:
+            monitoringDetails?.online_monitoring_notes ?? "",
           online_monitoring_self_report:
             monitoringDetails?.online_monitoring_self_report ?? "",
           online_monitoring_rgm_info:
@@ -1112,8 +1144,8 @@ export default memo(function OfflineMonitoringTab(props: OfflineMonitoringTabPro
             Installer + Monitoring Platform with 0% Reporting (&gt;10 Systems)
           </CardTitle>
           <CardDescription>
-            Combinations where no systems are reporting and total systems
-            exceed 10.
+            Combinations where no systems are reporting and total systems exceed
+            10.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -1156,7 +1188,9 @@ export default memo(function OfflineMonitoringTab(props: OfflineMonitoringTabPro
         <CardHeader>
           <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
             <div>
-              <CardTitle className="text-base">Offline Systems Detail</CardTitle>
+              <CardTitle className="text-base">
+                Offline Systems Detail
+              </CardTitle>
               <CardDescription>
                 Filterable and sortable list of non-reporting systems.
               </CardDescription>
@@ -1172,6 +1206,36 @@ export default memo(function OfflineMonitoringTab(props: OfflineMonitoringTabPro
           </div>
         </CardHeader>
         <CardContent className="space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm">
+            <div className="text-slate-700">
+              Loaded {formatNumber(monitoringDetailsBySystemKey.size)}{" "}
+              monitoring detail rows
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => void refreshOfflineMonitoringRows()}
+              >
+                Refresh
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={startBuild}
+                disabled={isBuildRunning}
+              >
+                {isBuildRunning ? "Building..." : "Rebuild table"}
+              </Button>
+            </div>
+          </div>
+
+          {buildErrorMessage ? (
+            <div className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-900">
+              {buildErrorMessage}
+            </div>
+          ) : null}
+
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
             <div className="space-y-1">
               <label className="text-sm font-medium text-slate-700">
@@ -1199,7 +1263,9 @@ export default memo(function OfflineMonitoringTab(props: OfflineMonitoringTabPro
               <select
                 className="h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm"
                 value={offlinePlatformFilter}
-                onChange={(event) => setOfflinePlatformFilter(event.target.value)}
+                onChange={(event) =>
+                  setOfflinePlatformFilter(event.target.value)
+                }
               >
                 <option value="All">All Platforms</option>
                 {offlinePlatformOptions.map((value) => (
@@ -1265,7 +1331,9 @@ export default memo(function OfflineMonitoringTab(props: OfflineMonitoringTabPro
               </select>
             </div>
             <div className="space-y-1">
-              <label className="text-sm font-medium text-slate-700">Search</label>
+              <label className="text-sm font-medium text-slate-700">
+                Search
+              </label>
               <Input
                 placeholder="System, IDs, method, platform, installer, monitoring access..."
                 value={offlineSearch}
@@ -1337,15 +1405,24 @@ export default memo(function OfflineMonitoringTab(props: OfflineMonitoringTabPro
                       {accessFields.monitoringPassword || "N/A"}
                     </TableCell>
                     <TableCell>{system.installerName}</TableCell>
-                    <TableCell>{formatDate(system.latestReportingDate)}</TableCell>
-                    <TableCell>{formatKwh(system.latestReportingKwh)}</TableCell>
-                    <TableCell>{formatCurrency(system.contractedValue)}</TableCell>
+                    <TableCell>
+                      {formatDate(system.latestReportingDate)}
+                    </TableCell>
+                    <TableCell>
+                      {formatKwh(system.latestReportingKwh)}
+                    </TableCell>
+                    <TableCell>
+                      {formatCurrency(system.contractedValue)}
+                    </TableCell>
                   </TableRow>
                 );
               })}
               {visibleOfflineDetailRows.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={15} className="py-6 text-center text-slate-500">
+                  <TableCell
+                    colSpan={15}
+                    className="py-6 text-center text-slate-500"
+                  >
                     No offline systems match the current filters.
                   </TableCell>
                 </TableRow>

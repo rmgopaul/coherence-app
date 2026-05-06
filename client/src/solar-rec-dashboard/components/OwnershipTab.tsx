@@ -7,7 +7,14 @@
  * the oversized offlineMonitoring/system-snapshot path.
  */
 
-import { memo, useDeferredValue, useEffect, useMemo, useState } from "react";
+import {
+  memo,
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 import type { inferRouterOutputs } from "@trpc/server";
 import { AskAiPanel } from "@/components/AskAiPanel";
 import { Button } from "@/components/ui/button";
@@ -33,6 +40,7 @@ import {
 } from "@/solar-rec-dashboard/lib/helpers";
 import { OWNERSHIP_ORDER } from "@/solar-rec-dashboard/lib/constants";
 import { solarRecTrpc } from "@/solar-rec/solarRecTrpc";
+import { useDashboardBuildControl } from "@/solar-rec-dashboard/hooks/useDashboardBuildControl";
 import type { SolarRecAppRouter } from "@server/_core/solarRecRouter";
 import type { OwnershipStatus } from "@/solar-rec-dashboard/state/types";
 
@@ -55,10 +63,6 @@ function toDateOrNull(value: Date | string | null): Date | null {
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
-function isTerminalBuildStatus(status: string | null | undefined): boolean {
-  return status === "succeeded" || status === "failed" || status === "notFound";
-}
-
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -72,18 +76,11 @@ export default memo(function OwnershipTab() {
   const [searchTerm, setSearchTerm] = useState("");
   const [cursorAfter, setCursorAfter] = useState<string | null>(null);
   const [ownershipRows, setOwnershipRows] = useState<OwnershipPageRow[]>([]);
-  const [activeBuildId, setActiveBuildId] = useState<string | null>(null);
-  const [processedBuildId, setProcessedBuildId] = useState<string | null>(null);
-  const [buildErrorMessage, setBuildErrorMessage] = useState<string | null>(
-    null
-  );
   // Phase 18: defer the search string so filteredOwnershipRows
   // re-runs as a low-priority update, keeping keystrokes responsive.
   const deferredSearchTerm = useDeferredValue(searchTerm);
 
   const utils = solarRecTrpc.useUtils();
-  const startDashboardBuild =
-    solarRecTrpc.solarRecDashboard.startDashboardBuild.useMutation();
   const ownershipPageQuery =
     solarRecTrpc.solarRecDashboard.getDashboardOwnershipPage.useQuery(
       {
@@ -100,21 +97,7 @@ export default memo(function OwnershipTab() {
       {
         staleTime: 60_000,
         retry: false,
-      }
-    );
-  const buildStatusQuery =
-    solarRecTrpc.solarRecDashboard.getDashboardBuildStatus.useQuery(
-      { buildId: activeBuildId ?? "__none__" },
-      {
-        enabled: activeBuildId !== null,
-        refetchInterval: (query) => {
-          const status = query.state.data?.status;
-          if (isTerminalBuildStatus(status)) return false;
-          return 2_000;
-        },
-        retry: false,
-        staleTime: 0,
-      }
+      },
     );
 
   useEffect(() => {
@@ -129,49 +112,20 @@ export default memo(function OwnershipTab() {
     });
   }, [cursorAfter, ownershipPageQuery.data]);
 
-  useEffect(() => {
-    if (!activeBuildId || processedBuildId === activeBuildId) return;
-    const status = buildStatusQuery.data?.status;
-    if (status === "succeeded") {
-      setProcessedBuildId(activeBuildId);
-      setBuildErrorMessage(null);
-      setCursorAfter(null);
-      setOwnershipRows([]);
-      void utils.solarRecDashboard.getDashboardOwnershipPage.invalidate();
-    } else if (status === "failed" || status === "notFound") {
-      setProcessedBuildId(activeBuildId);
-      setBuildErrorMessage(
-        buildStatusQuery.data?.errorMessage ??
-          "Dashboard build did not complete."
-      );
-    }
-  }, [
-    activeBuildId,
-    buildStatusQuery.data?.errorMessage,
-    buildStatusQuery.data?.status,
-    processedBuildId,
-    utils,
-  ]);
-
-  function resetPaging(): void {
+  const resetPaging = useCallback(() => {
     setCursorAfter(null);
     setOwnershipRows([]);
-  }
+  }, []);
 
-  async function handleStartBuild(): Promise<void> {
-    try {
-      setBuildErrorMessage(null);
-      const result = await startDashboardBuild.mutateAsync();
-      setActiveBuildId(result.buildId);
-      setProcessedBuildId(null);
-    } catch (error) {
-      setBuildErrorMessage(
-        error instanceof Error
-          ? error.message
-          : "Unable to start dashboard build."
-      );
-    }
-  }
+  const handleBuildSucceeded = useCallback(() => {
+    resetPaging();
+    return utils.solarRecDashboard.getDashboardOwnershipPage.invalidate();
+  }, [resetPaging, utils]);
+
+  const { buildErrorMessage, isBuildRunning, startBuild } =
+    useDashboardBuildControl({
+      onSucceeded: handleBuildSucceeded,
+    });
 
   const filteredOwnershipRows = useMemo(() => {
     const normalizedSearch = deferredSearchTerm.trim().toLowerCase();
@@ -193,11 +147,6 @@ export default memo(function OwnershipTab() {
     });
   }, [ownershipRows, deferredSearchTerm]);
 
-  const buildStatus = buildStatusQuery.data?.status ?? null;
-  const isBuildRunning =
-    startDashboardBuild.isPending ||
-    buildStatus === "queued" ||
-    buildStatus === "running";
   const nextCursor = ownershipPageQuery.data?.nextCursor ?? null;
   const hasMore = ownershipPageQuery.data?.hasMore ?? false;
 
@@ -205,7 +154,9 @@ export default memo(function OwnershipTab() {
     <div className="space-y-4 mt-4">
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Ownership Status Classifier</CardTitle>
+          <CardTitle className="text-base">
+            Ownership Status Classifier
+          </CardTitle>
           <CardDescription>
             Categories: Transferred, Not Transferred, and Terminated crossed
             with Reporting / Not Reporting.
@@ -222,7 +173,7 @@ export default memo(function OwnershipTab() {
                 value={ownershipFilter}
                 onChange={(event) => {
                   setOwnershipFilter(
-                    event.target.value as OwnershipStatus | "All"
+                    event.target.value as OwnershipStatus | "All",
                   );
                   resetPaging();
                 }}
@@ -253,7 +204,9 @@ export default memo(function OwnershipTab() {
               </select>
             </div>
             <div className="space-y-1">
-              <label className="text-sm font-medium text-slate-700">Search</label>
+              <label className="text-sm font-medium text-slate-700">
+                Search
+              </label>
               <Input
                 placeholder="System, project, ID, tracking..."
                 value={searchTerm}
@@ -283,7 +236,7 @@ export default memo(function OwnershipTab() {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={handleStartBuild}
+                onClick={startBuild}
                 disabled={isBuildRunning}
               >
                 {isBuildRunning ? "Building..." : "Rebuild table"}
@@ -345,7 +298,10 @@ export default memo(function OwnershipTab() {
               ))}
               {filteredOwnershipRows.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={11} className="py-6 text-center text-sm text-slate-500">
+                  <TableCell
+                    colSpan={11}
+                    className="py-6 text-center text-sm text-slate-500"
+                  >
                     {ownershipPageQuery.isLoading
                       ? "Loading ownership rows..."
                       : "No ownership rows found."}
@@ -380,13 +336,13 @@ export default memo(function OwnershipTab() {
           for (const s of ownershipRows) {
             counts.set(
               s.ownershipStatus,
-              (counts.get(s.ownershipStatus) ?? 0) + 1
+              (counts.get(s.ownershipStatus) ?? 0) + 1,
             );
           }
           return {
             loadedRows: ownershipRows.length,
             byOwnershipStatus: Array.from(counts.entries()).map(
-              ([status, count]) => ({ status, count })
+              ([status, count]) => ({ status, count }),
             ),
             filters: {
               category: ownershipFilter,
@@ -407,13 +363,14 @@ export default memo(function OwnershipTab() {
                 isTerminated: s.isTerminated,
                 contractType: s.contractType,
                 latestReportingDate: s.latestReportingDate
-                  ? toDateOrNull(s.latestReportingDate)
+                  ? (toDateOrNull(s.latestReportingDate)
                       ?.toISOString()
-                      .slice(0, 10) ?? null
+                      .slice(0, 10) ?? null)
                   : null,
                 contractedDate: s.contractedDate
-                  ? toDateOrNull(s.contractedDate)?.toISOString().slice(0, 10) ??
-                    null
+                  ? (toDateOrNull(s.contractedDate)
+                      ?.toISOString()
+                      .slice(0, 10) ?? null)
                   : null,
               })),
           };

@@ -7,10 +7,10 @@
  *   - 1 useMemo (filteredChangeOwnershipRows)
  *   - 1 CSV download callback
  *
- * Unlike Performance Ratio and Offline Monitoring, the upstream
- * `changeOwnershipRows` and `changeOwnershipSummary` memos stay in the
- * parent because Overview tab tiles, Snapshot Log, and createLogEntry
- * all read from them. This tab receives both as props.
+ * Summary fields still come from the parent because Overview tab tiles,
+ * Snapshot Log, and createLogEntry all read them. Detail rows are
+ * supplied by the parent's paginated `getDashboardChangeOwnershipPage`
+ * walk over the derived fact table.
  *
  * Component mounts only when `activeTab === "change-ownership"`, so the
  * filter/sort closure is garbage collected when the user switches away.
@@ -49,6 +49,8 @@ import {
   resolveContractValueAmount,
 } from "@/solar-rec-dashboard/lib/helpers";
 import { CHANGE_OWNERSHIP_ORDER } from "@/solar-rec-dashboard/lib/constants";
+import { solarRecTrpc } from "@/solar-rec/solarRecTrpc";
+import { useDashboardBuildControl } from "@/solar-rec-dashboard/hooks/useDashboardBuildControl";
 import type {
   ChangeOwnershipStatus,
   ChangeOwnershipSummary,
@@ -60,11 +62,10 @@ import type {
 // ---------------------------------------------------------------------------
 
 /**
- * Projected change-of-ownership row shape from
- * `getDashboardChangeOwnership.rows` (Phase 5e step 4 PR-C3,
- * 2026-04-30). Mirrors the server's `ChangeOwnershipExportRow`.
- * Kept inline rather than cross-importing from
- * `server/services/solar/buildChangeOwnershipAggregates.ts`.
+ * Projected change-of-ownership detail row shape. The parent maps
+ * `getDashboardChangeOwnershipPage` fact rows back into this contract
+ * so the tab and Snapshot Log consumers stay decoupled from tRPC's
+ * wire-level decimal/date details.
  */
 export type ChangeOwnershipExportRow = {
   key: string;
@@ -90,9 +91,9 @@ export type ChangeOwnershipExportRow = {
 
 export interface ChangeOwnershipTabProps {
   /**
-   * Flagged change-of-ownership rows. Comes from the server
-   * aggregator `getDashboardChangeOwnership.rows`. Also consumed
-   * by the parent's createLogEntry flow.
+   * Flagged change-of-ownership rows. Comes from the parent's
+   * paginated fact-table walk. Also consumed by the parent's
+   * createLogEntry flow.
    */
   changeOwnershipRows: readonly ChangeOwnershipExportRow[];
 
@@ -121,7 +122,9 @@ type ChangeOwnershipSortKey =
 // Component
 // ---------------------------------------------------------------------------
 
-export default memo(function ChangeOwnershipTab(props: ChangeOwnershipTabProps) {
+export default memo(function ChangeOwnershipTab(
+  props: ChangeOwnershipTabProps,
+) {
   const { changeOwnershipRows, changeOwnershipSummary } = props;
 
   const [changeOwnershipFilter, setChangeOwnershipFilter] = useState<
@@ -136,6 +139,19 @@ export default memo(function ChangeOwnershipTab(props: ChangeOwnershipTabProps) 
   const [changeOwnershipSortDir, setChangeOwnershipSortDir] = useState<
     "asc" | "desc"
   >("desc");
+  const utils = solarRecTrpc.useUtils();
+
+  const refreshChangeOwnershipRows = useCallback(() => {
+    return Promise.all([
+      utils.solarRecDashboard.getDashboardChangeOwnership.invalidate(),
+      utils.solarRecDashboard.getDashboardChangeOwnershipPage.invalidate(),
+    ]).then(() => undefined);
+  }, [utils]);
+
+  const { buildErrorMessage, isBuildRunning, startBuild } =
+    useDashboardBuildControl({
+      onSucceeded: refreshChangeOwnershipRows,
+    });
 
   // -------------------------------------------------------------------------
   // Filter + sort the upstream rows. Capped at 500 rows in the UI below
@@ -285,7 +301,9 @@ export default memo(function ChangeOwnershipTab(props: ChangeOwnershipTabProps) 
       <div className="grid gap-4 md:grid-cols-3">
         <Card>
           <CardHeader>
-            <CardDescription>Flagged Change of Ownership Systems</CardDescription>
+            <CardDescription>
+              Flagged Change of Ownership Systems
+            </CardDescription>
             <CardTitle className="text-2xl">
               {formatNumber(changeOwnershipSummary.total)}
             </CardTitle>
@@ -333,7 +351,9 @@ export default memo(function ChangeOwnershipTab(props: ChangeOwnershipTabProps) 
           <CardHeader>
             <CardDescription>Contract Value Not Reporting</CardDescription>
             <CardTitle className="text-2xl">
-              {formatCurrency(changeOwnershipSummary.contractedValueNotReporting)}
+              {formatCurrency(
+                changeOwnershipSummary.contractedValueNotReporting,
+              )}
             </CardTitle>
           </CardHeader>
         </Card>
@@ -380,6 +400,36 @@ export default memo(function ChangeOwnershipTab(props: ChangeOwnershipTabProps) 
           </div>
         </CardHeader>
         <CardContent className="space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm">
+            <div className="text-slate-700">
+              Showing {filteredChangeOwnershipRows.length.toLocaleString()} of{" "}
+              {changeOwnershipRows.length.toLocaleString()} loaded rows
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => void refreshChangeOwnershipRows()}
+              >
+                Refresh
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={startBuild}
+                disabled={isBuildRunning}
+              >
+                {isBuildRunning ? "Building..." : "Rebuild table"}
+              </Button>
+            </div>
+          </div>
+
+          {buildErrorMessage ? (
+            <div className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-900">
+              {buildErrorMessage}
+            </div>
+          ) : null}
+
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
             <div className="space-y-1">
               <label className="text-sm font-medium text-slate-700">
@@ -403,11 +453,15 @@ export default memo(function ChangeOwnershipTab(props: ChangeOwnershipTabProps) 
               </select>
             </div>
             <div className="space-y-1">
-              <label className="text-sm font-medium text-slate-700">Search</label>
+              <label className="text-sm font-medium text-slate-700">
+                Search
+              </label>
               <Input
                 placeholder="System name, IDs, contract type..."
                 value={changeOwnershipSearch}
-                onChange={(event) => setChangeOwnershipSearch(event.target.value)}
+                onChange={(event) =>
+                  setChangeOwnershipSearch(event.target.value)
+                }
               />
             </div>
             <div className="space-y-1">
@@ -440,7 +494,9 @@ export default memo(function ChangeOwnershipTab(props: ChangeOwnershipTabProps) 
                 className="h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm"
                 value={changeOwnershipSortDir}
                 onChange={(event) =>
-                  setChangeOwnershipSortDir(event.target.value as "asc" | "desc")
+                  setChangeOwnershipSortDir(
+                    event.target.value as "asc" | "desc",
+                  )
                 }
               >
                 <option value="desc">Descending</option>
@@ -475,10 +531,14 @@ export default memo(function ChangeOwnershipTab(props: ChangeOwnershipTabProps) 
             <TableBody>
               {filteredChangeOwnershipRows.slice(0, 500).map((system) => (
                 <TableRow key={system.key}>
-                  <TableCell className="font-medium">{system.systemName}</TableCell>
+                  <TableCell className="font-medium">
+                    {system.systemName}
+                  </TableCell>
                   <TableCell>{system.systemId ?? "N/A"}</TableCell>
                   <TableCell>{system.trackingSystemRefId ?? "N/A"}</TableCell>
-                  <TableCell>{formatCapacityKw(system.installedKwAc)}</TableCell>
+                  <TableCell>
+                    {formatCapacityKw(system.installedKwAc)}
+                  </TableCell>
                   <TableCell>
                     {formatCurrency(resolveContractValueAmount(system))}
                   </TableCell>
@@ -504,7 +564,10 @@ export default memo(function ChangeOwnershipTab(props: ChangeOwnershipTabProps) 
               ))}
               {filteredChangeOwnershipRows.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={11} className="py-6 text-center text-slate-500">
+                  <TableCell
+                    colSpan={11}
+                    className="py-6 text-center text-slate-500"
+                  >
                     No flagged systems match the current filters.
                   </TableCell>
                 </TableRow>
