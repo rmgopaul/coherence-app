@@ -3943,6 +3943,49 @@ export const solarRecDashboardRouter = t.router({
     }),
 
   /**
+   * Phase 2 PR-F-4-a (OOM rebuild) — bounded detail lookup for
+   * SystemDetailSheet. Opening the right-side detail sheet used to
+   * require the parent to hydrate the legacy `getSystemSnapshot`
+   * SystemRecord[] payload just to find one selected row. This reads
+   * the derived `solarRecDashboardSystemFacts` table by primary key
+   * instead, so a drill-in remains a tiny DB lookup.
+   */
+  getSystemFactsBySystemKeys: dashboardProcedure(
+    "solar-rec-dashboard",
+    "read"
+  )
+    .input(
+      z.object({
+        systemKeys: z.array(z.string().min(1).max(128)).max(25),
+      })
+    )
+    .query(async ({ ctx, input }) => {
+      const { getSystemFactsBySystemKeys } = await import(
+        "../db/dashboardSystemFacts"
+      );
+      const systemKeys = Array.from(
+        new Set(input.systemKeys.map((key) => key.trim()).filter(Boolean))
+      );
+      const rows = await getSystemFactsBySystemKeys(
+        ctx.scopeId,
+        systemKeys
+      );
+      const order = new Map(
+        systemKeys.map((systemKey, index) => [systemKey, index])
+      );
+      rows.sort(
+        (a, b) =>
+          (order.get(a.systemKey) ?? Number.MAX_SAFE_INTEGER) -
+          (order.get(b.systemKey) ?? Number.MAX_SAFE_INTEGER)
+      );
+      return {
+        _checkpoint: "system-facts-by-keys-v1",
+        _runnerVersion: "phase-2-pr-f-4-a@1" as const,
+        rows,
+      };
+    }),
+
+  /**
    * Phase 5e PR (2026-04-29) — server-side aggregator for the
    * `performanceSourceRows` shape consumed by RecPerformanceEvaluation
    * Tab + Snapshot Log + the parent's `recPerformanceSnapshotContracts
