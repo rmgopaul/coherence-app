@@ -108,6 +108,15 @@ export const BUCKET = {
 
 export type DeliveryTrackerData = {
   rows: DeliveryTrackerRow[];
+  /**
+   * Full number of system-year rows represented by the aggregate.
+   * Server-backed tab loads may return only a bounded preview in
+   * `rows` to keep production tab activation from shipping hundreds
+   * of thousands of row objects through tRPC.
+   */
+  detailRowCount: number;
+  detailRowsTruncated: boolean;
+  detailRowLimit: number | null;
   contracts: DeliveryTrackerContractSummary[];
   totalTransfers: number;
   /**
@@ -152,6 +161,9 @@ export type DeliveryTrackerData = {
 
 export const EMPTY_DELIVERY_TRACKER_DATA: DeliveryTrackerData = Object.freeze({
   rows: [],
+  detailRowCount: 0,
+  detailRowsTruncated: false,
+  detailRowLimit: null,
   contracts: [],
   totalTransfers: 0,
   unmatchedTransfers: 0,
@@ -444,6 +456,9 @@ export function buildDeliveryTrackerData(input: {
 
   return {
     rows,
+    detailRowCount: rows.length,
+    detailRowsTruncated: false,
+    detailRowLimit: null,
     contracts,
     totalTransfers,
     unmatchedTransfers,

@@ -1,5 +1,10 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { buildDeliveryTrackerData } from "./buildDeliveryTrackerData";
+import {
+  buildDeliveryTrackerData,
+  createDeliveryTrackerAccumulator,
+} from "./buildDeliveryTrackerData";
 
 // These fixtures mirror the ones in
 // `client/src/solar-rec-dashboard/lib/buildDeliveryTrackerData.test.ts`
@@ -31,6 +36,18 @@ const transferRow = (overrides: Partial<CsvRow> = {}): CsvRow => ({
 });
 
 describe("buildDeliveryTrackerData (server-side parity)", () => {
+  it("server entrypoint uses paged transferHistory reads and a compact detail preview", () => {
+    const source = readFileSync(
+      resolve(__dirname, "buildDeliveryTrackerData.ts"),
+      "utf8"
+    );
+    expect(source).toContain("deliveryTracker_compact_v2");
+    expect(source).toContain("DELIVERY_TRACKER_DETAIL_PREVIEW_LIMIT");
+    expect(source).toContain("loadDatasetRowsPage(");
+    expect(source).not.toMatch(/loadDatasetRows\([\s\S]{0,160}srDsTransferHistory/);
+    expect(source).not.toContain("Promise.all([");
+  });
+
   it("credits delivery when schedule has dates and transfer falls in range", () => {
     const data = buildDeliveryTrackerData({
       scheduleRows: [scheduleRow()],
@@ -40,9 +57,63 @@ describe("buildDeliveryTrackerData (server-side parity)", () => {
     expect(data.totalTransfers).toBe(1);
     expect(data.unmatchedTransfers).toBe(0);
     expect(data.rows).toHaveLength(1);
+    expect(data.detailRowCount).toBe(1);
+    expect(data.detailRowsTruncated).toBe(false);
     expect(data.rows[0].obligated).toBe(10);
     expect(data.rows[0].delivered).toBe(4);
     expect(data.rows[0].gap).toBe(6);
+  });
+
+  it("can cap returned detail rows while keeping full contract totals", () => {
+    const data = buildDeliveryTrackerData({
+      scheduleRows: [
+        scheduleRow({
+          tracking_system_ref_id: "NON100",
+          year1_quantity_required: "10",
+        }),
+        scheduleRow({
+          tracking_system_ref_id: "NON101",
+          year1_quantity_required: "20",
+          utility_contract_number: "493",
+        }),
+        scheduleRow({
+          tracking_system_ref_id: "NON200",
+          year1_quantity_required: "5",
+          utility_contract_number: "500",
+        }),
+      ],
+      transferRows: [],
+      options: { detailRowLimit: 2 },
+    });
+
+    expect(data.rows).toHaveLength(2);
+    expect(data.detailRowCount).toBe(3);
+    expect(data.detailRowsTruncated).toBe(true);
+    expect(data.detailRowLimit).toBe(2);
+    const contract493 = data.contracts.find((c) => c.contractId === "493");
+    const contract500 = data.contracts.find((c) => c.contractId === "500");
+    expect(contract493?.totalObligated).toBe(30);
+    expect(contract500?.totalObligated).toBe(5);
+  });
+
+  it("streaming accumulator matches the array-based helper", () => {
+    const scheduleRows = [scheduleRow()];
+    const transferRows = [
+      transferRow({ Quantity: "5" }),
+      transferRow({
+        Quantity: "2",
+        Transferor: "ComEd",
+        Transferee: "Carbon Solutions",
+        "Transfer Completion Date": "2024-09-15",
+      }),
+    ];
+    const arrayResult = buildDeliveryTrackerData({
+      scheduleRows,
+      transferRows,
+    });
+    const accumulator = createDeliveryTrackerAccumulator(scheduleRows);
+    transferRows.forEach((row) => accumulator.processTransferRow(row));
+    expect(accumulator.finish()).toEqual(arrayResult);
   });
 
   it("regression guard: Schedule-B-style row without dates still emits obligation", () => {

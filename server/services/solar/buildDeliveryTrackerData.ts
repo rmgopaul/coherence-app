@@ -36,7 +36,7 @@ import {
   parseNumber,
   toPercentValue,
 } from "./aggregatorHelpers";
-import { loadDatasetRows } from "./buildSystemSnapshot";
+import { loadDatasetRows, loadDatasetRowsPage } from "./buildSystemSnapshot";
 import { superjsonSerde, withArtifactCache } from "./withArtifactCache";
 
 // ---------------------------------------------------------------------------
@@ -114,6 +114,9 @@ export type FlaggedSchedule = {
 
 export type DeliveryTrackerData = {
   rows: DeliveryTrackerRow[];
+  detailRowCount: number;
+  detailRowsTruncated: boolean;
+  detailRowLimit: number | null;
   contracts: DeliveryTrackerContractSummary[];
   totalTransfers: number;
   unmatchedTransfers: number;
@@ -128,6 +131,9 @@ export type DeliveryTrackerData = {
 
 export const EMPTY_DELIVERY_TRACKER_DATA: DeliveryTrackerData = Object.freeze({
   rows: [],
+  detailRowCount: 0,
+  detailRowsTruncated: false,
+  detailRowLimit: null,
   contracts: [],
   totalTransfers: 0,
   unmatchedTransfers: 0,
@@ -157,6 +163,16 @@ type SystemSchedule = {
   years: YearSlot[];
 };
 
+type BuildDeliveryTrackerOptions = {
+  /**
+   * Maximum number of system-year detail rows to return. Contract
+   * totals and diagnostics are still computed from every schedule row.
+   * Null means return every detail row, preserving the original pure
+   * helper behavior for parity tests and explicit exports.
+   */
+  detailRowLimit?: number | null;
+};
+
 // ---------------------------------------------------------------------------
 // Pure aggregator — identical logic to the client version. Tested by the
 // sibling `.test.ts`.
@@ -165,12 +181,29 @@ type SystemSchedule = {
 export function buildDeliveryTrackerData(input: {
   scheduleRows: CsvRow[];
   transferRows: CsvRow[];
+  options?: BuildDeliveryTrackerOptions;
 }): DeliveryTrackerData {
-  const { scheduleRows, transferRows } = input;
+  const { scheduleRows, transferRows, options } = input;
 
   if (scheduleRows.length === 0 && transferRows.length > 0) {
     return EMPTY_DELIVERY_TRACKER_DATA;
   }
+
+  const accumulator = createDeliveryTrackerAccumulator(scheduleRows, options);
+  for (const row of transferRows) {
+    accumulator.processTransferRow(row);
+  }
+  return accumulator.finish();
+}
+
+export function createDeliveryTrackerAccumulator(
+  scheduleRows: CsvRow[],
+  options: BuildDeliveryTrackerOptions = {}
+): {
+  processTransferRow: (row: CsvRow) => void;
+  finish: () => DeliveryTrackerData;
+} {
+  const detailRowLimit = options.detailRowLimit ?? null;
 
   const systemSchedules = new Map<string, SystemSchedule>();
 
@@ -247,15 +280,26 @@ export function buildDeliveryTrackerData(input: {
 
   let totalTransfers = 0;
   let unmatchedTransfers = 0;
+  let sampledTransferRows = 0;
+  const transferIdSampleSet = new Set<string>();
   const transfersMissingObligationCounts = new Map<string, number>();
   const transfersUnmatchedByYearCounts = new Map<string, number>();
   const transfersPreDeliveryScheduleCounts = new Map<string, number>();
 
-  for (const row of transferRows) {
+  const processTransferRow = (row: CsvRow) => {
+    if (sampledTransferRows < 100) {
+      sampledTransferRows += 1;
+      const sampleUnitId = clean(row["Unit ID"]).toLowerCase();
+      if (sampleUnitId && transferIdSampleSet.size < 5) {
+        transferIdSampleSet.add(sampleUnitId);
+      }
+    }
+    if (systemSchedules.size === 0) return;
+
     const unitId = clean(row["Unit ID"]);
-    if (!unitId) continue;
+    if (!unitId) return;
     const qty = parseNumber(row.Quantity) ?? 0;
-    if (qty === 0) continue;
+    if (qty === 0) return;
 
     const transferor = (clean(row.Transferor) ?? "").toLowerCase();
     const transferee = (clean(row.Transferee) ?? "").toLowerCase();
@@ -272,7 +316,7 @@ export function buildDeliveryTrackerData(input: {
 
     if (isFromCS && transfereeIsUtility) direction = 1;
     else if (transferorIsUtility && isToCS) direction = -1;
-    else continue;
+    else return;
 
     totalTransfers++;
 
@@ -280,7 +324,7 @@ export function buildDeliveryTrackerData(input: {
     const completionDate = completionDateRaw
       ? parseDate(completionDateRaw)
       : null;
-    if (!completionDate) continue;
+    if (!completionDate) return;
 
     const schedule = systemSchedules.get(unitId.toLowerCase());
     if (!schedule) {
@@ -289,7 +333,7 @@ export function buildDeliveryTrackerData(input: {
         unitId,
         (transfersMissingObligationCounts.get(unitId) ?? 0) + 1
       );
-      continue;
+      return;
     }
 
     let matched = false;
@@ -341,79 +385,84 @@ export function buildDeliveryTrackerData(input: {
         }
       }
     }
-  }
-
-  const rows: DeliveryTrackerRow[] = [];
-  const contractAgg = new Map<string, DeliveryTrackerContractSummary>();
-
-  systemSchedules.forEach((schedule) => {
-    for (const year of schedule.years) {
-      const gap = year.obligated - year.delivered;
-      rows.push({
-        systemName: schedule.systemName,
-        unitId: schedule.unitId,
-        contractId: schedule.contractId,
-        yearLabel: year.yearLabel,
-        yearStart: year.yearStart,
-        yearEnd: year.yearEnd,
-        obligated: year.obligated,
-        delivered: year.delivered,
-        gap,
-      });
-
-      const c = contractAgg.get(schedule.contractId) ?? {
-        contractId: schedule.contractId,
-        systems: 0,
-        totalObligated: 0,
-        totalDelivered: 0,
-        totalGap: 0,
-        deliveryPercent: null,
-      };
-      c.totalObligated += year.obligated;
-      c.totalDelivered += year.delivered;
-      c.totalGap += gap;
-      contractAgg.set(schedule.contractId, c);
-    }
-    const c = contractAgg.get(schedule.contractId);
-    if (c) c.systems++;
-  });
-
-  const contracts = Array.from(contractAgg.values())
-    .map((c) => ({
-      ...c,
-      deliveryPercent: toPercentValue(c.totalDelivered, c.totalObligated),
-    }))
-    .sort((a, b) =>
-      a.contractId.localeCompare(b.contractId, undefined, { numeric: true })
-    );
-
-  const scheduleIdSample = Array.from(systemSchedules.keys()).slice(0, 5);
-  const transferIdSample = Array.from(
-    new Set(
-      transferRows
-        .slice(0, 100)
-        .map((r) => clean(r["Unit ID"])?.toLowerCase())
-        .filter(Boolean)
-    )
-  ).slice(0, 5);
-
-  return {
-    rows,
-    contracts,
-    totalTransfers,
-    unmatchedTransfers,
-    scheduleIdSample,
-    transferIdSample,
-    scheduleCount: systemSchedules.size,
-    transfersMissingObligation: toSortedBucket(
-      transfersMissingObligationCounts
-    ),
-    transfersUnmatchedByYear: toSortedBucket(transfersUnmatchedByYearCounts),
-    transfersPreDeliverySchedule: toSortedBucket(
-      transfersPreDeliveryScheduleCounts
-    ),
-    schedulesWithYearsOutsideBounds: schedulesWithYearsOutsideBoundsList,
   };
+
+  const finish = (): DeliveryTrackerData => {
+    const rows: DeliveryTrackerRow[] = [];
+    const contractAgg = new Map<string, DeliveryTrackerContractSummary>();
+    let detailRowCount = 0;
+
+    systemSchedules.forEach((schedule) => {
+      for (const year of schedule.years) {
+        const gap = year.obligated - year.delivered;
+        const detailRow: DeliveryTrackerRow = {
+          systemName: schedule.systemName,
+          unitId: schedule.unitId,
+          contractId: schedule.contractId,
+          yearLabel: year.yearLabel,
+          yearStart: year.yearStart,
+          yearEnd: year.yearEnd,
+          obligated: year.obligated,
+          delivered: year.delivered,
+          gap,
+        };
+        detailRowCount += 1;
+        if (detailRowLimit === null || rows.length < detailRowLimit) {
+          rows.push(detailRow);
+        }
+
+        const c = contractAgg.get(schedule.contractId) ?? {
+          contractId: schedule.contractId,
+          systems: 0,
+          totalObligated: 0,
+          totalDelivered: 0,
+          totalGap: 0,
+          deliveryPercent: null,
+        };
+        c.totalObligated += year.obligated;
+        c.totalDelivered += year.delivered;
+        c.totalGap += gap;
+        contractAgg.set(schedule.contractId, c);
+      }
+      const c = contractAgg.get(schedule.contractId);
+      if (c) c.systems++;
+    });
+
+    const contracts = Array.from(contractAgg.values())
+      .map((c) => ({
+        ...c,
+        deliveryPercent: toPercentValue(c.totalDelivered, c.totalObligated),
+      }))
+      .sort((a, b) =>
+        a.contractId.localeCompare(b.contractId, undefined, { numeric: true })
+      );
+
+    const scheduleIdSample = Array.from(systemSchedules.keys()).slice(0, 5);
+
+    return {
+      rows,
+      detailRowCount,
+      detailRowsTruncated:
+        detailRowLimit !== null && detailRowCount > detailRowLimit,
+      detailRowLimit,
+      contracts,
+      totalTransfers,
+      unmatchedTransfers,
+      scheduleIdSample,
+      transferIdSample: Array.from(transferIdSampleSet),
+      scheduleCount: systemSchedules.size,
+      transfersMissingObligation: toSortedBucket(
+        transfersMissingObligationCounts
+      ),
+      transfersUnmatchedByYear: toSortedBucket(transfersUnmatchedByYearCounts),
+      transfersPreDeliverySchedule: toSortedBucket(
+        transfersPreDeliveryScheduleCounts
+      ),
+      schedulesWithYearsOutsideBounds: schedulesWithYearsOutsideBoundsList,
+    };
+  };
+
+  return { processTransferRow, finish };
 }
 
 function toSortedBucket(counts: Map<string, number>): TransferBucketEntry[] {
@@ -429,9 +478,13 @@ function toSortedBucket(counts: Map<string, number>): TransferBucketEntry[] {
 
 const DELIVERY_TRACKER_DEPS = ["deliveryScheduleBase", "transferHistory"] as const;
 
-const ARTIFACT_TYPE = "deliveryTracker";
+const ARTIFACT_TYPE = "deliveryTracker_compact_v2";
 
-export const DELIVERY_TRACKER_RUNNER_VERSION = "data-flow-pr5_13_deliverytracker@1";
+export const DELIVERY_TRACKER_RUNNER_VERSION =
+  "data-flow-pr5_13_deliverytracker@2-compact-paged";
+
+const DELIVERY_TRACKER_DETAIL_PREVIEW_LIMIT = 200;
+const DELIVERY_TRACKER_TRANSFER_PAGE_SIZE = 25_000;
 
 async function computeDeliveryTrackerInputHash(
   scopeId: string
@@ -466,10 +519,14 @@ export async function getOrBuildDeliveryTrackerData(
   scopeId: string
 ): Promise<DeliveryTrackerData & { fromCache: boolean }> {
   const { hash, versionMap } = await computeDeliveryTrackerInputHash(scopeId);
+  const deliveryScheduleBatchId = versionMap.get("deliveryScheduleBase") ?? null;
+  const transferHistoryBatchId = versionMap.get("transferHistory") ?? null;
 
-  // No active batches for either dataset → nothing to compute. Return
-  // an empty payload (mirrors the client's hydration-guard behavior).
-  if (versionMap.size === 0) {
+  // No active Schedule B row table means every transfer would be
+  // classified as missing obligation. Return before touching
+  // transferHistory so the tab cannot OOM just because transfer
+  // history exists without Schedule B coverage.
+  if (!deliveryScheduleBatchId) {
     return { ...EMPTY_DELIVERY_TRACKER_DATA, fromCache: false };
   }
 
@@ -478,21 +535,38 @@ export async function getOrBuildDeliveryTrackerData(
     artifactType: ARTIFACT_TYPE,
     inputVersionHash: hash,
     serde: superjsonSerde<DeliveryTrackerData>(),
-    rowCount: (data) => data.rows.length,
+    rowCount: (data) => data.detailRowCount,
     recompute: async () => {
-      const [scheduleRows, transferRows] = await Promise.all([
-        loadDatasetRows(
-          scopeId,
-          versionMap.get("deliveryScheduleBase") ?? null,
-          srDsDeliverySchedule
-        ),
-        loadDatasetRows(
-          scopeId,
-          versionMap.get("transferHistory") ?? null,
-          srDsTransferHistory
-        ),
-      ]);
-      return buildDeliveryTrackerData({ scheduleRows, transferRows });
+      const scheduleRows = await loadDatasetRows(
+        scopeId,
+        deliveryScheduleBatchId,
+        srDsDeliverySchedule
+      );
+      const accumulator = createDeliveryTrackerAccumulator(scheduleRows, {
+        detailRowLimit: DELIVERY_TRACKER_DETAIL_PREVIEW_LIMIT,
+      });
+
+      if (transferHistoryBatchId) {
+        let cursor: string | null = null;
+        for (;;) {
+          const page = await loadDatasetRowsPage(
+            scopeId,
+            transferHistoryBatchId,
+            srDsTransferHistory,
+            {
+              cursor,
+              limit: DELIVERY_TRACKER_TRANSFER_PAGE_SIZE,
+            }
+          );
+          for (const row of page.rows) {
+            accumulator.processTransferRow(row);
+          }
+          if (!page.nextCursor) break;
+          cursor = page.nextCursor;
+        }
+      }
+
+      return accumulator.finish();
     },
   });
 
