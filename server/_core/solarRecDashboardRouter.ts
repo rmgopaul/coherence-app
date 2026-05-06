@@ -3323,6 +3323,79 @@ export const solarRecDashboardRouter = t.router({
     }),
 
   /**
+   * Phase 2 PR-B (OOM-rebuild keystone) — start a per-scope build
+   * of the dashboard fact tables. Returns a `buildId` immediately;
+   * the runner is scheduled fire-and-forget via `setImmediate` so
+   * the mutation returns fast.
+   *
+   * **PR-B status**: the runner is wired but the steps array is
+   * empty. A successful build today claims, runs zero steps, and
+   * completes immediately — the contract is exercised end-to-end
+   * but no derived rows are produced. PR-C+ will plug in
+   * fact-builders one at a time. The `inputVersionsJson` field
+   * captures source-batch IDs at build time; PR-B sends an empty
+   * object, PR-C+ will populate it with the active dataset
+   * batches.
+   *
+   * Cross-process safety + DB-backed registry — same pattern as
+   * `startDashboardCsvExport` (Phase 6 PR-B).
+   */
+  startDashboardBuild: dashboardProcedure(
+    "solar-rec-dashboard",
+    "read"
+  ).mutation(async ({ ctx }) => {
+    const { startDashboardBuild } = await import(
+      "../services/solar/dashboardBuildJobs"
+    );
+    const { DASHBOARD_BUILD_RUNNER_VERSION } = await import(
+      "../services/solar/dashboardBuildJobRunner"
+    );
+    const { buildId } = await startDashboardBuild(
+      ctx.scopeId,
+      ctx.userId ?? null
+    );
+    return {
+      buildId,
+      _runnerVersion: DASHBOARD_BUILD_RUNNER_VERSION,
+    };
+  }),
+
+  /**
+   * Phase 2 PR-B — build status poll. Slim response (< 1 KB).
+   * Cross-scope `buildId` reads as `notFound` (no leak).
+   *
+   * Terminal states the client polls for:
+   *   - `succeeded` — derived rows are ready; subsequent reads
+   *     hit them via the paginated detail-page procs PR-C+ will
+   *     add.
+   *   - `failed` with `errorMessage` — surface to the user; the
+   *     existing aggregator procs continue to work as a fallback.
+   *   - `notFound` — pruned (TTL elapsed) or never existed for
+   *     this scope.
+   */
+  getDashboardBuildStatus: dashboardProcedure(
+    "solar-rec-dashboard",
+    "read"
+  )
+    .input(z.object({ buildId: z.string().min(1).max(64) }))
+    .query(async ({ ctx, input }) => {
+      const { getDashboardBuildStatus } = await import(
+        "../services/solar/dashboardBuildJobs"
+      );
+      const { DASHBOARD_BUILD_RUNNER_VERSION } = await import(
+        "../services/solar/dashboardBuildJobRunner"
+      );
+      const snapshot = await getDashboardBuildStatus(
+        ctx.scopeId,
+        input.buildId
+      );
+      return {
+        ...snapshot,
+        _runnerVersion: DASHBOARD_BUILD_RUNNER_VERSION,
+      };
+    }),
+
+  /**
    * Snapshot-log read/recovery surface — READ-ONLY.
    *
    * Background. The Snapshot Log feature historically persisted to
