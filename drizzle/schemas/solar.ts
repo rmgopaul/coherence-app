@@ -2488,6 +2488,17 @@ export const solarRecDashboardSystemFacts = mysqlTable(
     // Part-2 verification (nullable: not every system has a
     // matched ABP project).
     part2VerificationDate: date("part2VerificationDate"),
+    // Part-2 eligibility — derived during build by checking the
+    // system's IDs (systemId / stateApplicationRefId /
+    // trackingSystemRefId) against the eligible-Part-2 ID sets
+    // returned by the offline-monitoring aggregator. Phase 2
+    // PR-F-4-f-1 adds this column so the OverviewTab's
+    // `part2EligibleSystemsForSizeReporting` filter can be
+    // satisfied by `getDashboardSystemsPage` at the proc layer
+    // instead of a parent-level walk over `systems`. Stored as a
+    // boolean (not nullable: every system has a deterministic
+    // eligibility based on the abpReport batch the build saw).
+    isPart2Eligible: boolean("isPart2Eligible").notNull(),
 
     // Build versioning + observability. PR-F-2's runner step will
     // set `buildId` to the current `solarRecDashboardBuilds.id` so
@@ -2520,6 +2531,14 @@ export const solarRecDashboardSystemFacts = mysqlTable(
     scopeReportingIdx: index(
       "solar_rec_dashboard_system_facts_scope_reporting_idx"
     ).on(table.scopeId, table.isReporting),
+    // Part-2 eligibility filter — primary axis for the OverviewTab's
+    // `part2EligibleSystemsForSizeReporting` slice. Most reads are
+    // `isPart2Eligible=true` (the "Part-2-verified" subset), so
+    // selectivity is high and the index meaningfully narrows the
+    // scan vs the PK alone.
+    scopePart2EligibleIdx: index(
+      "solar_rec_dashboard_system_facts_scope_part2_eligible_idx"
+    ).on(table.scopeId, table.isPart2Eligible),
   })
 );
 

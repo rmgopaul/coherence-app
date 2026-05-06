@@ -1,0 +1,2 @@
+ALTER TABLE `solarRecDashboardSystemFacts` ADD `isPart2Eligible` boolean NOT NULL;--> statement-breakpoint
+CREATE INDEX `solar_rec_dashboard_system_facts_scope_part2_eligible_idx` ON `solarRecDashboardSystemFacts` (`scopeId`,`isPart2Eligible`);

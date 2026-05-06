@@ -79,6 +79,12 @@ describe("getDashboardSystemsPage (source rail)", () => {
       /sizeBucket:\s*z[\s\S]*?\.nullable\(\)[\s\S]*?\.optional\(\)/
     );
     expect(proc!).toMatch(/isReporting:\s*z\.boolean\(\)\.nullable\(\)\.optional\(\)/);
+    // Phase 2 PR-F-4-f-1 filter axis. `useInfiniteQuery` callers
+    // pass `isPart2Eligible: true` to retire the OverviewTab's
+    // parent-level `part2EligibleSystemsForSizeReporting` walk.
+    expect(proc!).toMatch(
+      /isPart2Eligible:\s*z\.boolean\(\)\.nullable\(\)\.optional\(\)/
+    );
   });
 
   it("delegates to getSystemFactsPage from the DB helper module", () => {
@@ -88,10 +94,13 @@ describe("getDashboardSystemsPage (source rail)", () => {
     );
   });
 
-  it("forwards all three filter axes to the DB helper", () => {
+  it("forwards all four filter axes to the DB helper", () => {
     expect(proc!).toMatch(/status:\s*input\.ownershipStatus\s*\?\?\s*null/);
     expect(proc!).toMatch(/sizeBucket:\s*input\.sizeBucket\s*\?\?\s*null/);
     expect(proc!).toMatch(/isReporting:\s*input\.isReporting\s*\?\?\s*null/);
+    expect(proc!).toMatch(
+      /isPart2Eligible:\s*input\.isPart2Eligible\s*\?\?\s*null/
+    );
   });
 
   it("derives nextCursor from the last row's systemKey when the page is full", () => {
@@ -104,8 +113,8 @@ describe("getDashboardSystemsPage (source rail)", () => {
     expect(proc!).toMatch(/hasMore/);
   });
 
-  it("ships a `_runnerVersion` marker", () => {
-    expect(proc!).toMatch(/_runnerVersion:\s*"phase-2-pr-f-3/);
+  it("ships a `_runnerVersion` marker bumped to @2 (PR-F-4-f-1 added isPart2Eligible filter axis)", () => {
+    expect(proc!).toMatch(/_runnerVersion:\s*"phase-2-pr-f-3@2"/);
   });
 
   it("ships a `_checkpoint` for deploy verification", () => {

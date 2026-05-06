@@ -28,6 +28,7 @@ const mocks = vi.hoisted(() => ({
   upsertSystemFacts: vi.fn(),
   deleteOrphanedSystemFacts: vi.fn(),
   getOrBuildSystemSnapshot: vi.fn(),
+  getOrBuildOfflineMonitoringAggregates: vi.fn(),
 }));
 
 vi.mock("../../db/dashboardSystemFacts", () => ({
@@ -50,11 +51,23 @@ vi.mock("./buildSystemSnapshot", async () => {
   };
 });
 
+vi.mock("./buildOfflineMonitoringAggregates", async () => {
+  const actual = await vi.importActual<
+    typeof import("./buildOfflineMonitoringAggregates")
+  >("./buildOfflineMonitoringAggregates");
+  return {
+    ...actual,
+    getOrBuildOfflineMonitoringAggregates:
+      mocks.getOrBuildOfflineMonitoringAggregates,
+  };
+});
+
 import {
   __resetSystemBuildStepRegistrationForTests,
   buildSystemFactRows,
   systemBuildStep,
   registerSystemBuildStep,
+  type Part2EligibilityIdSets,
   type SystemRecordSubset,
 } from "./buildDashboardSystemFacts";
 import {
@@ -122,12 +135,25 @@ function makeRow(
   };
 }
 
+/**
+ * Eligibility input for tests that don't exercise the Part-2
+ * filter — every system resolves to `isPart2Eligible=false`. The
+ * dedicated eligibility-test block below builds non-empty sets to
+ * exercise the membership branches.
+ */
+const EMPTY_ELIGIBILITY: Part2EligibilityIdSets = {
+  applicationIds: new Set<string>(),
+  portalSystemIds: new Set<string>(),
+  trackingIds: new Set<string>(),
+};
+
 describe("buildSystemFactRows (pure transformation)", () => {
   it("returns one fact row per SystemRecord", () => {
     const rows = buildSystemFactRows({
       scopeId: "scope-1",
       buildId: "bld-1",
       rows: [makeRow({ key: "sys-a" }), makeRow({ key: "sys-b" })],
+      eligibility: EMPTY_ELIGIBILITY,
     });
     expect(rows).toHaveLength(2);
     expect(rows.map(r => r.systemKey).sort()).toEqual(["sys-a", "sys-b"]);
@@ -138,6 +164,7 @@ describe("buildSystemFactRows (pure transformation)", () => {
       scopeId: "scope-X",
       buildId: "bld-Y",
       rows: [makeRow()],
+      eligibility: EMPTY_ELIGIBILITY,
     });
     expect(rows[0].scopeId).toBe("scope-X");
     expect(rows[0].buildId).toBe("bld-Y");
@@ -148,6 +175,7 @@ describe("buildSystemFactRows (pure transformation)", () => {
       scopeId: "s",
       buildId: "b",
       rows: [makeRow({ key: "custom-key-123" })],
+      eligibility: EMPTY_ELIGIBILITY,
     });
     expect(rows[0].systemKey).toBe("custom-key-123");
   });
@@ -181,6 +209,7 @@ describe("buildSystemFactRows (pure transformation)", () => {
       scopeId: "s",
       buildId: "b",
       rows: [source],
+      eligibility: EMPTY_ELIGIBILITY,
     });
     expect(row.systemId).toBe("sys-X");
     expect(row.stateApplicationRefId).toBe("state-X");
@@ -231,6 +260,7 @@ describe("buildSystemFactRows (pure transformation)", () => {
           latestReportingKwh: 1234.5,
         }),
       ],
+      eligibility: EMPTY_ELIGIBILITY,
     });
     expect(row.installedKwAc).toBe("7.5");
     expect(row.installedKwDc).toBe("8.2");
@@ -262,6 +292,7 @@ describe("buildSystemFactRows (pure transformation)", () => {
           latestReportingKwh: NaN as number,
         }),
       ],
+      eligibility: EMPTY_ELIGIBILITY,
     });
     expect(row.installedKwAc).toBeNull();
     expect(row.installedKwDc).toBeNull();
@@ -293,6 +324,7 @@ describe("buildSystemFactRows (pure transformation)", () => {
           latestReportingKwh: null,
         }),
       ],
+      eligibility: EMPTY_ELIGIBILITY,
     });
     expect(row.installedKwAc).toBeNull();
     expect(row.installedKwDc).toBeNull();
@@ -318,6 +350,7 @@ describe("buildSystemFactRows (pure transformation)", () => {
           part2VerificationDate: null,
         }),
       ],
+      eligibility: EMPTY_ELIGIBILITY,
     });
     expect(row.latestReportingDate).toBeNull();
     expect(row.zillowSoldDate).toBeNull();
@@ -337,6 +370,7 @@ describe("buildSystemFactRows (pure transformation)", () => {
           hasChangedOwnership: false,
         }),
       ],
+      eligibility: EMPTY_ELIGIBILITY,
     });
     expect(row.isReporting).toBe(false);
     expect(row.isTerminated).toBe(false);
@@ -349,8 +383,110 @@ describe("buildSystemFactRows (pure transformation)", () => {
       scopeId: "s",
       buildId: "b",
       rows: [],
+      eligibility: EMPTY_ELIGIBILITY,
     });
     expect(rows).toEqual([]);
+  });
+
+  // ──────────────────────────────────────────────────────────────────
+  // Part-2 eligibility membership branches (PR-F-4-f-1)
+  // ──────────────────────────────────────────────────────────────────
+
+  it("flags isPart2Eligible=true when systemId is in portalSystemIds", () => {
+    const [row] = buildSystemFactRows({
+      scopeId: "s",
+      buildId: "b",
+      rows: [makeRow({ systemId: "match-portal" })],
+      eligibility: {
+        applicationIds: new Set(),
+        portalSystemIds: new Set(["match-portal"]),
+        trackingIds: new Set(),
+      },
+    });
+    expect(row.isPart2Eligible).toBe(true);
+  });
+
+  it("flags isPart2Eligible=true when stateApplicationRefId is in applicationIds", () => {
+    const [row] = buildSystemFactRows({
+      scopeId: "s",
+      buildId: "b",
+      rows: [
+        makeRow({
+          systemId: null,
+          stateApplicationRefId: "match-app",
+          trackingSystemRefId: null,
+        }),
+      ],
+      eligibility: {
+        applicationIds: new Set(["match-app"]),
+        portalSystemIds: new Set(),
+        trackingIds: new Set(),
+      },
+    });
+    expect(row.isPart2Eligible).toBe(true);
+  });
+
+  it("flags isPart2Eligible=true when trackingSystemRefId is in trackingIds", () => {
+    const [row] = buildSystemFactRows({
+      scopeId: "s",
+      buildId: "b",
+      rows: [
+        makeRow({
+          systemId: null,
+          stateApplicationRefId: null,
+          trackingSystemRefId: "match-tracking",
+        }),
+      ],
+      eligibility: {
+        applicationIds: new Set(),
+        portalSystemIds: new Set(),
+        trackingIds: new Set(["match-tracking"]),
+      },
+    });
+    expect(row.isPart2Eligible).toBe(true);
+  });
+
+  it("flags isPart2Eligible=false when none of the 3 IDs match", () => {
+    const [row] = buildSystemFactRows({
+      scopeId: "s",
+      buildId: "b",
+      rows: [
+        makeRow({
+          systemId: "miss-1",
+          stateApplicationRefId: "miss-2",
+          trackingSystemRefId: "miss-3",
+        }),
+      ],
+      eligibility: {
+        applicationIds: new Set(["other-1"]),
+        portalSystemIds: new Set(["other-2"]),
+        trackingIds: new Set(["other-3"]),
+      },
+    });
+    expect(row.isPart2Eligible).toBe(false);
+  });
+
+  it("does NOT match a null ID against an empty-string set entry (defends against null-coercion bug)", () => {
+    // A regression that wrote `eligibility.applicationIds.has(row.stateApplicationRefId ?? "")`
+    // would silently match every row with a null app-ref-id when the
+    // set happened to contain "". Rail catches the slip.
+    const [row] = buildSystemFactRows({
+      scopeId: "s",
+      buildId: "b",
+      rows: [
+        makeRow({
+          systemId: null,
+          stateApplicationRefId: null,
+          trackingSystemRefId: null,
+        }),
+      ],
+      eligibility: {
+        applicationIds: new Set([""]),
+        portalSystemIds: new Set([""]),
+        trackingIds: new Set([""]),
+      },
+    });
+    expect(row.isPart2Eligible).toBe(false);
   });
 });
 
@@ -361,8 +497,12 @@ describe("buildSystemFactRows (pure transformation)", () => {
 function makeAggregateResult() {
   return {
     systems: [
-      makeRow({ key: "sys-1" }),
-      makeRow({ key: "sys-2", sizeBucket: ">10 kW AC" }),
+      makeRow({ key: "sys-1", systemId: "sys-1" }),
+      makeRow({
+        key: "sys-2",
+        systemId: "sys-2",
+        sizeBucket: ">10 kW AC",
+      }),
     ],
     fromCache: false,
     inputVersionHash: "hash-X",
@@ -371,8 +511,46 @@ function makeAggregateResult() {
   };
 }
 
+/**
+ * Default offlineMonitoring aggregate stub for orchestration
+ * tests: empty eligibility (no Part-2 verified projects). Tests
+ * that exercise the eligibility branch override
+ * `eligiblePart2*` arrays via the spread pattern.
+ */
+function makeOfflineMonitoringResult(
+  overrides: Partial<{
+    eligiblePart2ApplicationIds: string[];
+    eligiblePart2PortalSystemIds: string[];
+    eligiblePart2TrackingIds: string[];
+  }> = {}
+) {
+  return {
+    result: {
+      eligiblePart2ApplicationIds: [],
+      eligiblePart2PortalSystemIds: [],
+      eligiblePart2TrackingIds: [],
+      // Other fields the offlineMonitoring aggregator returns; the
+      // builder reads only the 3 ID arrays. Keep these stubs minimal
+      // so a regression that starts touching them surfaces here.
+      abpApplicationIdBySystemKey: {},
+      abpAcSizeKwBySystemKey: {},
+      abpAcSizeKwByApplicationId: {},
+      abpPart2VerificationDateByApplicationId: {},
+      monitoringDetailsBySystemKey: {},
+      part2VerifiedSystemIds: [],
+      part2VerifiedAbpRowsCount: 0,
+      abpEligibleTotalSystemsCount: 0,
+      ...overrides,
+    },
+    fromCache: false,
+  };
+}
+
 describe("systemBuildStep — orchestration", () => {
-  it("aggregator → upsert → orphan-sweep order with correct args", async () => {
+  it("offlineMonitoring → snapshot → upsert → orphan-sweep order with correct args", async () => {
+    mocks.getOrBuildOfflineMonitoringAggregates.mockResolvedValue(
+      makeOfflineMonitoringResult()
+    );
     mocks.getOrBuildSystemSnapshot.mockResolvedValue(makeAggregateResult());
     mocks.deleteOrphanedSystemFacts.mockResolvedValue(11);
 
@@ -382,6 +560,9 @@ describe("systemBuildStep — orchestration", () => {
       signal: new AbortController().signal,
     });
 
+    expect(
+      mocks.getOrBuildOfflineMonitoringAggregates
+    ).toHaveBeenCalledWith("scope-A");
     expect(mocks.getOrBuildSystemSnapshot).toHaveBeenCalledWith("scope-A");
     expect(mocks.upsertSystemFacts).toHaveBeenCalledTimes(1);
     const [upsertedRows] = mocks.upsertSystemFacts.mock.calls[0];
@@ -396,15 +577,48 @@ describe("systemBuildStep — orchestration", () => {
       "scope-A",
       "bld-1"
     );
-    // Order check: upsert BEFORE orphan-sweep.
+    // Order check: offlineMonitoring BEFORE snapshot, snapshot
+    // BEFORE upsert, upsert BEFORE orphan-sweep.
+    const offlineOrder =
+      mocks.getOrBuildOfflineMonitoringAggregates.mock.invocationCallOrder[0];
+    const snapshotOrder =
+      mocks.getOrBuildSystemSnapshot.mock.invocationCallOrder[0];
     const upsertOrder =
       mocks.upsertSystemFacts.mock.invocationCallOrder[0];
     const sweepOrder =
       mocks.deleteOrphanedSystemFacts.mock.invocationCallOrder[0];
+    expect(offlineOrder).toBeLessThan(snapshotOrder);
+    expect(snapshotOrder).toBeLessThan(upsertOrder);
     expect(upsertOrder).toBeLessThan(sweepOrder);
   });
 
+  it("populates isPart2Eligible from the offlineMonitoring 3 ID sets (PR-F-4-f-1)", async () => {
+    mocks.getOrBuildOfflineMonitoringAggregates.mockResolvedValue(
+      makeOfflineMonitoringResult({
+        // sys-1 matches by portalSystemId; sys-2 doesn't match any axis
+        eligiblePart2PortalSystemIds: ["sys-1"],
+      })
+    );
+    mocks.getOrBuildSystemSnapshot.mockResolvedValue(makeAggregateResult());
+
+    await systemBuildStep.run({
+      scopeId: "scope-A",
+      buildId: "bld-1",
+      signal: new AbortController().signal,
+    });
+
+    const [upsertedRows] = mocks.upsertSystemFacts.mock.calls[0];
+    expect(upsertedRows).toHaveLength(2);
+    expect(upsertedRows[0].systemKey).toBe("sys-1");
+    expect(upsertedRows[0].isPart2Eligible).toBe(true);
+    expect(upsertedRows[1].systemKey).toBe("sys-2");
+    expect(upsertedRows[1].isPart2Eligible).toBe(false);
+  });
+
   it("propagates upsert failures (runner converts to errorMessage)", async () => {
+    mocks.getOrBuildOfflineMonitoringAggregates.mockResolvedValue(
+      makeOfflineMonitoringResult()
+    );
     mocks.getOrBuildSystemSnapshot.mockResolvedValue(makeAggregateResult());
     mocks.upsertSystemFacts.mockRejectedValue(new Error("upsert blew up"));
 
@@ -428,11 +642,17 @@ describe("systemBuildStep — orchestration", () => {
         signal: controller.signal,
       })
     ).rejects.toThrow(/aborted/);
+    expect(
+      mocks.getOrBuildOfflineMonitoringAggregates
+    ).not.toHaveBeenCalled();
     expect(mocks.getOrBuildSystemSnapshot).not.toHaveBeenCalled();
     expect(mocks.upsertSystemFacts).not.toHaveBeenCalled();
   });
 
   it("handles an empty systems array (cold scope with no abpReport / solarApplications)", async () => {
+    mocks.getOrBuildOfflineMonitoringAggregates.mockResolvedValue(
+      makeOfflineMonitoringResult()
+    );
     mocks.getOrBuildSystemSnapshot.mockResolvedValue({
       ...makeAggregateResult(),
       systems: [],
