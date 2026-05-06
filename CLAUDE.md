@@ -670,7 +670,7 @@ in prod). Bounded responses look like this:
 | `debugDatasetPersistenceRaw` | Raw rows from every layer + verdict | ~2 KB |
 | `getDashboard<TabName>Aggregates` (DeliveryTracker / TrendDeliveryPace / TrendsProduction / ContractVintage / AppPipelineMonthly / AppPipelineCashFlow / PerformanceRatio / Forecast / Financials) | Per-tab aggregate result | ~10–500 KB |
 
-**Transitional reality: 5 procedures still ship oversized
+**Transitional reality: 4 procedures still ship oversized
 responses.** They live in `DASHBOARD_OVERSIZE_ALLOWLIST`
 (`server/_core/dashboardResponseGuard.ts`) and are accepted as
 known regressions in warn mode. None of them fire on Overview
@@ -688,7 +688,6 @@ sketch may stay aspirational indefinitely.
 | `solarRecDashboard.getDashboardOverviewSummary` | Heavy summary embedding `ownershipRows: OwnershipOverviewExportRow[]` (~5–15 MB) | Slim `getDashboardSummary` (already shipped, default mount) + a paginated `getDashboardOwnershipRowsPage` for the detail table. CSV export already moved off this proc — see the retired procs below. |
 | `solarRecDashboard.getDashboardChangeOwnership` | Per-project `rows: ChangeOwnershipExportRow[]` (~19 MB) | Slim Change-Ownership rollup (already in `getDashboardSummary`) + paginated `getDashboardChangeOwnershipRowsPage`. |
 | `solarRecDashboard.getDashboardOfflineMonitoring` | Per-system maps keyed by ~21k systems (`monitoringDetailsBySystemKey` etc.) | Paginated `getDashboardMonitoringDetailsPage` + per-system endpoint for drill-in. |
-| `solarRecDashboard.getDatasetCsv` | Full CSV string built in memory (≤25 MB hard cap) | Streaming HTTP export OR background artifact job — same shape as `startDashboardCsvExport` but for raw `srDs*` datasets. |
 
 **Retired CSV-export procs** (PR #346, #347, follow-up):
 `exportOwnershipTileCsv` and `exportChangeOwnershipTileCsv` were
@@ -696,9 +695,15 @@ removed from the router and the allowlist. They were synchronous
 queries returning MB-scale CSV through tRPC. Replaced by the
 background-job pair below.
 
+`getDatasetCsv` was also retired from the router and the allowlist.
+Raw dataset CSV exports now use the same background-job pair with
+`startDashboardCsvExport({ exportType: "datasetCsv", datasetKey })`.
+The worker pages through the active `srDs*` batch, writes the CSV to
+storage, and returns only a slim status snapshot through tRPC.
+
 | Replacement proc | Wire shape | Notes |
 |---|---|---|
-| `solarRecDashboard.startDashboardCsvExport` | Mutation, returns `{ jobId, _runnerVersion }` (~200 B). | Enqueues a CSV export job for either the ownership tile or the change-ownership tile. The MB-scale CSV no longer crosses tRPC. |
+| `solarRecDashboard.startDashboardCsvExport` | Mutation, returns `{ jobId, _runnerVersion }` (~200 B). | Enqueues a CSV export job for the ownership tile, change-ownership tile, or raw dataset CSV. The MB-scale CSV no longer crosses tRPC. |
 | `solarRecDashboard.getDashboardCsvExportJobStatus` | Query, returns a slim status snapshot (`status` ∈ `queued`/`running`/`succeeded`/`failed`/`notFound`, plus `fileName?`/`url?`/`rowCount?`/`error?`/timestamps). ~1 KB. | Client polls until terminal status, then `triggerUrlDownload`s the artifact URL. Cross-scope job IDs read as `notFound`. |
 
 **Phase 6 PR-B (DB-backed registry — DONE).** The
@@ -729,17 +734,17 @@ PR-A migration 0058). Implications:
 **Remaining background-job transitional debt:**
 
 - **Worker still builds the entire CSV string in memory** before
-  `storagePut`. The improvement vs. the prior synchronous procs is
-  scoped: the MB-scale CSV is OFF the tRPC response path, restoring
-  the response budget. True row-streaming directly to storage is
-  the next hardening step.
+  `storagePut` (including raw dataset CSV exports). The improvement
+  vs. the prior synchronous procs is scoped: the MB-scale CSV is OFF
+  the tRPC response path, restoring the response budget. True
+  row-streaming directly to storage is the next hardening step.
 - **`storageDelete` proxy-mode is a logged no-op.** The Forge proxy
   does not currently expose a DELETE endpoint in this repo
   (`v1/storage/upload` and `v1/storage/downloadUrl` are wired;
   `v1/storage/delete` is not). Local-mode deletes work. Until proxy-
   mode delete lands, pruned-job artifacts persist in proxy mode
   until the storage lifecycle policy reclaims them.
-- **Heavy aggregator dependency.** The worker invokes
+- **Heavy aggregator dependency.** Ownership/change-ownership exports invoke
   `getOrBuildOverviewSummary` / `getOrBuildChangeOwnership` to get
   the source rows. On a cold cache that re-scans the raw `srDs*`
   tables. Phase 2 of the dashboard rebuild (derived fact tables)
@@ -930,10 +935,11 @@ expected post-upload state even with no chunked blob present.
   `consistent` but the legacy hydration path looks wrong.
 - **`_runnerVersion`** appears on every saveDataset /
   getDataset / getDatasetCloudStatuses /
-  getDatasetSummariesAll / getDatasetRowsPage / getDatasetCsv /
+  getDatasetSummariesAll / getDatasetRowsPage /
   debugDatasetPersistenceRaw / getDashboard<TabName>Aggregates
-  response. Verify it matches what you just deployed before
-  assuming the new code is running.
+  response, plus the dashboard CSV export start/status pair. Verify
+  it matches what you just deployed before assuming the new code is
+  running.
 
 ### Hard rules
 
@@ -949,7 +955,8 @@ expected post-upload state even with no chunked blob present.
 2. **No client tab is allowed to read `datasets[key].rows` or
    `datasets[key].rows.length` for ANY of the 18 dataset keys.** Use
    `getDatasetSummariesAll` for counts, `getDatasetRowsPage` /
-   `getDatasetCsv` for detail rows, or
+   `startDashboardCsvExport({ exportType: "datasetCsv" })` for full
+   CSV downloads, or
    `getDashboard<TabName>Aggregates` for tab-level rollups. Reading
    `datasets[key].uploadedAt` for staleness checks is still allowed
    for tabs that haven't migrated their per-dataset metadata
@@ -961,10 +968,10 @@ expected post-upload state even with no chunked blob present.
    is for normal-but-noteworthy events; persistence failures are
    `console.error` and surface to the client response.
 5. **Default Overview mount must not enable any allowlisted heavy
-   procedure.** The 5 currently allowlisted procs are
+   procedure.** The 4 currently allowlisted procs are
    `getSystemSnapshot`, `getDashboardOverviewSummary`,
-   `getDashboardChangeOwnership`, `getDashboardOfflineMonitoring`,
-   and `getDatasetCsv`. They are gated behind tab-active flags +
+   `getDashboardChangeOwnership`, and
+   `getDashboardOfflineMonitoring`. They are gated behind tab-active flags +
    `hasUserInteractedWithDashboard`. `getDashboardFinancials` is
    not on the allowlist (its response is bounded), but it's heavy
    enough that it follows the same gating: enabled only on

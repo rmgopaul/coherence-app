@@ -97,9 +97,10 @@ Two-step migration:
    only has one consumer (the CSV merge handler).
 
 2. **Step 2** — Migrate the CSV merge handler to fetch the existing
-   rows from server on demand (e.g. via `getDatasetCsv` or
-   `getDatasetRowsPage`). Then drop `onApply` from both auto-apply
-   and `handleApply`. Drop the parent's `setDatasets` calls for
+   rows from server on demand (e.g. via `getDatasetRowsPage`). For
+   full user downloads, use `startDashboardCsvExport({ exportType:
+   "datasetCsv" })`. Then drop `onApply` from both auto-apply and
+   `handleApply`. Drop the parent's `setDatasets` calls for
    `deliveryScheduleBase`.
 
 Don't try to do both steps in one PR. Step 2 has subtle

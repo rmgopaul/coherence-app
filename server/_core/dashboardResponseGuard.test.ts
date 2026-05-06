@@ -187,7 +187,6 @@ describe("DASHBOARD_OVERSIZE_ALLOWLIST", () => {
         "solarRecDashboard.getDashboardChangeOwnership",
         "solarRecDashboard.getDashboardOfflineMonitoring",
         "solarRecDashboard.getDashboardOverviewSummary",
-        "solarRecDashboard.getDatasetCsv",
         "solarRecDashboard.getSystemSnapshot",
       ].sort()
     );
@@ -209,6 +208,9 @@ describe("DASHBOARD_OVERSIZE_ALLOWLIST", () => {
     )).toBe(false);
     expect(DASHBOARD_OVERSIZE_ALLOWLIST.has(
       "solarRecDashboard.exportChangeOwnershipTileCsv"
+    )).toBe(false);
+    expect(DASHBOARD_OVERSIZE_ALLOWLIST.has(
+      "solarRecDashboard.getDatasetCsv"
     )).toBe(false);
   });
 });
@@ -606,7 +608,7 @@ describe("solarRecDashboardRouter wiring", () => {
     const filePath = resolve(__dirname, "solarRecDashboardRouter.ts");
     const source = readFileSync(filePath, "utf8");
     const procBlock =
-      /getDatasetSummariesAll\s*:\s*dashboardProcedure[\s\S]*?\n  \/\*\*\n   \* CSV export/.exec(
+      /getDatasetSummariesAll\s*:\s*dashboardProcedure[\s\S]*?\n  \/\*\*\n   \* Cursor-paginated row reader/.exec(
         source
       )?.[0];
     expect(procBlock).toBeDefined();
@@ -633,6 +635,8 @@ describe("solarRecDashboardRouter wiring", () => {
     expect(source).toMatch(
       /getDashboardCsvExportJobStatus\s*:\s*dashboardProcedure\s*\(/
     );
+    expect(source).toMatch(/exportType:\s*z\.literal\("datasetCsv"\)/);
+    expect(source).toMatch(/datasetKey:\s*z\.enum\(/);
   });
 
   it("registers getSnapshotLogs as a dashboardProcedure (read-only recovery surface)", () => {
@@ -652,7 +656,7 @@ describe("solarRecDashboardRouter wiring", () => {
     expect(procBlock![1]).toBe("query");
   });
 
-  it("does NOT re-register the retired synchronous CSV export procs", () => {
+  it("does NOT re-register retired synchronous CSV export procs", () => {
     const filePath = resolve(__dirname, "solarRecDashboardRouter.ts");
     const source = readFileSync(filePath, "utf8");
     // The old query-shape procs returned MB-scale CSV strings
@@ -665,6 +669,7 @@ describe("solarRecDashboardRouter wiring", () => {
     expect(source).not.toMatch(
       /exportChangeOwnershipTileCsv\s*:\s*dashboardProcedure\s*\(/
     );
+    expect(source).not.toMatch(/getDatasetCsv\s*:\s*dashboardProcedure\s*\(/);
   });
 
   it("listSolarRecDashboardStorageByPrefix uses ESCAPE '!' (sql_mode-independent)", () => {
@@ -745,6 +750,9 @@ describe("CLAUDE.md drift", () => {
     );
     expect(claudeMd).not.toMatch(
       /\|\s*`solarRecDashboard\.exportChangeOwnershipTileCsv`\s*\|/
+    );
+    expect(claudeMd).not.toMatch(
+      /\|\s*`solarRecDashboard\.getDatasetCsv`\s*\|/
     );
   });
 
