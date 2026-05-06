@@ -3195,7 +3195,7 @@ export default function SolarRecDashboard() {
   // fact-table reads, but the proc still carries high-cardinality
   // Part-II ID arrays and remains allowlisted. Only fetched when:
   //   1. The active tab consumes those Part-II arrays (Offline
-  //      Monitoring, Size, performance-ratio cluster), AND
+  //      Monitoring, Size, or REC performance evaluation), AND
   //   2. The user has interacted with the dashboard (deep links to
   //      heavy tabs do NOT auto-fire the residual all-array response —
   //      the user must navigate at least once, which counts as
@@ -3203,7 +3203,6 @@ export default function SolarRecDashboard() {
   const isOfflineMonitoringHeavyNeeded =
     isOfflineMonitoringTabActive ||
     activeTab === "size" ||
-    activeTab === "performance-ratio" ||
     isPerformanceEvalTabActive;
   const offlineMonitoringQuery =
     solarRecTrpc.solarRecDashboard.getDashboardOfflineMonitoring.useQuery(
@@ -6246,8 +6245,8 @@ const aiDataContext = useMemo(() => {
                       `generationBaselineByTrackingId`). The tab
                       consumes the performance-ratio result from the
                       server `getDashboardPerformanceRatio` aggregator.
-                      The remaining props feed the dataset-existence
-                      empty-state check + the size-reporting sub-memo. */}
+                      The remaining props feed only the dataset-
+                      existence empty-state check. */}
                   <PerformanceRatioTabLazy
                     hasConvertedReads={
                       (datasetSummariesByKey.convertedReads?.rowCount ?? 0) > 0
@@ -6257,8 +6256,6 @@ const aiDataContext = useMemo(() => {
                     }
                     convertedReadsLabel={DATASET_DEFINITIONS.convertedReads.label}
                     annualProductionEstimatesLabel={DATASET_DEFINITIONS.annualProductionEstimates.label}
-                    part2EligibleSystemsForSizeReporting={part2EligibleSystemsForSizeReporting}
-                    abpAcSizeKwBySystemKey={abpAcSizeKwBySystemKey}
                   />
                 </Suspense>
               </TabErrorBoundary>
