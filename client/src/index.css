@@ -6,6 +6,9 @@
 @theme inline {
   --font-sans: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
   --font-display: "Permanent Marker", cursive;
+  --font-archivo: "Archivo Black", ui-sans-serif, system-ui, sans-serif;
+  --font-instrument: "Instrument Serif", ui-serif, Georgia, serif;
+  --font-jetbrains: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   --radius-sm: calc(var(--radius) - 2px);
   --radius-md: var(--radius);
   --radius-lg: calc(var(--radius) + 2px);
