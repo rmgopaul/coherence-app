@@ -3,9 +3,14 @@ import { resolve } from "node:path";
 import { initTRPC } from "@trpc/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  DASHBOARD_REQUEST_HEAP_AFTER_WARN_BYTES_DEFAULT,
+  DASHBOARD_REQUEST_HEAP_DELTA_WARN_BYTES_DEFAULT,
   DASHBOARD_OVERSIZE_ALLOWLIST,
   DASHBOARD_RESPONSE_LIMIT_BYTES_DEFAULT,
   checkDashboardResponseSize,
+  getDashboardRequestHeapAfterWarnBytes,
+  getDashboardRequestHeapDeltaWarnBytes,
+  getDashboardRequestHeapLogAll,
   getDashboardResponseEnforcement,
   getDashboardResponseLimitBytes,
 } from "./dashboardResponseGuard";
@@ -13,6 +18,9 @@ import {
 const ENV_KEYS = [
   "DASHBOARD_RESPONSE_LIMIT_BYTES",
   "DASHBOARD_RESPONSE_ENFORCEMENT",
+  "DASHBOARD_REQUEST_HEAP_DELTA_WARN_BYTES",
+  "DASHBOARD_REQUEST_HEAP_AFTER_WARN_BYTES",
+  "DASHBOARD_REQUEST_HEAP_LOG_ALL",
   "NODE_ENV",
 ] as const;
 
@@ -111,6 +119,60 @@ describe("getDashboardResponseEnforcement", () => {
     expect(getDashboardResponseEnforcement()).toBe("warn");
     process.env.NODE_ENV = "development";
     expect(getDashboardResponseEnforcement()).toBe("throw");
+  });
+});
+
+describe("dashboard request heap env helpers", () => {
+  let snapshot: ReturnType<typeof snapshotEnv>;
+  beforeEach(() => {
+    snapshot = snapshotEnv();
+  });
+  afterEach(() => {
+    restoreEnv(snapshot);
+  });
+
+  it("uses the documented default heap thresholds", () => {
+    delete process.env.DASHBOARD_REQUEST_HEAP_DELTA_WARN_BYTES;
+    delete process.env.DASHBOARD_REQUEST_HEAP_AFTER_WARN_BYTES;
+    expect(getDashboardRequestHeapDeltaWarnBytes()).toBe(
+      DASHBOARD_REQUEST_HEAP_DELTA_WARN_BYTES_DEFAULT
+    );
+    expect(getDashboardRequestHeapAfterWarnBytes()).toBe(
+      DASHBOARD_REQUEST_HEAP_AFTER_WARN_BYTES_DEFAULT
+    );
+    expect(DASHBOARD_REQUEST_HEAP_DELTA_WARN_BYTES_DEFAULT).toBe(
+      64 * 1024 * 1024
+    );
+    expect(DASHBOARD_REQUEST_HEAP_AFTER_WARN_BYTES_DEFAULT).toBe(
+      700 * 1024 * 1024
+    );
+  });
+
+  it("respects positive threshold overrides and ignores invalid ones", () => {
+    process.env.DASHBOARD_REQUEST_HEAP_DELTA_WARN_BYTES = "1024.9";
+    process.env.DASHBOARD_REQUEST_HEAP_AFTER_WARN_BYTES = "2048";
+    expect(getDashboardRequestHeapDeltaWarnBytes()).toBe(1024);
+    expect(getDashboardRequestHeapAfterWarnBytes()).toBe(2048);
+
+    process.env.DASHBOARD_REQUEST_HEAP_DELTA_WARN_BYTES = "0";
+    process.env.DASHBOARD_REQUEST_HEAP_AFTER_WARN_BYTES = "nope";
+    expect(getDashboardRequestHeapDeltaWarnBytes()).toBe(
+      DASHBOARD_REQUEST_HEAP_DELTA_WARN_BYTES_DEFAULT
+    );
+    expect(getDashboardRequestHeapAfterWarnBytes()).toBe(
+      DASHBOARD_REQUEST_HEAP_AFTER_WARN_BYTES_DEFAULT
+    );
+  });
+
+  it("supports explicit log-all truthy values only", () => {
+    for (const raw of ["1", "true", "yes", "on", " TRUE "]) {
+      process.env.DASHBOARD_REQUEST_HEAP_LOG_ALL = raw;
+      expect(getDashboardRequestHeapLogAll()).toBe(true);
+    }
+    for (const raw of ["", "0", "false", "off", "no", "anything-else"]) {
+      process.env.DASHBOARD_REQUEST_HEAP_LOG_ALL = raw;
+      expect(getDashboardRequestHeapLogAll()).toBe(false);
+    }
   });
 });
 
@@ -249,7 +311,7 @@ describe("dashboardResponseGuardMiddleware allowlist short-circuit", () => {
   });
   afterEach(() => {
     restoreEnv(envSnapshot);
-    warnSpy.mockRestore();
+    vi.restoreAllMocks();
     vi.resetModules();
     vi.doUnmock("./solarRecBase");
   });
@@ -263,7 +325,11 @@ describe("dashboardResponseGuardMiddleware allowlist short-circuit", () => {
    * `requirePermission` is mocked to a passthrough so we do not need
    * a real DB or solar-rec context just to drive the guard.
    */
-  async function buildHarness(procedureName: string, payload: unknown) {
+  async function buildHarness(
+    procedureName: string,
+    payload: unknown,
+    resolver?: () => unknown
+  ) {
     vi.resetModules();
     vi.doMock("./solarRecBase", async () => {
       const trpc = await import("@trpc/server");
@@ -285,7 +351,7 @@ describe("dashboardResponseGuardMiddleware allowlist short-circuit", () => {
       [procedureName]: dashboardProcedure(
         "solar-rec-dashboard",
         "read"
-      ).query(() => payload),
+      ).query(() => (resolver ? resolver() : payload)),
     });
     const appRouter = localT.router({ solarRecDashboard: subRouter });
     return appRouter.createCaller({});
@@ -305,14 +371,151 @@ describe("dashboardResponseGuardMiddleware allowlist short-circuit", () => {
     };
   }
 
+  function memoryUsageWithHeap(
+    heapUsed: number
+  ): ReturnType<typeof process.memoryUsage> {
+    return {
+      rss: heapUsed,
+      heapTotal: heapUsed,
+      heapUsed,
+      external: 0,
+      arrayBuffers: 0,
+    };
+  }
+
+  function mockHeapSequence(...heapValues: number[]) {
+    let index = 0;
+    return vi.spyOn(process, "memoryUsage").mockImplementation(() => {
+      const value = heapValues[Math.min(index, heapValues.length - 1)] ?? 0;
+      index += 1;
+      return memoryUsageWithHeap(value);
+    });
+  }
+
+  function parseHeapLog(callIndex = 0): Record<string, unknown> {
+    const message = String(warnSpy.mock.calls[callIndex]?.[0] ?? "");
+    expect(message).toContain("[dashboard:request-heap]");
+    return JSON.parse(
+      message.replace("[dashboard:request-heap] ", "")
+    ) as Record<string, unknown>;
+  }
+
   it("warn mode + allowlisted: does NOT serialize the response", async () => {
     process.env.DASHBOARD_RESPONSE_ENFORCEMENT = "warn";
     const caller = await buildHarness("getSystemSnapshot", sentinel());
     // If the guard serialized the sentinel, this would throw.
     await expect(
-      (caller.solarRecDashboard as { getSystemSnapshot: () => Promise<unknown> }).getSystemSnapshot()
+      (caller.solarRecDashboard as {
+        getSystemSnapshot: () => Promise<unknown>;
+      }).getSystemSnapshot()
     ).resolves.toBeTruthy();
     expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it("heap log-all + allowlisted: logs heap without serializing the response", async () => {
+    process.env.DASHBOARD_RESPONSE_ENFORCEMENT = "warn";
+    process.env.DASHBOARD_REQUEST_HEAP_LOG_ALL = "1";
+    mockHeapSequence(1_000, 1_001);
+    const caller = await buildHarness("getSystemSnapshot", sentinel());
+
+    await expect(
+      (caller.solarRecDashboard as {
+        getSystemSnapshot: () => Promise<unknown>;
+      }).getSystemSnapshot()
+    ).resolves.toBeTruthy();
+
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    const payload = parseHeapLog();
+    expect(payload.path).toBe("solarRecDashboard.getSystemSnapshot");
+    expect(payload.allowlisted).toBe(true);
+    expect(payload.outcome).toBe("success");
+    expect(payload.reasons).toEqual(["log-all"]);
+  });
+
+  it("does not log heap metrics below thresholds by default", async () => {
+    process.env.DASHBOARD_RESPONSE_ENFORCEMENT = "warn";
+    process.env.DASHBOARD_REQUEST_HEAP_DELTA_WARN_BYTES = "1000";
+    process.env.DASHBOARD_REQUEST_HEAP_AFTER_WARN_BYTES = "10000";
+    mockHeapSequence(1_000, 1_100);
+    const caller = await buildHarness("someExperimentalProc", { ok: true });
+
+    await (caller.solarRecDashboard as {
+      someExperimentalProc: () => Promise<unknown>;
+    }).someExperimentalProc();
+
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it("logs one structured heap line when the heap delta threshold is exceeded", async () => {
+    process.env.DASHBOARD_RESPONSE_ENFORCEMENT = "warn";
+    process.env.DASHBOARD_REQUEST_HEAP_DELTA_WARN_BYTES = "100";
+    process.env.DASHBOARD_REQUEST_HEAP_AFTER_WARN_BYTES = "10000";
+    mockHeapSequence(1_000, 1_250);
+    const caller = await buildHarness("someExperimentalProc", { ok: true });
+
+    await (caller.solarRecDashboard as {
+      someExperimentalProc: () => Promise<unknown>;
+    }).someExperimentalProc();
+
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    const payload = parseHeapLog();
+    expect(payload).toMatchObject({
+      path: "solarRecDashboard.someExperimentalProc",
+      outcome: "success",
+      enforcement: "warn",
+      allowlisted: false,
+      heapBeforeBytes: 1000,
+      heapAfterBytes: 1250,
+      heapDeltaBytes: 250,
+      heapDeltaWarnBytes: 100,
+      heapAfterWarnBytes: 10000,
+      reasons: ["heap-delta"],
+    });
+    expect(typeof payload.elapsedMs).toBe("number");
+  });
+
+  it("logs below-threshold heap metrics when log-all is enabled", async () => {
+    process.env.DASHBOARD_RESPONSE_ENFORCEMENT = "off";
+    process.env.DASHBOARD_REQUEST_HEAP_DELTA_WARN_BYTES = "1000";
+    process.env.DASHBOARD_REQUEST_HEAP_AFTER_WARN_BYTES = "10000";
+    process.env.DASHBOARD_REQUEST_HEAP_LOG_ALL = "true";
+    mockHeapSequence(1_000, 1_001);
+    const caller = await buildHarness("someExperimentalProc", { ok: true });
+
+    await (caller.solarRecDashboard as {
+      someExperimentalProc: () => Promise<unknown>;
+    }).someExperimentalProc();
+
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    const payload = parseHeapLog();
+    expect(payload.enforcement).toBe("off");
+    expect(payload.reasons).toEqual(["log-all"]);
+  });
+
+  it("logs failed procedures when the heap threshold is exceeded", async () => {
+    process.env.DASHBOARD_RESPONSE_ENFORCEMENT = "warn";
+    process.env.DASHBOARD_REQUEST_HEAP_DELTA_WARN_BYTES = "100";
+    process.env.DASHBOARD_REQUEST_HEAP_AFTER_WARN_BYTES = "10000";
+    mockHeapSequence(1_000, 1_250);
+    const caller = await buildHarness("someExperimentalProc", null, () => {
+      throw new Error("boom");
+    });
+
+    await expect(
+      (caller.solarRecDashboard as {
+        someExperimentalProc: () => Promise<unknown>;
+      }).someExperimentalProc()
+    ).rejects.toThrow("boom");
+
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    const payload = parseHeapLog();
+    expect(payload).toMatchObject({
+      path: "solarRecDashboard.someExperimentalProc",
+      outcome: "failed",
+      error: "boom",
+      heapDeltaBytes: 250,
+      reasons: ["heap-delta"],
+    });
   });
 
   it("warn mode + non-allowlisted: serializes (to log) but does not throw", async () => {
