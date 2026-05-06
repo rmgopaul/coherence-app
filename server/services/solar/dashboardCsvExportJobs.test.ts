@@ -43,6 +43,9 @@ const datasetCsvExportMocks = vi.hoisted(() => ({
 const deliveryTrackerDetailExportMocks = vi.hoisted(() => ({
   cleanup: vi.fn(async () => undefined),
 }));
+const deliveryTrackerUnmatchedExportMocks = vi.hoisted(() => ({
+  cleanup: vi.fn(async () => undefined),
+}));
 
 function fakeReset(): void {
   fakeDb.length = 0;
@@ -313,6 +316,15 @@ vi.mock("./buildDeliveryTrackerData", () => ({
     csvBytes: 123,
     cleanup: deliveryTrackerDetailExportMocks.cleanup,
   })),
+  buildDeliveryTrackerUnmatchedTransfersCsvExport: vi.fn(
+    async (_scopeId: string) => ({
+      filePath: "/tmp/delivery-tracker-unmatched-transfers.csv",
+      fileName: "delivery-tracker-unmatched-transfers-20260506123456.csv",
+      rowCount: 3,
+      csvBytes: 234,
+      cleanup: deliveryTrackerUnmatchedExportMocks.cleanup,
+    })
+  ),
 }));
 
 // Mock the db/_core import the service uses for the
@@ -365,7 +377,10 @@ import {
   type DashboardCsvExportInput,
 } from "./dashboardCsvExportJobs";
 import { buildDatasetCsvExport } from "./dashboardDatasetCsvExport";
-import { buildDeliveryTrackerDetailCsvExport } from "./buildDeliveryTrackerData";
+import {
+  buildDeliveryTrackerDetailCsvExport,
+  buildDeliveryTrackerUnmatchedTransfersCsvExport,
+} from "./buildDeliveryTrackerData";
 
 const SCOPE = "scope-A";
 const OTHER_SCOPE = "scope-B";
@@ -670,6 +685,32 @@ describe("dashboardCsvExportJobs — runner: Delivery Tracker detail CSV (DB-bac
   });
 });
 
+describe("dashboardCsvExportJobs — runner: Delivery Tracker unmatched transfers CSV (DB-backed)", () => {
+  it("claims, runs the unmatched-transfer builder + file-backed storagePut", async () => {
+    const storageMod = await import("../../storage");
+    const jobId = await startAndRun(SCOPE, {
+      exportType: "deliveryTrackerUnmatchedTransfersCsv",
+    });
+    const status = await getCsvExportJobStatus(SCOPE, jobId);
+
+    expect(buildDeliveryTrackerUnmatchedTransfersCsvExport).toHaveBeenCalledWith(
+      SCOPE
+    );
+    expect(status?.status).toBe("succeeded");
+    expect(status?.fileName).toBe(
+      "delivery-tracker-unmatched-transfers-20260506123456.csv"
+    );
+    expect(status?.rowCount).toBe(3);
+    expect(status?.url).toContain(`solar-rec-dashboard/${SCOPE}/exports/`);
+    expect(storageMod.storagePutFile).toHaveBeenCalledWith(
+      expect.stringContaining(`${jobId}-`),
+      "/tmp/delivery-tracker-unmatched-transfers.csv",
+      "text/csv; charset=utf-8"
+    );
+    expect(deliveryTrackerUnmatchedExportMocks.cleanup).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("dashboardCsvExportJobs — scope isolation (DB-backed)", () => {
   it("returns null when reading a job from a different scope", async () => {
     const jobId = await startAndRun(SCOPE, {
@@ -861,9 +902,9 @@ describe("dashboardCsvExportJobs — sweepStaleAndPruned", () => {
 });
 
 describe("dashboardCsvExportJobs — runner version + claim id", () => {
-  it("exports the v8 Delivery Tracker detail CSV runner version", () => {
+  it("exports the v9 Delivery Tracker unmatched-transfer CSV runner version", () => {
     expect(DASHBOARD_CSV_EXPORT_RUNNER_VERSION).toBe(
-      "dashboard-csv-export-jobs-v8-delivery-tracker-detail"
+      "dashboard-csv-export-jobs-v9-delivery-tracker-unmatched"
     );
   });
 
@@ -952,6 +993,15 @@ describe("dashboardCsvExportJobs — input JSON parsing", () => {
       exportType: "deliveryTrackerDetailCsv",
     });
     expect(result).toEqual({ exportType: "deliveryTrackerDetailCsv" });
+  });
+
+  it("accepts deliveryTrackerUnmatchedTransfersCsv shape", () => {
+    const result = __TEST_ONLY__.parseInputJson({
+      exportType: "deliveryTrackerUnmatchedTransfersCsv",
+    });
+    expect(result).toEqual({
+      exportType: "deliveryTrackerUnmatchedTransfersCsv",
+    });
   });
 
   it("rejects unknown shapes", () => {

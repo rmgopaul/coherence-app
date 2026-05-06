@@ -56,10 +56,7 @@ import {
   triggerCsvDownload,
 } from "@/solar-rec-dashboard/lib/csvIo";
 import { formatNumber } from "@/solar-rec-dashboard/lib/helpers";
-import {
-  BUCKET,
-  type DeliveryTrackerData,
-} from "@/solar-rec-dashboard/lib/buildDeliveryTrackerData";
+import type { DeliveryTrackerData } from "@/solar-rec-dashboard/lib/buildDeliveryTrackerData";
 
 export interface DeliveryTrackerTabProps {
   /**
@@ -72,15 +69,30 @@ export interface DeliveryTrackerTabProps {
   deliveryTrackerData: DeliveryTrackerData;
   /** Starts the server-side full detail CSV export job. */
   onExportDetailCsv?: () => void;
+  /** Starts the server-side full unmatched-transfer bucket CSV export job. */
+  onExportUnmatchedTransfersCsv?: () => void;
 }
 
 export default memo(function DeliveryTrackerTab(props: DeliveryTrackerTabProps) {
-  const { scheduleBImportSlot, deliveryTrackerData, onExportDetailCsv } = props;
+  const {
+    scheduleBImportSlot,
+    deliveryTrackerData,
+    onExportDetailCsv,
+    onExportUnmatchedTransfersCsv,
+  } = props;
   const detailRowCount =
     deliveryTrackerData.detailRowCount ?? deliveryTrackerData.rows.length;
   const detailRowsTruncated =
     deliveryTrackerData.detailRowsTruncated ??
     deliveryTrackerData.rows.length < detailRowCount;
+  const missingObligationTrackingIdCount =
+    deliveryTrackerData.missingObligationTrackingIdCount ??
+    deliveryTrackerData.transfersMissingObligation.length;
+  const schedulesWithYearsOutsideBoundsCount =
+    deliveryTrackerData.schedulesWithYearsOutsideBoundsCount ??
+    deliveryTrackerData.schedulesWithYearsOutsideBounds.length;
+  const missingObligationPreviewRows =
+    deliveryTrackerData.transfersMissingObligation.slice(0, 20);
 
   return (
     <div className="space-y-4 mt-4">
@@ -157,14 +169,14 @@ export default memo(function DeliveryTrackerTab(props: DeliveryTrackerTabProps) 
           </Card>
         )}
 
-      {deliveryTrackerData.transfersMissingObligation.length > 0 && (
+      {missingObligationTrackingIdCount > 0 && (
         <Card className="border-amber-200 bg-amber-50/40">
           <CardHeader className="pb-2">
             <div className="flex items-center justify-between gap-2">
               <div>
                 <CardTitle className="text-base text-amber-900">
                   Missing Schedule B Coverage (
-                  {formatNumber(deliveryTrackerData.transfersMissingObligation.length)})
+                  {formatNumber(missingObligationTrackingIdCount)})
                 </CardTitle>
                 <CardDescription className="text-amber-800">
                   These tracking IDs have transfers recorded in GATS Transfer History
@@ -178,14 +190,14 @@ export default memo(function DeliveryTrackerTab(props: DeliveryTrackerTabProps) 
                   <code>year_mismatch</code> (Schedule B exists but the transfer
                   date fell outside every year window — usually a malformed PDF
                   parse or transfers after the contract term).
-                  {deliveryTrackerData.schedulesWithYearsOutsideBounds.length > 0 ? (
+                  {schedulesWithYearsOutsideBoundsCount > 0 ? (
                     <>
                       {" "}
                       <strong>
                         {formatNumber(
-                          deliveryTrackerData.schedulesWithYearsOutsideBounds.length,
+                          schedulesWithYearsOutsideBoundsCount,
                         )}{" "}
-                        scraped Schedule B{deliveryTrackerData.schedulesWithYearsOutsideBounds.length === 1 ? "" : "s"}
+                        scraped Schedule B{schedulesWithYearsOutsideBoundsCount === 1 ? "" : "s"}
                       </strong>{" "}
                       have year boundaries outside the plausible 2019–2042 window
                       and are likely bad parses. Because their earliest year sits
@@ -237,52 +249,15 @@ export default memo(function DeliveryTrackerTab(props: DeliveryTrackerTabProps) 
                   </div>
                 ) : null}
               </div>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  // Combined export of every transfer that did NOT land
-                  // in a Schedule B year slot, partitioned into three
-                  // buckets. The summary-card Unmatched Transfers total
-                  // excludes pre_delivery_schedule, so it equals the
-                  // sum of the missing_schedule_b + year_mismatch rows
-                  // only. The pre_delivery_schedule rows are surfaced
-                  // here for completeness.
-                  const rows = [
-                    ...deliveryTrackerData.transfersMissingObligation.map(
-                      ({ trackingId, transferCount }) => ({
-                        tracking_system_ref_id: trackingId,
-                        bucket: BUCKET.missingScheduleB,
-                        transfer_count: String(transferCount),
-                      }),
-                    ),
-                    ...deliveryTrackerData.transfersPreDeliverySchedule.map(
-                      ({ trackingId, transferCount }) => ({
-                        tracking_system_ref_id: trackingId,
-                        bucket: BUCKET.preDeliverySchedule,
-                        transfer_count: String(transferCount),
-                      }),
-                    ),
-                    ...deliveryTrackerData.transfersUnmatchedByYear.map(
-                      ({ trackingId, transferCount }) => ({
-                        tracking_system_ref_id: trackingId,
-                        bucket: BUCKET.yearMismatch,
-                        transfer_count: String(transferCount),
-                      }),
-                    ),
-                  ];
-                  const csv = buildCsv(
-                    ["tracking_system_ref_id", "bucket", "transfer_count"],
-                    rows,
-                  );
-                  triggerCsvDownload(
-                    `delivery-tracker-unmatched-transfers-${timestampForCsvFileName()}.csv`,
-                    csv,
-                  );
-                }}
-              >
-                Export CSV
-              </Button>
+              {onExportUnmatchedTransfersCsv ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={onExportUnmatchedTransfersCsv}
+                >
+                  Export full CSV
+                </Button>
+              ) : null}
             </div>
           </CardHeader>
           <CardContent className="pt-0">
@@ -295,9 +270,8 @@ export default memo(function DeliveryTrackerTab(props: DeliveryTrackerTabProps) 
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {deliveryTrackerData.transfersMissingObligation
-                    .slice(0, 20)
-                    .map(({ trackingId, transferCount }) => (
+                  {missingObligationPreviewRows.map(
+                    ({ trackingId, transferCount }) => (
                       <TableRow key={trackingId}>
                         <TableCell className="font-mono text-xs">
                           {trackingId}
@@ -306,15 +280,18 @@ export default memo(function DeliveryTrackerTab(props: DeliveryTrackerTabProps) 
                           {formatNumber(transferCount)}
                         </TableCell>
                       </TableRow>
-                    ))}
+                    )
+                  )}
                 </TableBody>
               </Table>
             </div>
-            {deliveryTrackerData.transfersMissingObligation.length > 20 && (
+            {missingObligationTrackingIdCount >
+              missingObligationPreviewRows.length && (
               <p className="text-xs text-amber-700 mt-2">
-                Showing first 20 of{" "}
-                {formatNumber(deliveryTrackerData.transfersMissingObligation.length)}{" "}
-                missing tracking IDs. Export CSV for the full list.
+                Showing first{" "}
+                {formatNumber(missingObligationPreviewRows.length)} of{" "}
+                {formatNumber(missingObligationTrackingIdCount)} missing tracking
+                IDs. Export full CSV for the full list.
               </p>
             )}
           </CardContent>

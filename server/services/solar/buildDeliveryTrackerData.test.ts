@@ -41,7 +41,7 @@ describe("buildDeliveryTrackerData (server-side parity)", () => {
       resolve(__dirname, "buildDeliveryTrackerData.ts"),
       "utf8"
     );
-    expect(source).toContain("deliveryTracker_compact_v2");
+    expect(source).toContain("deliveryTracker_compact_v3");
     expect(source).toContain("DELIVERY_TRACKER_DETAIL_PREVIEW_LIMIT");
     expect(source).toContain("loadDatasetRowsPage(");
     expect(source).not.toMatch(/loadDatasetRows\([\s\S]{0,160}srDsTransferHistory/);
@@ -94,6 +94,25 @@ describe("buildDeliveryTrackerData (server-side parity)", () => {
     const contract500 = data.contracts.find((c) => c.contractId === "500");
     expect(contract493?.totalObligated).toBe(30);
     expect(contract500?.totalObligated).toBe(5);
+  });
+
+  it("can cap returned diagnostic buckets while preserving full counts", () => {
+    const data = buildDeliveryTrackerData({
+      scheduleRows: [scheduleRow({ tracking_system_ref_id: "NON100" })],
+      transferRows: [
+        transferRow({ "Unit ID": "NON999" }),
+        transferRow({ "Unit ID": "NON998" }),
+      ],
+      options: { diagnosticRowLimit: 1 },
+    });
+
+    expect(data.diagnosticRowLimit).toBe(1);
+    expect(data.diagnosticRowsTruncated).toBe(true);
+    expect(data.missingObligationTrackingIdCount).toBe(2);
+    expect(data.transfersMissingObligation).toHaveLength(1);
+    expect(data.transfersMissingObligation[0].trackingId).toBe("NON998");
+    expect(data.unmatchedByYearTrackingIdCount).toBe(0);
+    expect(data.preDeliveryScheduleTrackingIdCount).toBe(0);
   });
 
   it("streaming accumulator matches the array-based helper", () => {
@@ -154,6 +173,62 @@ describe("buildDeliveryTrackerData (server-side parity)", () => {
       );
       expect(csv).toContain("Test System,NON100,493,2024-2025");
       expect(csv).toContain("Test System,NON101,493,2024-2025");
+    } finally {
+      await artifact.cleanup?.();
+    }
+  });
+
+  it("writes full unmatched-transfer bucket CSV from the accumulator", async () => {
+    const accumulator = createDeliveryTrackerAccumulator(
+      [
+        scheduleRow({
+          tracking_system_ref_id: "NON100",
+          year1_start_date: "2024-06-01",
+          year1_end_date: "2025-05-31",
+        }),
+        scheduleRow({
+          tracking_system_ref_id: "NON200",
+          year1_start_date: "2024-06-01",
+          year1_end_date: "2024-12-31",
+        }),
+      ],
+      { diagnosticRowLimit: 0 }
+    );
+    accumulator.processTransferRow(transferRow({ "Unit ID": "NON999" }));
+    accumulator.processTransferRow(
+      transferRow({
+        "Unit ID": "NON100",
+        "Transfer Completion Date": "2023-06-15",
+      })
+    );
+    accumulator.processTransferRow(
+      transferRow({
+        "Unit ID": "NON200",
+        "Transfer Completion Date": "2026-07-01",
+      })
+    );
+
+    const preview = accumulator.finish();
+    expect(preview.transfersMissingObligation).toHaveLength(0);
+    expect(preview.missingObligationTrackingIdCount).toBe(1);
+    expect(preview.preDeliveryScheduleTrackingIdCount).toBe(1);
+    expect(preview.unmatchedByYearTrackingIdCount).toBe(1);
+
+    const artifact = await accumulator.writeUnmatchedTransferCsvFile(
+      "2026-05-06T12:34:56.000Z"
+    );
+    try {
+      expect(artifact.fileName).toBe(
+        "delivery-tracker-unmatched-transfers-20260506123456.csv"
+      );
+      expect(artifact.rowCount).toBe(3);
+      expect(artifact.csvBytes).toBeGreaterThan(0);
+      expect(artifact.filePath).toBeDefined();
+      const csv = readFileSync(artifact.filePath!, "utf8");
+      expect(csv).toContain("tracking_system_ref_id,bucket,transfer_count");
+      expect(csv).toContain("NON999,missing_schedule_b,1");
+      expect(csv).toContain("NON100,pre_delivery_schedule,1");
+      expect(csv).toContain("NON200,year_mismatch,1");
     } finally {
       await artifact.cleanup?.();
     }

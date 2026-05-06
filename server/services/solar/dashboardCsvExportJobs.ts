@@ -64,7 +64,10 @@ import {
   isDashboardDatasetCsvExportKey,
   type DashboardDatasetCsvExportKey,
 } from "./dashboardDatasetCsvExport";
-import { buildDeliveryTrackerDetailCsvExport } from "./buildDeliveryTrackerData";
+import {
+  buildDeliveryTrackerDetailCsvExport,
+  buildDeliveryTrackerUnmatchedTransfersCsvExport,
+} from "./buildDeliveryTrackerData";
 import { getOrBuildOverviewSummary } from "./buildOverviewSummaryAggregates";
 import { startDashboardJobMetric } from "./dashboardJobMetrics";
 import {
@@ -82,7 +85,7 @@ import type { DashboardCsvExportJob } from "../../../drizzle/schema";
 const METRIC_PREFIX = "[dashboard:csv-export-jobs]";
 
 export const DASHBOARD_CSV_EXPORT_RUNNER_VERSION =
-  "dashboard-csv-export-jobs-v8-delivery-tracker-detail";
+  "dashboard-csv-export-jobs-v9-delivery-tracker-unmatched";
 const LEGACY_DETERMINISTIC_ARTIFACT_RUNNER_VERSION =
   "dashboard-csv-export-jobs-v3-heartbeat";
 
@@ -152,7 +155,8 @@ export type DashboardCsvExportInput =
   | { exportType: "ownershipTile"; tile: OwnershipTileKey }
   | { exportType: "changeOwnershipTile"; status: ChangeOwnershipStatus }
   | { exportType: "datasetCsv"; datasetKey: DashboardDatasetCsvExportKey }
-  | { exportType: "deliveryTrackerDetailCsv" };
+  | { exportType: "deliveryTrackerDetailCsv" }
+  | { exportType: "deliveryTrackerUnmatchedTransfersCsv" };
 
 export type DashboardCsvExportStatus =
   | "queued"
@@ -955,6 +959,9 @@ function parseInputJson(rawInput: unknown): DashboardCsvExportInput | null {
   if (candidate.exportType === "deliveryTrackerDetailCsv") {
     return { exportType: "deliveryTrackerDetailCsv" };
   }
+  if (candidate.exportType === "deliveryTrackerUnmatchedTransfersCsv") {
+    return { exportType: "deliveryTrackerUnmatchedTransfersCsv" };
+  }
   return null;
 }
 
@@ -980,6 +987,9 @@ async function buildExport(
   }
   if (input.exportType === "deliveryTrackerDetailCsv") {
     return buildDeliveryTrackerDetailCsvExport(scopeId);
+  }
+  if (input.exportType === "deliveryTrackerUnmatchedTransfersCsv") {
+    return buildDeliveryTrackerUnmatchedTransfersCsvExport(scopeId);
   }
   const { result } = await getOrBuildChangeOwnership(scopeId);
   return buildChangeOwnershipTileCsvFile(result.rows, input.status);

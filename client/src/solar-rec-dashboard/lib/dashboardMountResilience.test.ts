@@ -196,6 +196,17 @@ describe("Solar REC dashboard mount: heavy-query gates", () => {
     expect(deliveryTrackerHandler!).toMatch(
       /exportType\s*:\s*["']deliveryTrackerDetailCsv["']/
     );
+    const deliveryTrackerUnmatchedHandler = sliceFn(
+      code,
+      "downloadDeliveryTrackerUnmatchedTransfersCsv"
+    );
+    expect(deliveryTrackerUnmatchedHandler).not.toBeNull();
+    expect(deliveryTrackerUnmatchedHandler!).toMatch(
+      /runDashboardCsvExport\s*\(/
+    );
+    expect(deliveryTrackerUnmatchedHandler!).toMatch(
+      /exportType\s*:\s*["']deliveryTrackerUnmatchedTransfersCsv["']/
+    );
 
     // The retired inline-CSV fetch shape must NOT reappear on either
     // handler.
@@ -235,6 +246,9 @@ describe("Solar REC dashboard mount: heavy-query gates", () => {
     );
     expect(code).toMatch(
       /const\s+downloadDeliveryTrackerDetailCsv\s*=\s*useCallback\s*\(/
+    );
+    expect(code).toMatch(
+      /const\s+downloadDeliveryTrackerUnmatchedTransfersCsv\s*=\s*useCallback\s*\(/
     );
   });
 
@@ -373,6 +387,12 @@ describe("Solar REC dashboard mount: heavy-query gates", () => {
     );
     expect(deliveryTrackerHandler).not.toBeNull();
     expect(deliveryTrackerHandler!).toMatch(/preparingMessage\s*:/);
+    const deliveryTrackerUnmatchedHandler = sliceFn(
+      code,
+      "downloadDeliveryTrackerUnmatchedTransfersCsv"
+    );
+    expect(deliveryTrackerUnmatchedHandler).not.toBeNull();
+    expect(deliveryTrackerUnmatchedHandler!).toMatch(/preparingMessage\s*:/);
   });
 
   it("CSV export helper accepts initialMessage and per-tile callers pass it", () => {
@@ -399,6 +419,12 @@ describe("Solar REC dashboard mount: heavy-query gates", () => {
     );
     expect(deliveryTrackerHandler).not.toBeNull();
     expect(deliveryTrackerHandler!).toMatch(/initialMessage\s*:/);
+    const deliveryTrackerUnmatchedHandler = sliceFn(
+      code,
+      "downloadDeliveryTrackerUnmatchedTransfersCsv"
+    );
+    expect(deliveryTrackerUnmatchedHandler).not.toBeNull();
+    expect(deliveryTrackerUnmatchedHandler!).toMatch(/initialMessage\s*:/);
   });
 
   it("CSV export helper OWNS the initial toast.loading call (per-tile handlers do not create toastId)", () => {
@@ -430,6 +456,12 @@ describe("Solar REC dashboard mount: heavy-query gates", () => {
     );
     expect(deliveryTrackerHandler).not.toBeNull();
     expect(deliveryTrackerHandler!).not.toMatch(/toast\.loading\s*\(/);
+    const deliveryTrackerUnmatchedHandler = sliceFn(
+      code,
+      "downloadDeliveryTrackerUnmatchedTransfersCsv"
+    );
+    expect(deliveryTrackerUnmatchedHandler).not.toBeNull();
+    expect(deliveryTrackerUnmatchedHandler!).not.toMatch(/toast\.loading\s*\(/);
   });
 
   it("CSV export recovery from interrupted re-anchors to initial when elapsed < 30s", () => {
@@ -629,6 +661,7 @@ describe("Solar REC dashboard mount: heavy-query gates", () => {
       "downloadOwnershipCountTileCsv",
       "downloadChangeOwnershipCountTileCsv",
       "downloadDeliveryTrackerDetailCsv",
+      "downloadDeliveryTrackerUnmatchedTransfersCsv",
       "runDashboardCsvExport",
     ]) {
       const handler = sliceFn(code, name);
@@ -641,6 +674,9 @@ describe("Solar REC dashboard mount: heavy-query gates", () => {
 
   it("Delivery Tracker full detail export uses the background job and preview renders server-bounded rows directly", () => {
     expect(DELIVERY_TRACKER_TAB_SOURCE).toMatch(/onExportDetailCsv/);
+    expect(DELIVERY_TRACKER_TAB_SOURCE).toMatch(
+      /onExportUnmatchedTransfersCsv/
+    );
     expect(DELIVERY_TRACKER_TAB_SOURCE).toMatch(/Export full CSV/);
     expect(DELIVERY_TRACKER_TAB_SOURCE).toMatch(/Export preview CSV/);
     expect(DELIVERY_TRACKER_TAB_SOURCE).not.toMatch(
@@ -648,6 +684,13 @@ describe("Solar REC dashboard mount: heavy-query gates", () => {
     );
     expect(DELIVERY_TRACKER_TAB_SOURCE).toMatch(
       /deliveryTrackerData\.rows\.map\s*\(/
+    );
+    expect(DELIVERY_TRACKER_TAB_SOURCE).toMatch(
+      /missingObligationTrackingIdCount/
+    );
+    expect(DELIVERY_TRACKER_TAB_SOURCE).not.toMatch(/BUCKET/);
+    expect(DELIVERY_TRACKER_TAB_SOURCE).not.toMatch(
+      /delivery-tracker-unmatched-transfers-/
     );
   });
 });

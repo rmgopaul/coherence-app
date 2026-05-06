@@ -127,6 +127,12 @@ export type DeliveryTrackerData = {
   scheduleIdSample: string[];
   transferIdSample: string[];
   scheduleCount: number;
+  diagnosticRowLimit: number | null;
+  diagnosticRowsTruncated: boolean;
+  missingObligationTrackingIdCount: number;
+  unmatchedByYearTrackingIdCount: number;
+  preDeliveryScheduleTrackingIdCount: number;
+  schedulesWithYearsOutsideBoundsCount: number;
   transfersMissingObligation: TransferBucketEntry[];
   transfersUnmatchedByYear: TransferBucketEntry[];
   transfersPreDeliverySchedule: TransferBucketEntry[];
@@ -144,6 +150,12 @@ export const EMPTY_DELIVERY_TRACKER_DATA: DeliveryTrackerData = Object.freeze({
   scheduleIdSample: [],
   transferIdSample: [],
   scheduleCount: 0,
+  diagnosticRowLimit: null,
+  diagnosticRowsTruncated: false,
+  missingObligationTrackingIdCount: 0,
+  unmatchedByYearTrackingIdCount: 0,
+  preDeliveryScheduleTrackingIdCount: 0,
+  schedulesWithYearsOutsideBoundsCount: 0,
   transfersMissingObligation: [],
   transfersUnmatchedByYear: [],
   transfersPreDeliverySchedule: [],
@@ -175,6 +187,12 @@ type BuildDeliveryTrackerOptions = {
    * helper behavior for parity tests and explicit exports.
    */
   detailRowLimit?: number | null;
+  /**
+   * Maximum number of diagnostic bucket rows to return. Full counts
+   * and CSV exports are still computed from the complete maps.
+   * Null means return every diagnostic row for parity tests.
+   */
+  diagnosticRowLimit?: number | null;
 };
 
 export interface DeliveryTrackerDetailCsvArtifact {
@@ -218,8 +236,12 @@ export function createDeliveryTrackerAccumulator(
   writeDetailCsvFile: (
     generatedAtIso?: string
   ) => Promise<DeliveryTrackerDetailCsvArtifact>;
+  writeUnmatchedTransferCsvFile: (
+    generatedAtIso?: string
+  ) => Promise<DeliveryTrackerDetailCsvArtifact>;
 } {
   const detailRowLimit = options.detailRowLimit ?? null;
+  const diagnosticRowLimit = options.diagnosticRowLimit ?? null;
 
   const systemSchedules = new Map<string, SystemSchedule>();
 
@@ -443,6 +465,34 @@ export function createDeliveryTrackerAccumulator(
       );
 
     const scheduleIdSample = Array.from(systemSchedules.keys()).slice(0, 5);
+    const missingObligationTrackingIdCount =
+      transfersMissingObligationCounts.size;
+    const unmatchedByYearTrackingIdCount =
+      transfersUnmatchedByYearCounts.size;
+    const preDeliveryScheduleTrackingIdCount =
+      transfersPreDeliveryScheduleCounts.size;
+    const schedulesWithYearsOutsideBoundsCount =
+      schedulesWithYearsOutsideBoundsList.length;
+    const transfersMissingObligation = toSortedBucket(
+      transfersMissingObligationCounts,
+      diagnosticRowLimit
+    );
+    const transfersUnmatchedByYear = toSortedBucket(
+      transfersUnmatchedByYearCounts,
+      diagnosticRowLimit
+    );
+    const transfersPreDeliverySchedule = toSortedBucket(
+      transfersPreDeliveryScheduleCounts,
+      diagnosticRowLimit
+    );
+    const schedulesWithYearsOutsideBounds =
+      limitRows(schedulesWithYearsOutsideBoundsList, diagnosticRowLimit);
+    const diagnosticRowsTruncated =
+      (diagnosticRowLimit !== null &&
+        (missingObligationTrackingIdCount > diagnosticRowLimit ||
+          unmatchedByYearTrackingIdCount > diagnosticRowLimit ||
+          preDeliveryScheduleTrackingIdCount > diagnosticRowLimit ||
+          schedulesWithYearsOutsideBoundsCount > diagnosticRowLimit));
 
     return {
       rows,
@@ -456,14 +506,16 @@ export function createDeliveryTrackerAccumulator(
       scheduleIdSample,
       transferIdSample: Array.from(transferIdSampleSet),
       scheduleCount: systemSchedules.size,
-      transfersMissingObligation: toSortedBucket(
-        transfersMissingObligationCounts
-      ),
-      transfersUnmatchedByYear: toSortedBucket(transfersUnmatchedByYearCounts),
-      transfersPreDeliverySchedule: toSortedBucket(
-        transfersPreDeliveryScheduleCounts
-      ),
-      schedulesWithYearsOutsideBounds: schedulesWithYearsOutsideBoundsList,
+      diagnosticRowLimit,
+      diagnosticRowsTruncated,
+      missingObligationTrackingIdCount,
+      unmatchedByYearTrackingIdCount,
+      preDeliveryScheduleTrackingIdCount,
+      schedulesWithYearsOutsideBoundsCount,
+      transfersMissingObligation,
+      transfersUnmatchedByYear,
+      transfersPreDeliverySchedule,
+      schedulesWithYearsOutsideBounds,
     };
   };
 
@@ -535,7 +587,44 @@ export function createDeliveryTrackerAccumulator(
     }
   };
 
-  return { processTransferRow, finish, writeDetailCsvFile };
+  const writeUnmatchedTransferCsvFile = async (
+    generatedAtIso: string = new Date().toISOString()
+  ): Promise<DeliveryTrackerDetailCsvArtifact> => {
+    const fileName =
+      `delivery-tracker-unmatched-transfers-${timestampForCsvFileName(
+        generatedAtIso
+      )}.csv`;
+    return writeCsvFileArtifact({
+      fileName,
+      headers: DELIVERY_TRACKER_UNMATCHED_TRANSFER_CSV_HEADERS,
+      rows: buildUnmatchedTransferCsvRows(),
+      tempPrefix: "solar-rec-delivery-unmatched-",
+    });
+  };
+
+  function buildUnmatchedTransferCsvRows(): Record<string, string>[][] {
+    return [
+      unmatchedTransferCsvRowsForBucket(
+        transfersMissingObligationCounts,
+        DELIVERY_TRACKER_TRANSFER_BUCKETS.missingScheduleB
+      ),
+      unmatchedTransferCsvRowsForBucket(
+        transfersPreDeliveryScheduleCounts,
+        DELIVERY_TRACKER_TRANSFER_BUCKETS.preDeliverySchedule
+      ),
+      unmatchedTransferCsvRowsForBucket(
+        transfersUnmatchedByYearCounts,
+        DELIVERY_TRACKER_TRANSFER_BUCKETS.yearMismatch
+      ),
+    ];
+  }
+
+  return {
+    processTransferRow,
+    finish,
+    writeDetailCsvFile,
+    writeUnmatchedTransferCsvFile,
+  };
 }
 
 function buildDetailRow(
@@ -570,6 +659,21 @@ const DELIVERY_TRACKER_DETAIL_CSV_HEADERS = [
 
 const DELIVERY_TRACKER_DETAIL_CSV_CHUNK_ROWS = 1000;
 
+const DELIVERY_TRACKER_UNMATCHED_TRANSFER_CSV_HEADERS = [
+  "tracking_system_ref_id",
+  "bucket",
+  "transfer_count",
+];
+
+const DELIVERY_TRACKER_TRANSFER_BUCKETS = {
+  missingScheduleB: "missing_schedule_b",
+  preDeliverySchedule: "pre_delivery_schedule",
+  yearMismatch: "year_mismatch",
+} as const;
+
+type DeliveryTrackerTransferBucket =
+  (typeof DELIVERY_TRACKER_TRANSFER_BUCKETS)[keyof typeof DELIVERY_TRACKER_TRANSFER_BUCKETS];
+
 function detailRowToCsvRecord(row: DeliveryTrackerRow): Record<string, string> {
   return {
     system_name: row.systemName,
@@ -588,11 +692,105 @@ function timestampForCsvFileName(iso: string): string {
   return iso.replace(/[^0-9]/g, "").slice(0, 14);
 }
 
-function toSortedBucket(counts: Map<string, number>): TransferBucketEntry[] {
-  return Array.from(counts, ([trackingId, transferCount]) => ({
+async function writeCsvFileArtifact(input: {
+  fileName: string;
+  headers: string[];
+  rows: Record<string, string>[][];
+  tempPrefix: string;
+}): Promise<DeliveryTrackerDetailCsvArtifact> {
+  let tempDir: string | null = null;
+  let wroteFirstChunk = false;
+  let rowCount = 0;
+
+  async function flush(buffer: Record<string, string>[]): Promise<void> {
+    if (!tempDir || buffer.length === 0) return;
+    const text = buildCsvText(input.headers, buffer);
+    if (!wroteFirstChunk) {
+      await writeFile(path.join(tempDir, input.fileName), text, "utf8");
+      wroteFirstChunk = true;
+    } else {
+      const newlineIdx = text.indexOf("\n");
+      const body = newlineIdx >= 0 ? text.slice(newlineIdx + 1) : "";
+      await appendFile(path.join(tempDir, input.fileName), `\n${body}`, "utf8");
+    }
+    buffer.length = 0;
+  }
+
+  try {
+    tempDir = await mkdtemp(path.join(tmpdir(), input.tempPrefix));
+    const buffer: Record<string, string>[] = [];
+    for (let bucketIndex = 0; bucketIndex < input.rows.length; bucketIndex++) {
+      const bucketRows = input.rows[bucketIndex];
+      for (let rowIndex = 0; rowIndex < bucketRows.length; rowIndex++) {
+        buffer.push(bucketRows[rowIndex]);
+        rowCount += 1;
+        if (buffer.length >= DELIVERY_TRACKER_DETAIL_CSV_CHUNK_ROWS) {
+          await flush(buffer);
+        }
+      }
+    }
+    await flush(buffer);
+
+    if (!wroteFirstChunk) {
+      await rm(tempDir, { recursive: true, force: true });
+      tempDir = null;
+      return { csv: "", fileName: input.fileName, rowCount: 0, csvBytes: 0 };
+    }
+
+    const filePath = path.join(tempDir, input.fileName);
+    const csvBytes = (await stat(filePath)).size;
+    const cleanup = async () => {
+      if (!tempDir) return;
+      await rm(tempDir, { recursive: true, force: true });
+      tempDir = null;
+    };
+
+    return {
+      filePath,
+      fileName: input.fileName,
+      rowCount,
+      csvBytes,
+      cleanup,
+    };
+  } catch (err) {
+    if (tempDir) {
+      await rm(tempDir, { recursive: true, force: true }).catch(
+        () => undefined
+      );
+    }
+    throw err;
+  }
+}
+
+function limitRows<T>(rows: T[], limit: number | null): T[] {
+  return limit === null ? rows : rows.slice(0, limit);
+}
+
+function toSortedBucket(
+  counts: Map<string, number>,
+  limit: number | null = null
+): TransferBucketEntry[] {
+  const rows = Array.from(counts, ([trackingId, transferCount]) => ({
     trackingId,
     transferCount,
   })).sort((a, b) => a.trackingId.localeCompare(b.trackingId));
+  return limitRows(rows, limit);
+}
+
+function unmatchedTransferCsvRowsForBucket(
+  counts: Map<string, number>,
+  bucket: DeliveryTrackerTransferBucket
+): Record<string, string>[] {
+  const entries = Array.from(counts.entries()).sort(([left], [right]) =>
+    left.localeCompare(right)
+  );
+  return entries.map(([trackingId, transferCount]) => {
+    return {
+      tracking_system_ref_id: trackingId,
+      bucket,
+      transfer_count: String(transferCount),
+    };
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -601,12 +799,13 @@ function toSortedBucket(counts: Map<string, number>): TransferBucketEntry[] {
 
 const DELIVERY_TRACKER_DEPS = ["deliveryScheduleBase", "transferHistory"] as const;
 
-const ARTIFACT_TYPE = "deliveryTracker_compact_v2";
+const ARTIFACT_TYPE = "deliveryTracker_compact_v3";
 
 export const DELIVERY_TRACKER_RUNNER_VERSION =
-  "data-flow-pr5_13_deliverytracker@2-compact-paged";
+  "data-flow-pr5_13_deliverytracker@3-compact-diagnostics";
 
 const DELIVERY_TRACKER_DETAIL_PREVIEW_LIMIT = 200;
+const DELIVERY_TRACKER_DIAGNOSTIC_PREVIEW_LIMIT = 200;
 const DELIVERY_TRACKER_TRANSFER_PAGE_SIZE = 25_000;
 
 async function computeDeliveryTrackerInputHash(
@@ -667,6 +866,7 @@ export async function getOrBuildDeliveryTrackerData(
       );
       const accumulator = createDeliveryTrackerAccumulator(scheduleRows, {
         detailRowLimit: DELIVERY_TRACKER_DETAIL_PREVIEW_LIMIT,
+        diagnosticRowLimit: DELIVERY_TRACKER_DIAGNOSTIC_PREVIEW_LIMIT,
       });
 
       if (transferHistoryBatchId) {
@@ -718,6 +918,7 @@ export async function buildDeliveryTrackerDetailCsvExport(
   );
   const accumulator = createDeliveryTrackerAccumulator(scheduleRows, {
     detailRowLimit: 0,
+    diagnosticRowLimit: 0,
   });
 
   if (transferHistoryBatchId) {
@@ -741,4 +942,53 @@ export async function buildDeliveryTrackerDetailCsvExport(
   }
 
   return accumulator.writeDetailCsvFile(generatedAtIso);
+}
+
+export async function buildDeliveryTrackerUnmatchedTransfersCsvExport(
+  scopeId: string,
+  generatedAtIso: string = new Date().toISOString()
+): Promise<DeliveryTrackerDetailCsvArtifact> {
+  const { versionMap } = await computeDeliveryTrackerInputHash(scopeId);
+  const deliveryScheduleBatchId = versionMap.get("deliveryScheduleBase") ?? null;
+  const transferHistoryBatchId = versionMap.get("transferHistory") ?? null;
+  const fileName =
+    `delivery-tracker-unmatched-transfers-${timestampForCsvFileName(
+      generatedAtIso
+    )}.csv`;
+
+  if (!deliveryScheduleBatchId) {
+    return { csv: "", fileName, rowCount: 0, csvBytes: 0 };
+  }
+
+  const scheduleRows = await loadDatasetRows(
+    scopeId,
+    deliveryScheduleBatchId,
+    srDsDeliverySchedule
+  );
+  const accumulator = createDeliveryTrackerAccumulator(scheduleRows, {
+    detailRowLimit: 0,
+    diagnosticRowLimit: 0,
+  });
+
+  if (transferHistoryBatchId) {
+    let cursor: string | null = null;
+    for (;;) {
+      const page = await loadDatasetRowsPage(
+        scopeId,
+        transferHistoryBatchId,
+        srDsTransferHistory,
+        {
+          cursor,
+          limit: DELIVERY_TRACKER_TRANSFER_PAGE_SIZE,
+        }
+      );
+      for (const row of page.rows) {
+        accumulator.processTransferRow(row);
+      }
+      if (!page.nextCursor) break;
+      cursor = page.nextCursor;
+    }
+  }
+
+  return accumulator.writeUnmatchedTransferCsvFile(generatedAtIso);
 }
