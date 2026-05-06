@@ -2395,3 +2395,135 @@ export type SolarRecDashboardOwnershipFact =
   typeof solarRecDashboardOwnershipFacts.$inferSelect;
 export type InsertSolarRecDashboardOwnershipFact =
   typeof solarRecDashboardOwnershipFacts.$inferInsert;
+
+// ────────────────────────────────────────────────────────────────────
+// Solar REC dashboard fact table — per-system snapshot
+// (Phase 2 PR-F-1, the fourth derived fact table).
+//
+// Backs the eventual paginated `getDashboardSystemsPage` proc that
+// retires `getDashboardOverviewSummary`'s last allowlist sibling
+// `getSystemSnapshot` (~26 MB on prod, the single largest entry on
+// `DASHBOARD_OVERSIZE_ALLOWLIST`). PR-F-1 is helpers + schema ONLY —
+// no caller wires these in yet.
+//
+// Schema mirrors `SystemRecord` from
+// `client/src/solar-rec-dashboard/state/types.ts` 1:1: 31 fields
+// covering identity, sizing, contract money, REC accounting,
+// reporting, ownership status, contract metadata, monitoring info.
+// PR-F-2 will populate via the build runner from
+// `getOrBuildSystemSnapshot`'s output. PR-F-3 will add a paginated
+// read proc; PR-F-4+ will migrate the 6 tabs that currently consume
+// `systems: SystemRecord[]` (Overview, Ownership, OfflineMonitoring,
+// SizeReporting, ValueReporting, ChangeOwnership).
+//
+// Decimal precision/scale rationale:
+//   - kw fields (`installedKwAc`, `installedKwDc`,
+//     `latestReportingKwh`): `decimal(12, 4)` — typical residential
+//     systems are 5–20 kW; large commercial are O(MW). 12,4 covers
+//     ~99,999,999 with 4-decimal-precision (kWh telemetry).
+//   - REC counts (`contractedRecs`, `deliveredRecs`): `decimal(18, 4)`
+//     — partial-REC accounting requires fractional precision; the
+//     wider integer range covers any plausible aggregate.
+//   - Money (`recPrice`, `totalContractAmount`, `contractedValue`,
+//     `deliveredValue`, `valueGap`): `decimal(18, 4)` — same as the
+//     other fact tables; covers cents-on-billion-dollar contracts.
+// ────────────────────────────────────────────────────────────────────
+export const solarRecDashboardSystemFacts = mysqlTable(
+  "solarRecDashboardSystemFacts",
+  {
+    scopeId: varchar("scopeId", { length: 64 }).notNull(),
+    // SystemRecord.key — stable per-system identifier with three
+    // keying schemes (`id:`, `tracking:`, `name:`). varchar(128).
+    systemKey: varchar("systemKey", { length: 128 }).notNull(),
+
+    // 31 SystemRecord fields, mirrors the type 1:1.
+    // Identity fields (alongside systemKey above).
+    systemId: varchar("systemId", { length: 128 }),
+    stateApplicationRefId: varchar("stateApplicationRefId", { length: 128 }),
+    trackingSystemRefId: varchar("trackingSystemRefId", { length: 128 }),
+    systemName: text("systemName").notNull(),
+    // Sizing.
+    installedKwAc: decimal("installedKwAc", { precision: 12, scale: 4 }),
+    installedKwDc: decimal("installedKwDc", { precision: 12, scale: 4 }),
+    // Stored as varchar (not mysqlEnum) so adding a bucket is a
+    // code-only PR. SystemRecord.sizeBucket has 3 values today:
+    // "<=10 kW AC" / ">10 kW AC" / "Unknown".
+    sizeBucket: varchar("sizeBucket", { length: 32 }).notNull(),
+    // Contract money + REC accounting.
+    recPrice: decimal("recPrice", { precision: 18, scale: 4 }),
+    totalContractAmount: decimal("totalContractAmount", {
+      precision: 18,
+      scale: 4,
+    }),
+    contractedRecs: decimal("contractedRecs", { precision: 18, scale: 4 }),
+    deliveredRecs: decimal("deliveredRecs", { precision: 18, scale: 4 }),
+    contractedValue: decimal("contractedValue", { precision: 18, scale: 4 }),
+    deliveredValue: decimal("deliveredValue", { precision: 18, scale: 4 }),
+    valueGap: decimal("valueGap", { precision: 18, scale: 4 }),
+    // Reporting telemetry.
+    latestReportingDate: date("latestReportingDate"),
+    latestReportingKwh: decimal("latestReportingKwh", {
+      precision: 18,
+      scale: 4,
+    }),
+    isReporting: boolean("isReporting").notNull(),
+    // Ownership / status.
+    isTerminated: boolean("isTerminated").notNull(),
+    isTransferred: boolean("isTransferred").notNull(),
+    ownershipStatus: varchar("ownershipStatus", { length: 64 }).notNull(),
+    hasChangedOwnership: boolean("hasChangedOwnership").notNull(),
+    changeOwnershipStatus: varchar("changeOwnershipStatus", { length: 64 }),
+    // Contract metadata.
+    contractStatusText: text("contractStatusText").notNull(),
+    contractType: varchar("contractType", { length: 64 }),
+    // Zillow cross-reference (optional sale tracking).
+    zillowStatus: varchar("zillowStatus", { length: 64 }),
+    zillowSoldDate: date("zillowSoldDate"),
+    contractedDate: date("contractedDate"),
+    // Monitoring metadata (free-form; the SizeReporting tab
+    // breakdown filters key off these strings).
+    monitoringType: text("monitoringType").notNull(),
+    monitoringPlatform: text("monitoringPlatform").notNull(),
+    installerName: text("installerName").notNull(),
+    // Part-2 verification (nullable: not every system has a
+    // matched ABP project).
+    part2VerificationDate: date("part2VerificationDate"),
+
+    // Build versioning + observability. PR-F-2's runner step will
+    // set `buildId` to the current `solarRecDashboardBuilds.id` so
+    // the post-UPSERT DELETE can sweep orphans efficiently.
+    buildId: varchar("buildId", { length: 64 }).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    pk: primaryKey({
+      columns: [table.scopeId, table.systemKey],
+      name: "solar_rec_dashboard_system_facts_pk",
+    }),
+    // Build sweep covers the orphan-deletion query.
+    scopeBuildIdx: index(
+      "solar_rec_dashboard_system_facts_scope_build_idx"
+    ).on(table.scopeId, table.buildId),
+    // Status filter — primary axis on Overview/ChangeOwnership
+    // tabs. PR-F-3's read proc may add `status` as a server-side
+    // filter; the index makes that read efficient.
+    scopeStatusIdx: index(
+      "solar_rec_dashboard_system_facts_scope_status_idx"
+    ).on(table.scopeId, table.ownershipStatus),
+    // Size filter — SizeReportingTab + Overview tile filter axis.
+    scopeSizeIdx: index(
+      "solar_rec_dashboard_system_facts_scope_size_idx"
+    ).on(table.scopeId, table.sizeBucket),
+    // Reporting filter — used by the "currently reporting" splits
+    // on multiple tabs.
+    scopeReportingIdx: index(
+      "solar_rec_dashboard_system_facts_scope_reporting_idx"
+    ).on(table.scopeId, table.isReporting),
+  })
+);
+
+export type SolarRecDashboardSystemFact =
+  typeof solarRecDashboardSystemFacts.$inferSelect;
+export type InsertSolarRecDashboardSystemFact =
+  typeof solarRecDashboardSystemFacts.$inferInsert;
