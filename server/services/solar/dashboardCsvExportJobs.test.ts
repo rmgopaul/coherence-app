@@ -275,6 +275,23 @@ vi.mock("./buildChangeOwnershipAggregates", () => ({
   })),
 }));
 
+vi.mock("./dashboardDatasetCsvExport", () => {
+  const keys = ["transferHistory", "deliveryScheduleBase"] as const;
+  return {
+    DASHBOARD_DATASET_CSV_EXPORT_KEYS: keys,
+    isDashboardDatasetCsvExportKey: (value: unknown) =>
+      typeof value === "string" &&
+      keys.includes(value as (typeof keys)[number]),
+    buildDatasetCsvExport: vi.fn(
+      async (_scopeId: string, datasetKey: string) => ({
+        csv: `dataset_key\n${datasetKey}`,
+        fileName: `dataset-${datasetKey}-20260506123456.csv`,
+        rowCount: 1,
+      })
+    ),
+  };
+});
+
 // Mock the db/_core import the service uses for the
 // `getDashboardCsvExportJobById` worker helper. The service
 // fetches by ID directly via Drizzle for that one path; we
@@ -324,6 +341,7 @@ import {
   startCsvExportJob,
   type DashboardCsvExportInput,
 } from "./dashboardCsvExportJobs";
+import { buildDatasetCsvExport } from "./dashboardDatasetCsvExport";
 
 const SCOPE = "scope-A";
 const OTHER_SCOPE = "scope-B";
@@ -498,6 +516,25 @@ describe("dashboardCsvExportJobs — runner: change-ownership-tile (DB-backed)",
     expect(status?.status).toBe("succeeded");
     expect(status?.rowCount).toBe(0);
     expect(status?.url).toBeNull();
+  });
+});
+
+describe("dashboardCsvExportJobs — runner: dataset CSV (DB-backed)", () => {
+  it("claims, runs the dataset CSV builder + storagePut", async () => {
+    const jobId = await startAndRun(SCOPE, {
+      exportType: "datasetCsv",
+      datasetKey: "transferHistory",
+    });
+    const status = await getCsvExportJobStatus(SCOPE, jobId);
+
+    expect(buildDatasetCsvExport).toHaveBeenCalledWith(
+      SCOPE,
+      "transferHistory"
+    );
+    expect(status?.status).toBe("succeeded");
+    expect(status?.fileName).toBe("dataset-transferHistory-20260506123456.csv");
+    expect(status?.rowCount).toBe(1);
+    expect(status?.url).toContain(`solar-rec-dashboard/${SCOPE}/exports/`);
   });
 });
 
@@ -692,9 +729,9 @@ describe("dashboardCsvExportJobs — sweepStaleAndPruned", () => {
 });
 
 describe("dashboardCsvExportJobs — runner version + claim id", () => {
-  it("exports the v4 claim-scoped artifact runner version", () => {
+  it("exports the v5 dataset CSV runner version", () => {
     expect(DASHBOARD_CSV_EXPORT_RUNNER_VERSION).toBe(
-      "dashboard-csv-export-jobs-v4-claim-scoped-artifacts"
+      "dashboard-csv-export-jobs-v5-dataset-csv-export"
     );
   });
 
@@ -767,6 +804,17 @@ describe("dashboardCsvExportJobs — input JSON parsing", () => {
     });
   });
 
+  it("accepts datasetCsv shape", () => {
+    const result = __TEST_ONLY__.parseInputJson({
+      exportType: "datasetCsv",
+      datasetKey: "transferHistory",
+    });
+    expect(result).toEqual({
+      exportType: "datasetCsv",
+      datasetKey: "transferHistory",
+    });
+  });
+
   it("rejects unknown shapes", () => {
     expect(__TEST_ONLY__.parseInputJson(null)).toBeNull();
     expect(__TEST_ONLY__.parseInputJson(undefined)).toBeNull();
@@ -776,6 +824,12 @@ describe("dashboardCsvExportJobs — input JSON parsing", () => {
       __TEST_ONLY__.parseInputJson({
         exportType: "ownershipTile",
         tile: "invalid",
+      })
+    ).toBeNull();
+    expect(
+      __TEST_ONLY__.parseInputJson({
+        exportType: "datasetCsv",
+        datasetKey: "unknownDataset",
       })
     ).toBeNull();
   });

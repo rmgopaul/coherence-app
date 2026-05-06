@@ -54,6 +54,11 @@ import {
   getOrBuildChangeOwnership,
   type ChangeOwnershipStatus,
 } from "./buildChangeOwnershipAggregates";
+import {
+  buildDatasetCsvExport,
+  isDashboardDatasetCsvExportKey,
+  type DashboardDatasetCsvExportKey,
+} from "./dashboardDatasetCsvExport";
 import { getOrBuildOverviewSummary } from "./buildOverviewSummaryAggregates";
 import { startDashboardJobMetric } from "./dashboardJobMetrics";
 import {
@@ -71,7 +76,7 @@ import type { DashboardCsvExportJob } from "../../../drizzle/schema";
 const METRIC_PREFIX = "[dashboard:csv-export-jobs]";
 
 export const DASHBOARD_CSV_EXPORT_RUNNER_VERSION =
-  "dashboard-csv-export-jobs-v4-claim-scoped-artifacts";
+  "dashboard-csv-export-jobs-v5-dataset-csv-export";
 const LEGACY_DETERMINISTIC_ARTIFACT_RUNNER_VERSION =
   "dashboard-csv-export-jobs-v3-heartbeat";
 
@@ -139,7 +144,8 @@ class DashboardCsvExportTimeoutError extends Error {
 
 export type DashboardCsvExportInput =
   | { exportType: "ownershipTile"; tile: OwnershipTileKey }
-  | { exportType: "changeOwnershipTile"; status: ChangeOwnershipStatus };
+  | { exportType: "changeOwnershipTile"; status: ChangeOwnershipStatus }
+  | { exportType: "datasetCsv"; datasetKey: DashboardDatasetCsvExportKey };
 
 export type DashboardCsvExportStatus =
   | "queued"
@@ -238,7 +244,7 @@ function buildSnapshot(
 /**
  * Enqueue an export job. Inserts a `queued` row and schedules
  * the runner via `setImmediate` (so the mutation returns fast,
- * before the heavy aggregator load).
+ * before the heavy aggregator or row-table export load).
  *
  * `runner` and `scheduler` are dependency-injected for tests; in
  * production they default to `runCsvExportJob` and `setImmediate`
@@ -409,7 +415,12 @@ export async function runCsvExportJob(jobId: string): Promise<void> {
   const metric = startDashboardJobMetric({
     prefix: METRIC_PREFIX,
     jobId,
-    context: { exportType: input.exportType },
+    context: {
+      exportType: input.exportType,
+      ...(input.exportType === "datasetCsv"
+        ? { datasetKey: input.datasetKey }
+        : {}),
+    },
   });
 
   // Codex P1 follow-up (2026-05-04): heartbeat keeps healthy
@@ -864,6 +875,15 @@ function parseInputJson(rawInput: unknown): DashboardCsvExportInput | null {
     }
     return null;
   }
+  if (candidate.exportType === "datasetCsv") {
+    if (isDashboardDatasetCsvExportKey(candidate.datasetKey)) {
+      return {
+        exportType: "datasetCsv",
+        datasetKey: candidate.datasetKey,
+      };
+    }
+    return null;
+  }
   return null;
 }
 
@@ -880,6 +900,9 @@ async function buildExport(
   if (input.exportType === "ownershipTile") {
     const { result } = await getOrBuildOverviewSummary(scopeId);
     return buildOwnershipTileCsv(result.ownershipRows, input.tile);
+  }
+  if (input.exportType === "datasetCsv") {
+    return buildDatasetCsvExport(scopeId, input.datasetKey);
   }
   const { result } = await getOrBuildChangeOwnership(scopeId);
   return buildChangeOwnershipTileCsv(result.rows, input.status);

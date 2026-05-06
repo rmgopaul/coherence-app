@@ -425,7 +425,7 @@ This task creates row tables for the remaining 11 datasets and rewires their ing
 3. Ingestion path through `server/services/solar/datasetIngestion.ts` and `datasetRowPersistence.ts` — extend `persistDatasetRows` to handle the new dataset key.
 4. Activation triggering through `coreDatasetSrDsSync` / `triggerCoreDatasetSrDsSync` in the dashboard router. Update `CORE_DATASET_KEYS_FOR_SNAPSHOT` and `SYSTEM_SNAPSHOT_DEPS` if the dataset participates in the system snapshot.
 5. `getDatasetSummariesAll` (PR-3 of the data-flow series) auto-extends — its `ROW_TABLES_BY_DATASET_KEY` map gains the new entry. `getDatasetRowsPage` (PR-4) likewise.
-6. `getDatasetCsv` (PR-5) gains the dataset to its enum.
+6. Raw dataset CSV export uses `startDashboardCsvExport({ exportType: "datasetCsv" })`; add the dataset to that enum and the worker's row-table map.
 7. Drizzle migration generated via `pnpm db:push` — verify it lands in `drizzle/NNNN_*.sql` with a matching `_journal.json` entry, then run `drizzle-kit migrate` against prod **before** merging the code PR (per CLAUDE.md "Schema migration safety").
 
 **Special cases.**

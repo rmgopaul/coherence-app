@@ -63,6 +63,10 @@ export const DASHBOARD_REQUEST_HEAP_AFTER_WARN_BYTES_DEFAULT =
  *     polls a slim status endpoint.
  *   - `solarRecDashboard.exportChangeOwnershipTileCsv` — same
  *     replacement, same flow.
+ *   - `solarRecDashboard.getDatasetCsv` — replaced by the same
+ *     background-job flow with `exportType: "datasetCsv"`. The full
+ *     raw dataset CSV is written to storage and downloaded by URL
+ *     instead of crossing tRPC as a string.
  */
 export const DASHBOARD_OVERSIZE_ALLOWLIST: ReadonlySet<string> = new Set([
   // Returns the full pre-computed system record set; rebuild plan replaces
@@ -79,9 +83,6 @@ export const DASHBOARD_OVERSIZE_ALLOWLIST: ReadonlySet<string> = new Set([
   // (`monitoringDetailsBySystemKey` etc.); rebuild plan paginates via
   // `getDashboardMonitoringDetailsPage`.
   "solarRecDashboard.getDashboardOfflineMonitoring",
-  // Paginates DB reads but joins the full CSV in memory before returning.
-  // Rebuild plan replaces with a streaming background export job.
-  "solarRecDashboard.getDatasetCsv",
 ]);
 
 export type DashboardResponseEnforcement = "warn" | "throw" | "off";
