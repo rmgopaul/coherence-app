@@ -64,6 +64,7 @@ const {
   fetchGroupSites,
   fetchSingleSiteTelemetryTotal,
   fetchSiteExternalIds,
+  fetchTelemetryWindowTotals,
 } = __TEST_ONLY__;
 
 // ────────────────────────────────────────────────────────────────────
@@ -1754,5 +1755,349 @@ describe("fetchSiteExternalIds", () => {
       "site-priority",
     ]);
     expect(result.get("site-priority")).toBe("STE20260101-77777");
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────
+// fetchTelemetryWindowTotals — Concern #1 slice 4c PR-C
+//
+// Group-level telemetry orchestrator. Builds candidate URLs (1-3,
+// based on optional `endpointUrl` override) × group-rollup variants
+// (null / "sum") → ordered TelemetryAttempt list. Iterates:
+//
+//   Priority 1: history endpoint WITHOUT group_rollup (may return
+//               per-site breakdowns)
+//   Priority 2: history endpoint WITH group_rollup=sum
+//   Priority 3: aggregate endpoint WITH group_rollup=sum
+//
+// Returns the first attempt that yields a non-empty
+// `Map<siteId, SiteTotal>` — UNLESS `allowEmptyTotals` is set, in
+// which case the first successful 200 wins even if totals are empty
+// (used for the lifetime/zero-window path).
+// ────────────────────────────────────────────────────────────────────
+
+/**
+ * Build a per-site telemetry payload that
+ * `computeSiteDeltasByTelemetryPayload` parses into a non-empty
+ * Map. Each entry has its own `site_id` so the parser attributes
+ * values per-site (avoiding the `siteId !== groupId` filter).
+ */
+function perSiteTelemetryPayload(
+  entries: Array<{
+    siteId: string;
+    series: Array<{ valueWh: number; timestamp: string }>;
+  }>
+): unknown {
+  return {
+    data: entries.map(e => ({
+      site_id: e.siteId,
+      series: e.series.map(s => ({
+        value: s.valueWh,
+        timestamp: s.timestamp,
+      })),
+    })),
+  };
+}
+
+const GROUP_ID = "group-abc";
+const TELEMETRY_OPTS = {
+  groupId: GROUP_ID,
+  signal: "solar_energy_exported",
+  startDatetime: "2026-05-01T00:00:00Z",
+  endDatetime: "2026-05-08T00:00:00Z",
+};
+
+describe("fetchTelemetryWindowTotals", () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("returns per-site totals + attemptUsed when first URL succeeds", async () => {
+    fetchMock.mockResolvedValueOnce(
+      buildBearerResponse({
+        ok: true,
+        contentType: "application/json",
+        json: perSiteTelemetryPayload([
+          {
+            siteId: "site-A",
+            series: [
+              { valueWh: 0, timestamp: "2026-05-01T00:00:00Z" },
+              { valueWh: 5_000, timestamp: "2026-05-08T00:00:00Z" },
+            ],
+          },
+          {
+            siteId: "site-B",
+            series: [
+              { valueWh: 1_000, timestamp: "2026-05-01T00:00:00Z" },
+              { valueWh: 4_000, timestamp: "2026-05-08T00:00:00Z" },
+            ],
+          },
+        ]),
+      })
+    );
+    const result = await fetchTelemetryWindowTotals(VALID_CONTEXT, "tok", {
+      ...TELEMETRY_OPTS,
+    });
+    expect(result.totals.size).toBe(2);
+    expect(result.totals.get("site-A")?.totalKwh).toBe(5);
+    expect(result.totals.get("site-B")?.totalKwh).toBe(3);
+    expect(result.resolvedEndpointUrl).toContain("/telemetry/history");
+    // First attempt is history without group_rollup.
+    expect(result.attemptUsed.groupRollup).toBeNull();
+  });
+
+  it("includes the canonical query params (target_id=groupId, signals, dates, period, rollup, fill)", async () => {
+    fetchMock.mockResolvedValueOnce(
+      buildBearerResponse({
+        ok: true,
+        contentType: "application/json",
+        json: perSiteTelemetryPayload([
+          {
+            siteId: "site-1",
+            series: [
+              { valueWh: 0, timestamp: "2026-05-01T00:00:00Z" },
+              { valueWh: 1, timestamp: "2026-05-08T00:00:00Z" },
+            ],
+          },
+        ]),
+      })
+    );
+    await fetchTelemetryWindowTotals(VALID_CONTEXT, "tok", {
+      ...TELEMETRY_OPTS,
+      period: "1h",
+    });
+    const url = new URL(fetchMock.mock.calls[0][0] as string);
+    expect(url.pathname).toBe("/v2/telemetry/history");
+    expect(url.searchParams.get("target_id")).toBe(GROUP_ID);
+    expect(url.searchParams.get("signals")).toBe("solar_energy_exported");
+    expect(url.searchParams.get("start_datetime")).toBe(
+      "2026-05-01T00:00:00Z"
+    );
+    expect(url.searchParams.get("end_datetime")).toBe(
+      "2026-05-08T00:00:00Z"
+    );
+    expect(url.searchParams.get("period")).toBe("1h");
+    expect(url.searchParams.get("rollup")).toBe("last");
+    expect(url.searchParams.get("fill")).toBe("none");
+    // First attempt: NO group_rollup query param.
+    expect(url.searchParams.has("group_rollup")).toBe(false);
+  });
+
+  it("falls through past 200-but-empty-totals to next attempt (group_rollup=sum)", async () => {
+    // First attempt: history without group_rollup → returns ONLY the
+    // group's own data (filtered out as `siteId === groupId`), so
+    // `totals` is empty.
+    fetchMock.mockResolvedValueOnce(
+      buildBearerResponse({
+        ok: true,
+        contentType: "application/json",
+        json: perSiteTelemetryPayload([
+          {
+            siteId: GROUP_ID,
+            series: [
+              { valueWh: 0, timestamp: "2026-05-01T00:00:00Z" },
+              { valueWh: 1, timestamp: "2026-05-08T00:00:00Z" },
+            ],
+          },
+        ]),
+      })
+    );
+    // Second attempt: history with group_rollup=sum → real per-site data.
+    fetchMock.mockResolvedValueOnce(
+      buildBearerResponse({
+        ok: true,
+        contentType: "application/json",
+        json: perSiteTelemetryPayload([
+          {
+            siteId: "site-real",
+            series: [
+              { valueWh: 0, timestamp: "2026-05-01T00:00:00Z" },
+              { valueWh: 7_000, timestamp: "2026-05-08T00:00:00Z" },
+            ],
+          },
+        ]),
+      })
+    );
+    const result = await fetchTelemetryWindowTotals(VALID_CONTEXT, "tok", {
+      ...TELEMETRY_OPTS,
+    });
+    expect(result.totals.size).toBe(1);
+    expect(result.totals.get("site-real")?.totalKwh).toBe(7);
+    expect(result.attemptUsed.groupRollup).toBe("sum");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    // Second attempt URL includes group_rollup=sum.
+    const secondUrl = new URL(fetchMock.mock.calls[1][0] as string);
+    expect(secondUrl.searchParams.get("group_rollup")).toBe("sum");
+  });
+
+  it("falls through past an error response to the next attempt", async () => {
+    fetchMock.mockResolvedValueOnce(
+      buildBearerResponse({
+        ok: false,
+        status: 500,
+        statusText: "Server Error",
+      })
+    );
+    fetchMock.mockResolvedValueOnce(
+      buildBearerResponse({
+        ok: true,
+        contentType: "application/json",
+        json: perSiteTelemetryPayload([
+          {
+            siteId: "site-1",
+            series: [
+              { valueWh: 0, timestamp: "2026-05-01T00:00:00Z" },
+              { valueWh: 2_000, timestamp: "2026-05-08T00:00:00Z" },
+            ],
+          },
+        ]),
+      })
+    );
+    const result = await fetchTelemetryWindowTotals(VALID_CONTEXT, "tok", {
+      ...TELEMETRY_OPTS,
+    });
+    expect(result.totals.get("site-1")?.totalKwh).toBe(2);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("returns first 200 even with empty totals when allowEmptyTotals is set", async () => {
+    // Empty-totals payload (no per-site data).
+    fetchMock.mockResolvedValueOnce(
+      buildBearerResponse({
+        ok: true,
+        contentType: "application/json",
+        json: { data: [] },
+      })
+    );
+    const result = await fetchTelemetryWindowTotals(VALID_CONTEXT, "tok", {
+      ...TELEMETRY_OPTS,
+      allowEmptyTotals: true,
+    });
+    expect(result.totals.size).toBe(0);
+    // ONE fetch — allowEmptyTotals short-circuits the fall-through.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("throws after all attempts fail, with last-error message + preview", async () => {
+    // Sticky mock — every attempt returns the same 503.
+    fetchMock.mockResolvedValue(
+      buildBearerResponse({
+        ok: false,
+        status: 503,
+        statusText: "Service Unavailable",
+      })
+    );
+    await expect(
+      fetchTelemetryWindowTotals(VALID_CONTEXT, "tok", { ...TELEMETRY_OPTS })
+    ).rejects.toThrow(/all endpoint candidates/i);
+    await expect(
+      fetchTelemetryWindowTotals(VALID_CONTEXT, "tok", { ...TELEMETRY_OPTS })
+    ).rejects.toThrow(/503/);
+  });
+
+  it("biases iteration order when preferredAttempt is provided", async () => {
+    // Without preferredAttempt the iteration is:
+    //   1. history (no rollup), 2. history (rollup=sum),
+    //   3. aggregate (rollup=sum).
+    // With preferredAttempt=aggregate → that attempt fires first.
+    const apiBase = "https://gridlogic-api.sn.tesla.services/v2";
+    const aggregateUrl = `${apiBase}/telemetry/history/operational/aggregate`;
+    fetchMock.mockResolvedValueOnce(
+      buildBearerResponse({
+        ok: true,
+        contentType: "application/json",
+        json: perSiteTelemetryPayload([
+          {
+            siteId: "site-pref",
+            series: [
+              { valueWh: 0, timestamp: "2026-05-01T00:00:00Z" },
+              { valueWh: 9_000, timestamp: "2026-05-08T00:00:00Z" },
+            ],
+          },
+        ]),
+      })
+    );
+    const result = await fetchTelemetryWindowTotals(VALID_CONTEXT, "tok", {
+      ...TELEMETRY_OPTS,
+      preferredAttempt: { baseUrl: aggregateUrl, groupRollup: "sum" },
+    });
+    expect(result.totals.get("site-pref")?.totalKwh).toBe(9);
+    const firstUrl = new URL(fetchMock.mock.calls[0][0] as string);
+    expect(firstUrl.pathname).toContain("/operational/aggregate");
+    expect(firstUrl.searchParams.get("group_rollup")).toBe("sum");
+  });
+
+  it("uses 120000 ms timeout on the bearer fetch (telemetry budget)", async () => {
+    // Light assertion — the implementation passes timeoutMs: 120_000
+    // through to fetchJsonWithBearerToken (covered exhaustively in
+    // slice 4a). Verify a successful happy-path call here implies the
+    // budget is wired.
+    fetchMock.mockResolvedValueOnce(
+      buildBearerResponse({
+        ok: true,
+        contentType: "application/json",
+        json: perSiteTelemetryPayload([
+          {
+            siteId: "site-1",
+            series: [
+              { valueWh: 0, timestamp: "2026-05-01T00:00:00Z" },
+              { valueWh: 1, timestamp: "2026-05-08T00:00:00Z" },
+            ],
+          },
+        ]),
+      })
+    );
+    const result = await fetchTelemetryWindowTotals(VALID_CONTEXT, "tok", {
+      ...TELEMETRY_OPTS,
+    });
+    expect(result.totals.size).toBe(1);
+  });
+
+  it("propagates an externally-aborted signal across attempts", async () => {
+    // Caller aborts BEFORE the function runs. Each iteration starts
+    // with `throwIfSignalAborted(options.abortSignal)` which throws
+    // immediately on the first attempt — no fetches issued.
+    const controller = new AbortController();
+    controller.abort();
+    await expect(
+      fetchTelemetryWindowTotals(VALID_CONTEXT, "tok", {
+        ...TELEMETRY_OPTS,
+        abortSignal: controller.signal,
+      })
+    ).rejects.toThrow();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("respects an endpointUrl override containing /telemetry/", async () => {
+    fetchMock.mockResolvedValueOnce(
+      buildBearerResponse({
+        ok: true,
+        contentType: "application/json",
+        json: perSiteTelemetryPayload([
+          {
+            siteId: "site-override",
+            series: [
+              { valueWh: 0, timestamp: "2026-05-01T00:00:00Z" },
+              { valueWh: 6_000, timestamp: "2026-05-08T00:00:00Z" },
+            ],
+          },
+        ]),
+      })
+    );
+    const overrideUrl = "https://custom.example.com/telemetry/history";
+    const result = await fetchTelemetryWindowTotals(VALID_CONTEXT, "tok", {
+      ...TELEMETRY_OPTS,
+      endpointUrl: overrideUrl,
+    });
+    expect(result.totals.get("site-override")?.totalKwh).toBe(6);
+    const firstUrl = new URL(fetchMock.mock.calls[0][0] as string);
+    expect(firstUrl.host).toBe("custom.example.com");
   });
 });

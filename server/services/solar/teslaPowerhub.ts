@@ -3416,18 +3416,24 @@ export async function getTeslaPowerhubGroupProductionMetricsCached(
 //   to derive max-min delta in kWh; primary→fallback signal logic
 //   for RGM-meter → inverter graceful degradation.
 //
-// Slice 4c PR-B (this PR): adds `fetchSiteExternalIds` — STE ID
-//   extraction across N sites with concurrency + rate-limiting. Tesla
-//   stores the STE identifier (e.g. `STE20250403-01158`) in
-//   inconsistent fields, so the function uses a 3-priority scan: (1)
-//   18 candidate fields (top-level + nested `data`) matching the STE
-//   pattern; (2) any string value in record/data matching the
-//   pattern; (3) `site_name` as last-resort fallback. Errors per site
-//   are tolerated (logged via `onProgress` count, not thrown).
+// Slice 4c PR-B (#404): adds `fetchSiteExternalIds` — STE ID
+//   extraction across N sites with concurrency + rate-limiting. 3-
+//   priority scan (candidate fields → any-string → site_name).
+//   Per-site errors tolerated.
 //
-// Still to come: telemetry window orchestration
-// (`fetchTelemetryWindowTotals`), then the top-level
-// `getTeslaPowerhubProductionMetrics`.
+// Slice 4c PR-C (this PR): adds `fetchTelemetryWindowTotals` — the
+//   group-level telemetry orchestrator. Builds candidate URLs (1-3
+//   based on override) × group-rollup variants (null / "sum") →
+//   ordered TelemetryAttempt list. Iterates: history-without-rollup
+//   first (may return per-site breakdowns), history-with-rollup-sum
+//   second (group-aggregated), aggregate endpoint last. Returns the
+//   first attempt that yields per-site totals — UNLESS
+//   `allowEmptyTotals` is set, in which case the first 200 wins
+//   even if totals are empty (used for the lifetime/zero-window
+//   path). Throws with last-error + payload preview if all attempts
+//   fail.
+//
+// Still to come: top-level `getTeslaPowerhubProductionMetrics`.
 // ────────────────────────────────────────────────────────────────────
 export const __TEST_ONLY__ = {
   normalizeTimeoutMs,
@@ -3445,4 +3451,5 @@ export const __TEST_ONLY__ = {
   fetchGroupSites,
   fetchSingleSiteTelemetryTotal,
   fetchSiteExternalIds,
+  fetchTelemetryWindowTotals,
 };
