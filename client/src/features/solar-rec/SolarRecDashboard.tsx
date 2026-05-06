@@ -3663,25 +3663,67 @@ export default function SolarRecDashboard() {
   // offlinePlatformBreakdownRows, filteredOfflineSystems, offlineSummary, filter-reset useEffect
   // — moved to @/solar-rec-dashboard/components/OfflineMonitoringTab
 
-  const abpApplicationIdBySystemKey = useMemo(() => {
-    return new Map<string, string>(
-      Object.entries(
-        offlineMonitoringQuery.data?.abpApplicationIdBySystemKey ?? {}
-      )
+  // Per-system maps (Phase 2 PR-C-3-b, 2026-05-06): derived from a
+  // `useInfiniteQuery` walk of `getDashboardMonitoringDetailsPage`
+  // (PR-C-3-a, fact-table backed) instead of the
+  // `getDashboardOfflineMonitoring` heavy proc's per-system map
+  // fields. Same gating predicate as the heavy query — both
+  // queries fire together so both data sources are warm at the
+  // same time. Same auto-walk pattern as the change-ownership
+  // pages query (PR-D-4).
+  const monitoringDetailsPagesQuery =
+    solarRecTrpc.solarRecDashboard.getDashboardMonitoringDetailsPage.useInfiniteQuery(
+      { limit: 500 },
+      {
+        staleTime: 60_000,
+        enabled:
+          isOfflineMonitoringHeavyNeeded && hasUserInteractedWithDashboard,
+        getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
+        initialCursor: null,
+      }
     );
-  }, [offlineMonitoringQuery.data]);
+  useEffect(() => {
+    if (
+      monitoringDetailsPagesQuery.hasNextPage &&
+      !monitoringDetailsPagesQuery.isFetchingNextPage
+    ) {
+      void monitoringDetailsPagesQuery.fetchNextPage();
+    }
+  }, [
+    monitoringDetailsPagesQuery.hasNextPage,
+    monitoringDetailsPagesQuery.isFetchingNextPage,
+    monitoringDetailsPagesQuery.fetchNextPage,
+  ]);
+  const isMonitoringDetailsPagesComplete =
+    monitoringDetailsPagesQuery.status === "success" &&
+    !monitoringDetailsPagesQuery.hasNextPage;
 
-  // Phase 5e step 4 PR-C1 (2026-04-30) — three abp-derived Maps now
-  // come from `getDashboardOfflineMonitoring`. Server runs the same
-  // first-non-null / earliest-date semantics; client wraps the
-  // serialized records in Maps once.
+  const abpApplicationIdBySystemKey = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const page of monitoringDetailsPagesQuery.data?.pages ?? []) {
+      for (const row of page.rows) {
+        if (row.abpApplicationId) {
+          map.set(row.systemKey, row.abpApplicationId);
+        }
+      }
+    }
+    return map;
+  }, [monitoringDetailsPagesQuery.data]);
+
+  // Decimal columns on the fact table are wire-encoded as
+  // `string | null` (Drizzle `decimal()` convention); the
+  // `parseDecimalString` helper at module top normalizes back to
+  // `number | null` for the existing Map<string, number> contract.
   const abpAcSizeKwBySystemKey = useMemo(() => {
-    return new Map<string, number>(
-      Object.entries(
-        offlineMonitoringQuery.data?.abpAcSizeKwBySystemKey ?? {}
-      )
-    );
-  }, [offlineMonitoringQuery.data]);
+    const map = new Map<string, number>();
+    for (const page of monitoringDetailsPagesQuery.data?.pages ?? []) {
+      for (const row of page.rows) {
+        const n = parseDecimalString(row.abpAcSizeKw);
+        if (n !== null) map.set(row.systemKey, n);
+      }
+    }
+    return map;
+  }, [monitoringDetailsPagesQuery.data]);
 
   const abpAcSizeKwByApplicationId = useMemo(() => {
     return new Map<string, number>(
@@ -3703,13 +3745,39 @@ export default function SolarRecDashboard() {
     return out;
   }, [offlineMonitoringQuery.data]);
 
+  // Drizzle column names (camelCase) → MonitoringDetailsRecord
+  // field names (snake_case) at the boundary. Null defaults to
+  // empty string to match the aggregator's prior contract — the
+  // tab + downstream consumers treat absent rows as empty fields.
   const monitoringDetailsBySystemKey = useMemo(() => {
-    return new Map<string, MonitoringDetailsRecord>(
-      Object.entries(
-        offlineMonitoringQuery.data?.monitoringDetailsBySystemKey ?? {}
-      )
-    );
-  }, [offlineMonitoringQuery.data]);
+    const map = new Map<string, MonitoringDetailsRecord>();
+    for (const page of monitoringDetailsPagesQuery.data?.pages ?? []) {
+      for (const row of page.rows) {
+        map.set(row.systemKey, {
+          online_monitoring_access_type: row.onlineMonitoringAccessType ?? "",
+          online_monitoring: row.onlineMonitoring ?? "",
+          online_monitoring_granted_username:
+            row.onlineMonitoringGrantedUsername ?? "",
+          online_monitoring_username: row.onlineMonitoringUsername ?? "",
+          online_monitoring_system_name: row.onlineMonitoringSystemName ?? "",
+          online_monitoring_system_id: row.onlineMonitoringSystemId ?? "",
+          online_monitoring_password: row.onlineMonitoringPassword ?? "",
+          online_monitoring_website_api_link:
+            row.onlineMonitoringWebsiteApiLink ?? "",
+          online_monitoring_entry_method:
+            row.onlineMonitoringEntryMethod ?? "",
+          online_monitoring_notes: row.onlineMonitoringNotes ?? "",
+          online_monitoring_self_report: row.onlineMonitoringSelfReport ?? "",
+          online_monitoring_rgm_info: row.onlineMonitoringRgmInfo ?? "",
+          online_monitoring_no_submit_generation:
+            row.onlineMonitoringNoSubmitGeneration ?? "",
+          system_online: row.systemOnline ?? "",
+          last_reported_online_date: row.lastReportedOnlineDate ?? "",
+        });
+      }
+    }
+    return map;
+  }, [monitoringDetailsPagesQuery.data]);
 
   // Phase 5e (2026-04-29): the parent's two tracking-ID-keyed memos
   // — `annualProductionByTrackingId` and `generationBaselineByTrack
@@ -4964,6 +5032,19 @@ export default function SolarRecDashboard() {
         ready: false,
         reason:
           "Open Offline Monitoring (or another heavy tab) to load Part-II value data before snapshotting.",
+      };
+    }
+    // Snapshot needs the per-system maps too. After PR-C-3-b
+    // those come from the `getDashboardMonitoringDetailsPage`
+    // walk (auto-paged). The infinite query reports `success`
+    // after page 1; gate explicitly on end-of-stream so
+    // `monitoringDetailsBySystemKey` etc. are fully hydrated
+    // before `snapshotPart2ValueSummary` reads them.
+    if (!isMonitoringDetailsPagesComplete) {
+      return {
+        ready: false,
+        reason:
+          "Loading offline-monitoring per-system rows… try again in a moment.",
       };
     }
     if (!serverSnapshot.systems) {
