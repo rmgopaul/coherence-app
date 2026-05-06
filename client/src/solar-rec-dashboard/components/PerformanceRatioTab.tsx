@@ -20,7 +20,7 @@
  */
 
 import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
-import { Upload } from "lucide-react";
+import { Loader2, Upload } from "lucide-react";
 import { clean, formatCurrency, formatPercent } from "@/lib/helpers";
 import { AskAiPanel } from "@/components/AskAiPanel";
 import {
@@ -301,6 +301,36 @@ export default memo(function PerformanceRatioTab(props: PerformanceRatioTabProps
   // -------------------------------------------------------------------------
   const performanceRatioQuery =
     solarRecTrpc.solarRecDashboard.getDashboardPerformanceRatio.useQuery();
+
+  // Cache-miss elapsed-time tracker. The server aggregator streams
+  // ~200 pages of converted reads + 7 dataset loads on a cold cache,
+  // which can take 30–60s on prod-scale data. Without this counter
+  // the user has no signal that work is in progress — the tile grid
+  // renders 0/0/0 (the same numbers a successful empty result would
+  // show), which is indistinguishable from a stuck/errored query.
+  const performanceRatioStartedAtRef = useRef<number | null>(null);
+  const [performanceRatioElapsedSec, setPerformanceRatioElapsedSec] =
+    useState(0);
+  useEffect(() => {
+    if (!performanceRatioQuery.isPending) {
+      performanceRatioStartedAtRef.current = null;
+      setPerformanceRatioElapsedSec(0);
+      return;
+    }
+    if (performanceRatioStartedAtRef.current === null) {
+      performanceRatioStartedAtRef.current = Date.now();
+    }
+    const interval = window.setInterval(() => {
+      const startedAt = performanceRatioStartedAtRef.current;
+      if (startedAt !== null) {
+        setPerformanceRatioElapsedSec(
+          Math.round((Date.now() - startedAt) / 1000),
+        );
+      }
+    }, 1000);
+    return () => window.clearInterval(interval);
+  }, [performanceRatioQuery.isPending]);
+
   const performanceRatioResult = useMemo(() => {
     const data = performanceRatioQuery.data;
     if (!data) {
@@ -1141,6 +1171,41 @@ export default memo(function PerformanceRatioTab(props: PerformanceRatioTabProps
         </Card>
       ) : (
         <>
+          {performanceRatioQuery.isPending && (
+            <Card className="border-sky-200 bg-sky-50/60">
+              <CardHeader>
+                <CardTitle className="text-base flex items-center gap-2 text-sky-900">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Computing performance ratio…
+                  {performanceRatioElapsedSec > 0 && (
+                    <span className="text-sm font-normal text-sky-700">
+                      ({performanceRatioElapsedSec}s)
+                    </span>
+                  )}
+                </CardTitle>
+                <CardDescription className="text-sky-800">
+                  Streaming converted reads from the database and joining
+                  against the system snapshot + ABP Part II data. The first
+                  load after a deploy can take up to a minute while the
+                  cache rebuilds; subsequent loads are served from cache.
+                </CardDescription>
+              </CardHeader>
+            </Card>
+          )}
+          {performanceRatioQuery.isError && (
+            <Card className="border-rose-200 bg-rose-50/60">
+              <CardHeader>
+                <CardTitle className="text-base text-rose-900">
+                  Performance ratio failed to load
+                </CardTitle>
+                <CardDescription className="text-rose-800">
+                  {performanceRatioQuery.error instanceof Error
+                    ? performanceRatioQuery.error.message
+                    : "Unknown error. Try refreshing the page."}
+                </CardDescription>
+              </CardHeader>
+            </Card>
+          )}
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-7">
             <Card>
               <CardHeader>
