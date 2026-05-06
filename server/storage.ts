@@ -18,7 +18,11 @@ import { ENV } from "./_core/env";
 type StorageConfig = { baseUrl: string; apiKey: string };
 
 export const LOCAL_STORAGE_ROUTE_PREFIX = "/_local_uploads";
-const DEFAULT_LOCAL_STORAGE_ROOT = path.resolve(process.cwd(), ".local_uploads");
+const DEFAULT_LOCAL_STORAGE_ROOT = path.resolve(
+  process.cwd(),
+  ".local_uploads"
+);
+const STORAGE_PROXY_DELETE_TIMEOUT_MS = 10_000;
 
 function normalizeEnvValue(value: string | undefined): string {
   const normalized = (value ?? "").trim();
@@ -45,7 +49,9 @@ export function isStorageProxyConfigured(): boolean {
 
 export function getLocalStorageRoot(): string {
   const configured = process.env.LOCAL_STORAGE_ROOT?.trim();
-  return configured && configured.length > 0 ? path.resolve(configured) : DEFAULT_LOCAL_STORAGE_ROOT;
+  return configured && configured.length > 0
+    ? path.resolve(configured)
+    : DEFAULT_LOCAL_STORAGE_ROOT;
 }
 
 function getStorageConfig(): StorageConfig {
@@ -71,6 +77,12 @@ function getStorageConfig(): StorageConfig {
 
 function buildUploadUrl(baseUrl: string, relKey: string): URL {
   const url = new URL("v1/storage/upload", ensureTrailingSlash(baseUrl));
+  url.searchParams.set("path", normalizeKey(relKey));
+  return url;
+}
+
+function buildDeleteUrl(baseUrl: string, relKey: string): URL {
+  const url = new URL("v1/storage/delete", ensureTrailingSlash(baseUrl));
   url.searchParams.set("path", normalizeKey(relKey));
   return url;
 }
@@ -106,8 +118,8 @@ function normalizeKey(relKey: string): string {
 function keyToLocalUrl(key: string): string {
   const encoded = key
     .split("/")
-    .filter((part) => part.length > 0)
-    .map((part) => encodeURIComponent(part))
+    .filter(part => part.length > 0)
+    .map(part => encodeURIComponent(part))
     .join("/");
   return `${LOCAL_STORAGE_ROUTE_PREFIX}/${encoded}`;
 }
@@ -256,7 +268,9 @@ export async function storagePutFile(
   return { key, url, bytes };
 }
 
-export async function storageGet(relKey: string): Promise<{ key: string; url: string; }> {
+export async function storageGet(
+  relKey: string
+): Promise<{ key: string; url: string }> {
   const key = normalizeKey(relKey);
 
   if (!isStorageProxyConfigured()) {
@@ -313,12 +327,11 @@ export async function storageExists(relKey: string): Promise<boolean> {
  * missing file is treated as success (the caller's intent — "this
  * key should not exist" — is satisfied either way).
  *
- * Proxy mode: the Forge proxy does not currently expose a DELETE
- * endpoint in this codebase (only `v1/storage/upload` and
- * `v1/storage/downloadUrl` are wired up). Returns
- * `{ deleted: false, mode: "proxy" }` and logs once at warn level
- * so the caller can surface the limitation. Proxy-side cleanup is
- * tracked as the next hardening step.
+ * Proxy mode: calls the Forge proxy delete endpoint. Proxy cleanup
+ * remains best-effort: a failed / unavailable delete endpoint is
+ * logged and returns `{ deleted: false, mode: "proxy" }` so cleanup
+ * loops can keep operating and lifecycle cleanup can reclaim the
+ * artifact later.
  *
  * Never throws — caller-side cleanup loops should never fail because
  * a single artifact couldn't be removed.
@@ -345,11 +358,31 @@ export async function storageDelete(
     }
   }
 
-  // Forge proxy delete is not implemented; log + return without
-  // touching the artifact so callers can keep operating.
-  console.warn(
-    `[storage:delete] proxy-mode delete not implemented for key=${key} (artifact will persist until lifecycle policy expires it)`
-  );
+  const { baseUrl, apiKey } = getStorageConfig();
+  const deleteUrl = buildDeleteUrl(baseUrl, key);
+  try {
+    const response = await fetch(deleteUrl, {
+      method: "DELETE",
+      headers: buildAuthHeaders(apiKey),
+      signal: AbortSignal.timeout(STORAGE_PROXY_DELETE_TIMEOUT_MS),
+    });
+    if (response.ok) {
+      return { deleted: true, mode: "proxy" };
+    }
+    const message = await response.text().catch(() => response.statusText);
+    console.warn(
+      `[storage:delete] proxy delete failed for key=${key} ` +
+        `(${response.status} ${response.statusText}): ${
+          message || response.statusText
+        }`
+    );
+  } catch (err) {
+    console.warn(
+      `[storage:delete] proxy delete failed for key=${key}: ${
+        err instanceof Error ? err.message : String(err)
+      }`
+    );
+  }
   return { deleted: false, mode: "proxy" };
 }
 
@@ -373,7 +406,9 @@ export async function storageReadBytes(relKey: string): Promise<Uint8Array> {
   const { url } = await storageGet(key);
   const response = await fetch(url);
   if (!response.ok) {
-    throw new Error(`Storage read failed (${response.status} ${response.statusText}).`);
+    throw new Error(
+      `Storage read failed (${response.status} ${response.statusText}).`
+    );
   }
   const out = new Uint8Array(await response.arrayBuffer());
   logLargeStorageTransfer("storage-read", {

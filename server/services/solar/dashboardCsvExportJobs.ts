@@ -1005,10 +1005,10 @@ async function uploadBuiltCsvArtifact(
  *
  * The TTL prune deletes the row first then fires `storageDelete`
  * for each artifact URL — the storage cleanup is best-effort
- * (proxy-mode `storageDelete` is a logged no-op until that
- * endpoint is wired). A failed `storageDelete` doesn't roll back
- * the row delete: the artifact would persist until the storage
- * lifecycle policy reclaims it.
+ * (proxy-mode `storageDelete` attempts the Forge delete endpoint
+ * and returns false if the proxy rejects it). A failed
+ * `storageDelete` doesn't roll back the row delete: the artifact
+ * would persist until the storage lifecycle policy reclaims it.
  */
 async function sweepStaleAndPruned(): Promise<void> {
   try {
