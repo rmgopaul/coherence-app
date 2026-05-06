@@ -2287,3 +2287,111 @@ export type SolarRecDashboardChangeOwnershipFact =
   typeof solarRecDashboardChangeOwnershipFacts.$inferSelect;
 export type InsertSolarRecDashboardChangeOwnershipFact =
   typeof solarRecDashboardChangeOwnershipFacts.$inferInsert;
+
+// ────────────────────────────────────────────────────────────────────
+// Solar REC dashboard fact table — ownership overview per system
+// (Phase 2 PR-E-1, the third derived fact table).
+//
+// Replaces the per-row `OwnershipOverviewExportRow[]` payload that
+// `getDashboardOverviewSummary` embeds today (~5-15 MB on prod, the
+// second-largest of the three remaining oversize-allowlist entries).
+// PR-E-2 will add the builder that populates this table from the
+// system snapshot + part2-unmatched aggregator. PR-E-3 will add
+// the paginated read proc that the OverviewTab migrates onto.
+//
+// Same architectural shape as PR-C-1 + PR-D-1:
+//   - PK `(scopeId, systemKey)` where `systemKey` is the
+//     `OwnershipOverviewExportRow.key` from the existing aggregator
+//     (the system's stable identifier from the snapshot, OR the
+//     synthetic key for "Part II Unmatched" rows).
+//   - Build versioning via `buildId` + `(scopeId, buildId)` index.
+//   - UPSERT-then-orphan-sweep.
+//
+// Field layout: 1:1 mapping to `OwnershipOverviewExportRow` (20
+// fields). No numeric decimals (all numbers are derived elsewhere
+// for ownership; the export-row shape is text/date/boolean/enum
+// only — no `installedKwAc` / contract amounts here, those live on
+// changeOwnership).
+//
+// Filter axes pinned by indexes:
+//   - `(scopeId, buildId)` — orphan sweep
+//   - `(scopeId, ownershipStatus)` — primary tab filter axis
+//     (Transferred / Not Transferred / Terminated × Reporting /
+//     Not Reporting). Same pattern as PR-D-1's
+//     `changeOwnershipStatus` index.
+//   - `(scopeId, source)` — OverviewTab's "Matched System vs
+//     Part II Unmatched" toggle. Cheap secondary axis.
+//
+// PR-E-1 is helpers ONLY — no caller wires these in until PR-E-2.
+// ────────────────────────────────────────────────────────────────────
+
+export const solarRecDashboardOwnershipFacts = mysqlTable(
+  "solarRecDashboardOwnershipFacts",
+  {
+    scopeId: varchar("scopeId", { length: 64 }).notNull(),
+    // OwnershipOverviewExportRow.key — stable system identifier
+    // OR the synthetic key for Part II Unmatched rows. varchar(128).
+    systemKey: varchar("systemKey", { length: 128 }).notNull(),
+
+    // 20 OwnershipOverviewExportRow fields, mirrors the type 1:1.
+    // Part 2 cross-reference fields (always present on every row,
+    // empty/null when the row didn't match a Part II project).
+    part2ProjectName: text("part2ProjectName").notNull(),
+    part2ApplicationId: varchar("part2ApplicationId", { length: 128 }),
+    part2SystemId: varchar("part2SystemId", { length: 128 }),
+    part2TrackingId: varchar("part2TrackingId", { length: 128 }),
+    // Discriminator: "Matched System" | "Part II Unmatched".
+    // Stored as varchar (not mysqlEnum) so adding a new source is
+    // a code-only PR. The OverviewTab's source-filter toggle keys
+    // off this column.
+    source: varchar("source", { length: 64 }).notNull(),
+    // System fields (present on Matched System rows; empty/null
+    // on Part II Unmatched rows).
+    systemName: text("systemName").notNull(),
+    systemId: varchar("systemId", { length: 128 }),
+    stateApplicationRefId: varchar("stateApplicationRefId", { length: 128 }),
+    trackingSystemRefId: varchar("trackingSystemRefId", { length: 128 }),
+    // Status enums + booleans.
+    ownershipStatus: varchar("ownershipStatus", { length: 64 }).notNull(),
+    isReporting: boolean("isReporting").notNull(),
+    isTransferred: boolean("isTransferred").notNull(),
+    isTerminated: boolean("isTerminated").notNull(),
+    // Contract metadata.
+    contractType: varchar("contractType", { length: 64 }),
+    contractStatusText: text("contractStatusText").notNull(),
+    // Date fields (4-byte date type, no time component).
+    latestReportingDate: date("latestReportingDate"),
+    contractedDate: date("contractedDate"),
+    // Zillow cross-reference (optional sale tracking).
+    zillowStatus: varchar("zillowStatus", { length: 64 }),
+    zillowSoldDate: date("zillowSoldDate"),
+
+    // Build versioning + observability.
+    buildId: varchar("buildId", { length: 64 }).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    pk: primaryKey({
+      columns: [table.scopeId, table.systemKey],
+      name: "solar_rec_dashboard_ownership_facts_pk",
+    }),
+    // Build sweep covers the orphan-deletion query.
+    scopeBuildIdx: index(
+      "solar_rec_dashboard_ownership_facts_scope_build_idx"
+    ).on(table.scopeId, table.buildId),
+    // Status filter — primary tab filter axis.
+    scopeStatusIdx: index(
+      "solar_rec_dashboard_ownership_facts_scope_status_idx"
+    ).on(table.scopeId, table.ownershipStatus),
+    // Source filter — Matched System vs Part II Unmatched toggle.
+    scopeSourceIdx: index(
+      "solar_rec_dashboard_ownership_facts_scope_source_idx"
+    ).on(table.scopeId, table.source),
+  })
+);
+
+export type SolarRecDashboardOwnershipFact =
+  typeof solarRecDashboardOwnershipFacts.$inferSelect;
+export type InsertSolarRecDashboardOwnershipFact =
+  typeof solarRecDashboardOwnershipFacts.$inferInsert;
