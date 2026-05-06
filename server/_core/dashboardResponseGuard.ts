@@ -41,6 +41,7 @@
 import { TRPCError } from "@trpc/server";
 import { t, requirePermission } from "./solarRecBase";
 import type { ModuleKey } from "../../shared/solarRecModules";
+import { maybeLogDashboardTidbDiagnostics } from "../services/solar/dashboardTidbDiagnostics";
 
 export const DASHBOARD_RESPONSE_LIMIT_BYTES_DEFAULT = 1024 * 1024;
 export const DASHBOARD_REQUEST_HEAP_DELTA_WARN_BYTES_DEFAULT =
@@ -229,29 +230,52 @@ const dashboardResponseGuardMiddleware = t.middleware(
     try {
       result = await next();
     } catch (error) {
+      const heapAfterBytes = process.memoryUsage().heapUsed;
+      const elapsedMs = Date.now() - startedAt;
       maybeLogDashboardRequestHeap({
         path,
         outcome: "failed",
         startedAt,
         heapBeforeBytes,
-        heapAfterBytes: process.memoryUsage().heapUsed,
+        heapAfterBytes,
         enforcement: getDashboardResponseEnforcement(),
         allowlisted,
         error,
       });
+      void maybeLogDashboardTidbDiagnostics({
+        path,
+        outcome: "failed",
+        elapsedMs,
+        enforcement: getDashboardResponseEnforcement(),
+        allowlisted,
+        heapBeforeBytes,
+        heapAfterBytes,
+      });
       throw error;
     }
     const enforcement = getDashboardResponseEnforcement();
+    const heapAfterBytes = process.memoryUsage().heapUsed;
+    const elapsedMs = Date.now() - startedAt;
+    const outcome = result.ok ? "success" : "failed";
 
     maybeLogDashboardRequestHeap({
       path,
-      outcome: result.ok ? "success" : "failed",
+      outcome,
       startedAt,
       heapBeforeBytes,
-      heapAfterBytes: process.memoryUsage().heapUsed,
+      heapAfterBytes,
       enforcement,
       allowlisted,
       error: result.ok ? undefined : result.error,
+    });
+    void maybeLogDashboardTidbDiagnostics({
+      path,
+      outcome,
+      elapsedMs,
+      enforcement,
+      allowlisted,
+      heapBeforeBytes,
+      heapAfterBytes,
     });
 
     if (!result.ok) return result;

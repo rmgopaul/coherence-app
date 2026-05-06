@@ -21,6 +21,10 @@ const ENV_KEYS = [
   "DASHBOARD_REQUEST_HEAP_DELTA_WARN_BYTES",
   "DASHBOARD_REQUEST_HEAP_AFTER_WARN_BYTES",
   "DASHBOARD_REQUEST_HEAP_LOG_ALL",
+  "DASHBOARD_TIDB_DIAGNOSTICS",
+  "DASHBOARD_TIDB_DIAGNOSTICS_MIN_ELAPSED_MS",
+  "DASHBOARD_TIDB_DIAGNOSTICS_MIN_INTERVAL_MS",
+  "DASHBOARD_TIDB_DIAGNOSTICS_LIMIT",
   "NODE_ENV",
 ] as const;
 
@@ -307,6 +311,7 @@ describe("dashboardResponseGuardMiddleware allowlist short-circuit", () => {
 
   beforeEach(() => {
     envSnapshot = snapshotEnv();
+    delete process.env.DASHBOARD_TIDB_DIAGNOSTICS;
     warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
   });
   afterEach(() => {
@@ -775,6 +780,9 @@ describe("Solar REC dashboard guardrail CI", () => {
     );
     expect(script).toContain(
       "server/services/solar/dashboardJobMetrics.test.ts"
+    );
+    expect(script).toContain(
+      "server/services/solar/dashboardTidbDiagnostics.test.ts"
     );
     expect(ciWorkflow).toMatch(/solar-rec-dashboard-guardrails:/);
     expect(ciWorkflow).toContain("pnpm run test:solar-rec-dashboard-guardrails");

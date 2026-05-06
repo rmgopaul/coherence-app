@@ -13,10 +13,10 @@
  *     start + finish is fine.
  *   - No timers, no setInterval — the caller decides when to call
  *     `finish` / `fail`.
- *   - No TiDB `SHOW STATUS` / RU query — that needs a verified-
- *     cheap probe before it can run on every job. Add it when
- *     Phase 1 wires the RU diagnostics gate; this file stays
- *     process-local only.
+ *   - No TiDB `SHOW STATUS` / RU query. Request-level TiDB/RU
+ *     diagnostics are env-gated in `dashboardTidbDiagnostics.ts`;
+ *     this file stays process-local so every background job can emit
+ *     terminal metrics without adding database work.
  *
  * Usage:
  *   const metric = startDashboardJobMetric({
