@@ -27,7 +27,6 @@ import { appendFile, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type {
-  ChangeOwnershipExportRow,
   ChangeOwnershipStatus,
   OwnershipStatus,
 } from "./buildChangeOwnershipAggregates";
@@ -54,6 +53,23 @@ export interface OwnershipTileCsvRow {
   contractedDate: Date | string | null;
   zillowStatus: string | null;
   zillowSoldDate: Date | string | null;
+}
+
+export interface ChangeOwnershipTileCsvRow {
+  systemName: string;
+  systemId: string | null;
+  trackingSystemRefId: string | null;
+  ownershipStatus: string;
+  changeOwnershipStatus: string | null;
+  isReporting: boolean;
+  isTransferred: boolean;
+  isTerminated: boolean;
+  contractType: string | null;
+  contractStatusText: string;
+  contractedDate: Date | string | null;
+  zillowStatus: string | null;
+  zillowSoldDate: Date | string | null;
+  latestReportingDate: Date | string | null;
 }
 
 export interface OwnershipTileCsvResult {
@@ -200,7 +216,7 @@ export async function buildOwnershipTileCsvFile(
  * as ownership — filter, sort, map to CSV columns.
  */
 export function buildChangeOwnershipTileCsv(
-  changeOwnershipRows: readonly ChangeOwnershipExportRow[],
+  changeOwnershipRows: readonly ChangeOwnershipTileCsvRow[],
   status: ChangeOwnershipStatus,
   generatedAtIso: string = new Date().toISOString()
 ): ChangeOwnershipTileCsvResult {
@@ -220,7 +236,7 @@ export function buildChangeOwnershipTileCsv(
  * allocation before upload.
  */
 export async function buildChangeOwnershipTileCsvFile(
-  changeOwnershipRows: readonly ChangeOwnershipExportRow[],
+  changeOwnershipRows: readonly ChangeOwnershipTileCsvRow[],
   status: ChangeOwnershipStatus,
   generatedAtIso: string = new Date().toISOString()
 ): Promise<FileBackedTileCsvResult> {
@@ -246,9 +262,9 @@ function filterOwnershipTileRows(
 }
 
 function filterChangeOwnershipRows(
-  changeOwnershipRows: readonly ChangeOwnershipExportRow[],
+  changeOwnershipRows: readonly ChangeOwnershipTileCsvRow[],
   status: ChangeOwnershipStatus
-): ChangeOwnershipExportRow[] {
+): ChangeOwnershipTileCsvRow[] {
   return changeOwnershipRows
     .filter(row => row.changeOwnershipStatus === status)
     .slice()
@@ -292,7 +308,7 @@ function ownershipRowToCsvRecord(
 }
 
 function changeOwnershipRowToCsvRecord(
-  row: ChangeOwnershipExportRow
+  row: ChangeOwnershipTileCsvRow
 ): Record<string, string> {
   return {
     system_name: row.systemName,

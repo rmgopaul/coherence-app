@@ -75,6 +75,10 @@ import {
   getOwnershipFactsPage,
 } from "../../db/dashboardOwnershipFacts";
 import {
+  getChangeOwnershipFactsCount,
+  getChangeOwnershipFactsPage,
+} from "../../db/dashboardChangeOwnershipFacts";
+import {
   claimDashboardCsvExportJob,
   completeDashboardCsvExportJobFailure,
   completeDashboardCsvExportJobSuccess,
@@ -86,16 +90,18 @@ import {
 } from "../../db/dashboardCsvExportJobs";
 import type {
   DashboardCsvExportJob,
+  SolarRecDashboardChangeOwnershipFact,
   SolarRecDashboardOwnershipFact,
 } from "../../../drizzle/schema";
 
 const METRIC_PREFIX = "[dashboard:csv-export-jobs]";
 
 export const DASHBOARD_CSV_EXPORT_RUNNER_VERSION =
-  "dashboard-csv-export-jobs-v10-ownership-fact-export";
+  "dashboard-csv-export-jobs-v11-change-ownership-fact-export";
 const LEGACY_DETERMINISTIC_ARTIFACT_RUNNER_VERSION =
   "dashboard-csv-export-jobs-v3-heartbeat";
 const OWNERSHIP_FACT_EXPORT_PAGE_SIZE = 1000;
+const CHANGE_OWNERSHIP_FACT_EXPORT_PAGE_SIZE = 1000;
 const OWNERSHIP_TILE_STATUS_FILTERS: Record<
   OwnershipTileKey,
   readonly string[]
@@ -1026,6 +1032,16 @@ async function buildExport(
   if (input.exportType === "deliveryTrackerUnmatchedTransfersCsv") {
     return buildDeliveryTrackerUnmatchedTransfersCsvExport(scopeId);
   }
+  const factArtifact = await buildChangeOwnershipTileCsvFromFacts(
+    scopeId,
+    input.status
+  );
+  if (factArtifact) return factArtifact;
+
+  // Transitional fallback: scopes that have not run the
+  // change-ownership fact build yet still need exports to work.
+  // Once the build runner is required before export, this fallback
+  // can be retired with `getOrBuildChangeOwnership`.
   const { result } = await getOrBuildChangeOwnership(scopeId);
   return buildChangeOwnershipTileCsvFile(result.rows, input.status);
 }
@@ -1056,6 +1072,32 @@ async function buildOwnershipTileCsvFromFacts(
   }
 
   return buildOwnershipTileCsvFile(rows, tile);
+}
+
+async function buildChangeOwnershipTileCsvFromFacts(
+  scopeId: string,
+  status: ChangeOwnershipStatus
+): Promise<BuiltCsvArtifact | null> {
+  const totalFacts = await getChangeOwnershipFactsCount(scopeId);
+  if (totalFacts <= 0) return null;
+
+  const rows: SolarRecDashboardChangeOwnershipFact[] = [];
+  let cursorAfter: string | null = null;
+  while (true) {
+    const page = await getChangeOwnershipFactsPage(scopeId, {
+      cursorAfter,
+      limit: CHANGE_OWNERSHIP_FACT_EXPORT_PAGE_SIZE,
+      status,
+    });
+    rows.push(...page);
+
+    if (page.length < CHANGE_OWNERSHIP_FACT_EXPORT_PAGE_SIZE) break;
+    const nextCursor = page[page.length - 1]?.systemKey ?? null;
+    if (!nextCursor || nextCursor === cursorAfter) break;
+    cursorAfter = nextCursor;
+  }
+
+  return buildChangeOwnershipTileCsvFile(rows, status);
 }
 
 function getBuiltCsvBytes(built: BuiltCsvArtifact): number {

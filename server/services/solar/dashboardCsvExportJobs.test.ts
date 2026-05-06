@@ -51,6 +51,11 @@ const ownershipFactsMockState = vi.hoisted(() => ({
   getOwnershipFactsCount: vi.fn(),
   getOwnershipFactsPage: vi.fn(),
 }));
+const changeOwnershipFactsMockState = vi.hoisted(() => ({
+  rows: [] as Array<Record<string, unknown>>,
+  getChangeOwnershipFactsCount: vi.fn(),
+  getChangeOwnershipFactsPage: vi.fn(),
+}));
 
 function fakeReset(): void {
   fakeDb.length = 0;
@@ -242,6 +247,13 @@ vi.mock("../../db/dashboardOwnershipFacts", () => ({
   getOwnershipFactsPage: ownershipFactsMockState.getOwnershipFactsPage,
 }));
 
+vi.mock("../../db/dashboardChangeOwnershipFacts", () => ({
+  getChangeOwnershipFactsCount:
+    changeOwnershipFactsMockState.getChangeOwnershipFactsCount,
+  getChangeOwnershipFactsPage:
+    changeOwnershipFactsMockState.getChangeOwnershipFactsPage,
+}));
+
 vi.mock("./buildOverviewSummaryAggregates", () => ({
   getOrBuildOverviewSummary: vi.fn(async () => ({
     result: {
@@ -400,6 +412,9 @@ beforeEach(() => {
   ownershipFactsMockState.rows = [];
   ownershipFactsMockState.getOwnershipFactsCount.mockReset();
   ownershipFactsMockState.getOwnershipFactsPage.mockReset();
+  changeOwnershipFactsMockState.rows = [];
+  changeOwnershipFactsMockState.getChangeOwnershipFactsCount.mockReset();
+  changeOwnershipFactsMockState.getChangeOwnershipFactsPage.mockReset();
   ownershipFactsMockState.getOwnershipFactsCount.mockImplementation(
     async (scopeId: string) =>
       ownershipFactsMockState.rows.filter(row => row.scopeId === scopeId)
@@ -418,6 +433,36 @@ beforeEach(() => {
         .filter(row => row.scopeId === scopeId)
         .filter(row =>
           options.status ? row.ownershipStatus === options.status : true
+        )
+        .filter(row =>
+          options.cursorAfter
+            ? String(row.systemKey) > options.cursorAfter
+            : true
+        )
+        .sort((a, b) =>
+          String(a.systemKey).localeCompare(String(b.systemKey))
+        )
+        .slice(0, options.limit);
+    }
+  );
+  changeOwnershipFactsMockState.getChangeOwnershipFactsCount.mockImplementation(
+    async (scopeId: string) =>
+      changeOwnershipFactsMockState.rows.filter(row => row.scopeId === scopeId)
+        .length
+  );
+  changeOwnershipFactsMockState.getChangeOwnershipFactsPage.mockImplementation(
+    async (
+      scopeId: string,
+      options: {
+        cursorAfter?: string | null;
+        limit: number;
+        status?: string | null;
+      }
+    ) => {
+      return changeOwnershipFactsMockState.rows
+        .filter(row => row.scopeId === scopeId)
+        .filter(row =>
+          options.status ? row.changeOwnershipStatus === options.status : true
         )
         .filter(row =>
           options.cursorAfter
@@ -505,6 +550,38 @@ function makeOwnershipFact(
     contractedDate: new Date("2024-01-01T00:00:00Z"),
     zillowStatus: null,
     zillowSoldDate: null,
+    buildId: "bld-1",
+    createdAt: new Date("2026-05-01T00:00:00Z"),
+    updatedAt: new Date("2026-05-01T00:00:00Z"),
+    ...overrides,
+  };
+}
+
+function makeChangeOwnershipFact(
+  systemKey: string,
+  overrides: Record<string, unknown> = {}
+): Record<string, unknown> {
+  return {
+    scopeId: SCOPE,
+    systemKey,
+    systemName: `Change ${systemKey}`,
+    systemId: `sys-${systemKey}`,
+    trackingSystemRefId: `trk-${systemKey}`,
+    installedKwAc: "10.0000",
+    contractType: "REC",
+    contractStatusText: "Active",
+    contractedDate: new Date("2023-06-01T00:00:00Z"),
+    zillowStatus: null,
+    zillowSoldDate: null,
+    latestReportingDate: new Date("2026-04-15T00:00:00Z"),
+    changeOwnershipStatus: "Transferred and Reporting",
+    ownershipStatus: "Transferred and Reporting",
+    isReporting: true,
+    isTerminated: false,
+    isTransferred: true,
+    hasChangedOwnership: true,
+    totalContractAmount: "1000.0000",
+    contractedValue: "1000.0000",
     buildId: "bld-1",
     createdAt: new Date("2026-05-01T00:00:00Z"),
     updatedAt: new Date("2026-05-01T00:00:00Z"),
@@ -709,7 +786,68 @@ describe("dashboardCsvExportJobs — runner: ownership-tile (DB-backed)", () => 
 });
 
 describe("dashboardCsvExportJobs — runner: change-ownership-tile (DB-backed)", () => {
-  it("claims, runs change-ownership aggregator + CSV builder + storagePutFile", async () => {
+  it("prefers paginated change-ownership facts and skips the heavy change-ownership aggregator", async () => {
+    changeOwnershipFactsMockState.rows = [
+      makeChangeOwnershipFact("key-b", {
+        changeOwnershipStatus: "Transferred and Reporting",
+      }),
+      makeChangeOwnershipFact("key-a", {
+        changeOwnershipStatus: "Transferred and Reporting",
+      }),
+      makeChangeOwnershipFact("key-z", {
+        changeOwnershipStatus: "Transferred and Not Reporting",
+      }),
+    ];
+    const changeOwnershipMod = await import("./buildChangeOwnershipAggregates");
+    const getChangeOwnership =
+      changeOwnershipMod.getOrBuildChangeOwnership as unknown as ReturnType<
+        typeof vi.fn
+      >;
+    getChangeOwnership.mockClear();
+
+    const jobId = await startAndRun(SCOPE, {
+      exportType: "changeOwnershipTile",
+      status: "Transferred and Reporting",
+    });
+
+    const status = await getCsvExportJobStatus(SCOPE, jobId);
+    expect(status?.status).toBe("succeeded");
+    expect(status?.rowCount).toBe(2);
+    expect(getChangeOwnership).not.toHaveBeenCalled();
+    expect(
+      changeOwnershipFactsMockState.getChangeOwnershipFactsCount
+    ).toHaveBeenCalledWith(SCOPE);
+    expect(
+      changeOwnershipFactsMockState.getChangeOwnershipFactsPage
+    ).toHaveBeenCalledWith(
+      SCOPE,
+      expect.objectContaining({
+        status: "Transferred and Reporting",
+        limit: 1000,
+      })
+    );
+  });
+
+  it("falls back to the change-ownership aggregator when facts have not been built", async () => {
+    const changeOwnershipMod = await import("./buildChangeOwnershipAggregates");
+    const getChangeOwnership =
+      changeOwnershipMod.getOrBuildChangeOwnership as unknown as ReturnType<
+        typeof vi.fn
+      >;
+    getChangeOwnership.mockClear();
+
+    const jobId = await startAndRun(SCOPE, {
+      exportType: "changeOwnershipTile",
+      status: "Transferred and Reporting",
+    });
+
+    const status = await getCsvExportJobStatus(SCOPE, jobId);
+    expect(status?.status).toBe("succeeded");
+    expect(status?.rowCount).toBe(1);
+    expect(getChangeOwnership).toHaveBeenCalledWith(SCOPE);
+  });
+
+  it("claims, runs fallback aggregator + CSV builder + storagePutFile", async () => {
     const storageMod = await import("../../storage");
     const jobId = await startAndRun(SCOPE, {
       exportType: "changeOwnershipTile",
@@ -1048,9 +1186,9 @@ describe("dashboardCsvExportJobs — sweepStaleAndPruned", () => {
 });
 
 describe("dashboardCsvExportJobs — runner version + claim id", () => {
-  it("exports the v10 ownership-fact CSV runner version", () => {
+  it("exports the v11 change-ownership-fact CSV runner version", () => {
     expect(DASHBOARD_CSV_EXPORT_RUNNER_VERSION).toBe(
-      "dashboard-csv-export-jobs-v10-ownership-fact-export"
+      "dashboard-csv-export-jobs-v11-change-ownership-fact-export"
     );
   });
 
