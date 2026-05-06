@@ -698,8 +698,9 @@ background-job pair below.
 `getDatasetCsv` was also retired from the router and the allowlist.
 Raw dataset CSV exports now use the same background-job pair with
 `startDashboardCsvExport({ exportType: "datasetCsv", datasetKey })`.
-The worker pages through the active `srDs*` batch, writes the CSV to
-storage, and returns only a slim status snapshot through tRPC.
+The worker pages through the active `srDs*` batch, spools the CSV to
+a temp file, uploads that file to storage, and returns only a slim
+status snapshot through tRPC.
 
 | Replacement proc | Wire shape | Notes |
 |---|---|---|
@@ -733,11 +734,11 @@ PR-A migration 0058). Implications:
 
 **Remaining background-job transitional debt:**
 
-- **Worker still builds the entire CSV string in memory** before
-  `storagePut` (including raw dataset CSV exports). The improvement
-  vs. the prior synchronous procs is scoped: the MB-scale CSV is OFF
-  the tRPC response path, restoring the response budget. True
-  row-streaming directly to storage is the next hardening step.
+- **Ownership/change-ownership exports still build the CSV string in
+  memory** before `storagePut`. Raw dataset CSV exports now spool
+  pages to a temp file and upload that file, so they no longer keep
+  the full CSV text in JS heap. True direct streaming to proxy
+  storage is still a future hardening step.
 - **`storageDelete` proxy-mode is a logged no-op.** The Forge proxy
   does not currently expose a DELETE endpoint in this repo
   (`v1/storage/upload` and `v1/storage/downloadUrl` are wired;

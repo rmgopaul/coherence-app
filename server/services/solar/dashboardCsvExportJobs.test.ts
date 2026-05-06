@@ -37,6 +37,9 @@ interface FakeRow {
 }
 
 const fakeDb: FakeRow[] = [];
+const datasetCsvExportMocks = vi.hoisted(() => ({
+  cleanup: vi.fn(async () => undefined),
+}));
 
 function fakeReset(): void {
   fakeDb.length = 0;
@@ -211,6 +214,11 @@ vi.mock("../../storage", () => ({
     key,
     url: `/_local_uploads/${key}`,
   })),
+  storagePutFile: vi.fn(async (key: string) => ({
+    key,
+    url: `/_local_uploads/${key}`,
+    bytes: 27,
+  })),
   storageGet: vi.fn(async (key: string) => ({
     key,
     url: `/_local_uploads/${key}`,
@@ -284,9 +292,11 @@ vi.mock("./dashboardDatasetCsvExport", () => {
       keys.includes(value as (typeof keys)[number]),
     buildDatasetCsvExport: vi.fn(
       async (_scopeId: string, datasetKey: string) => ({
-        csv: `dataset_key\n${datasetKey}`,
+        filePath: `/tmp/dataset-${datasetKey}.csv`,
         fileName: `dataset-${datasetKey}-20260506123456.csv`,
         rowCount: 1,
+        csvBytes: 27,
+        cleanup: datasetCsvExportMocks.cleanup,
       })
     ),
   };
@@ -520,7 +530,8 @@ describe("dashboardCsvExportJobs — runner: change-ownership-tile (DB-backed)",
 });
 
 describe("dashboardCsvExportJobs — runner: dataset CSV (DB-backed)", () => {
-  it("claims, runs the dataset CSV builder + storagePut", async () => {
+  it("claims, runs the dataset CSV builder + file-backed storagePut", async () => {
+    const storageMod = await import("../../storage");
     const jobId = await startAndRun(SCOPE, {
       exportType: "datasetCsv",
       datasetKey: "transferHistory",
@@ -535,6 +546,54 @@ describe("dashboardCsvExportJobs — runner: dataset CSV (DB-backed)", () => {
     expect(status?.fileName).toBe("dataset-transferHistory-20260506123456.csv");
     expect(status?.rowCount).toBe(1);
     expect(status?.url).toContain(`solar-rec-dashboard/${SCOPE}/exports/`);
+    expect(storageMod.storagePutFile).toHaveBeenCalledWith(
+      expect.stringContaining(`${jobId}-`),
+      "/tmp/dataset-transferHistory.csv",
+      "text/csv; charset=utf-8"
+    );
+    expect(datasetCsvExportMocks.cleanup).toHaveBeenCalledTimes(1);
+  });
+
+  it("defers temp-file cleanup until a timed-out file upload settles", async () => {
+    vi.useFakeTimers();
+    const storageMod = await import("../../storage");
+    const storagePutFile = storageMod.storagePutFile as unknown as ReturnType<
+      typeof vi.fn
+    >;
+    let resolveStoragePutFile:
+      | ((value: { key: string; url: string; bytes: number }) => void)
+      | null = null;
+    storagePutFile.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveStoragePutFile = resolve;
+        })
+    );
+    const dbHelpers = await import("../../db/dashboardCsvExportJobs");
+    await dbHelpers.insertDashboardCsvExportJob({
+      id: "dataset-late-put-timeout",
+      scopeId: SCOPE,
+      input: { exportType: "datasetCsv", datasetKey: "transferHistory" },
+      status: "queued",
+      runnerVersion: DASHBOARD_CSV_EXPORT_RUNNER_VERSION,
+    });
+
+    const runPromise = runCsvExportJob("dataset-late-put-timeout");
+    await vi.dynamicImportSettled();
+    await flushMicrotasks(128);
+    expect(resolveStoragePutFile).not.toBeNull();
+    await vi.advanceTimersByTimeAsync(__TEST_ONLY__.EXPORT_RUNNER_TIMEOUT_MS);
+    await runPromise;
+    expect(fakeFindById("dataset-late-put-timeout")?.status).toBe("failed");
+    expect(datasetCsvExportMocks.cleanup).not.toHaveBeenCalled();
+
+    resolveStoragePutFile!({
+      key: "unused",
+      url: "/unused",
+      bytes: 27,
+    });
+    await flushMicrotasks();
+    expect(datasetCsvExportMocks.cleanup).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -729,9 +788,9 @@ describe("dashboardCsvExportJobs — sweepStaleAndPruned", () => {
 });
 
 describe("dashboardCsvExportJobs — runner version + claim id", () => {
-  it("exports the v5 dataset CSV runner version", () => {
+  it("exports the v6 file-backed dataset CSV runner version", () => {
     expect(DASHBOARD_CSV_EXPORT_RUNNER_VERSION).toBe(
-      "dashboard-csv-export-jobs-v5-dataset-csv-export"
+      "dashboard-csv-export-jobs-v6-file-backed-dataset-csv"
     );
   });
 
@@ -1310,7 +1369,9 @@ describe("dashboardCsvExportJobs — Codex P2: lost-claim success path cleans st
     });
 
     const runPromise = runCsvExportJob("late-complete-timeout");
-    await flushMicrotasks();
+    await flushMicrotasks(128);
+    await vi.dynamicImportSettled();
+    await flushMicrotasks(128);
     expect(resolveComplete).not.toBeNull();
     await vi.advanceTimersByTimeAsync(__TEST_ONLY__.EXPORT_RUNNER_TIMEOUT_MS);
     await runPromise;

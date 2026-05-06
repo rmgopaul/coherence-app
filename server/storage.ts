@@ -2,7 +2,15 @@
 // 1) Forge proxy when BUILT_IN_FORGE_API_URL + BUILT_IN_FORGE_API_KEY are present.
 // 2) Local filesystem fallback when Forge credentials are missing.
 
-import { mkdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
+import { openAsBlob } from "node:fs";
+import {
+  copyFile,
+  mkdir,
+  readFile,
+  stat,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import path from "node:path";
 import { getBandwidthLogThresholdBytes } from "./_core/bandwidthDiagnostics";
 import { ENV } from "./_core/env";
@@ -189,6 +197,63 @@ export async function storagePut(
     durationMs: Date.now() - startedAt,
   });
   return { key, url };
+}
+
+export async function storagePutFile(
+  relKey: string,
+  sourcePath: string,
+  contentType = "application/octet-stream"
+): Promise<{ key: string; url: string; bytes: number }> {
+  const key = normalizeKey(relKey);
+  const sourceStat = await stat(sourcePath);
+  if (!sourceStat.isFile()) {
+    throw new Error(`Storage upload source is not a file: ${sourcePath}`);
+  }
+  const bytes = sourceStat.size;
+  const startedAt = Date.now();
+
+  if (!isStorageProxyConfigured()) {
+    const root = getLocalStorageRoot();
+    const absolutePath = path.join(root, key);
+    await mkdir(path.dirname(absolutePath), { recursive: true });
+    await copyFile(sourcePath, absolutePath);
+    logLargeStorageTransfer("storage-put", {
+      key,
+      bytes,
+      contentType,
+      mode: "local",
+      durationMs: Date.now() - startedAt,
+    });
+    return { key, url: keyToLocalUrl(key), bytes };
+  }
+
+  const { baseUrl, apiKey } = getStorageConfig();
+  const uploadUrl = buildUploadUrl(baseUrl, key);
+  const fileName = key.split("/").pop() ?? key;
+  const blob = await openAsBlob(sourcePath, { type: contentType });
+  const formData = new FormData();
+  formData.append("file", blob, fileName || "file");
+  const response = await fetch(uploadUrl, {
+    method: "POST",
+    headers: buildAuthHeaders(apiKey),
+    body: formData,
+  });
+
+  if (!response.ok) {
+    const message = await response.text().catch(() => response.statusText);
+    throw new Error(
+      `Storage upload failed (${response.status} ${response.statusText}): ${message}`
+    );
+  }
+  const url = (await response.json()).url;
+  logLargeStorageTransfer("storage-put", {
+    key,
+    bytes,
+    contentType,
+    mode: "proxy",
+    durationMs: Date.now() - startedAt,
+  });
+  return { key, url, bytes };
 }
 
 export async function storageGet(relKey: string): Promise<{ key: string; url: string; }> {
