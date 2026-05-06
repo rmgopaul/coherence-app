@@ -2121,11 +2121,18 @@ export const solarRecDashboardRouter = t.router({
       // ── Step 1: Persist the raw text so the textarea rehydrates
       //    on next mount. Do this FIRST so even if the patch step
       //    fails the user doesn't lose their pasted mapping.
-      await saveSolarRecDashboardPayload(
+      const mappingTextSaved = await saveSolarRecDashboardPayload(
         ctx.userId,
         "dashboard:schedule_b_contract_id_mapping",
         input.mappingText
       );
+      if (!mappingTextSaved) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message:
+            "Failed to save the Schedule B contract-ID mapping. No delivery schedule rows were changed.",
+        });
+      }
 
       // ── Step 2: Parse using shared helper (same logic used by
       //    applyScheduleBToDeliveryObligations when loading the
@@ -2140,6 +2147,7 @@ export const solarRecDashboardRouter = t.router({
           unchanged: 0,
           totalRows: 0,
           mappingTextSaved: true,
+          mappingText: input.mappingText,
         };
       }
 
@@ -2164,6 +2172,7 @@ export const solarRecDashboardRouter = t.router({
           rowCount: 0,
           _runnerVersion: null,
           mappingTextSaved: true,
+          mappingText: input.mappingText,
         };
       }
 
@@ -2246,6 +2255,7 @@ export const solarRecDashboardRouter = t.router({
         syncStateUpdated: persistence.syncStateUpdated,
         syncStateError: persistence.syncStateError,
         mappingTextSaved: true,
+        mappingText: input.mappingText,
       };
     }),
   uploadScheduleBFileChunk: dashboardProcedure("solar-rec-dashboard", "edit")
@@ -3827,6 +3837,35 @@ export const solarRecDashboardRouter = t.router({
           const list = uploadSourcesByDataset.get(row.datasetKey) ?? [];
           list.push(source);
           uploadSourcesByDataset.set(row.datasetKey, list);
+        }
+
+        const convertedReadsManifestPayload =
+          await getSolarRecDashboardPayload(ownerUserId, "dataset:convertedReads");
+        const { summarizeServerManagedConvertedReadsSources } = await import(
+          "../solar/convertedReadsBridge"
+        );
+        const convertedReadsServerSources =
+          summarizeServerManagedConvertedReadsSources(
+            convertedReadsManifestPayload
+          );
+        if (convertedReadsServerSources.length > 0) {
+          const existing = uploadSourcesByDataset.get("convertedReads") ?? [];
+          const byId = new Map<string, UploadSourceSummary>();
+          for (const source of [...existing, ...convertedReadsServerSources]) {
+            byId.set(source.jobId, source);
+          }
+          uploadSourcesByDataset.set(
+            "convertedReads",
+            Array.from(byId.values()).sort((a, b) => {
+              const aTime = a.uploadedAt
+                ? new Date(a.uploadedAt).getTime()
+                : 0;
+              const bTime = b.uploadedAt
+                ? new Date(b.uploadedAt).getTime()
+                : 0;
+              return bTime - aTime;
+            })
+          );
         }
       }
 

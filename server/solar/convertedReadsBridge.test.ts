@@ -3,6 +3,7 @@ import {
   detectExistingPayloadKind,
   isServerManagedConvertedReadsSourceId,
   LEGACY_PLAIN_CSV_SOURCE_ID,
+  summarizeServerManagedConvertedReadsSources,
 } from "./convertedReadsBridge";
 
 describe("detectExistingPayloadKind", () => {
@@ -107,6 +108,74 @@ describe("isServerManagedConvertedReadsSourceId", () => {
     expect(
       isServerManagedConvertedReadsSourceId("legacy_plain_csv_other")
     ).toBe(false);
+  });
+});
+
+describe("summarizeServerManagedConvertedReadsSources", () => {
+  it("returns monitoring and individual API sources from the manifest for upload-card display", () => {
+    const payload = JSON.stringify({
+      _rawSourcesV1: true,
+      version: 1,
+      sources: [
+        {
+          id: "user_upload",
+          fileName: "manual.csv",
+          uploadedAt: "2026-05-01T00:00:00.000Z",
+          rowCount: 10,
+        },
+        {
+          id: "mon_batch_solaredge",
+          fileName: "Monitoring batch: SolarEdge (12)",
+          uploadedAt: "2026-05-03T00:00:00.000Z",
+          rowCount: 12,
+        },
+        {
+          id: "individual_egauge",
+          fileName: "eGauge API (4 rows)",
+          uploadedAt: "2026-05-02T00:00:00.000Z",
+          rowCount: 4,
+        },
+      ],
+    });
+
+    expect(summarizeServerManagedConvertedReadsSources(payload)).toEqual([
+      {
+        jobId: "mon_batch_solaredge",
+        fileName: "Monitoring batch: SolarEdge (12)",
+        uploadedAt: "2026-05-03T00:00:00.000Z",
+        rowCount: 12,
+      },
+      {
+        jobId: "individual_egauge",
+        fileName: "eGauge API (4 rows)",
+        uploadedAt: "2026-05-02T00:00:00.000Z",
+        rowCount: 4,
+      },
+    ]);
+  });
+
+  it("returns an empty list for non-manifest payloads", () => {
+    expect(
+      summarizeServerManagedConvertedReadsSources("monitoring,read_date\n")
+    ).toEqual([]);
+    expect(summarizeServerManagedConvertedReadsSources(null)).toEqual([]);
+  });
+
+  it("skips malformed manifest source entries without throwing", () => {
+    const payload = JSON.stringify({
+      _rawSourcesV1: true,
+      version: 1,
+      sources: [null, { id: 123 }, { id: "mon_batch_hoymiles" }],
+    });
+
+    expect(summarizeServerManagedConvertedReadsSources(payload)).toEqual([
+      {
+        jobId: "mon_batch_hoymiles",
+        fileName: "mon_batch_hoymiles",
+        uploadedAt: null,
+        rowCount: null,
+      },
+    ]);
   });
 });
 
@@ -228,5 +297,74 @@ describe("plain-CSV migration end-to-end (mocked DB)", () => {
     // user_existing preserved + new individual_solaredge appended;
     // legacy_plain_csv NOT created (no plain payload to migrate).
     expect(sourceIds).toEqual(["individual_solaredge", "user_existing"]);
+  });
+});
+
+describe("monitoring batch sync scheduling", () => {
+  const stored = new Map<string, string>();
+  const startSyncJob = vi.fn(() => "test-sync-job");
+
+  beforeEach(() => {
+    stored.clear();
+    startSyncJob.mockClear();
+    vi.resetModules();
+    vi.doMock("../db", () => ({
+      getSolarRecDashboardPayload: vi.fn(
+        async (_userId: number, key: string) => stored.get(key) ?? null
+      ),
+      saveSolarRecDashboardPayload: vi.fn(
+        async (_userId: number, key: string, payload: string) => {
+          stored.set(key, payload);
+          return true;
+        }
+      ),
+    }));
+    vi.doMock("../services/solar/coreDatasetSyncJobs", () => ({
+      startSyncJob,
+    }));
+    vi.doMock("../services/solar/serverSideMigration", () => ({
+      syncOneCoreDatasetFromStorage: vi.fn(async () => ({
+        datasetKey: "convertedReads",
+        state: "done",
+        batchId: "test-batch",
+        rowCount: 0,
+        durationMs: 1,
+      })),
+    }));
+  });
+
+  it("lets the monitoring runner defer row-table sync until the final provider write lands", async () => {
+    const {
+      pushMonitoringRunsToConvertedReads,
+      scheduleConvertedReadsRowTableSync,
+    } = await import("./convertedReadsBridge");
+
+    const result = await pushMonitoringRunsToConvertedReads(
+      42,
+      "solaredge",
+      "SolarEdge",
+      [
+        {
+          provider: "solaredge",
+          siteId: "123",
+          siteName: "Site 123",
+          lifetimeKwh: 99,
+          dateKey: "2026-05-06",
+          status: "success",
+        },
+      ],
+      { scheduleRowTableSync: false, scopeId: "scope-1" }
+    );
+
+    expect(result?.pushed).toBe(1);
+    expect(startSyncJob).not.toHaveBeenCalled();
+
+    scheduleConvertedReadsRowTableSync(42, "scope-1");
+    expect(startSyncJob).toHaveBeenCalledTimes(1);
+    expect(startSyncJob).toHaveBeenCalledWith(
+      "scope-1",
+      "convertedReads",
+      expect.any(Function)
+    );
   });
 });

@@ -102,4 +102,32 @@ describe("Solar REC shared dataset invalidation", () => {
       /notifyServerDataChanged\("manual CSV upload"\)/
     );
   });
+
+  it("Schedule B contract-ID mapping save refreshes the stale mapping query cache", () => {
+    const handler = sliceFn(
+      scheduleBImportSource,
+      "handleSaveAndApplyContractIdMapping"
+    );
+    expect(handler).not.toBeNull();
+    expect(handler!).toContain("getScheduleBContractIdMapping.setData");
+    expect(handler!).toContain("getScheduleBContractIdMappingQuery.refetch");
+    expect(handler!).toContain("result.mappingText");
+  });
+
+  it("Performance Ratio rows revive server dates before render-time date math", () => {
+    const performanceRatioFile = resolve(
+      __dirname,
+      "..",
+      "components",
+      "PerformanceRatioTab.tsx"
+    );
+    const source = readFileSync(performanceRatioFile, "utf8");
+    expect(source).toContain("revivePerformanceRatioRows");
+    expect(source).toContain("reviveNullableDate(row.readDate)");
+    expect(source).toContain(
+      "part2VerificationDate: reviveNullableDate(row.part2VerificationDate)"
+    );
+    expect(source).toContain("baselineDate: reviveNullableDate(row.baselineDate)");
+    expect(source).toContain("rows: revivePerformanceRatioRows(data.rows)");
+  });
 });

@@ -11,6 +11,7 @@ import { mapWithConcurrency } from "../services/core/concurrency";
 import {
   pushMonitoringRunsToConvertedReads,
   providerCanonicalLabel,
+  scheduleConvertedReadsRowTableSync,
   type MonitoringRunRow,
 } from "./convertedReadsBridge";
 import { resolveSolarRecOwnerUserId } from "../_core/solarRecAuth";
@@ -501,6 +502,7 @@ export async function executeMonitoringBatch(
     };
 
     let providersCompleted = 0;
+    let convertedReadsSyncNeeded = false;
     for (const provider of providers) {
       const providerCredentials = scopedCredentials.filter(
         credential => credential.provider === provider
@@ -559,9 +561,11 @@ export async function executeMonitoringBatch(
               ownerUserId,
               provider,
               providerCanonicalLabel(provider),
-              providerRuns
+              providerRuns,
+              { scheduleRowTableSync: false, scopeId }
             );
             if (result) {
+              convertedReadsSyncNeeded = true;
               console.log(
                 `[MonitoringBatch] Converted reads source "${result.sourceId}" updated: ${result.pushed} rows (provider=${provider}).`
               );
@@ -589,9 +593,12 @@ export async function executeMonitoringBatch(
       maybePersistProgress(true);
     }
 
-    // No final push needed — each provider writes/replaces its own source
-    // in the manifest during the per-provider loop above. The manifest
-    // always reflects the latest completed providers.
+    if (ownerUserId && convertedReadsSyncNeeded) {
+      const syncJobId = scheduleConvertedReadsRowTableSync(ownerUserId, scopeId);
+      console.log(
+        `[MonitoringBatch] Scheduled Converted Reads row-table sync after final provider write: ${syncJobId ?? "not scheduled"}.`
+      );
+    }
     if (!ownerUserId) {
       console.warn(
         "[MonitoringBatch] Converted reads pushes were skipped: no ownerUserId resolved."

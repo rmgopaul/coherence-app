@@ -343,6 +343,7 @@ export function ScheduleBImport({
   // the Schedule B PDF scrape is missing or erroring on.
   const uploadDeliveryScheduleCsv =
     trpc.solarRecDashboard.uploadDeliveryScheduleCsv.useMutation();
+  const trpcUtils = trpc.useUtils();
   // contract-id-mapping-v1: server-persisted GATS ID → Contract ID
   // mapping. The query hydrates the textarea on mount; the mutation
   // saves the text + patches deliveryScheduleBase server-side + returns
@@ -649,6 +650,15 @@ export function ScheduleBImport({
       const result = await applyScheduleBContractIdMapping.mutateAsync({
         mappingText: contractIdMappingText,
       });
+      trpcUtils.solarRecDashboard.getScheduleBContractIdMapping.setData(
+        undefined,
+        {
+          _checkpoint: "contract-id-mapping-v1",
+          mappingText: result.mappingText ?? contractIdMappingText,
+        }
+      );
+      hydratedMappingRef.current = true;
+      await getScheduleBContractIdMappingQuery.refetch();
       await notifyServerDataChanged("contract-id mapping");
       if (onApplyComplete) {
         try {
@@ -681,6 +691,8 @@ export function ScheduleBImport({
   }, [
     contractIdMappingText,
     applyScheduleBContractIdMapping,
+    trpcUtils,
+    getScheduleBContractIdMappingQuery,
     notifyServerDataChanged,
     onApplyComplete,
   ]);

@@ -72,6 +72,18 @@ describe("solarRecDashboard shared dataset write paths", () => {
     expect(proc!).toContain("loadCanonicalDeliveryScheduleBaseDataset");
     expect(proc!).toContain("persistDeliveryScheduleBaseCanonical");
     expect(proc!).toContain("rowTableStatus: persistence.rowTableStatus");
+    expect(proc!).toContain("const mappingTextSaved = await saveSolarRecDashboardPayload");
+    expect(proc!).toContain("Failed to save the Schedule B contract-ID mapping");
+    expect(proc!).toContain("mappingText: input.mappingText");
+  });
+
+  it("dataset summaries include server-managed Converted Reads sources", () => {
+    const proc = sliceProcedure("getDatasetSummariesAll");
+    expect(proc).not.toBeNull();
+    expect(proc!).toContain("summarizeServerManagedConvertedReadsSources");
+    expect(proc!).toContain('getSolarRecDashboardPayload(ownerUserId, "dataset:convertedReads")');
+    expect(proc!).toContain("uploadSourcesByDataset.set(");
+    expect(proc!).toContain('"convertedReads",');
   });
 
   it("exposes a safe cloud-to-row-table backfill path for storage-only production state", () => {
