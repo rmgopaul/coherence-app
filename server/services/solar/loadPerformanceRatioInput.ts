@@ -257,11 +257,14 @@ interface SnapshotSystemForPerfRatio {
   installedKwAc: number | null;
   totalContractAmount: number | null;
   contractedValue: number | null;
-  // Whether the system passed Part 2 size-reporting eligibility —
-  // matches the `part2EligibleSystemsForSizeReporting` filter in
-  // SolarRecDashboard.tsx. The aggregator only matches against
-  // eligible systems.
-  part2EligibleForSizeReporting: boolean;
+  // Whether the system has a Part 2 verification date on its
+  // SystemRecord. Used in lieu of the original client-side
+  // `part2EligibleSystemsForSizeReporting` filter (which built 3
+  // ID sets from `part2VerifiedAbpRows`); the snapshot's
+  // `part2VerificationDate` field is the closest pre-computed
+  // proxy and is set whenever a matching solarApplications or
+  // abpReport row carries a parsed Part_2_App_Verification_Date.
+  part2HasVerification: boolean;
 }
 
 function tokenizeSystemForPerfRatio(
@@ -343,10 +346,13 @@ function extractSnapshotSystemsForPerfRatio(
       installedKwAc: numberOrNull(r.installedKwAc),
       totalContractAmount: numberOrNull(r.totalContractAmount),
       contractedValue: numberOrNull(r.contractedValue),
-      part2EligibleForSizeReporting: boolOr(
-        r.part2EligibleForSizeReporting,
-        false
-      ),
+      // Snapshot cache uses plain JSON (not superjson), so Date
+      // fields round-trip as ISO strings on cache hits and as
+      // Date instances on fresh builds — accept either.
+      part2HasVerification:
+        r.part2VerificationDate instanceof Date ||
+        (typeof r.part2VerificationDate === "string" &&
+          r.part2VerificationDate.length > 0),
     });
   }
   return out;
@@ -513,7 +519,7 @@ export async function loadPerformanceRatioStaticInput(
   const snapshotSystems = extractSnapshotSystemsForPerfRatio(snapshot.systems);
   const systems: PerformanceRatioInputSystem[] = snapshotSystems
     .filter(
-      (s) => s.part2EligibleForSizeReporting && Boolean(s.trackingSystemRefId)
+      (s) => s.part2HasVerification && Boolean(s.trackingSystemRefId)
     )
     .map((s) =>
       tokenizeSystemForPerfRatio(
