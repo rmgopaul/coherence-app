@@ -400,6 +400,13 @@
       "when": 1778083219603,
       "tag": "0060_add_solar_rec_dashboard_builds",
       "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "5",
+      "when": 1778086090221,
+      "tag": "0061_add_dashboard_monitoring_details_facts",
+      "breakpoints": true
     }
   ]
 }

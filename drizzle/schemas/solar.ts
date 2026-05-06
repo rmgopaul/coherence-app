@@ -9,8 +9,10 @@ import {
   uniqueIndex,
   index,
   double,
+  decimal,
   boolean,
   json,
+  primaryKey,
 } from "drizzle-orm/mysql-core";
 
 export const productionReadings = mysqlTable(
@@ -2072,3 +2074,113 @@ export type SolarRecDashboardBuild =
   typeof solarRecDashboardBuilds.$inferSelect;
 export type InsertSolarRecDashboardBuild =
   typeof solarRecDashboardBuilds.$inferInsert;
+
+// ────────────────────────────────────────────────────────────────────
+// Solar REC dashboard fact table — monitoring details per system
+// (Phase 2 PR-C-1, the first derived fact table).
+//
+// Replaces the per-system map shape in
+// `getDashboardOfflineMonitoring`'s response that ships ~21k entries
+// × 15 fields each on every cold-load (the largest of the four
+// per-system maps the proc returns). PR-C-2 will add the builder
+// that populates this table from `srDsSolarApplications` +
+// `srDsAbpReport`. PR-C-3 will add the paginated read proc
+// (`getDashboardMonitoringDetailsPage`) that the OfflineMonitoringTab
+// migrates onto. PR-C-1 (this schema) is a no-op at runtime —
+// nothing reads or writes the table until PR-C-2 lands.
+//
+// Row identity: `(scopeId, systemKey)` is the natural unique key.
+// `systemKey` is the `${idType}:${id}` composite the existing
+// aggregator builds (`id:`, `tracking:`, `name:` — three keying
+// schemes mirroring the lookup priority OfflineMonitoringTab.tsx
+// already uses). Capping varchar at 128 keeps the unique index
+// well under MySQL's 3072-byte limit.
+//
+// Build versioning: every row carries the `buildId` that wrote it.
+// The PR-C-2 orchestration plan:
+//   1. UPSERT every current row tagged with the new buildId.
+//   2. DELETE WHERE scopeId=current AND buildId != current — sweeps
+//      orphans (systems that disappeared from the input).
+// After step 2 the table reflects EXACTLY the systems in the
+// latest successful build, all tagged with that build's id.
+// Reads ignore `buildId` and just filter by `scopeId`; the column
+// exists for observability + the cleanup sweep.
+//
+// Field mapping mirrors `MonitoringDetailsRecord` from
+// `server/services/solar/buildOfflineMonitoringAggregates.ts` 1:1.
+// Stored as text (not varchar) because some fields can be free-form
+// notes that exceed varchar(255). The corresponding aggregator
+// fields are already free-form strings on the wire.
+// ────────────────────────────────────────────────────────────────────
+
+export const solarRecDashboardMonitoringDetailsFacts = mysqlTable(
+  "solarRecDashboardMonitoringDetailsFacts",
+  {
+    scopeId: varchar("scopeId", { length: 64 }).notNull(),
+    // `${idType}:${id}` composite. Three keying schemes:
+    //   id:       — solarApplications application_id field
+    //   tracking: — abpReport tracking_system_id field
+    //   name:     — solarApplications system_name field (last-resort)
+    systemKey: varchar("systemKey", { length: 128 }).notNull(),
+
+    // 15 monitoringDetails fields, mirrors `MonitoringDetailsRecord`
+    // 1:1. All stored as text because the aggregator's source
+    // (`srDsSolarApplications`) treats them as free-form strings.
+    onlineMonitoringAccessType: text("onlineMonitoringAccessType"),
+    onlineMonitoring: text("onlineMonitoring"),
+    onlineMonitoringGrantedUsername: text("onlineMonitoringGrantedUsername"),
+    onlineMonitoringUsername: text("onlineMonitoringUsername"),
+    onlineMonitoringSystemName: text("onlineMonitoringSystemName"),
+    onlineMonitoringSystemId: text("onlineMonitoringSystemId"),
+    onlineMonitoringPassword: text("onlineMonitoringPassword"),
+    onlineMonitoringWebsiteApiLink: text("onlineMonitoringWebsiteApiLink"),
+    onlineMonitoringEntryMethod: text("onlineMonitoringEntryMethod"),
+    onlineMonitoringNotes: text("onlineMonitoringNotes"),
+    onlineMonitoringSelfReport: text("onlineMonitoringSelfReport"),
+    onlineMonitoringRgmInfo: text("onlineMonitoringRgmInfo"),
+    onlineMonitoringNoSubmitGeneration: text(
+      "onlineMonitoringNoSubmitGeneration"
+    ),
+    systemOnline: text("systemOnline"),
+    lastReportedOnlineDate: text("lastReportedOnlineDate"),
+
+    // ABP cross-reference fields. Nullable because not every system
+    // has an ABP entry. `abpApplicationId` lets clients walk back
+    // to the originating ABP record (the same `${idType}:${id}` →
+    // application-ID mapping the aggregator returns as
+    // `abpApplicationIdBySystemKey`). `abpAcSizeKw` is the
+    // installed-DC-converted-to-AC value in kW that
+    // `abpAcSizeKwBySystemKey` exposes — used by SizeReportingTab
+    // and the snapshotPart2ValueSummary tile to attribute kW back
+    // to systems.
+    abpApplicationId: varchar("abpApplicationId", { length: 128 }),
+    abpAcSizeKw: decimal("abpAcSizeKw", { precision: 12, scale: 4 }),
+
+    // Build versioning + observability. PR-C-2's orchestrator sets
+    // `buildId` to the current `solarRecDashboardBuilds.id` so the
+    // post-UPSERT DELETE can sweep orphans efficiently.
+    buildId: varchar("buildId", { length: 64 }).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    // Composite primary key — the natural unique row identity.
+    // `(scopeId, systemKey)` lets UPSERT keep one row per system per
+    // scope; PR-C-2 will leverage `INSERT ... ON DUPLICATE KEY
+    // UPDATE` against this PK.
+    pk: primaryKey({
+      columns: [table.scopeId, table.systemKey],
+      name: "solar_rec_dashboard_monitoring_details_facts_pk",
+    }),
+    // Build sweep: WHERE scopeId=? AND buildId != currentBuildId.
+    // Covers the orphan-deletion query PR-C-2 fires after UPSERT.
+    scopeBuildIdx: index(
+      "solar_rec_dashboard_monitoring_details_facts_scope_build_idx"
+    ).on(table.scopeId, table.buildId),
+  })
+);
+
+export type SolarRecDashboardMonitoringDetailsFact =
+  typeof solarRecDashboardMonitoringDetailsFacts.$inferSelect;
+export type InsertSolarRecDashboardMonitoringDetailsFact =
+  typeof solarRecDashboardMonitoringDetailsFacts.$inferInsert;
