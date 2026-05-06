@@ -1,42 +1,57 @@
 /**
- * eGauge adapter — pure-helper tests.
+ * eGauge adapter — pure-helper + integration tests.
  *
- * Second slice of Concern #1 from the PRs 366-383 review: vendor
- * restoration PRs (#368, #371, #373) shipped without adapter-level
- * vitest specs. Tesla Powerhub's pure-helper rails (#389) was slice
- * 1; this is slice 2. eGauge is the largest non-Locus solar adapter
- * (~1,733 LOC, 40 functions) — the pure surface alone is sizeable
- * (URL canonicalization, portfolio host conversion, cookie/jwt
- * parsing, ISO-date-to-unix coercion, HTML stripping, meter-ID
- * extraction from 4 different URL shapes).
+ * Slice 2 (#394, original file content below the `truncate` divider):
+ *   pure-helper tests covering URL canonicalization, portfolio host
+ *   conversion, cookie/jwt parsing, ISO-date-to-unix coercion, HTML
+ *   stripping, meter-ID extraction. 124 rails via `__TEST_ONLY__`.
  *
- * Why pure helpers first:
+ * Slice 4d (this PR's addition, the `getEgaugeSystemInfo` describe
+ *   block at end of file): integration tests covering BOTH access
+ *   modes — public (single GET) and credential digest-auth (3-step
+ *   challenge → login → /api/sys flow). Establishes the fetch-mock
+ *   pattern for eGauge so future slices can layer
+ *   `getEgaugeLocalData` / `getEgaugeRegisterLatest` /
+ *   `getEgaugePortfolioSystems` on top.
+ *
+ * Why integration coverage NOW:
+ *   - Slice 2 pinned the pure helpers; the network-bound paths
+ *     remained uncovered. Tesla slices 3-4c established the
+ *     `vi.stubGlobal("fetch", ...)` pattern across token /
+ *     bearer-auth / URL-iteration / telemetry; this PR proves the
+ *     pattern carries over to eGauge's distinctly different auth
+ *     model (digest-style challenge/response with realm + nonce +
+ *     md5 hash composition, plus optional cookie persistence).
+ *   - eGauge is the largest non-Tesla solar adapter (~1,733 LOC).
+ *     Its production-mode auth path is materially different from
+ *     Tesla's bearer-token flow, so the pattern transfer alone is
+ *     a worthwhile signal to PR-reviewers.
+ *
+ * Why pure helpers first (kept from slice 2 docstring):
  *   - Adapter regressions in pure helpers manifest as silent wrong
- *     behavior. Example: a `tryConvertPortalDevicesUrlToMeterBase`
- *     regression that no longer recognizes `egauge.net/devices/X`
- *     would force every operator who pastes a portal URL into the
- *     credentials form to manually rewrite it. Tests prevent that
- *     regression class without needing live API mocks.
+ *     behavior. Tests prevent that regression class without needing
+ *     live API mocks.
  *   - The pure surface is small enough that one PR fits a
  *     tractable scope.
- *   - Exposes the helpers via `__TEST_ONLY__` (mirrors
- *     `teslaPowerhub.ts` slice 1 + `dashboardCsvExportJobs`)
- *     without changing the adapter's public import surface.
  *
- * Network-bound integration paths (`getEgaugeSystemInfo`,
- * `getEgaugeRegisterLatest`, `getEgaugePortfolioMembership`,
- * `getMeterProductionSnapshot`) stay out of scope here — they need
- * fetch mocking and are follow-up PRs.
+ * Still uncovered after this PR: `getEgaugeLocalData`,
+ * `getEgaugeRegisterLatest`, `getEgaugeRegisterHistory`,
+ * `getEgaugePortfolioSystems`, `getMeterProductionSnapshot`. All
+ * five reuse the same auth flow established here, so the marginal
+ * cost of each subsequent slice is just per-endpoint URL/payload
+ * shape verification.
  */
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   __TEST_ONLY__,
   buildEgaugeRegisterTimeExpression,
   EGAUGE_DEFAULT_BASE_URL,
   EGAUGE_PORTFOLIO_BASE_URL,
+  getEgaugeSystemInfo,
   normalizeEgaugeBaseUrl,
   normalizeEgaugePortfolioBaseUrl,
 } from "./egauge";
+import type { EgaugeApiContext } from "./egauge";
 
 const {
   truncate,
@@ -1062,5 +1077,325 @@ describe("buildEgaugeRegisterTimeExpression", () => {
         intervalMinutes: 15,
       })
     ).toThrow(/YYYY-MM-DD/);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────
+// getEgaugeSystemInfo — integration tests w/ fetch mock
+// (Concern #1 slice 4d — establishes fetch-mock pattern for eGauge,
+//  parallel to Tesla slice 3 #399 but for digest-auth instead of
+//  client-credentials bearer)
+// ────────────────────────────────────────────────────────────────────
+
+const PUBLIC_CONTEXT: EgaugeApiContext = {
+  baseUrl: "https://meter.d.egauge.net",
+  accessType: "public",
+  username: null,
+  password: null,
+};
+
+const CREDENTIAL_CONTEXT: EgaugeApiContext = {
+  baseUrl: "https://meter.d.egauge.net",
+  accessType: "user_login",
+  username: "operator",
+  password: "secret-password",
+};
+
+/**
+ * Build a Response stand-in matching what `EgaugeClient.requestJson`
+ * reads. The implementation calls `response.text()` for the body,
+ * `response.headers.get("set-cookie")` (or `getSetCookie()` /
+ * `raw()`) for cookies, and `response.ok` / `response.status` /
+ * `response.statusText` for error handling.
+ */
+function buildEgaugeResponse(opts: {
+  ok: boolean;
+  status?: number;
+  statusText?: string;
+  body?: string;
+  /** Cookie values to expose via `headers.getSetCookie()`. */
+  setCookies?: string[];
+}): Response {
+  const status = opts.status ?? (opts.ok ? 200 : 500);
+  return {
+    ok: opts.ok,
+    status,
+    statusText: opts.statusText ?? (opts.ok ? "OK" : "Internal Server Error"),
+    headers: {
+      get: (_name: string) => null,
+      getSetCookie: () => opts.setCookies ?? [],
+    },
+    text: async () => opts.body ?? "",
+  } as unknown as Response;
+}
+
+describe("getEgaugeSystemInfo (integration)", () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  // ── public access mode ───────────────────────────────────────────
+
+  it("public mode: single GET to /api/sys returns parsed system info", async () => {
+    fetchMock.mockResolvedValueOnce(
+      buildEgaugeResponse({
+        ok: true,
+        body: JSON.stringify({
+          name: "Acme Solar",
+          serial: "egauge12345",
+        }),
+      })
+    );
+    const result = await getEgaugeSystemInfo(PUBLIC_CONTEXT);
+    expect(result.systemName).toBe("Acme Solar");
+    expect(result.serialNumber).toBe("egauge12345");
+    expect(result.accessType).toBe("public");
+    expect(result.baseUrl).toBe("https://meter.d.egauge.net");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("public mode: hits /api/sys (NOT /api/auth/* in public mode)", async () => {
+    fetchMock.mockResolvedValueOnce(
+      buildEgaugeResponse({
+        ok: true,
+        body: JSON.stringify({ name: "X" }),
+      })
+    );
+    await getEgaugeSystemInfo(PUBLIC_CONTEXT);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url as string).toBe("https://meter.d.egauge.net/api/sys");
+    const headers = (init as RequestInit).headers as Record<string, string>;
+    // Public mode should NOT send Authorization header.
+    expect(headers["Authorization"]).toBeUndefined();
+    expect(headers["Accept"]).toBe("application/json");
+  });
+
+  it("public mode: extracts serialNumber from `serial_number` alias too", async () => {
+    fetchMock.mockResolvedValueOnce(
+      buildEgaugeResponse({
+        ok: true,
+        body: JSON.stringify({ system_name: "Foo", serial_number: "abc-001" }),
+      })
+    );
+    const result = await getEgaugeSystemInfo(PUBLIC_CONTEXT);
+    expect(result.systemName).toBe("Foo");
+    expect(result.serialNumber).toBe("abc-001");
+  });
+
+  it("public mode: returns null systemName/serialNumber when payload has no recognized fields", async () => {
+    fetchMock.mockResolvedValueOnce(
+      buildEgaugeResponse({
+        ok: true,
+        body: JSON.stringify({ unrelated: "value" }),
+      })
+    );
+    const result = await getEgaugeSystemInfo(PUBLIC_CONTEXT);
+    expect(result.systemName).toBeNull();
+    expect(result.serialNumber).toBeNull();
+  });
+
+  it("public mode: surfaces non-OK status as a thrown error", async () => {
+    fetchMock.mockResolvedValueOnce(
+      buildEgaugeResponse({
+        ok: false,
+        status: 503,
+        statusText: "Service Unavailable",
+      })
+    );
+    await expect(getEgaugeSystemInfo(PUBLIC_CONTEXT)).rejects.toThrow(/503/);
+  });
+
+  // ── credential mode (digest auth) ────────────────────────────────
+
+  it("credential mode: completes the 3-step challenge → login → /api/sys flow", async () => {
+    // 1. Challenge: GET /api/auth/unauthorized → returns realm + nonce
+    fetchMock.mockResolvedValueOnce(
+      buildEgaugeResponse({
+        ok: true,
+        body: JSON.stringify({ rlm: "egauge", nnc: "server-nonce-abc" }),
+      })
+    );
+    // 2. Login: POST /api/auth/login → returns JWT
+    fetchMock.mockResolvedValueOnce(
+      buildEgaugeResponse({
+        ok: true,
+        body: JSON.stringify({ jwt: "session-jwt-xyz" }),
+      })
+    );
+    // 3. /api/sys: GET with Bearer JWT
+    fetchMock.mockResolvedValueOnce(
+      buildEgaugeResponse({
+        ok: true,
+        body: JSON.stringify({
+          name: "Authenticated System",
+          serial: "egauge99999",
+        }),
+      })
+    );
+
+    const result = await getEgaugeSystemInfo(CREDENTIAL_CONTEXT);
+    expect(result.systemName).toBe("Authenticated System");
+    expect(result.serialNumber).toBe("egauge99999");
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+
+    // Step 1 URL: /api/auth/unauthorized
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "https://meter.d.egauge.net/api/auth/unauthorized"
+    );
+    // Step 2 URL: /api/auth/login (POST with body)
+    expect(fetchMock.mock.calls[1][0]).toBe(
+      "https://meter.d.egauge.net/api/auth/login"
+    );
+    expect((fetchMock.mock.calls[1][1] as RequestInit).method).toBe("POST");
+    // Step 3 URL: /api/sys with Bearer JWT
+    expect(fetchMock.mock.calls[2][0]).toBe(
+      "https://meter.d.egauge.net/api/sys"
+    );
+    const sysHeaders = (fetchMock.mock.calls[2][1] as RequestInit)
+      .headers as Record<string, string>;
+    expect(sysHeaders["Authorization"]).toBe("Bearer session-jwt-xyz");
+  });
+
+  it("credential mode: login POST body includes realm, username, both nonces, and a digest hash", async () => {
+    fetchMock.mockResolvedValueOnce(
+      buildEgaugeResponse({
+        ok: true,
+        body: JSON.stringify({ rlm: "egauge-realm", nnc: "srv-nonce" }),
+      })
+    );
+    fetchMock.mockResolvedValueOnce(
+      buildEgaugeResponse({
+        ok: true,
+        body: JSON.stringify({ jwt: "tok" }),
+      })
+    );
+    fetchMock.mockResolvedValueOnce(
+      buildEgaugeResponse({
+        ok: true,
+        body: JSON.stringify({ name: "n" }),
+      })
+    );
+
+    await getEgaugeSystemInfo(CREDENTIAL_CONTEXT);
+
+    const loginInit = fetchMock.mock.calls[1][1] as RequestInit;
+    const body = JSON.parse(loginInit.body as string);
+    expect(body.rlm).toBe("egauge-realm");
+    expect(body.nnc).toBe("srv-nonce");
+    expect(body.usr).toBe("operator");
+    // Client nonce is randomly generated — just check format (32 hex chars).
+    expect(body.cnnc).toMatch(/^[0-9a-f]{32}$/);
+    // Digest hash is 32 hex chars (md5 hex output).
+    expect(body.hash).toMatch(/^[0-9a-f]{32}$/);
+    // Headers correct.
+    const headers = loginInit.headers as Record<string, string>;
+    expect(headers["Content-Type"]).toBe("application/json");
+  });
+
+  it("credential mode: throws when challenge response is missing realm/nonce", async () => {
+    fetchMock.mockResolvedValueOnce(
+      buildEgaugeResponse({
+        ok: true,
+        body: JSON.stringify({ unrelated: "value" }),
+      })
+    );
+    await expect(getEgaugeSystemInfo(CREDENTIAL_CONTEXT)).rejects.toThrow(
+      /login challenge failed.*realm\/nonce/i
+    );
+    // Only the challenge call fired — login was never attempted.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("credential mode: accepts session cookie auth when login returns no JWT (cookies path)", async () => {
+    fetchMock.mockResolvedValueOnce(
+      buildEgaugeResponse({
+        ok: true,
+        body: JSON.stringify({ rlm: "r", nnc: "n" }),
+        // Challenge response sets a session cookie.
+        setCookies: ["session=cookie-value-1; Path=/"],
+      })
+    );
+    // Login response — no JWT, but the cookie from step 1 already
+    // satisfies `this.cookies.size > 0`, so authentication succeeds.
+    fetchMock.mockResolvedValueOnce(
+      buildEgaugeResponse({
+        ok: true,
+        body: JSON.stringify({ unrelated: "no-jwt-here" }),
+      })
+    );
+    fetchMock.mockResolvedValueOnce(
+      buildEgaugeResponse({
+        ok: true,
+        body: JSON.stringify({ name: "Cookie-Authed" }),
+      })
+    );
+    const result = await getEgaugeSystemInfo(CREDENTIAL_CONTEXT);
+    expect(result.systemName).toBe("Cookie-Authed");
+    // The 3rd request (/api/sys) carries the Cookie header from step 1.
+    const sysHeaders = (fetchMock.mock.calls[2][1] as RequestInit)
+      .headers as Record<string, string>;
+    expect(sysHeaders["Cookie"]).toContain("session=cookie-value-1");
+  });
+
+  it("credential mode: throws when login returns NO JWT AND NO cookie", async () => {
+    fetchMock.mockResolvedValueOnce(
+      buildEgaugeResponse({
+        ok: true,
+        body: JSON.stringify({ rlm: "r", nnc: "n" }),
+      })
+    );
+    fetchMock.mockResolvedValueOnce(
+      buildEgaugeResponse({
+        ok: true,
+        body: JSON.stringify({ unrelated: "still-no-jwt" }),
+      })
+    );
+    await expect(getEgaugeSystemInfo(CREDENTIAL_CONTEXT)).rejects.toThrow(
+      /no JWT\/session cookie/i
+    );
+  });
+
+  it("credential mode: throws when username or password is missing", async () => {
+    const missingCreds: EgaugeApiContext = {
+      ...CREDENTIAL_CONTEXT,
+      password: null,
+    };
+    await expect(getEgaugeSystemInfo(missingCreds)).rejects.toThrow(
+      /username and password are required/i
+    );
+    // No fetch fired — pre-flight credential check rejects before challenge.
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("credential mode: surfaces non-OK from /api/sys after successful auth", async () => {
+    fetchMock.mockResolvedValueOnce(
+      buildEgaugeResponse({
+        ok: true,
+        body: JSON.stringify({ rlm: "r", nnc: "n" }),
+      })
+    );
+    fetchMock.mockResolvedValueOnce(
+      buildEgaugeResponse({
+        ok: true,
+        body: JSON.stringify({ jwt: "tok" }),
+      })
+    );
+    fetchMock.mockResolvedValueOnce(
+      buildEgaugeResponse({
+        ok: false,
+        status: 500,
+        statusText: "Internal Server Error",
+      })
+    );
+    await expect(getEgaugeSystemInfo(CREDENTIAL_CONTEXT)).rejects.toThrow(
+      /500/
+    );
   });
 });
