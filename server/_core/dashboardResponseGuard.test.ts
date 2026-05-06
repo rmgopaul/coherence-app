@@ -748,3 +748,35 @@ describe("CLAUDE.md drift", () => {
     expect(claudeMd).toMatch(/getDashboardCsvExportJobStatus/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// CI drift rails. These tests cover the OOM guardrails that have repeatedly
+// caught Solar REC dashboard regressions; keep them visible as a named CI job
+// instead of burying them in the full Vitest run only.
+// ---------------------------------------------------------------------------
+
+describe("Solar REC dashboard guardrail CI", () => {
+  const repoRoot = resolve(__dirname, "..", "..");
+  const packageJson = JSON.parse(
+    readFileSync(resolve(repoRoot, "package.json"), "utf8")
+  ) as { scripts?: Record<string, string> };
+  const ciWorkflow = readFileSync(
+    resolve(repoRoot, ".github", "workflows", "ci.yml"),
+    "utf8"
+  );
+
+  it("runs dashboard OOM and mount guardrails as a dedicated CI job", () => {
+    const script = packageJson.scripts?.["test:solar-rec-dashboard-guardrails"];
+
+    expect(script).toBeDefined();
+    expect(script).toContain("server/_core/dashboardResponseGuard.test.ts");
+    expect(script).toContain(
+      "client/src/solar-rec-dashboard/lib/dashboardMountResilience.test.ts"
+    );
+    expect(script).toContain(
+      "server/services/solar/dashboardJobMetrics.test.ts"
+    );
+    expect(ciWorkflow).toMatch(/solar-rec-dashboard-guardrails:/);
+    expect(ciWorkflow).toContain("pnpm run test:solar-rec-dashboard-guardrails");
+  });
+});
