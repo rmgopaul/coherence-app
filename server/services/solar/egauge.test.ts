@@ -49,6 +49,7 @@ import {
   EGAUGE_PORTFOLIO_BASE_URL,
   getEgaugeRegisterLatest,
   getEgaugeSystemInfo,
+  getMeterProductionSnapshot,
   normalizeEgaugeBaseUrl,
   normalizeEgaugePortfolioBaseUrl,
 } from "./egauge";
@@ -73,6 +74,7 @@ const {
   extractSummaryString,
   extractRegisterCount,
   extractLocalValueCount,
+  extractRegisterCumulativeWh,
   normalizeErrorPayload,
   stripHtml,
   parseLooseNumber,
@@ -1642,5 +1644,344 @@ describe("getEgaugeRegisterLatest (integration)", () => {
     await expect(getEgaugeRegisterLatest(CREDENTIAL_CONTEXT)).rejects.toThrow(
       /401/
     );
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────
+// extractRegisterCumulativeWh — pure helper
+// (Concern #1 slice 4e PR-B: register-name → cumulative-Wh extractor
+//  used by `getMeterProductionSnapshot`. 8 priority register names +
+//  nested-object lookup (4 cumulative aliases) + single-register
+//  fallback. Direct unit tests are clearer than driving every case
+//  through `getMeterProductionSnapshot`'s 3-step auth flow.)
+// ────────────────────────────────────────────────────────────────────
+
+describe("extractRegisterCumulativeWh", () => {
+  it("extracts a numeric `Solar+` register from registers map", () => {
+    expect(
+      extractRegisterCumulativeWh({
+        registers: { "Solar+": 1_234_567 },
+      })
+    ).toBe(1_234_567);
+  });
+
+  it("recognizes all 8 priority register names", () => {
+    const names = [
+      "Generation",
+      "Solar",
+      "Solar+",
+      "generation",
+      "solar",
+      "PV",
+      "Grid",
+      "Total Generation",
+    ];
+    for (const name of names) {
+      expect(
+        extractRegisterCumulativeWh({ registers: { [name]: 100 } })
+      ).toBe(100);
+    }
+  });
+
+  it("prefers the FIRST matching priority name when multiple are present", () => {
+    // Generation comes BEFORE Solar+ in the priority list — so it wins.
+    expect(
+      extractRegisterCumulativeWh({
+        registers: { Generation: 5_000, "Solar+": 9_999 },
+      })
+    ).toBe(5_000);
+  });
+
+  it("extracts cumulative from nested register object (`{ cumulative: N }`)", () => {
+    expect(
+      extractRegisterCumulativeWh({
+        registers: { "Solar+": { cumulative: 7_777 } },
+      })
+    ).toBe(7_777);
+  });
+
+  it("recognizes nested-object aliases: total / value / energy", () => {
+    expect(
+      extractRegisterCumulativeWh({
+        registers: { "Solar+": { total: 1 } },
+      })
+    ).toBe(1);
+    expect(
+      extractRegisterCumulativeWh({
+        registers: { Solar: { value: 2 } },
+      })
+    ).toBe(2);
+    expect(
+      extractRegisterCumulativeWh({
+        registers: { PV: { energy: 3 } },
+      })
+    ).toBe(3);
+  });
+
+  it("walks the `data` envelope when `registers` is absent", () => {
+    expect(
+      extractRegisterCumulativeWh({
+        data: { Generation: 4_242 },
+      })
+    ).toBe(4_242);
+  });
+
+  it("walks the top-level record when neither `registers` nor `data` is present", () => {
+    expect(extractRegisterCumulativeWh({ Generation: 8_888 })).toBe(8_888);
+  });
+
+  it("falls back to a single-numeric-register payload (no recognized name)", () => {
+    // No priority-list match, but exactly ONE numeric value — use it.
+    expect(
+      extractRegisterCumulativeWh({
+        registers: { UnknownRegisterName: 12_345 },
+      })
+    ).toBe(12_345);
+  });
+
+  it("returns null when multiple unrecognized numeric registers exist (ambiguous)", () => {
+    expect(
+      extractRegisterCumulativeWh({
+        registers: { Foo: 1, Bar: 2 },
+      })
+    ).toBeNull();
+  });
+
+  it("returns null on an empty registers map", () => {
+    expect(extractRegisterCumulativeWh({ registers: {} })).toBeNull();
+  });
+
+  it("returns null on null / non-object input", () => {
+    expect(extractRegisterCumulativeWh(null)).toBeNull();
+    expect(extractRegisterCumulativeWh(undefined)).toBeNull();
+    expect(extractRegisterCumulativeWh("string")).toBeNull();
+    expect(extractRegisterCumulativeWh(42)).toBeNull();
+  });
+
+  it("rejects non-finite values (NaN, Infinity)", () => {
+    expect(
+      extractRegisterCumulativeWh({ registers: { "Solar+": NaN } })
+    ).toBeNull();
+    expect(
+      extractRegisterCumulativeWh({ registers: { "Solar+": Infinity } })
+    ).toBeNull();
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────
+// getMeterProductionSnapshot — integration tests w/ fetch mock
+// (Concern #1 slice 4e PR-B: the snapshot-builder the monitoring
+//  scheduler calls per meter. Wraps getRegisterLatest +
+//  extractRegisterCumulativeWh + Wh→kWh conversion. NEVER throws —
+//  errors are captured into the result's `status: "Error"` shape.)
+// ────────────────────────────────────────────────────────────────────
+
+const ANCHOR_DATE = "2026-05-06";
+
+describe("getMeterProductionSnapshot (integration)", () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("public mode: returns Found + lifetimeKwh on a successful register fetch", async () => {
+    fetchMock.mockResolvedValueOnce(
+      buildEgaugeResponse({
+        ok: true,
+        body: JSON.stringify({
+          registers: { "Solar+": 5_000_000 },
+        }),
+      })
+    );
+    const result = await getMeterProductionSnapshot(
+      PUBLIC_CONTEXT,
+      "meter-001",
+      "Acme Solar",
+      ANCHOR_DATE
+    );
+    expect(result.status).toBe("Found");
+    expect(result.found).toBe(true);
+    // 5_000_000 Wh / 1000 = 5000 kWh.
+    expect(result.lifetimeKwh).toBe(5000);
+    expect(result.meterId).toBe("meter-001");
+    expect(result.meterName).toBe("Acme Solar");
+    expect(result.anchorDate).toBe(ANCHOR_DATE);
+    expect(result.error).toBeNull();
+  });
+
+  it("rounds Wh→kWh to 3 decimal places", async () => {
+    fetchMock.mockResolvedValueOnce(
+      buildEgaugeResponse({
+        ok: true,
+        body: JSON.stringify({
+          registers: { "Solar+": 1_234_567 },
+        }),
+      })
+    );
+    const result = await getMeterProductionSnapshot(
+      PUBLIC_CONTEXT,
+      "m",
+      null,
+      ANCHOR_DATE
+    );
+    // 1_234_567 / 1000 = 1234.567 (already 3 decimals)
+    expect(result.lifetimeKwh).toBe(1234.567);
+  });
+
+  it("rounds non-clean Wh→kWh divisions correctly", async () => {
+    fetchMock.mockResolvedValueOnce(
+      buildEgaugeResponse({
+        ok: true,
+        body: JSON.stringify({
+          registers: { "Solar+": 1_234_567.891 },
+        }),
+      })
+    );
+    const result = await getMeterProductionSnapshot(
+      PUBLIC_CONTEXT,
+      "m",
+      null,
+      ANCHOR_DATE
+    );
+    // 1234.567891 → rounded to 1234.568
+    expect(result.lifetimeKwh).toBe(1234.568);
+  });
+
+  it("returns Found + lifetimeKwh=null when register payload has no recognized name", async () => {
+    fetchMock.mockResolvedValueOnce(
+      buildEgaugeResponse({
+        ok: true,
+        body: JSON.stringify({ registers: { Foo: 1, Bar: 2 } }),
+      })
+    );
+    const result = await getMeterProductionSnapshot(
+      PUBLIC_CONTEXT,
+      "m",
+      null,
+      ANCHOR_DATE
+    );
+    // Status is still "Found" — register fetch succeeded — but
+    // lifetimeKwh is null because extractRegisterCumulativeWh
+    // couldn't disambiguate between two unrecognized registers.
+    expect(result.status).toBe("Found");
+    expect(result.found).toBe(true);
+    expect(result.lifetimeKwh).toBeNull();
+  });
+
+  it("captures register-fetch errors into Error status (never throws)", async () => {
+    fetchMock.mockResolvedValueOnce(
+      buildEgaugeResponse({
+        ok: false,
+        status: 503,
+        statusText: "Service Unavailable",
+      })
+    );
+    const result = await getMeterProductionSnapshot(
+      PUBLIC_CONTEXT,
+      "meter-down",
+      "Down Meter",
+      ANCHOR_DATE
+    );
+    expect(result.status).toBe("Error");
+    expect(result.found).toBe(false);
+    expect(result.lifetimeKwh).toBeNull();
+    expect(result.error).toMatch(/503/);
+    expect(result.meterId).toBe("meter-down");
+    expect(result.meterName).toBe("Down Meter");
+    expect(result.anchorDate).toBe(ANCHOR_DATE);
+  });
+
+  it("captures network errors into Error status", async () => {
+    fetchMock.mockRejectedValueOnce(new Error("ECONNREFUSED"));
+    const result = await getMeterProductionSnapshot(
+      PUBLIC_CONTEXT,
+      "m",
+      null,
+      ANCHOR_DATE
+    );
+    expect(result.status).toBe("Error");
+    expect(result.found).toBe(false);
+    expect(result.error).toMatch(/ECONNREFUSED/);
+  });
+
+  it("captures auth failures into Error status (no throw bubbles up)", async () => {
+    // Credential-mode meter, login-stage challenge response is bad
+    // → auth flow throws. Snapshot wraps it into Error status.
+    fetchMock.mockResolvedValueOnce(
+      buildEgaugeResponse({
+        ok: true,
+        body: JSON.stringify({ unrelated: "no realm/nonce" }),
+      })
+    );
+    const result = await getMeterProductionSnapshot(
+      CREDENTIAL_CONTEXT,
+      "auth-failed",
+      "Auth Failed",
+      ANCHOR_DATE
+    );
+    expect(result.status).toBe("Error");
+    expect(result.found).toBe(false);
+    expect(result.lifetimeKwh).toBeNull();
+    expect(result.error).toMatch(/login challenge failed/i);
+  });
+
+  it("credential mode: full 3-step flow with successful snapshot", async () => {
+    // 1. Challenge
+    fetchMock.mockResolvedValueOnce(
+      buildEgaugeResponse({
+        ok: true,
+        body: JSON.stringify({ rlm: "egauge", nnc: "n" }),
+      })
+    );
+    // 2. Login
+    fetchMock.mockResolvedValueOnce(
+      buildEgaugeResponse({
+        ok: true,
+        body: JSON.stringify({ jwt: "tok-snapshot" }),
+      })
+    );
+    // 3. /api/register
+    fetchMock.mockResolvedValueOnce(
+      buildEgaugeResponse({
+        ok: true,
+        body: JSON.stringify({
+          registers: { Generation: 2_500_000 },
+        }),
+      })
+    );
+    const result = await getMeterProductionSnapshot(
+      CREDENTIAL_CONTEXT,
+      "meter-c",
+      "Credentialed Meter",
+      ANCHOR_DATE
+    );
+    expect(result.status).toBe("Found");
+    expect(result.lifetimeKwh).toBe(2500);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("preserves anchorDate verbatim regardless of success or failure", async () => {
+    const anchor = "2026-12-31";
+    fetchMock.mockResolvedValueOnce(
+      buildEgaugeResponse({
+        ok: false,
+        status: 500,
+        statusText: "Server Error",
+      })
+    );
+    const result = await getMeterProductionSnapshot(
+      PUBLIC_CONTEXT,
+      "m",
+      null,
+      anchor
+    );
+    expect(result.anchorDate).toBe(anchor);
+    expect(result.status).toBe("Error");
   });
 });
