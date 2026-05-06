@@ -63,6 +63,7 @@ const {
   fetchAccessibleGroups,
   fetchGroupSites,
   fetchSingleSiteTelemetryTotal,
+  fetchSiteExternalIds,
 } = __TEST_ONLY__;
 
 // ────────────────────────────────────────────────────────────────────
@@ -1517,5 +1518,241 @@ describe("fetchSingleSiteTelemetryTotal", () => {
       endDatetime: "2026-05-08T00:00:00Z",
     });
     expect(result?.totalKwh).toBeGreaterThan(0);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────
+// fetchSiteExternalIds — Concern #1 slice 4c PR-B
+//
+// Walks N site IDs concurrently (4-way parallel via mapConcurrent +
+// 4-rps throttle), GETs `/asset/sites/<id>` per site, extracts the
+// STE identifier (e.g. STE20250403-01158) using a 3-priority scan:
+//
+//   1. Field with STE pattern in 18 known candidate fields
+//      (top-level + nested `data`).
+//   2. Any string value in record/data matching the STE pattern.
+//   3. `site_name` as last-resort fallback.
+//
+// Per-site errors are tolerated (the STE just won't appear in the
+// result map for that site). The non-throwing contract is critical
+// — Tesla returns 404 for sites the credential can't access, and a
+// blanket fail would block the entire monitoring batch.
+// ────────────────────────────────────────────────────────────────────
+
+describe("fetchSiteExternalIds", () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("returns an empty Map when given no site IDs", async () => {
+    const result = await fetchSiteExternalIds(VALID_CONTEXT, "tok", []);
+    expect(result.size).toBe(0);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("extracts STE ID from a top-level `site_name` field (priority 1)", async () => {
+    fetchMock.mockResolvedValueOnce(
+      buildBearerResponse({
+        ok: true,
+        contentType: "application/json",
+        json: { site_name: "STE20250403-01158" },
+      })
+    );
+    const result = await fetchSiteExternalIds(VALID_CONTEXT, "tok", [
+      "site-1",
+    ]);
+    expect(result.get("site-1")).toBe("STE20250403-01158");
+  });
+
+  it("extracts STE ID from a nested `data.site_name` field (priority 1)", async () => {
+    fetchMock.mockResolvedValueOnce(
+      buildBearerResponse({
+        ok: true,
+        contentType: "application/json",
+        json: { data: { site_name: "STE20260101-99999" } },
+      })
+    );
+    const result = await fetchSiteExternalIds(VALID_CONTEXT, "tok", [
+      "site-2",
+    ]);
+    expect(result.get("site-2")).toBe("STE20260101-99999");
+  });
+
+  it("extracts STE ID from any string value when no candidate field matches (priority 2)", async () => {
+    // Field name `notes` isn't in the candidate list, but its string
+    // value matches the STE pattern. Priority 2 catches it.
+    fetchMock.mockResolvedValueOnce(
+      buildBearerResponse({
+        ok: true,
+        contentType: "application/json",
+        json: {
+          // No site_name / name / display_name / etc. matching STE pattern.
+          some_unknown_field: "STE20251231-00001",
+        },
+      })
+    );
+    const result = await fetchSiteExternalIds(VALID_CONTEXT, "tok", [
+      "site-3",
+    ]);
+    expect(result.get("site-3")).toBe("STE20251231-00001");
+  });
+
+  it("falls back to site_name when no STE pattern is found anywhere (priority 3)", async () => {
+    fetchMock.mockResolvedValueOnce(
+      buildBearerResponse({
+        ok: true,
+        contentType: "application/json",
+        json: { site_name: "Some Customer LLC" },
+      })
+    );
+    const result = await fetchSiteExternalIds(VALID_CONTEXT, "tok", [
+      "site-4",
+    ]);
+    expect(result.get("site-4")).toBe("Some Customer LLC");
+  });
+
+  it("uses nested data.site_name for the priority-3 fallback when top-level is absent", async () => {
+    fetchMock.mockResolvedValueOnce(
+      buildBearerResponse({
+        ok: true,
+        contentType: "application/json",
+        json: { data: { site_name: "Nested Customer" } },
+      })
+    );
+    const result = await fetchSiteExternalIds(VALID_CONTEXT, "tok", [
+      "site-5",
+    ]);
+    expect(result.get("site-5")).toBe("Nested Customer");
+  });
+
+  it("returns no entry for sites with no recognizable identifier (3 priorities all miss)", async () => {
+    fetchMock.mockResolvedValueOnce(
+      buildBearerResponse({
+        ok: true,
+        contentType: "application/json",
+        // No site_name anywhere, no STE pattern anywhere.
+        json: { id: "uuid-only" },
+      })
+    );
+    const result = await fetchSiteExternalIds(VALID_CONTEXT, "tok", [
+      "site-6",
+    ]);
+    expect(result.has("site-6")).toBe(false);
+  });
+
+  it("tolerates per-site errors (404, 500, network) without throwing", async () => {
+    // Mix: site-A → 404, site-B → 500, site-C → 200 with STE.
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url.includes("/site-A")) {
+        return buildBearerResponse({
+          ok: false,
+          status: 404,
+          statusText: "Not Found",
+        });
+      }
+      if (url.includes("/site-B")) {
+        return buildBearerResponse({
+          ok: false,
+          status: 500,
+          statusText: "Server Error",
+        });
+      }
+      return buildBearerResponse({
+        ok: true,
+        contentType: "application/json",
+        json: { site_name: "STE20260101-00003" },
+      });
+    });
+    const result = await fetchSiteExternalIds(VALID_CONTEXT, "tok", [
+      "site-A",
+      "site-B",
+      "site-C",
+    ]);
+    // Only site-C produced an STE — the other two failed silently.
+    expect(result.size).toBe(1);
+    expect(result.get("site-C")).toBe("STE20260101-00003");
+  });
+
+  it("URL-encodes site IDs that contain reserved characters", async () => {
+    fetchMock.mockResolvedValueOnce(
+      buildBearerResponse({
+        ok: true,
+        contentType: "application/json",
+        json: { site_name: "STE20260101-00007" },
+      })
+    );
+    await fetchSiteExternalIds(VALID_CONTEXT, "tok", ["site/with/slash"]);
+    const [url] = fetchMock.mock.calls[0];
+    expect(url).toContain("site%2Fwith%2Fslash");
+    expect(url).not.toContain("site/with/slash/asset");
+  });
+
+  it("hits /asset/sites/<id> per site ID", async () => {
+    fetchMock.mockResolvedValue(
+      buildBearerResponse({
+        ok: true,
+        contentType: "application/json",
+        json: { site_name: "STE20260101-00099" },
+      })
+    );
+    await fetchSiteExternalIds(VALID_CONTEXT, "tok", [
+      "site-x",
+      "site-y",
+      "site-z",
+    ]);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    const urls = fetchMock.mock.calls.map(c => c[0] as string);
+    expect(urls.some(u => u.endsWith("/asset/sites/site-x"))).toBe(true);
+    expect(urls.some(u => u.endsWith("/asset/sites/site-y"))).toBe(true);
+    expect(urls.some(u => u.endsWith("/asset/sites/site-z"))).toBe(true);
+  });
+
+  it("short-circuits per-site work when abortSignal is already aborted", async () => {
+    // Pre-aborted signal — every iteration of mapConcurrent's worker
+    // checks `abortSignal?.aborted` and returns early without fetching.
+    const controller = new AbortController();
+    controller.abort();
+    fetchMock.mockResolvedValue(
+      buildBearerResponse({
+        ok: true,
+        contentType: "application/json",
+        json: { site_name: "STE20260101-00111" },
+      })
+    );
+    const result = await fetchSiteExternalIds(
+      VALID_CONTEXT,
+      "tok",
+      ["site-1", "site-2", "site-3"],
+      undefined,
+      controller.signal
+    );
+    expect(result.size).toBe(0);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("prefers the STE-pattern field over site_name when both are present", async () => {
+    // Defends against a regression where priority-3 site_name fallback
+    // shadows priority-1 STE pattern detection.
+    fetchMock.mockResolvedValueOnce(
+      buildBearerResponse({
+        ok: true,
+        contentType: "application/json",
+        json: {
+          site_name: "Some Customer LLC",
+          external_id: "STE20260101-77777",
+        },
+      })
+    );
+    const result = await fetchSiteExternalIds(VALID_CONTEXT, "tok", [
+      "site-priority",
+    ]);
+    expect(result.get("site-priority")).toBe("STE20260101-77777");
   });
 });
