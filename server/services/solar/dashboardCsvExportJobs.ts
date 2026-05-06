@@ -16,8 +16,8 @@
  *      `runCsvExportJob(jobId)` via `setImmediate`.
  *   3. Worker atomically claims the row (`queued → running` with
  *      `claimedBy` + `claimedAt` set in the same UPDATE), loads
- *      the heavy aggregator artifact, builds the CSV, writes it
- *      to storage, and atomically completes the row
+ *      the export source rows, builds the CSV, writes it to
+ *      storage, and atomically completes the row
  *      (`running → succeeded` WHERE `claimedBy` still equals
  *      ours).
  *   4. Client polls `getDashboardCsvExportJobStatus(jobId)`. The
@@ -71,6 +71,10 @@ import {
 import { getOrBuildOverviewSummary } from "./buildOverviewSummaryAggregates";
 import { startDashboardJobMetric } from "./dashboardJobMetrics";
 import {
+  getOwnershipFactsCount,
+  getOwnershipFactsPage,
+} from "../../db/dashboardOwnershipFacts";
+import {
   claimDashboardCsvExportJob,
   completeDashboardCsvExportJobFailure,
   completeDashboardCsvExportJobSuccess,
@@ -80,14 +84,35 @@ import {
   pruneTerminalDashboardCsvExportJobs,
   refreshDashboardCsvExportJobClaim,
 } from "../../db/dashboardCsvExportJobs";
-import type { DashboardCsvExportJob } from "../../../drizzle/schema";
+import type {
+  DashboardCsvExportJob,
+  SolarRecDashboardOwnershipFact,
+} from "../../../drizzle/schema";
 
 const METRIC_PREFIX = "[dashboard:csv-export-jobs]";
 
 export const DASHBOARD_CSV_EXPORT_RUNNER_VERSION =
-  "dashboard-csv-export-jobs-v9-delivery-tracker-unmatched";
+  "dashboard-csv-export-jobs-v10-ownership-fact-export";
 const LEGACY_DETERMINISTIC_ARTIFACT_RUNNER_VERSION =
   "dashboard-csv-export-jobs-v3-heartbeat";
+const OWNERSHIP_FACT_EXPORT_PAGE_SIZE = 1000;
+const OWNERSHIP_TILE_STATUS_FILTERS: Record<
+  OwnershipTileKey,
+  readonly string[]
+> = {
+  reporting: [
+    "Not Transferred and Reporting",
+    "Transferred and Reporting",
+  ],
+  notReporting: [
+    "Not Transferred and Not Reporting",
+    "Transferred and Not Reporting",
+  ],
+  terminated: [
+    "Terminated and Reporting",
+    "Terminated and Not Reporting",
+  ],
+};
 
 /**
  * TTL for terminal rows. After `completedAt + JOB_TTL_MS`, the
@@ -979,6 +1004,16 @@ async function buildExport(
   scopeId: string
 ): Promise<BuiltCsvArtifact> {
   if (input.exportType === "ownershipTile") {
+    const factArtifact = await buildOwnershipTileCsvFromFacts(
+      scopeId,
+      input.tile
+    );
+    if (factArtifact) return factArtifact;
+
+    // Transitional fallback: scopes that have not run the new
+    // dashboard fact build yet still need exports to work. Once
+    // the build runner is required before export, this fallback can
+    // be retired with `getDashboardOverviewSummary.ownershipRows`.
     const { result } = await getOrBuildOverviewSummary(scopeId);
     return buildOwnershipTileCsvFile(result.ownershipRows, input.tile);
   }
@@ -993,6 +1028,34 @@ async function buildExport(
   }
   const { result } = await getOrBuildChangeOwnership(scopeId);
   return buildChangeOwnershipTileCsvFile(result.rows, input.status);
+}
+
+async function buildOwnershipTileCsvFromFacts(
+  scopeId: string,
+  tile: OwnershipTileKey
+): Promise<BuiltCsvArtifact | null> {
+  const totalFacts = await getOwnershipFactsCount(scopeId);
+  if (totalFacts <= 0) return null;
+
+  const rows: SolarRecDashboardOwnershipFact[] = [];
+  for (const status of OWNERSHIP_TILE_STATUS_FILTERS[tile]) {
+    let cursorAfter: string | null = null;
+    while (true) {
+      const page = await getOwnershipFactsPage(scopeId, {
+        cursorAfter,
+        limit: OWNERSHIP_FACT_EXPORT_PAGE_SIZE,
+        status,
+      });
+      rows.push(...page);
+
+      if (page.length < OWNERSHIP_FACT_EXPORT_PAGE_SIZE) break;
+      const nextCursor = page[page.length - 1]?.systemKey ?? null;
+      if (!nextCursor || nextCursor === cursorAfter) break;
+      cursorAfter = nextCursor;
+    }
+  }
+
+  return buildOwnershipTileCsvFile(rows, tile);
 }
 
 function getBuiltCsvBytes(built: BuiltCsvArtifact): number {
