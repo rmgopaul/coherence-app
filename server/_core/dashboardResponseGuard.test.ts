@@ -407,6 +407,18 @@ describe("dashboardResponseGuardMiddleware allowlist short-circuit", () => {
     ) as Record<string, unknown>;
   }
 
+  function parseWarnLogByPrefix(prefix: string): Record<string, unknown> {
+    const message = String(
+      warnSpy.mock.calls.find((call) =>
+        String(call[0]).startsWith(prefix)
+      )?.[0] ?? ""
+    );
+    expect(message).toContain(prefix);
+    return JSON.parse(
+      message.replace(`${prefix} `, "")
+    ) as Record<string, unknown>;
+  }
+
   it("warn mode + allowlisted: does NOT serialize the response", async () => {
     process.env.DASHBOARD_RESPONSE_ENFORCEMENT = "warn";
     const caller = await buildHarness("getSystemSnapshot", sentinel());
@@ -454,7 +466,7 @@ describe("dashboardResponseGuardMiddleware allowlist short-circuit", () => {
   });
 
   it("logs one structured heap line when the heap delta threshold is exceeded", async () => {
-    process.env.DASHBOARD_RESPONSE_ENFORCEMENT = "warn";
+    process.env.DASHBOARD_RESPONSE_ENFORCEMENT = "off";
     process.env.DASHBOARD_REQUEST_HEAP_DELTA_WARN_BYTES = "100";
     process.env.DASHBOARD_REQUEST_HEAP_AFTER_WARN_BYTES = "10000";
     mockHeapSequence(1_000, 1_250);
@@ -469,7 +481,7 @@ describe("dashboardResponseGuardMiddleware allowlist short-circuit", () => {
     expect(payload).toMatchObject({
       path: "solarRecDashboard.someExperimentalProc",
       outcome: "success",
-      enforcement: "warn",
+      enforcement: "off",
       allowlisted: false,
       heapBeforeBytes: 1000,
       heapAfterBytes: 1250,
@@ -539,6 +551,41 @@ describe("dashboardResponseGuardMiddleware allowlist short-circuit", () => {
     expect(warnSpy.mock.calls[0][0]).toContain(
       "[dashboard:oversize-response]"
     );
+  });
+
+  it("warn mode + non-allowlisted + heap pressure: skips size measurement without serializing", async () => {
+    process.env.DASHBOARD_RESPONSE_ENFORCEMENT = "warn";
+    process.env.DASHBOARD_RESPONSE_LIMIT_BYTES = "32";
+    process.env.DASHBOARD_REQUEST_HEAP_DELTA_WARN_BYTES = "100";
+    process.env.DASHBOARD_REQUEST_HEAP_AFTER_WARN_BYTES = "10000";
+    mockHeapSequence(1_000, 1_250);
+    const caller = await buildHarness("someExperimentalProc", sentinel());
+
+    await expect(
+      (caller.solarRecDashboard as {
+        someExperimentalProc: () => Promise<unknown>;
+      }).someExperimentalProc()
+    ).resolves.toBeTruthy();
+
+    expect(warnSpy).toHaveBeenCalledTimes(2);
+    const heapPayload = parseWarnLogByPrefix("[dashboard:request-heap]");
+    expect(heapPayload).toMatchObject({
+      path: "solarRecDashboard.someExperimentalProc",
+      outcome: "success",
+      reasons: ["heap-delta"],
+    });
+    const skipPayload = parseWarnLogByPrefix("[dashboard:response-size-skip]");
+    expect(skipPayload).toMatchObject({
+      path: "solarRecDashboard.someExperimentalProc",
+      enforcement: "warn",
+      allowlisted: false,
+      heapBeforeBytes: 1000,
+      heapAfterBytes: 1250,
+      heapDeltaBytes: 250,
+      heapDeltaWarnBytes: 100,
+      heapAfterWarnBytes: 10000,
+      reasons: ["heap-delta"],
+    });
   });
 
   it("throw mode + allowlisted: serializes (to log) but does not throw", async () => {
