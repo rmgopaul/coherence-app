@@ -1716,12 +1716,15 @@ export async function getMeterProductionSnapshot(
 
 // ────────────────────────────────────────────────────────────────────
 // Test surface — internal pure helpers exported for unit-test access
-// without polluting the production import surface. Concern #1 from
-// the PRs 366-383 review (slice 2 — eGauge): the vendor-restoration
-// PRs (#368, #371, #373) shipped with no adapter-level vitest specs.
-// Tesla's pure-helper rails (#389) was slice 1; this is slice 2.
-// Network-bound paths (`getEgaugeSystemInfo`, `getEgaugeRegisterLatest`,
-// `getEgaugePortfolioMembership`, etc.) are follow-up PRs that mock fetch.
+// without polluting the production import surface.
+//
+// Slice 2 (#394): file-local pure helpers below.
+// Slice 4e PR-B (this PR): adds `extractRegisterCumulativeWh` — the
+//   register-name → cumulative-Wh extractor used by
+//   `getMeterProductionSnapshot`. Has 8 priority register names +
+//   nested-object lookup (4 cumulative aliases) + single-register
+//   fallback. Direct unit tests are clearer than driving every case
+//   through `getMeterProductionSnapshot`'s 3-step auth flow.
 // ────────────────────────────────────────────────────────────────────
 export const __TEST_ONLY__ = {
   truncate,
@@ -1742,6 +1745,7 @@ export const __TEST_ONLY__ = {
   extractSummaryString,
   extractRegisterCount,
   extractLocalValueCount,
+  extractRegisterCumulativeWh,
   normalizeErrorPayload,
   stripHtml,
   parseLooseNumber,
