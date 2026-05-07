@@ -2031,7 +2031,6 @@ export default function SolarRecDashboard() {
   const isDeliveryTrackerTabActive = activeTab === "delivery-tracker";
   const isOfflineMonitoringTabActive = activeTab === "offline-monitoring";
   const isChangeOwnershipTabActive = activeTab === "change-ownership";
-  const isAlertsTabActive = activeTab === "alerts";
   // Removed dead flags whose consumer memos moved out of the parent:
   // isTrendsTabActive, isComparisonsTabActive, isDataQualityTabActive,
   // isOfflineTabActive,
@@ -3240,14 +3239,13 @@ export default function SolarRecDashboard() {
   //
   // Generic interaction is too broad: a user clicking through tabs
   // would re-enable the 26 MB fetch even if they never visited an
-  // Alerts/Financials/Forecast tab. The predicate below
+  // Financials/Forecast tab. The predicate below
   // is the narrow contract — only the tabs that walk full system
-  // records. Comparisons reads the paginated
+  // records. Alerts and Comparisons read the paginated
   // `getDashboardSystemsPage` fact table directly, and
   // SystemDetailSheet reads one selected row via
   // `getSystemFactsBySystemKeys`.
   const isSystemSnapshotNeeded =
-    isAlertsTabActive ||
     isFinancialsTabActive ||
     isForecastTabActive;
   const serverSnapshot = useSystemSnapshot({
@@ -3361,10 +3359,10 @@ export default function SolarRecDashboard() {
   //
   // Same gating predicate as `useSystemSnapshot`
   // (`isSystemSnapshotNeeded`). The heavy snapshot stays gated
-  // for the consumers that genuinely need it (Alerts, Comparisons,
-  // Financials, Forecast, SystemDetail drill-in) until those
-  // migrations land in PR-F-4-{a,c,e}; this slice retires only
-  // the OverviewTab's parent-level walk.
+  // for the consumers that genuinely need it (Financials, Forecast)
+  // until those migrations land in PR-F-4-e / PR-F-4-b; this path
+  // exists only for the OverviewTab's parent-level size-reporting
+  // value summary.
   const part2EligibleSystemsPagesQuery =
     solarRecTrpc.solarRecDashboard.getDashboardSystemsPage.useInfiniteQuery(
       { limit: 500, isPart2Eligible: true },
@@ -6147,9 +6145,9 @@ const aiDataContext = useMemo(() => {
             <TabsTrigger className="h-8 px-2 text-xs md:text-sm" value="trends">Trends</TabsTrigger>
             <TabsTrigger className="h-8 px-2 text-xs md:text-sm" value="forecast">Forecast</TabsTrigger>
             {/* The (count) suffix used to come from a parent-level
-                `alertSummary.total`, but the alerts memo was gated by
-                isAlertsTabActive so the count was always 0 unless you
-                were already on the tab. AlertsTab now owns that state. */}
+                `alertSummary.total`, but the alerts memo was tab-gated
+                so the count was always 0 unless you were already on the
+                tab. AlertsTab now owns that state. */}
             <TabsTrigger className="h-8 px-2 text-xs md:text-sm" value="alerts">
               Alerts
             </TabsTrigger>
@@ -6415,7 +6413,6 @@ const aiDataContext = useMemo(() => {
               <TabErrorBoundary tabLabel="Alerts">
                 <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading alerts tab...</div>}>
                   <AlertsTabLazy
-                    systems={systems}
                     datasets={datasets}
                     isActive={activeTab === "alerts"}
                   />

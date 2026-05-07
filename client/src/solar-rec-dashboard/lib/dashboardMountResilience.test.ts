@@ -44,6 +44,12 @@ const COMPARISONS_TAB_FILE = resolve(
   "components",
   "ComparisonsTab.tsx"
 );
+const ALERTS_TAB_FILE = resolve(
+  __dirname,
+  "..",
+  "components",
+  "AlertsTab.tsx"
+);
 const SYSTEM_DETAIL_SHEET_FILE = resolve(
   __dirname,
   "..",
@@ -58,6 +64,7 @@ const DELIVERY_TRACKER_TAB_SOURCE = readFileSync(
 );
 const OWNERSHIP_TAB_SOURCE = readFileSync(OWNERSHIP_TAB_FILE, "utf8");
 const COMPARISONS_TAB_SOURCE = readFileSync(COMPARISONS_TAB_FILE, "utf8");
+const ALERTS_TAB_SOURCE = readFileSync(ALERTS_TAB_FILE, "utf8");
 const SYSTEM_DETAIL_SHEET_SOURCE = readFileSync(
   SYSTEM_DETAIL_SHEET_FILE,
   "utf8"
@@ -234,7 +241,7 @@ describe("Solar REC dashboard mount: heavy-query gates", () => {
     const start = code.indexOf("const isSystemSnapshotNeeded");
     expect(start).toBeGreaterThan(-1);
     const block = code.slice(start, start + 400);
-    expect(block).toMatch(/isAlertsTabActive/);
+    expect(block).not.toMatch(/isAlertsTabActive/);
     expect(block).toMatch(/isFinancialsTabActive/);
     expect(block).toMatch(/isForecastTabActive/);
     expect(block).not.toMatch(/selectedSystemKey/);
@@ -865,6 +872,22 @@ describe("Solar REC dashboard mount: heavy-query gates", () => {
     expect(COMPARISONS_TAB_SOURCE).not.toMatch(/SystemRecord/);
     expect(code).toMatch(/<ComparisonsTabLazy[\s\S]{0,120}isActive=/);
     expect(code).not.toMatch(/<ComparisonsTabLazy[\s\S]{0,160}systems=/);
+  });
+
+  it("Alerts tab reads paginated system facts instead of parent SystemRecord rows", () => {
+    expect(ALERTS_TAB_SOURCE).toMatch(
+      /getDashboardSystemsPage\.useInfiniteQuery/
+    );
+    expect(ALERTS_TAB_SOURCE).toMatch(/useDashboardBuildControl/);
+    expect(ALERTS_TAB_SOURCE).toMatch(/enabled:\s*isActive/);
+    expect(ALERTS_TAB_SOURCE).toMatch(
+      /getDashboardTrendDeliveryPace\.useQuery/
+    );
+    expect(ALERTS_TAB_SOURCE).not.toMatch(
+      /import type \{[\s\S]*SystemRecord/
+    );
+    expect(code).toMatch(/<AlertsTabLazy[\s\S]{0,160}isActive=/);
+    expect(code).not.toMatch(/<AlertsTabLazy[\s\S]{0,200}systems=/);
   });
 
   it("SystemDetailSheet reads one system fact by key instead of parent SystemRecord rows", () => {
