@@ -686,9 +686,9 @@ proc for Part-II ID arrays. Counts come from `getDashboardSummary`,
 Part-II systems come from the bounded
 `getDashboardSystemsPage({ isPart2Eligible: true })` walk, and
 monitoring details come from `getDashboardMonitoringDetailsPage`.
-The proc still exists server-side as a bounded compatibility/count
-surface, but the high-cardinality fields are stripped at the wire
-boundary and it is not an accepted oversized response path.
+The tRPC procedure itself is now removed from
+`solarRecDashboardRouter`; the shared offline-monitoring aggregate
+builder remains in-process for fact builders only.
 
 **`getSystemSnapshot` retired from the allowlist (Phase 2 PR-F-4-h,
 2026-05-07).** The parent dashboard no longer imports
