@@ -435,6 +435,13 @@
       "when": 1778108391308,
       "tag": "0065_add_system_facts_part2_eligible",
       "breakpoints": true
+    },
+    {
+      "idx": 66,
+      "version": "5",
+      "when": 1778175148898,
+      "tag": "0066_add_dashboard_performance_ratio_facts",
+      "breakpoints": true
     }
   ]
 }
