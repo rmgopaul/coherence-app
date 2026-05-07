@@ -3653,6 +3653,116 @@ export const solarRecDashboardRouter = t.router({
     }),
 
   /**
+   * Snapshot-log restore (Task 5.15 PR-B) — operator-driven
+   * one-shot mutation that consolidates orphaned chunk rows back
+   * into the canonical `snapshot_logs_v1` key.
+   *
+   * Idempotent. A second call after a successful restore observes
+   * `source === "main"` and returns `alreadyConsolidated: true`
+   * with zero side effects. Verify-then-delete: writes the new
+   * main payload, reads it back, asserts the id set matches, only
+   * then deletes the orphaned `snapshot_logs_v1_chunk_NNNN` rows.
+   *
+   * Gated on `solar-rec-dashboard:edit`. The dashboard tab itself
+   * gates on `read`; the operator-driven restore is `edit` because
+   * it mutates `solarRecDashboardStorage` rows.
+   */
+  restoreSnapshotLogsFromOrphanChunks: dashboardProcedure(
+    "solar-rec-dashboard",
+    "edit"
+  ).mutation(async ({ ctx }) => {
+    const {
+      getSolarRecDashboardPayload,
+      listSolarRecDashboardStorageByPrefix,
+      saveSolarRecDashboardPayload,
+      deleteSolarRecDashboardStorageByExactKeys,
+    } = await import("../db/preferences");
+    const { runSnapshotLogRestore, SNAPSHOT_LOG_RESTORE_KEYS } = await import(
+      "../services/solar/snapshotLogRestore"
+    );
+
+    const result = await runSnapshotLogRestore({
+      readMainPayload: () =>
+        getSolarRecDashboardPayload(ctx.userId, SNAPSHOT_LOG_RESTORE_KEYS.mainKey),
+      readOrphanRows: () =>
+        listSolarRecDashboardStorageByPrefix(
+          ctx.userId,
+          SNAPSHOT_LOG_RESTORE_KEYS.chunkPrefix,
+          { maxRows: 256 }
+        ),
+      writeMainPayload: (payload: string) =>
+        saveSolarRecDashboardPayload(
+          ctx.userId,
+          SNAPSHOT_LOG_RESTORE_KEYS.mainKey,
+          payload
+        ),
+      deleteStorageKeys: (storageKeys: string[]) =>
+        deleteSolarRecDashboardStorageByExactKeys(ctx.userId, storageKeys),
+    });
+
+    return result;
+  }),
+
+  /**
+   * Snapshot-log raw persistence diagnostic (Task 5.15 PR-B).
+   *
+   * Returns the main `snapshot_logs_v1` row's payload length plus
+   * the per-storageKey listing of orphaned `snapshot_logs_v1_chunk_*`
+   * rows (storageKey + payload length only — no full payload bodies
+   * over the wire). Plus the `composeSnapshotLogRecovery` verdict so
+   * the operator can confirm post-restore that the row collapsed to
+   * `source === "main"` and orphan rows are absent.
+   *
+   * Read-only. Caps the orphan listing at 256 rows (matches the
+   * recovery proc's MaxRows). Wire payload: a few KB at most.
+   */
+  debugSnapshotLogPersistenceRaw: dashboardProcedure(
+    "solar-rec-dashboard",
+    "read"
+  ).query(async ({ ctx }) => {
+    const {
+      getSolarRecDashboardPayload,
+      listSolarRecDashboardStorageByPrefix,
+    } = await import("../db/preferences");
+    const { composeSnapshotLogRecovery } = await import(
+      "../services/solar/snapshotLogRecovery"
+    );
+    const { SNAPSHOT_LOG_RESTORE_KEYS } = await import(
+      "../services/solar/snapshotLogRestore"
+    );
+
+    const [mainPayload, orphanRows] = await Promise.all([
+      getSolarRecDashboardPayload(ctx.userId, SNAPSHOT_LOG_RESTORE_KEYS.mainKey),
+      listSolarRecDashboardStorageByPrefix(
+        ctx.userId,
+        SNAPSHOT_LOG_RESTORE_KEYS.chunkPrefix,
+        { maxRows: 256 }
+      ),
+    ]);
+
+    const recovery = composeSnapshotLogRecovery({ mainPayload, orphanRows });
+
+    return {
+      mainKey: SNAPSHOT_LOG_RESTORE_KEYS.mainKey,
+      mainPayloadLength: mainPayload === null ? null : mainPayload.length,
+      orphanRows: orphanRows.map((row) => ({
+        storageKey: row.storageKey,
+        payloadLength: row.payload === null ? null : row.payload.length,
+      })),
+      recoveryVerdict: {
+        source: recovery.source,
+        totalUniqueCount: recovery.entries.length,
+        rawEntryCount: recovery.rawEntryCount,
+        duplicateCount: recovery.duplicateCount,
+        mainPayloadEntries: recovery.mainPayloadEntries,
+        orphanedChunkEntries: recovery.orphanedChunkEntries,
+        warnings: recovery.warnings,
+      },
+      _runnerVersion: "snapshot-logs-restore-debug-v1" as const,
+    };
+  }),
+
+  /**
    * Phase 2 PR-C-3-a (OOM rebuild) — paginated read for the
    * monitoringDetails fact table written by the build runner
    * (PR-C-2's `monitoringDetailsBuildStep`). This replaced the

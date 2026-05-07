@@ -149,6 +149,34 @@ export interface SnapshotLogTabProps {
   onCreateLogEntry: () => void;
   onClearLogs: () => void;
   onDeleteLogEntry: (id: string) => void;
+  /**
+   * Server-side recovery source verdict from `getSnapshotLogs`. The
+   * banner renders when this is `"orphaned-chunks"` or
+   * `"main-plus-orphaned-chunks"` — the two states indicating
+   * orphaned chunk rows that can be consolidated back into the
+   * canonical `snapshot_logs_v1` key. Task 5.15 PR-B.
+   */
+  recoverySource?:
+    | "main"
+    | "main-plus-orphaned-chunks"
+    | "orphaned-chunks"
+    | "none";
+  /**
+   * Total deduped unique-id count from the server recovery; shown
+   * in the restore banner copy. Optional — banner falls back to a
+   * generic message when missing.
+   */
+  recoveryTotalUniqueCount?: number;
+  /**
+   * Click handler for the "Recover and consolidate" button. Parent
+   * wires this to the `restoreSnapshotLogsFromOrphanChunks`
+   * mutation and the post-success query invalidation.
+   */
+  onRestoreOrphans?: () => void;
+  /** Whether the restore mutation is currently in flight. */
+  isRestoringOrphans?: boolean;
+  /** Last restore error message, if any. */
+  restoreErrorMessage?: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -163,7 +191,17 @@ export default memo(function SnapshotLogTab(props: SnapshotLogTabProps) {
     onCreateLogEntry,
     onClearLogs,
     onDeleteLogEntry,
+    recoverySource,
+    recoveryTotalUniqueCount,
+    onRestoreOrphans,
+    isRestoringOrphans,
+    restoreErrorMessage,
   } = props;
+
+  const showRecoveryBanner =
+    (recoverySource === "main-plus-orphaned-chunks" ||
+      recoverySource === "orphaned-chunks") &&
+    typeof onRestoreOrphans === "function";
 
   const [snapshotContractPage, setSnapshotContractPage] = useState(1);
 
@@ -556,6 +594,43 @@ export default memo(function SnapshotLogTab(props: SnapshotLogTabProps) {
 
   return (
     <div className="space-y-4 mt-4">
+      {showRecoveryBanner ? (
+        <Card className="border-amber-300 bg-amber-50">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base text-amber-900">
+              {recoveryTotalUniqueCount && recoveryTotalUniqueCount > 0
+                ? `${formatNumber(recoveryTotalUniqueCount)} hidden snapshot ${
+                    recoveryTotalUniqueCount === 1 ? "entry" : "entries"
+                  } found in cloud orphans`
+                : "Hidden snapshot entries found in cloud orphans"}
+            </CardTitle>
+            <CardDescription className="text-amber-800">
+              Earlier chunked writes left snapshot history pinned in
+              orphan rows that the dashboard can read but does not
+              consolidate automatically. Click below to merge them
+              back into the canonical key. Idempotent and safe — a
+              second click after success is a no-op.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="pt-0">
+            <div className="flex items-center gap-3">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={onRestoreOrphans}
+                disabled={isRestoringOrphans}
+              >
+                {isRestoringOrphans ? "Recovering…" : "Recover and consolidate"}
+              </Button>
+              {restoreErrorMessage ? (
+                <span className="text-sm text-red-700">
+                  {restoreErrorMessage}
+                </span>
+              ) : null}
+            </div>
+          </CardContent>
+        </Card>
+      ) : null}
       <div className="grid gap-4 md:grid-cols-3">
         <Card>
           <CardHeader>
