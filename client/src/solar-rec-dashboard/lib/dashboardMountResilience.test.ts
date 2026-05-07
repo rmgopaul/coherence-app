@@ -50,6 +50,12 @@ const ALERTS_TAB_FILE = resolve(
   "components",
   "AlertsTab.tsx"
 );
+const FORECAST_TAB_FILE = resolve(
+  __dirname,
+  "..",
+  "components",
+  "ForecastTab.tsx"
+);
 const SYSTEM_DETAIL_SHEET_FILE = resolve(
   __dirname,
   "..",
@@ -65,6 +71,7 @@ const DELIVERY_TRACKER_TAB_SOURCE = readFileSync(
 const OWNERSHIP_TAB_SOURCE = readFileSync(OWNERSHIP_TAB_FILE, "utf8");
 const COMPARISONS_TAB_SOURCE = readFileSync(COMPARISONS_TAB_FILE, "utf8");
 const ALERTS_TAB_SOURCE = readFileSync(ALERTS_TAB_FILE, "utf8");
+const FORECAST_TAB_SOURCE = readFileSync(FORECAST_TAB_FILE, "utf8");
 const SYSTEM_DETAIL_SHEET_SOURCE = readFileSync(
   SYSTEM_DETAIL_SHEET_FILE,
   "utf8"
@@ -243,7 +250,7 @@ describe("Solar REC dashboard mount: heavy-query gates", () => {
     const block = code.slice(start, start + 400);
     expect(block).not.toMatch(/isAlertsTabActive/);
     expect(block).toMatch(/isFinancialsTabActive/);
-    expect(block).toMatch(/isForecastTabActive/);
+    expect(block).not.toMatch(/isForecastTabActive/);
     expect(block).not.toMatch(/selectedSystemKey/);
     expect(block).not.toMatch(/isComparisonsTabActive/);
     // Generic interaction gating is NOT used for the snapshot.
@@ -888,6 +895,18 @@ describe("Solar REC dashboard mount: heavy-query gates", () => {
     );
     expect(code).toMatch(/<AlertsTabLazy[\s\S]{0,160}isActive=/);
     expect(code).not.toMatch(/<AlertsTabLazy[\s\S]{0,200}systems=/);
+  });
+
+  it("Forecast tab reads its server aggregate instead of parent SystemRecord rows", () => {
+    expect(FORECAST_TAB_SOURCE).toMatch(/getDashboardForecast\.useQuery/);
+    expect(FORECAST_TAB_SOURCE).toMatch(
+      /export interface ForecastTabProps \{\}/
+    );
+    expect(FORECAST_TAB_SOURCE).not.toMatch(
+      /import type \{[\s\S]*SystemRecord/
+    );
+    expect(code).toMatch(/<ForecastTabLazy\s*\/>/);
+    expect(code).not.toMatch(/<ForecastTabLazy[\s\S]{0,180}systems=/);
   });
 
   it("Financials tab consumes the parent's Part-2-eligible systems list (Phase 2 PR-F-4-e)", () => {

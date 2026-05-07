@@ -3239,15 +3239,13 @@ export default function SolarRecDashboard() {
   //
   // Generic interaction is too broad: a user clicking through tabs
   // would re-enable the 26 MB fetch even if they never visited an
-  // Financials/Forecast tab. The predicate below
-  // is the narrow contract — only the tabs that walk full system
-  // records. Alerts and Comparisons read the paginated
-  // `getDashboardSystemsPage` fact table directly, and
+  // Financials tab. The predicate below is the narrow contract —
+  // only the tabs that walk full system records. Alerts and
+  // Comparisons read the paginated `getDashboardSystemsPage` fact
+  // table directly, Forecast reads `getDashboardForecast`, and
   // SystemDetailSheet reads one selected row via
   // `getSystemFactsBySystemKeys`.
-  const isSystemSnapshotNeeded =
-    isFinancialsTabActive ||
-    isForecastTabActive;
+  const isSystemSnapshotNeeded = isFinancialsTabActive;
   const serverSnapshot = useSystemSnapshot({
     enabled: isSystemSnapshotNeeded,
   });
