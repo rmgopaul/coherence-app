@@ -190,16 +190,16 @@ describe("upsertPerformanceRatioFacts", () => {
     expect(Object.keys(set)).not.toContain("updatedAt");
   });
 
-  it("chunks rows at 400 per INSERT", async () => {
+  it("chunks rows at 200 per INSERT", async () => {
     const stub = makeDbStub({});
     mocks.getDb.mockResolvedValue(stub);
-    const rows = Array.from({ length: 1050 }, (_, i) => makeRow(String(i)));
+    const rows = Array.from({ length: 450 }, (_, i) => makeRow(String(i)));
     await upsertPerformanceRatioFacts(rows as never);
     const insertCalls = stub.calls.filter(c => c.kind === "insert");
     expect(insertCalls).toHaveLength(3);
-    expect(insertCalls[0].insertValues?.length).toBe(400);
-    expect(insertCalls[1].insertValues?.length).toBe(400);
-    expect(insertCalls[2].insertValues?.length).toBe(250);
+    expect(insertCalls[0].insertValues?.length).toBe(200);
+    expect(insertCalls[1].insertValues?.length).toBe(200);
+    expect(insertCalls[2].insertValues?.length).toBe(50);
   });
 
   it("throws when the DB is unavailable (write is mandatory)", async () => {

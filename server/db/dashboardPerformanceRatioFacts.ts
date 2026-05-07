@@ -53,11 +53,15 @@ import {
  * `succeeded` while no rows were written would silently corrupt
  * the data plane.
  *
- * Chunked at 400 rows / INSERT for TiDB parameter-limit headroom
- * (performance-ratio rows have ~28 columns; 400 × 28 = 11.2k
- * params, well under the ~65k cap). Lower than the 500-row chunk
- * the change-ownership builder uses because each row carries 6
- * extra decimal columns.
+ * Chunked at 200 rows / INSERT for TiDB parameter-limit headroom
+ * (performance-ratio rows have ~28 columns; 200 × 28 = 5.6k params,
+ * well under the ~65k cap). Lower than the 500-row chunk the
+ * change-ownership builder uses because each row carries 6 extra
+ * decimal columns AND because step-4's hot path runs under tight
+ * heap pressure on prod (build `bld-18271f3b…` died at pr=178,821
+ * mid-stream). 200 was 400; halving the chunk halves the prepared-
+ * statement parameter peak per upsert call, which is the largest
+ * synchronous JS allocation inside the streaming loop.
  */
 export async function upsertPerformanceRatioFacts(
   rows: InsertSolarRecDashboardPerformanceRatioFact[]
@@ -70,7 +74,7 @@ export async function upsertPerformanceRatioFacts(
     );
   }
 
-  const CHUNK = 400;
+  const CHUNK = 200;
   for (let i = 0; i < rows.length; i += CHUNK) {
     const chunk = rows.slice(i, i + CHUNK);
     await withDbRetry(

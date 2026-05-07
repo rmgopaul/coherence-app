@@ -146,7 +146,15 @@ async function streamSrDsRowsPage(
   return totalRows;
 }
 
-const STREAM_PAGE_SIZE_DEFAULT = 5_000;
+// 2026-05-08 step-4 hardening — was 5_000. Cut to 2_500 because the
+// previous value still produced a per-page allocation peak high enough
+// to OOM the worker mid-stream on prod-shape data (build
+// `bld-18271f3b…` died at pr=178,821 with the heartbeat frozen for
+// 4+ minutes — process death, not a soft timeout). Halving the page
+// size halves the transient `pageRows` footprint and the matched-row
+// buffer between drains, which is the biggest dial we have without
+// restructuring the aggregator.
+const STREAM_PAGE_SIZE_DEFAULT = 2_500;
 
 /**
  * Per-row accumulator for `srDsAccountSolarGeneration` pages.
@@ -574,7 +582,14 @@ export type PerformanceRatioStaticInput = Omit<
   "convertedReadsRows"
 >;
 
-export const PERFORMANCE_RATIO_CONVERTED_READS_PAGE_SIZE = 5_000;
+// 2026-05-08 step-4 hardening — was 5_000. See STREAM_PAGE_SIZE_DEFAULT
+// above for the failure mode this addresses. Each page allocates one
+// projected `PerformanceRatioConvertedReadRow` array + one matched-
+// rows buffer in the accumulator; halving the page caps both at half
+// peak. The drain frequency doubles (smaller batches per upsert) but
+// the upsert chunk size is independent of page size — the work just
+// fits more pages between heartbeats, which is fine.
+export const PERFORMANCE_RATIO_CONVERTED_READS_PAGE_SIZE = 2_500;
 
 export function projectPerformanceRatioConvertedRead(
   row: CsvRow
