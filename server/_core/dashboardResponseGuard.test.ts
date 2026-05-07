@@ -721,13 +721,13 @@ describe("solarRecDashboardRouter wiring", () => {
     expect(procBlock![1]).toBe("query");
   });
 
-  it("does NOT re-register the retired SystemRecord[] snapshot proc", () => {
+  it("does NOT re-register retired SystemRecord[] snapshot procs", () => {
     const filePath = resolve(__dirname, "solarRecDashboardRouter.ts");
     const source = readFileSync(filePath, "utf8");
     expect(source).not.toMatch(
       /getSystemSnapshot\s*:\s*dashboardProcedure\s*\(/
     );
-    expect(source).toMatch(
+    expect(source).not.toMatch(
       /getSystemSnapshotHash\s*:\s*dashboardProcedure\s*\(/
     );
   });
