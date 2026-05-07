@@ -1385,13 +1385,34 @@ describe("Solar REC dashboard: snapshot-readiness gate (PR #337 follow-up item 1
     expect(fnSlice!).not.toMatch(/Belt-and-braces/);
   });
 
-  it("Log Snapshot button is disabled and tooltipped while readiness is false", () => {
+  it("Log Snapshot button is tooltipped while readiness is false; click trips overview-heavy load (Task 5.15 PR-E)", () => {
+    // PR-E: button stays clickable when on Overview-with-slim so
+    // the click handler can flip `hasUserInteractedWithDashboard`
+    // and trigger the heavy `getDashboardOverviewSummary` query.
+    // Disabled state still applies on non-Overview tabs (where the
+    // heavy query can never fire) and while paginated walks /
+    // REC-perf rows are still loading on Overview-with-heavy.
     expect(code).toMatch(
-      /disabled\s*=\s*\{\s*!snapshotReadiness\.ready\s*\}[\s\S]{0,400}Log Snapshot/
+      /disabled\s*=\s*\{[\s\S]{0,200}!snapshotReadiness\.ready[\s\S]{0,400}isOverviewTabActive[\s\S]{0,200}summary\?\.kind\s*===\s*"slim"[\s\S]{0,400}Log Snapshot/
     );
     expect(code).toMatch(
       /title\s*=\s*\{[\s\S]{0,200}snapshotReadiness\.ready[\s\S]{0,200}snapshotReadiness\.reason[\s\S]{0,400}Log Snapshot/
     );
+    // PR-E adds a distinct readiness-reason for the
+    // Overview-with-slim case so the user isn't told to open the
+    // tab they're already on. The `Loading full summary…` string
+    // is the new path; the `Open the Overview tab` string still
+    // exists for the genuine non-Overview case.
+    expect(code).toMatch(/Loading full summary/);
+    expect(code).toMatch(/Open the Overview tab to load the full summary/);
+    // The createLogEntry handler must auto-trip the interaction
+    // flag when clicked from Overview-with-slim — that's the
+    // only way for a fresh-mount user (default Overview, no tab
+    // clicks) to ever load the heavy summary.
+    const fnSlice = sliceCreateLogEntryBody();
+    expect(fnSlice).not.toBeNull();
+    expect(fnSlice!).toMatch(/setHasUserInteractedWithDashboard\s*\(\s*true\s*\)/);
+    expect(fnSlice!).toMatch(/isOverviewTabActive[\s\S]{0,200}summary\?\.kind\s*===\s*"slim"/);
   });
 });
 

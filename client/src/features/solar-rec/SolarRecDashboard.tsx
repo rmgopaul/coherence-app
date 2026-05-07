@@ -5073,6 +5073,27 @@ export default function SolarRecDashboard() {
     | { ready: false; reason: string };
   const snapshotReadiness: SnapshotReadiness = ((): SnapshotReadiness => {
     if (summary?.kind !== "heavy") {
+      // Differentiate two failure modes that previously shared the
+      // same misleading "Open the Overview tab" message:
+      //   1. User is on Overview but heavy hasn't loaded yet —
+      //      either because `hasUserInteractedWithDashboard` is
+      //      still false (default landing on /solar-rec/dashboard
+      //      without clicking any tab) or because the heavy query
+      //      is still in flight. The createLogEntry click handler
+      //      auto-trips the interaction flag in this case.
+      //   2. User is on a non-Overview tab where the heavy query
+      //      can never fire (its `enabled` predicate gates on
+      //      `isOverviewTabActive`).
+      // Pre-fix: case (1) showed "Open the Overview tab" even
+      // though the user was already on it. Surfaced as a UX
+      // dead-end because the button was also disabled.
+      if (isOverviewTabActive) {
+        return {
+          ready: false,
+          reason:
+            "Loading full summary… click Log Snapshot again in a moment.",
+        };
+      }
       return {
         ready: false,
         reason:
@@ -5132,6 +5153,28 @@ export default function SolarRecDashboard() {
 
   const createLogEntry = () => {
     if (!snapshotReadiness.ready) {
+      // PR-E (Task 5.15) — auto-trip the interaction flag when the
+      // user clicks Log Snapshot from Overview-with-slim. The click
+      // is a deliberate user action that justifies firing the heavy
+      // overview-summary query (gated on `isOverviewTabActive &&
+      // hasUserInteractedWithDashboard`). Pre-fix: a user who
+      // landed on the default Overview tab without clicking any
+      // tab first had `hasUserInteractedWithDashboard = false`, so
+      // the heavy query was disabled, so `summary.kind` stayed
+      // "slim", so the button was disabled forever — with a
+      // tooltip telling them to "Open the Overview tab" while
+      // they were already on it.
+      if (
+        isOverviewTabActive &&
+        summary?.kind === "slim" &&
+        !hasUserInteractedWithDashboard
+      ) {
+        setHasUserInteractedWithDashboard(true);
+        toast.info(
+          "Loading full summary… click Log Snapshot again in a moment."
+        );
+        return;
+      }
       toast.error(snapshotReadiness.reason);
       return;
     }
@@ -5825,7 +5868,19 @@ const aiDataContext = useMemo(() => {
             <Button
               variant="outline"
               onClick={createLogEntry}
-              disabled={!snapshotReadiness.ready}
+              // PR-E: keep clickable when on Overview-with-slim so
+              // the click handler can trip
+              // `hasUserInteractedWithDashboard` and start loading
+              // the heavy summary. Disabled state still applies on
+              // non-Overview tabs (where heavy can never fire) and
+              // while paginated walks / REC-perf rows are still
+              // loading — those failure modes are user-actionable
+              // (switch tabs, wait) but don't need the click to
+              // unstick anything.
+              disabled={
+                !snapshotReadiness.ready &&
+                !(isOverviewTabActive && summary?.kind === "slim")
+              }
               title={
                 snapshotReadiness.ready
                   ? "Persist the current dashboard state to the snapshot log."
