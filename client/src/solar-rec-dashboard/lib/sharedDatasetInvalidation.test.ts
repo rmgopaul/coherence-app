@@ -52,8 +52,6 @@ describe("Solar REC shared dataset invalidation", () => {
       "getDatasetSummariesAll",
       "getDatasetCloudStatuses",
       "getActiveDatasetVersions",
-      "getSystemSnapshot",
-      "getSystemSnapshotHash",
       "getDashboardSystemsPage",
       "getTransferDeliveryLookup",
       "getDashboardDeliveryTrackerAggregates",
@@ -63,6 +61,15 @@ describe("Solar REC shared dataset invalidation", () => {
     ]) {
       expect(helper!).toContain(`${procedure}.invalidate`);
     }
+    // Phase 2 PR-F-4-h (2026-05-07): the legacy
+    // `getSystemSnapshot` + `getSystemSnapshotHash` invalidations
+    // are removed alongside the `useSystemSnapshot` hook
+    // retirement. No client path consumes either proc anymore;
+    // invalidating their caches on every upload was wasted work.
+    // A regression that re-adds these calls would re-couple the
+    // upload-finalize flow to the retired snapshot pipeline.
+    expect(helper!).not.toContain("getSystemSnapshot.invalidate");
+    expect(helper!).not.toContain("getSystemSnapshotHash.invalidate");
     expect(helper!).toContain("changedKey?: DatasetKey");
     expect(helper!).toContain("shouldRefreshSharedAggregates");
     expect(helper!).toContain("SHARED_DELIVERY_AGGREGATE_DATASET_KEYS.has(changedKey)");

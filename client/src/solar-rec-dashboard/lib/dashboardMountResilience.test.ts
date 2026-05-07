@@ -147,21 +147,24 @@ describe("Solar REC dashboard mount: heavy-query gates", () => {
     expect(code).toMatch(/!\s*isMonitoringDetailsPagesComplete/);
   });
 
-  it("getDashboardSystemsPage(isPart2Eligible) walk is gated on isSystemSnapshotNeeded (Phase 2 PR-F-4-f-2)", () => {
+  it("getDashboardSystemsPage(isPart2Eligible) walk is gated on isPart2EligibleSystemsNeeded (Phase 2 PR-F-4-f-2 + F-4-h rename)", () => {
     // PR-F-4-f-2 retired the OverviewTab's parent-level
     // `part2EligibleSystemsForSizeReporting` walk over `systems`
     // and replaced it with a `useInfiniteQuery` of
-    // `getDashboardSystemsPage({isPart2Eligible: true})`. The new
-    // query must stay gated on `isSystemSnapshotNeeded` — letting
-    // it slip past would re-introduce a paginated equivalent of
-    // the heavy snapshot fetch on the default Overview mount.
+    // `getDashboardSystemsPage({isPart2Eligible: true})`. PR-F-4-h
+    // renamed the predicate from `isSystemSnapshotNeeded` →
+    // `isPart2EligibleSystemsNeeded` since the legacy snapshot hook
+    // is gone. The query must stay gated on the renamed predicate —
+    // letting it slip past would re-introduce a paginated
+    // equivalent of the heavy snapshot fetch on the default
+    // Overview mount.
     const block = extractUseQueryBlock(
       code,
       "getDashboardSystemsPage.useInfiniteQuery"
     );
     expect(block).not.toBeNull();
     expect(block!).toMatch(/isPart2Eligible:\s*true/);
-    expect(block!).toMatch(/enabled:\s*isSystemSnapshotNeeded/);
+    expect(block!).toMatch(/enabled:\s*isPart2EligibleSystemsNeeded/);
   });
 
   it("snapshot readiness gates on the Part-2 eligible walk reaching end-of-stream (Phase 2 PR-F-4-f-2)", () => {
@@ -238,25 +241,41 @@ describe("Solar REC dashboard mount: heavy-query gates", () => {
     expect(code).toMatch(/!\s*isChangeOwnershipPagesComplete/);
   });
 
-  it("useSystemSnapshot is invoked with a narrow tab-specific predicate, not generic interaction", () => {
-    // Generic-interaction gates re-enable the legacy 26 MB
-    // SystemRecord[] payload as soon as the user clicks anything.
-    // The predicate must be tab-specific.
-    expect(code).toMatch(
-      /useSystemSnapshot\s*\(\s*\{\s*[\s\S]*?enabled\s*:\s*isSystemSnapshotNeeded/
+  it("useSystemSnapshot is fully retired (Phase 2 PR-F-4-h)", () => {
+    // PR-F-4-h removed every consumer of `serverSnapshot.systems`
+    // (Overview/Financials/Alerts/Comparisons/Forecast/SystemDetail
+    // /createLogEntry all migrated through the F-4 sequence) and
+    // deleted the `useSystemSnapshot.ts` hook file. A regression
+    // that re-imports or re-invokes the hook would re-couple the
+    // dashboard to the legacy 26 MB `getSystemSnapshot` payload.
+    expect(code).not.toMatch(/useSystemSnapshot\s*\(/);
+    expect(code).not.toMatch(/from\s+["']@\/solar-rec-dashboard\/hooks\/useSystemSnapshot/);
+    expect(code).not.toMatch(/serverSnapshot\.systems/);
+  });
+
+  it("getDashboardSystemsPage(isPart2Eligible) walk is gated on the renamed isPart2EligibleSystemsNeeded predicate (Phase 2 PR-F-4-h)", () => {
+    // PR-F-4-h renamed `isSystemSnapshotNeeded` →
+    // `isPart2EligibleSystemsNeeded` since the legacy hook is gone
+    // and the predicate now reflects the only consumer of the
+    // eligible-systems data (FinancialsTab's at-risk + verified-
+    // system rollup). The predicate body is just
+    // `isFinancialsTabActive`; a regression that broadens it would
+    // re-fire the paginated walk on tabs that don't need the data.
+    const decl = code.match(
+      /const\s+isPart2EligibleSystemsNeeded\s*=\s*([^\n;]+)/
     );
-    const start = code.indexOf("const isSystemSnapshotNeeded");
-    expect(start).toBeGreaterThan(-1);
-    const block = code.slice(start, start + 400);
-    expect(block).not.toMatch(/isAlertsTabActive/);
-    expect(block).toMatch(/isFinancialsTabActive/);
-    expect(block).not.toMatch(/isForecastTabActive/);
-    expect(block).not.toMatch(/selectedSystemKey/);
-    expect(block).not.toMatch(/isComparisonsTabActive/);
-    // Generic interaction gating is NOT used for the snapshot.
-    expect(code).not.toMatch(
-      /useSystemSnapshot\s*\(\s*\{\s*[\s\S]{0,200}enabled\s*:\s*hasUserInteractedWithDashboard/
+    expect(decl).not.toBeNull();
+    const declValue = decl![1].trim();
+    expect(declValue).toBe("isFinancialsTabActive");
+    // Sanity-check: the renamed predicate is in fact the gate on
+    // the paginated query (already pinned by an upstream rail; this
+    // double-check guards against the renaming dropping the wire).
+    const queryBlock = extractUseQueryBlock(
+      code,
+      "getDashboardSystemsPage.useInfiniteQuery"
     );
+    expect(queryBlock).not.toBeNull();
+    expect(queryBlock!).toMatch(/enabled:\s*isPart2EligibleSystemsNeeded/);
   });
 
   it("URL-driven tab change flips hasUserInteractedWithDashboard", () => {

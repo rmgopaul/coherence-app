@@ -192,10 +192,15 @@ describe("DASHBOARD_OVERSIZE_ALLOWLIST", () => {
     //     onto paginated `getDashboardOwnershipPage`; no other
     //     client path was reading the field, so this PR was a
     //     pure wire-strip.
+    //   - `getSystemSnapshot` — Phase 2 PR-F-4-h (2026-05-07): every
+    //     client consumer migrated to paginated/aggregator-backed
+    //     reads. `useSystemSnapshot` hook + the parent's `systems`
+    //     useMemo are deleted. The proc itself stays in the router
+    //     (no callers; cache infrastructure pending follow-up); the
+    //     wire-payload regression that justified the entry is gone.
     expect([...DASHBOARD_OVERSIZE_ALLOWLIST].sort()).toEqual(
       [
         "solarRecDashboard.getDashboardOfflineMonitoring",
-        "solarRecDashboard.getSystemSnapshot",
       ].sort()
     );
   });
@@ -242,15 +247,15 @@ describe("checkDashboardResponseSize", () => {
     const big = { rows: Array.from({ length: 5000 }, (_, i) => ({ i })) };
     const allowlisted = checkDashboardResponseSize(
       big,
-      "solarRecDashboard.getSystemSnapshot",
+      "solarRecDashboard.getDashboardOfflineMonitoring",
       { limitBytes: 1024 }
     );
-    const bare = checkDashboardResponseSize(big, "getSystemSnapshot", {
+    const bare = checkDashboardResponseSize(big, "getDashboardOfflineMonitoring", {
       limitBytes: 1024,
     });
     const otherRouter = checkDashboardResponseSize(
       big,
-      "otherRouter.getSystemSnapshot",
+      "otherRouter.getDashboardOfflineMonitoring",
       { limitBytes: 1024 }
     );
     if (allowlisted.ok || bare.ok || otherRouter.ok) {
@@ -429,12 +434,12 @@ describe("dashboardResponseGuardMiddleware allowlist short-circuit", () => {
 
   it("warn mode + allowlisted: does NOT serialize the response", async () => {
     process.env.DASHBOARD_RESPONSE_ENFORCEMENT = "warn";
-    const caller = await buildHarness("getSystemSnapshot", sentinel());
+    const caller = await buildHarness("getDashboardOfflineMonitoring", sentinel());
     // If the guard serialized the sentinel, this would throw.
     await expect(
       (caller.solarRecDashboard as {
-        getSystemSnapshot: () => Promise<unknown>;
-      }).getSystemSnapshot()
+        getDashboardOfflineMonitoring: () => Promise<unknown>;
+      }).getDashboardOfflineMonitoring()
     ).resolves.toBeTruthy();
     expect(warnSpy).not.toHaveBeenCalled();
   });
@@ -443,17 +448,17 @@ describe("dashboardResponseGuardMiddleware allowlist short-circuit", () => {
     process.env.DASHBOARD_RESPONSE_ENFORCEMENT = "warn";
     process.env.DASHBOARD_REQUEST_HEAP_LOG_ALL = "1";
     mockHeapSequence(1_000, 1_001);
-    const caller = await buildHarness("getSystemSnapshot", sentinel());
+    const caller = await buildHarness("getDashboardOfflineMonitoring", sentinel());
 
     await expect(
       (caller.solarRecDashboard as {
-        getSystemSnapshot: () => Promise<unknown>;
-      }).getSystemSnapshot()
+        getDashboardOfflineMonitoring: () => Promise<unknown>;
+      }).getDashboardOfflineMonitoring()
     ).resolves.toBeTruthy();
 
     expect(warnSpy).toHaveBeenCalledTimes(1);
     const payload = parseHeapLog();
-    expect(payload.path).toBe("solarRecDashboard.getSystemSnapshot");
+    expect(payload.path).toBe("solarRecDashboard.getDashboardOfflineMonitoring");
     expect(payload.allowlisted).toBe(true);
     expect(payload.outcome).toBe("success");
     expect(payload.reasons).toEqual(["log-all"]);
@@ -599,13 +604,13 @@ describe("dashboardResponseGuardMiddleware allowlist short-circuit", () => {
   it("throw mode + allowlisted: serializes (to log) but does not throw", async () => {
     process.env.DASHBOARD_RESPONSE_ENFORCEMENT = "throw";
     process.env.DASHBOARD_RESPONSE_LIMIT_BYTES = "32";
-    const caller = await buildHarness("getSystemSnapshot", {
+    const caller = await buildHarness("getDashboardOfflineMonitoring", {
       rows: Array.from({ length: 100 }, (_, i) => ({ i })),
     });
     await expect(
       (caller.solarRecDashboard as {
-        getSystemSnapshot: () => Promise<unknown>;
-      }).getSystemSnapshot()
+        getDashboardOfflineMonitoring: () => Promise<unknown>;
+      }).getDashboardOfflineMonitoring()
     ).resolves.toBeTruthy();
     expect(warnSpy).toHaveBeenCalledTimes(1);
   });
@@ -797,8 +802,13 @@ describe("CLAUDE.md drift", () => {
   it("documents the current allowlist count, not a stale one", () => {
     // The prose just above the allowlisted-procedure table claims
     // an exact procedure count. Keep it in sync with the Set.
+    // Singular vs plural: when 1 proc remains, the prose reads
+    // "One procedure still ships an oversized response."
+    // For higher counts: "N procedures still ship oversized
+    // responses." The regex below tolerates either form.
     const claimedCount = DASHBOARD_OVERSIZE_ALLOWLIST.size;
     const numberToWord: Record<number, string> = {
+      1: "One",
       2: "Two",
       3: "Three",
       4: "Four",
@@ -810,7 +820,7 @@ describe("CLAUDE.md drift", () => {
     const expectedWord = numberToWord[claimedCount];
     expect(expectedWord).toBeDefined();
     const sentence = new RegExp(
-      `Transitional reality:\\s*(?:${expectedWord}|${claimedCount})\\s+procedures still ship oversized`,
+      `Transitional reality:\\s*(?:${expectedWord}|${claimedCount})\\s+procedure(?:s)?\\s+still\\s+ship(?:s)?\\s+(?:an\\s+)?oversized`,
       "i"
     );
     expect(claudeMd).toMatch(sentence);
@@ -822,8 +832,12 @@ describe("CLAUDE.md drift", () => {
     )?.[0];
     expect(hardRule).toBeDefined();
 
+    // Singular vs plural: with 1 allowlisted entry the prose reads
+    // "The 1 currently allowlisted proc is …"; with N>1 it reads
+    // "The N currently allowlisted procs are …". The regex
+    // tolerates either form.
     const currentSentence = hardRule!.match(
-      /The\s+(?:\d+|[A-Z][a-z]+)\s+currently allowlisted procs are([\s\S]*?)\./
+      /The\s+(?:\d+|[A-Z][a-z]+)\s+currently allowlisted procs?\s+(?:is|are)([\s\S]*?)\./
     )?.[1];
     expect(currentSentence).toBeDefined();
 

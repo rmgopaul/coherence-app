@@ -670,21 +670,20 @@ in prod). Bounded responses look like this:
 | `debugDatasetPersistenceRaw` | Raw rows from every layer + verdict | ~2 KB |
 | `getDashboard<TabName>Aggregates` (DeliveryTracker / TrendDeliveryPace / TrendsProduction / ContractVintage / AppPipelineMonthly / AppPipelineCashFlow / PerformanceRatio / Forecast / Financials) | Per-tab aggregate result | ~10–500 KB |
 
-**Transitional reality: Two procedures still ship oversized
-responses.** They live in `DASHBOARD_OVERSIZE_ALLOWLIST`
-(`server/_core/dashboardResponseGuard.ts`) and are accepted as
-known regressions in warn mode. Neither fires on Overview
-default mount — they're scoped behind tab-active gates +
-`hasUserInteractedWithDashboard`. Each entry is **unscheduled
+**Transitional reality: One procedure still ships an oversized
+response.** It lives in `DASHBOARD_OVERSIZE_ALLOWLIST`
+(`server/_core/dashboardResponseGuard.ts`) and is accepted as a
+known regression in warn mode. It does not fire on Overview
+default mount — it's scoped behind tab-active gates +
+`hasUserInteractedWithDashboard`. The entry is **unscheduled
 transitional debt** — a sketch of the replacement shape, NOT a
-committed delivery plan. Neither has a tracking issue or a target
-sprint as of 2026-05-06. Mark a row with the issue / phase / PR
+committed delivery plan. It has no tracking issue or target
+sprint as of 2026-05-07. Mark with issue / phase / PR
 number when work actually gets scheduled; until then assume the
 sketch may stay aspirational indefinitely.
 
 | Allowlisted procedure | Wire shape today | Sketch of future replacement (unscheduled) |
 |---|---|---|
-| `solarRecDashboard.getSystemSnapshot` | Full pre-computed `SystemRecord[]` (~26 MB on prod) | Paginated `getDashboardSystemsPage` + a derived `solarRecDashboardSystemFacts` table; tab-specific reads would target only the columns they need. |
 | `solarRecDashboard.getDashboardOfflineMonitoring` | After Phase 2 PR-C-3-b the per-system maps are gone (~12 MB OOM driver retired), and a follow-up stripped the two dead `abp*ByApplicationId` maps from the wire response. Residual high-cardinality payload is now Part-II ID arrays + `part2VerifiedSystemIds` + 2 scalar counts derived from `srDsAbpReport`. | A fact table is the wrong shape (these aren't per-system snapshots). Slim dedicated aggregator endpoint OR paginated `srDsAbpReport` reads — both keep the row table canonical. Triggered when prod data shows the residual is still painful. |
 
 **`getDashboardChangeOwnership` retired from the allowlist (Phase 2
@@ -711,6 +710,26 @@ after that migration. The aggregator still computes the array
 internally; the dashboard CSV export job + the `ownership` fact
 builder (PR-E-2) read it in-process. Only the wire output shrunk;
 the wire-payload regression is gone and the entry is removed.
+
+**`getSystemSnapshot` retired from the allowlist (Phase 2 PR-F-4-h,
+2026-05-07).** The keystone retirement of Phase 2. The proc
+previously shipped `systems: SystemRecord[]` (~26 MB on prod) — the
+single largest entry on the allowlist. PR-F-4-h removes the parent's
+`useSystemSnapshot` hook + the `systems` useMemo + the
+`getSystemSnapshot.invalidate` calls in the upload-finalize block,
+and deletes the `useSystemSnapshot.ts` hook file outright. Every
+prior client consumer migrated through the F-4 sequence:
+- Overview / Financials → paginated `getDashboardSystemsPage({isPart2Eligible: true})` walk (PR-F-4-f-2 + F-4-e)
+- Alerts / Comparisons → paginated `getDashboardSystemsPage` walk (PR-F-4-c via codex #458 + PR-F-4-d via codex #450)
+- Forecast → `getDashboardForecast` aggregator (PR #460)
+- SystemDetailSheet → `getSystemFactsBySystemKeys` (PR-F-4-a via codex #456)
+- createLogEntry / snapshotReadiness → derives from slim summary + the paginated walks (PR-F-4-g dropped the vestigial gate)
+
+The proc itself stays in the router (no client callers; server-side
+artifact cache + `getOrBuildSystemSnapshot` build path still exist)
+pending a follow-up that retires the cache infrastructure too. The
+wire-payload regression that drove the allowlist entry is gone —
+no client request hits the proc — so the entry is removed.
 
 **Retired CSV-export procs** (PR #346, #347, follow-up):
 `exportOwnershipTileCsv` and `exportChangeOwnershipTileCsv` were
@@ -842,10 +861,14 @@ Pattern for any new tab aggregate:
   query backed by a shared aggregator + `solarRecComputedArtifacts`
   cache, or add a paginated fact-table read when the response would
   otherwise be row-shaped / high-cardinality. Do **not** extend
-  `getSystemSnapshot` for new tab work; it is one of the remaining
-  allowlisted oversized payloads and is being retired, not expanded.
-  The canonical templates are `buildDeliveryTrackerData.ts` (single-
-  dataset, Date round-trip via superjson) and
+  `getSystemSnapshot` for new tab work; the proc is dead client-
+  side after PR-F-4-h (no callers; only the server-side artifact
+  cache + build path remain pending follow-up retirement). New
+  per-system reads target `getDashboardSystemsPage` /
+  `getSystemFactsBySystemKeys` against the
+  `solarRecDashboardSystemFacts` table populated by the build
+  runner. The canonical templates are `buildDeliveryTrackerData.ts`
+  (single-dataset, Date round-trip via superjson) and
   `buildContractVintageAggregates.ts` (multi-dataset, joins through
   the system snapshot's eligibility filter).
 - Detail rows → use `getDatasetRowsPage` infinite-query pattern
@@ -1009,19 +1032,20 @@ expected post-upload state even with no chunked blob present.
    is for normal-but-noteworthy events; persistence failures are
    `console.error` and surface to the client response.
 5. **Default Overview mount must not enable any allowlisted heavy
-   procedure.** The 2 currently allowlisted procs are
-   `getSystemSnapshot` and `getDashboardOfflineMonitoring`.
-   `getDashboardOverviewSummary` and `getDashboardChangeOwnership`
-   are retired from the allowlist; do not re-add them as live heavy
-   mount paths. The remaining allowlisted procedures are gated
-   behind tab-active flags + `hasUserInteractedWithDashboard`, or
-   behind a narrower tab-specific predicate when generic interaction
-   would be too broad. `getDashboardFinancials` is not on the
-   allowlist (its response is bounded), but it's heavy enough that
-   it follows the same gating: enabled only on Financials/Pipeline
-   tab activation. The Overview mount path reads only
-   `getDashboardSummary` + `getDashboardFinancialKpiSummary` (slim,
-   cache-only). Regression rails live in
+   procedure.** The 1 currently allowlisted proc is
+   `getDashboardOfflineMonitoring`.
+   `getDashboardOverviewSummary`, `getDashboardChangeOwnership`,
+   and `getSystemSnapshot` are retired from the allowlist; do not
+   re-add them as live heavy mount paths. The remaining allowlisted
+   procedure is gated behind tab-active flags +
+   `hasUserInteractedWithDashboard`, or behind a narrower
+   tab-specific predicate when generic interaction would be too
+   broad. `getDashboardFinancials` is not on the allowlist (its
+   response is bounded), but it's heavy enough that it follows the
+   same gating: enabled only on Financials/Pipeline tab activation.
+   The Overview mount path reads only `getDashboardSummary` +
+   `getDashboardFinancialKpiSummary` (slim, cache-only). Regression
+   rails live in
    `client/src/solar-rec-dashboard/lib/dashboardMountResilience.test.ts`.
 6. **CSV export procs do not flip
    `hasUserInteractedWithDashboard`.** A CSV-tile click is a

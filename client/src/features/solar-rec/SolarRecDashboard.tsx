@@ -112,7 +112,6 @@ import { parseTabularFile } from "@/lib/csvParsing";
 import {
   EMPTY_DELIVERY_TRACKER_DATA,
 } from "@/solar-rec-dashboard/lib/buildDeliveryTrackerData";
-import { useSystemSnapshot } from "@/solar-rec-dashboard/hooks/useSystemSnapshot";
 import { useTransferDeliveryLookup } from "@/solar-rec-dashboard/hooks/useTransferDeliveryLookup";
 // Phase 3 of the IndexedDB-removal refactor (docs/server-side-
 // dashboard-refactor.md): the v2 server-side upload button. ONE
@@ -1714,12 +1713,6 @@ export default function SolarRecDashboard() {
         solarRecTrpcUtils.solarRecDashboard.getActiveDatasetVersions.invalidate({
           scopeId: sid,
         }),
-        solarRecTrpcUtils.solarRecDashboard.getSystemSnapshot.invalidate({
-          scopeId: sid,
-        }),
-        solarRecTrpcUtils.solarRecDashboard.getSystemSnapshotHash.invalidate({
-          scopeId: sid,
-        }),
         solarRecTrpcUtils.solarRecDashboard.getDashboardSystemsPage.invalidate(),
         solarRecTrpcUtils.solarRecDashboard.listDatasetUploadJobs.invalidate(),
       ];
@@ -3230,30 +3223,24 @@ export default function SolarRecDashboard() {
     );
   }, [offlineMonitoringQuery.data]);
 
-  // System snapshot is the legacy ~26 MB allowlisted SystemRecord[]
-  // payload. Only the tabs that genuinely need a per-system row
-  // walk should enable it. Overview, Change Ownership summary,
-  // Offline Monitoring summary, and CSV export do NOT — they are
-  // backed by the slim summary or by future paginated/server-side
-  // export endpoints.
+  // Phase 2 PR-F-4-h (2026-05-07) retired `useSystemSnapshot` and
+  // the parent's `systems: SystemRecord[]` array along with the
+  // legacy ~26 MB allowlisted `getSystemSnapshot` response. Every
+  // tab that previously walked full system records reads its data
+  // from a paginated fact-table proc instead:
+  //   - Alerts / Comparisons → `getDashboardSystemsPage` walk
+  //   - Forecast → `getDashboardForecast` aggregator
+  //   - SystemDetailSheet → `getSystemFactsBySystemKeys` (one row)
+  //   - Overview / Financials → consume the parent's
+  //     `part2EligibleSystemsForSizeReporting` (paginated walk
+  //     filtered by `isPart2Eligible: true`)
   //
-  // Generic interaction is too broad: a user clicking through tabs
-  // would re-enable the 26 MB fetch even if they never visited an
-  // Financials tab. The predicate below is the narrow contract —
-  // only the tabs that walk full system records. Alerts and
-  // Comparisons read the paginated `getDashboardSystemsPage` fact
-  // table directly, Forecast reads `getDashboardForecast`, and
-  // SystemDetailSheet reads one selected row via
-  // `getSystemFactsBySystemKeys`.
-  const isSystemSnapshotNeeded = isFinancialsTabActive;
-  const serverSnapshot = useSystemSnapshot({
-    enabled: isSystemSnapshotNeeded,
-  });
-
-  const systems = useMemo<SystemRecord[]>(
-    () => serverSnapshot.systems ?? [],
-    [serverSnapshot.systems],
-  );
+  // The predicate below gates the parent's
+  // `part2EligibleSystemsPagesQuery`. After all the consumer
+  // migrations only Financials genuinely needs the eligible-
+  // systems data hydrated — Overview falls back to slim-summary
+  // values.
+  const isPart2EligibleSystemsNeeded = isFinancialsTabActive;
 
 
   // Overview-summary aggregator. Pre-PR-E-4-supplement this carried
@@ -3355,18 +3342,20 @@ export default function SolarRecDashboard() {
   // to the prior client-side filter — but it doesn't require
   // hydrating the ~26 MB snapshot first.
   //
-  // Same gating predicate as `useSystemSnapshot`
-  // (`isSystemSnapshotNeeded`). The heavy snapshot stays gated
-  // for the consumers that genuinely need it (Financials, Forecast)
-  // until those migrations land in PR-F-4-e / PR-F-4-b; this path
-  // exists only for the OverviewTab's parent-level size-reporting
-  // value summary.
+  // Gate (`isPart2EligibleSystemsNeeded`, currently
+  // `isFinancialsTabActive`) was renamed from the legacy
+  // `isSystemSnapshotNeeded` in PR-F-4-h since the heavy
+  // `useSystemSnapshot` hook is gone — the predicate now reflects
+  // the only consumer of the eligible-systems data
+  // (FinancialsTab's at-risk + verified-system rollup). Overview
+  // tiles fall back to slim-summary values when the user hasn't
+  // visited Financials yet.
   const part2EligibleSystemsPagesQuery =
     solarRecTrpc.solarRecDashboard.getDashboardSystemsPage.useInfiniteQuery(
       { limit: 500, isPart2Eligible: true },
       {
         staleTime: 60_000,
-        enabled: isSystemSnapshotNeeded,
+        enabled: isPart2EligibleSystemsNeeded,
         getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
         initialCursor: null,
       }
@@ -5742,7 +5731,10 @@ const aiDataContext = useMemo(() => {
       case "forecast":
         // forecastProjections moved into ForecastTab — chat context
         // loses the per-contract payload but still tracks the tab.
-        return JSON.stringify({ tab: "forecast", systemCount: systems.length });
+        return JSON.stringify({
+          tab: "forecast",
+          systemCount: part2EligibleSystemsForSizeReporting.length,
+        });
       case "financials":
         return JSON.stringify({
           tab: "financials",
@@ -5775,10 +5767,17 @@ const aiDataContext = useMemo(() => {
           unmatchedTransfers: deliveryTrackerData.unmatchedTransfers,
         });
       case "overview":
+        // PR-F-4-h note (2026-05-07): pre-retirement this walked
+        // `systems` from `useSystemSnapshot`. That hook only fired
+        // on Alerts/Comparisons/Financials/Forecast, so on the
+        // Overview tab the array was empty anyway. Switching to the
+        // paginated `part2EligibleSystemsForSizeReporting` is a
+        // strict improvement — Overview chat context now sees the
+        // Part-2-eligible subset when Financials has been visited.
         return JSON.stringify({
           tab: "overview",
           systems: truncate(
-            systems.map((s) =>
+            part2EligibleSystemsForSizeReporting.map((s) =>
               pick(s as unknown as Record<string, unknown>, [
                 "systemName", "systemId", "trackingSystemRefId",
                 "installedKwAc", "recPrice", "contractedRecs",
@@ -5788,7 +5787,7 @@ const aiDataContext = useMemo(() => {
               ])
             )
           ),
-          totalSystems: systems.length,
+          totalSystems: part2EligibleSystemsForSizeReporting.length,
         });
       case "alerts":
         // alerts/alertSummary moved into AlertsTab — chat context loses
@@ -5801,7 +5800,7 @@ const aiDataContext = useMemo(() => {
       default:
         return JSON.stringify({
           tab: activeTab,
-          systemCount: systems.length,
+          systemCount: part2EligibleSystemsForSizeReporting.length,
           note: "Limited context for this tab. Ask general portfolio questions.",
         });
     }
@@ -5810,7 +5809,8 @@ const aiDataContext = useMemo(() => {
   }
 }, [
   activeTab, financialProfitData,
-  performanceSourceRows, deliveryTrackerData, systems,
+  performanceSourceRows, deliveryTrackerData,
+  part2EligibleSystemsForSizeReporting,
 ]);
 
   return (

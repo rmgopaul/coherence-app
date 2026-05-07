@@ -87,12 +87,27 @@ export const DASHBOARD_REQUEST_HEAP_AFTER_WARN_BYTES_DEFAULT =
  *     wire output shrinks. The slim response is now a few KB of
  *     scalars + the small `ownershipOverview` count object — well
  *     under the 1 MB budget.
+ *   - `solarRecDashboard.getSystemSnapshot` — Phase 2 PR-F-4-h
+ *     (2026-05-07) retired the proc from the allowlist after every
+ *     client consumer migrated off `useSystemSnapshot`:
+ *       * Overview / Financials → paginated
+ *         `getDashboardSystemsPage({isPart2Eligible: true})` walk
+ *       * Alerts / Comparisons → paginated `getDashboardSystemsPage`
+ *         walk
+ *       * Forecast → `getDashboardForecast` aggregator
+ *       * SystemDetailSheet → `getSystemFactsBySystemKeys` (one row)
+ *       * createLogEntry → derives from the slim summary + the
+ *         paginated walks (PR-F-4-g dropped the vestigial
+ *         `serverSnapshot.systems` readiness gate)
+ *     The `useSystemSnapshot` hook + the parent's `systems`
+ *     useMemo are deleted. The proc itself stays in the router
+ *     (no client callers; server-side artifact cache still exists)
+ *     pending a follow-up that retires the cache + the
+ *     `getOrBuildSystemSnapshot` build path. The wire-payload
+ *     regression that drove the allowlist entry is gone — no
+ *     client request hits the proc — so the entry is removed.
  */
 export const DASHBOARD_OVERSIZE_ALLOWLIST: ReadonlySet<string> = new Set([
-  // Returns the full pre-computed system record set; rebuild plan replaces
-  // with `getDashboardSystemsPage` + a derived `solarRecDashboardSystemFacts`
-  // table.
-  "solarRecDashboard.getSystemSnapshot",
   // Phase 2 PR-C-3-b (2026-05-06) stripped the 3 per-system maps
   // (`monitoringDetailsBySystemKey`, `abpApplicationIdBySystemKey`,
   // `abpAcSizeKwBySystemKey`) at the wire boundary — those drove the
