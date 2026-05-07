@@ -92,23 +92,28 @@ export const DASHBOARD_REQUEST_HEAP_AFTER_WARN_BYTES_DEFAULT =
  *     removed the last parent-level `useSystemSnapshot` consumer.
  *     Tabs now read bounded aggregate/fact-table endpoints instead
  *     of hydrating the legacy full `SystemRecord[]` payload.
+ *   - `solarRecDashboard.getDashboardOfflineMonitoring` — Phase 2
+ *     OfflineMonitoring residual cleanup (2026-05-07) stripped
+ *     the 3 dead Part-2 ID arrays (`eligiblePart2ApplicationIds`,
+ *     `eligiblePart2PortalSystemIds`, `part2VerifiedSystemIds`)
+ *     at the wire boundary after the F-4 series retired their
+ *     parent-level consumers. PR-C-3-b had already stripped the
+ *     per-system maps (~12 MB OOM driver). The remaining wire
+ *     shape — `eligiblePart2TrackingIds` (~250 KB, drives the
+ *     OfflineMonitoringTab's `abpEligibleTrackingIdsStrict`
+ *     filter) plus 2 scalar tile values — fits comfortably under
+ *     the 1 MB budget. The aggregator's internal computations
+ *     are unchanged (server-side fact builders still read the 3
+ *     dropped ID arrays in-process); only the wire output
+ *     shrinks.
+ *
+ * **The allowlist is now empty.** Phase 2 has retired every
+ * known oversized response from the dashboard router. New procs
+ * must stay under the 1 MB budget; if a future regression
+ * genuinely needs the allowlist mechanism, add the entry here
+ * with an inline replacement plan.
  */
-export const DASHBOARD_OVERSIZE_ALLOWLIST: ReadonlySet<string> = new Set([
-  // Phase 2 PR-C-3-b (2026-05-06) stripped the 3 per-system maps
-  // (`monitoringDetailsBySystemKey`, `abpApplicationIdBySystemKey`,
-  // `abpAcSizeKwBySystemKey`) at the wire boundary — those drove the
-  // ~12 MB OOM payload and are now derived from
-  // `getDashboardMonitoringDetailsPage`'s `useInfiniteQuery` walk
-  // (PR-C-3-a, fact-table backed). The proc still ships residual
-  // high-cardinality ID arrays + scalars
-  // (`eligiblePart2*`, `part2VerifiedSystemIds`, count fields)
-  // that derive from `srDsAbpReport`. Those fields are NOT
-  // per-system snapshots, so a fact table is the wrong shape for
-  // them — a future slim-aggregator pass (or a paginated read of
-  // `srDsAbpReport`) is the next pressure-relief step. The OOM
-  // driver is gone; the entry stays for the residual.
-  "solarRecDashboard.getDashboardOfflineMonitoring",
-]);
+export const DASHBOARD_OVERSIZE_ALLOWLIST: ReadonlySet<string> = new Set([]);
 
 export type DashboardResponseEnforcement = "warn" | "throw" | "off";
 
