@@ -105,64 +105,61 @@ describe("Solar REC dashboard mount: heavy-query gates", () => {
     expect(block!).toMatch(/hasUserInteractedWithDashboard/);
   });
 
-  it("getDashboardOfflineMonitoring is gated on a tab-active predicate AND hasUserInteractedWithDashboard", () => {
-    const block = extractUseQueryBlock(
-      code,
-      "getDashboardOfflineMonitoring.useQuery"
-    );
-    expect(block).not.toBeNull();
-    // Tab predicate is computed in a helper variable —
-    // `isOfflineMonitoringHeavyNeeded` — that the gate references.
-    expect(block!).toMatch(/isOfflineMonitoringHeavyNeeded/);
-    expect(block!).toMatch(/hasUserInteractedWithDashboard/);
+  it("parent no longer calls the retired getDashboardOfflineMonitoring aggregate", () => {
+    expect(code).not.toMatch(/getDashboardOfflineMonitoring\.useQuery/);
+    expect(code).not.toMatch(/isOfflineMonitoringHeavyNeeded/);
   });
 
-  it("getDashboardMonitoringDetailsPage is gated on isOfflineMonitoringHeavyNeeded AND hasUserInteractedWithDashboard (Phase 2 PR-C-3-b)", () => {
+  it("getDashboardMonitoringDetailsPage is gated on Offline Monitoring tab activation", () => {
     // PR-C-3-b stripped the 3 per-system maps from
     // `getDashboardOfflineMonitoring` (~12 MB on prod) and moved
     // their hydration onto a `useInfiniteQuery` walk of
-    // `getDashboardMonitoringDetailsPage`. Both queries must stay
-    // gated on the SAME `isOfflineMonitoringHeavyNeeded` predicate —
-    // letting the paginated query fire on a tab where the heavy
-    // proc isn't needed would re-ship the equivalent payload (just
-    // split across pages) on first paint.
+    // `getDashboardMonitoringDetailsPage`. PR-F-4-i retires the
+    // heavy proc call entirely, so the bounded page walk should fire
+    // only for the tab that displays those rows.
     const block = extractUseQueryBlock(
       code,
       "getDashboardMonitoringDetailsPage.useInfiniteQuery"
     );
     expect(block).not.toBeNull();
-    expect(block!).toMatch(/isOfflineMonitoringHeavyNeeded/);
+    expect(block!).toMatch(/isOfflineMonitoringTabActive/);
     expect(block!).toMatch(/hasUserInteractedWithDashboard/);
   });
 
-  it("offline-monitoring snapshot readiness gates on the paginated walk reaching end-of-stream", () => {
-    // The infinite query reports `success` after the first page;
-    // `snapshotPart2ValueSummary` needs the full per-system map
-    // set. Gate must additionally check `!hasNextPage` (encoded
-    // as `isMonitoringDetailsPagesComplete`) before the snapshot
-    // fires. Mirrors the change-ownership readiness rail (PR-D-4).
-    expect(code).toMatch(
-      /isMonitoringDetailsPagesComplete\s*=[\s\S]{0,200}status\s*===\s*"success"[\s\S]{0,200}!\s*[\s\S]{0,40}hasNextPage/
-    );
-    expect(code).toMatch(/!\s*isMonitoringDetailsPagesComplete/);
+  it("snapshot readiness no longer waits on Offline Monitoring detail rows", () => {
+    // Snapshot values now derive from slim summary, change-ownership
+    // pages, REC performance rows, and the Part-II systems page walk.
+    // Monitoring detail rows are display-only in OfflineMonitoringTab.
+    expect(code).not.toMatch(/isMonitoringDetailsPagesComplete/);
+    expect(code).not.toMatch(/Loading offline-monitoring per-system rows/);
   });
 
-  it("getDashboardSystemsPage(isPart2Eligible) walk preserves its Financials-only gate", () => {
+  it("getDashboardSystemsPage(isPart2Eligible) walk is gated to Part-II system consumers", () => {
     // PR-F-4-f-2 retired the OverviewTab's parent-level
     // `part2EligibleSystemsForSizeReporting` walk over `systems`
     // and replaced it with a `useInfiniteQuery` of
     // `getDashboardSystemsPage({isPart2Eligible: true})`. The new
-    // PR-F-4-h removes the snapshot hook but keeps this bounded row
-    // walk on the same Financials-only activation path. Letting it
-    // slip past would re-introduce a paginated equivalent of the
-    // heavy snapshot fetch on the default Overview mount.
+    // PR-F-4-i removes the residual Offline Monitoring ID-array
+    // payload, so the tabs that need Part-II systems now share this
+    // bounded page walk. It must still stay off default Overview
+    // mount.
     const block = extractUseQueryBlock(
       code,
       "getDashboardSystemsPage.useInfiniteQuery"
     );
     expect(block).not.toBeNull();
     expect(block!).toMatch(/isPart2Eligible:\s*true/);
-    expect(block!).toMatch(/enabled:\s*isFinancialsTabActive/);
+    expect(block!).toMatch(/isPart2EligibleSystemsNeeded/);
+    expect(block!).toMatch(/hasUserInteractedWithDashboard/);
+    const predicateStart = code.indexOf("const isPart2EligibleSystemsNeeded");
+    expect(predicateStart).toBeGreaterThan(-1);
+    const predicate = code.slice(predicateStart, predicateStart + 500);
+    expect(predicate).toMatch(/activeTab\s*===\s*"size"/);
+    expect(predicate).toMatch(/activeTab\s*===\s*"value"/);
+    expect(predicate).toMatch(/isOfflineMonitoringTabActive/);
+    expect(predicate).toMatch(/isFinancialsTabActive/);
+    expect(predicate).toMatch(/isSnapshotLogTabActive/);
+    expect(predicate).not.toMatch(/isOverviewTabActive/);
   });
 
   it("snapshot readiness gates on the Part-2 eligible walk reaching end-of-stream (Phase 2 PR-F-4-f-2)", () => {
@@ -180,15 +177,15 @@ describe("Solar REC dashboard mount: heavy-query gates", () => {
     expect(code).toMatch(/!\s*isPart2EligibleSystemsPagesComplete/);
   });
 
-  it("Ownership Status does not trigger the legacy offline-monitoring heavy query", () => {
-    const start = code.indexOf("const isOfflineMonitoringHeavyNeeded");
+  it("Ownership Status does not trigger the Part-II systems page walk", () => {
+    const start = code.indexOf("const isPart2EligibleSystemsNeeded");
     expect(start).toBeGreaterThan(-1);
     const block = code.slice(start, start + 500);
     expect(block).not.toMatch(/activeTab\s*===\s*["']ownership["']/);
   });
 
-  it("Performance Ratio does not trigger the legacy offline-monitoring heavy query", () => {
-    const start = code.indexOf("const isOfflineMonitoringHeavyNeeded");
+  it("Performance Ratio does not trigger the Part-II systems page walk", () => {
+    const start = code.indexOf("const isPart2EligibleSystemsNeeded");
     expect(start).toBeGreaterThan(-1);
     const block = code.slice(start, start + 500);
     expect(block).not.toMatch(/activeTab\s*===\s*["']performance-ratio["']/);
@@ -286,6 +283,7 @@ describe("Solar REC dashboard mount: heavy-query gates", () => {
     expect(block).toMatch(/slimSummary\?\.abpEligibleTotalSystemsCount/);
     expect(block).toMatch(/slimSummary\?\.part2VerifiedSystems/);
     expect(block).toMatch(/hasPart2SummaryCounts/);
+    expect(block).not.toMatch(/offlineMonitoringQuery/);
     expect(block).toMatch(
       /toPercentValue\s*\(\s*scopedSystems\s*,\s*part2UniqueSystems\s*\)/
     );
@@ -1006,18 +1004,19 @@ describe("Solar REC dashboard mount: high-cardinality fields stay off mount path
   const code = codeOnly();
 
   it("does not derive part2EligibleSystemsForSizeReporting unconditionally outside the gated query path", () => {
-    // The derived list reads `offlineMonitoringQuery.data` which
-    // returns undefined when the query is disabled. The derivation
-    // returns [] in that case — the test pins the early-out.
+    // The derived list reads from the bounded systems-page query.
+    // When the query is disabled or has not loaded, `pages` is an
+    // empty array and the derivation returns [].
     expect(code).toMatch(
-      /part2EligibleSystemsForSizeReporting[\s\S]{0,200}offlineMonitoringQuery\.data/
+      /part2EligibleSystemsForSizeReporting[\s\S]{0,240}part2EligibleSystemsPagesQuery\.data\?\.pages\s*\?\?\s*\[\]/
     );
   });
 
-  it("reads abpEligibleTotalSystems from slimSummary first, offlineMonitoring second", () => {
+  it("reads abpEligibleTotalSystems from slimSummary only", () => {
     expect(code).toMatch(
-      /abpEligibleTotalSystems\s*=\s*[\s\S]*?slimSummary\?\.[A-Za-z]+\s*\?\?\s*offlineMonitoringQuery/
+      /abpEligibleTotalSystems\s*=\s*[\s\S]*?slimSummary\?\.abpEligibleTotalSystemsCount\s*\?\?\s*0/
     );
+    expect(code).not.toMatch(/offlineMonitoringQuery/);
   });
 
   it("does not rebuild dead offline-monitoring application-id maps in the parent", () => {
@@ -1187,8 +1186,8 @@ describe("Solar REC dashboard: snapshot-readiness gate (PR #337 follow-up item 1
     expect(code).toMatch(/summary\?\.kind\s*!==\s*["']heavy["']/);
     expect(code).toMatch(/changeOwnershipQuery\.status\s*!==\s*["']success["']/);
     expect(code).toMatch(/!\s*isChangeOwnershipPagesComplete/);
-    expect(code).toMatch(/offlineMonitoringQuery\.status\s*!==\s*["']success["']/);
-    expect(code).toMatch(/!\s*isMonitoringDetailsPagesComplete/);
+    expect(code).not.toMatch(/offlineMonitoringQuery\.status/);
+    expect(code).not.toMatch(/!\s*isMonitoringDetailsPagesComplete/);
     expect(code).toMatch(/!\s*isPart2EligibleSystemsPagesComplete/);
     expect(code).toMatch(/performanceSourceRowsQuery\.status\s*!==\s*["']success["']/);
     // The vestigial gate must NOT come back. Snapshot creation no

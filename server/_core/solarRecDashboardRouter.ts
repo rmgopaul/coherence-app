@@ -3217,8 +3217,8 @@ export const solarRecDashboardRouter = t.router({
    * size buckets, totalContractAmount-based value totals, ABP
    * counts. NO per-system arrays or maps; does NOT call the heavy
    * overview/offline-monitoring aggregators. The dashboard parent
-   * uses this for first-paint so the heavy procedures stop firing
-   * on initial mount.
+   * uses this for first-paint so row-materializing procedures stay
+   * off initial mount.
    */
   getDashboardSummary: dashboardProcedure(
     "solar-rec-dashboard",
@@ -3259,8 +3259,8 @@ export const solarRecDashboardRouter = t.router({
    * `hasUserInteractedWithDashboard`. The export work is fully
    * server-side; letting the click seed the interaction gate would
    * silently enable the heavy mount-tier queries
-   * (`getDashboardOverviewSummary` / `getDashboardOfflineMonitoring`
-   * / `getDashboardChangeOwnership`) on the next render, dragging
+   * (`getDashboardOverviewSummary` / `getDashboardChangeOwnership`)
+   * on the next render, dragging
    * multi-MB JSON payloads into the browser as a side-effect of an
    * export click.
    *
@@ -3528,8 +3528,8 @@ export const solarRecDashboardRouter = t.router({
 
   /**
    * Phase 5e Followup #4 step 4 PR-A (2026-04-30) — server-side
-   * aggregator for the Offline Monitoring tab. Replaces four client
-   * useMemos in `SolarRecDashboard.tsx` that derived from
+   * aggregator for the Offline Monitoring tab. Originally replaced
+   * four client useMemos in `SolarRecDashboard.tsx` that derived from
    * `datasets.abpReport.rows` + `datasets.solarApplications.rows`:
    * `abpEligibleTrackingIdsStrict`, `abpApplicationIdBySystemKey`,
    * `monitoringDetailsBySystemKey`, and the 3 ID Sets that drive
@@ -3561,11 +3561,14 @@ export const solarRecDashboardRouter = t.router({
    * for in-process callers/tests, but the browser no longer pays to
    * receive maps it does not read.
    *
-   * The remaining wire fields are the Part-II ID arrays,
-   * `part2VerifiedSystemIds`, and 2 scalar counts; the proc stays
-   * on `DASHBOARD_OVERSIZE_ALLOWLIST` with a smaller residual
-   * footprint until a future PR slims those further. The OOM driver
-   * — the per-system maps — is gone.
+   * **Slim wire shape follow-up (2026-05-07).** The remaining
+   * high-cardinality Part-II ID arrays also moved off this wire
+   * response. The parent now gets counts from `getDashboardSummary`,
+   * Part-II systems from `getDashboardSystemsPage({ isPart2Eligible:
+   * true })`, and monitoring details from
+   * `getDashboardMonitoringDetailsPage`. This proc is kept as a
+   * bounded compatibility/count surface only and no longer needs
+   * `DASHBOARD_OVERSIZE_ALLOWLIST`.
    */
   getDashboardOfflineMonitoring: dashboardProcedure(
     "solar-rec-dashboard",
@@ -3594,6 +3597,10 @@ export const solarRecDashboardRouter = t.router({
       abpAcSizeKwByApplicationId: _abpAcSizeKwByApplicationId,
       abpPart2VerificationDateByApplicationId:
         _abpPart2VerificationDateByApplicationId,
+      eligiblePart2ApplicationIds: _eligiblePart2ApplicationIds,
+      eligiblePart2PortalSystemIds: _eligiblePart2PortalSystemIds,
+      eligiblePart2TrackingIds: _eligiblePart2TrackingIds,
+      part2VerifiedSystemIds: _part2VerifiedSystemIds,
       ...rest
     } = result;
 
@@ -3607,11 +3614,10 @@ export const solarRecDashboardRouter = t.router({
   /**
    * Phase 2 PR-C-3-a (OOM rebuild) — paginated read for the
    * monitoringDetails fact table written by the build runner
-   * (PR-C-2's `monitoringDetailsBuildStep`). This is the eventual
-   * REPLACEMENT for the per-system `monitoringDetailsBySystemKey`
-   * map shape that `getDashboardOfflineMonitoring` ships today
-   * (the largest of the four per-system maps that proc returns,
-   * keyed by ~21k systems on prod).
+   * (PR-C-2's `monitoringDetailsBuildStep`). This replaced the
+   * per-system `monitoringDetailsBySystemKey` map shape that
+   * `getDashboardOfflineMonitoring` used to ship (keyed by ~21k
+   * systems on prod).
    *
    * Returns one page of fact rows ordered by `systemKey` (ASC) so
    * the cursor is stable across requests. Caller paginates by
@@ -3762,9 +3768,8 @@ export const solarRecDashboardRouter = t.router({
    * ownership fact table written by the build runner (PR-E-2's
    * `ownershipBuildStep`). The eventual REPLACEMENT for the
    * per-row `ownershipRows: OwnershipOverviewExportRow[]` payload
-   * embedded in `getDashboardOverviewSummary` (~5–15 MB on prod;
-   * one of the three remaining heavy entries on
-   * `DASHBOARD_OVERSIZE_ALLOWLIST`).
+   * that used to be embedded in `getDashboardOverviewSummary`
+   * (~5–15 MB on prod).
    *
    * Returns one page of fact rows ordered by `systemKey` (ASC).
    * Caller paginates by passing the response's `nextCursor` back
@@ -3879,9 +3884,9 @@ export const solarRecDashboardRouter = t.router({
    *   - `isReporting` — current reporting state.
    *   - `isPart2Eligible` — Phase 2 PR-F-4-f-1 axis. Replaces the
    *     OverviewTab's parent-level `part2EligibleSystemsForSize
-   *     Reporting` filter (which walked `systems` against the 3
-   *     ID sets returned by `getDashboardOfflineMonitoring`). The
-   *     fact-table column is populated by the build runner; reads
+   *     Reporting` filter (which used to walk `systems` against
+   *     high-cardinality Part-II ID sets). The fact-table column is
+   *     populated by the build runner; reads
    *     here go straight to the covering index `(scopeId,
    *     isPart2Eligible)`.
    *

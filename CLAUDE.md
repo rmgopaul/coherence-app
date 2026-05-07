@@ -671,21 +671,21 @@ in prod). Bounded responses look like this:
 | `debugDatasetPersistenceRaw` | Raw rows from every layer + verdict | ~2 KB |
 | `getDashboard<TabName>Aggregates` (DeliveryTracker / TrendDeliveryPace / TrendsProduction / ContractVintage / AppPipelineMonthly / AppPipelineCashFlow / PerformanceRatio / Forecast / Financials) | Per-tab aggregate result | ~10–500 KB |
 
-**Transitional reality: One procedure still ships an oversized
-response.** It lives in `DASHBOARD_OVERSIZE_ALLOWLIST`
-(`server/_core/dashboardResponseGuard.ts`) and is accepted as a
-known regression in warn mode. It does not fire on Overview
-default mount — it is scoped behind tab-active gates +
-`hasUserInteractedWithDashboard`. The entry is **unscheduled
-transitional debt** — a sketch of the replacement shape, NOT a
-committed delivery plan. It does not have a tracking issue or a
-target sprint as of 2026-05-07. Mark the row with the issue /
-phase / PR number when work actually gets scheduled; until then
-assume the sketch may stay aspirational indefinitely.
+**Transitional reality: no dashboard procedure currently ships an
+accepted oversized response.** `DASHBOARD_OVERSIZE_ALLOWLIST`
+(`server/_core/dashboardResponseGuard.ts`) is intentionally empty.
+Do not add a procedure to it without an inline replacement plan that
+names the streaming, paginated, or backgrounded successor.
 
-| Allowlisted procedure | Wire shape today | Sketch of future replacement (unscheduled) |
-|---|---|---|
-| `solarRecDashboard.getDashboardOfflineMonitoring` | After Phase 2 PR-C-3-b the per-system maps are gone (~12 MB OOM driver retired), and a follow-up stripped the two dead `abp*ByApplicationId` maps from the wire response. Residual high-cardinality payload is now Part-II ID arrays + `part2VerifiedSystemIds` + 2 scalar counts derived from `srDsAbpReport`. | A fact table is the wrong shape (these aren't per-system snapshots). Slim dedicated aggregator endpoint OR paginated `srDsAbpReport` reads — both keep the row table canonical. Triggered when prod data shows the residual is still painful. |
+**`getDashboardOfflineMonitoring` retired from the allowlist (Phase
+2 PR-F-4-i, 2026-05-07).** The parent dashboard no longer calls the
+proc for Part-II ID arrays. Counts come from `getDashboardSummary`,
+Part-II systems come from the bounded
+`getDashboardSystemsPage({ isPart2Eligible: true })` walk, and
+monitoring details come from `getDashboardMonitoringDetailsPage`.
+The proc still exists server-side as a bounded compatibility/count
+surface, but the high-cardinality fields are stripped at the wire
+boundary and it is not an accepted oversized response path.
 
 **`getSystemSnapshot` retired from the allowlist (Phase 2 PR-F-4-h,
 2026-05-07).** The parent dashboard no longer imports
@@ -1003,10 +1003,10 @@ expected post-upload state even with no chunked blob present.
    purposes. Use `loadDatasetRowsPage` for pagination or
    `loadDatasetRows` only when the result is consumed in-process
    by an aggregator that itself returns a small result. Existing
-   row-materializing procs are listed in
-   `DASHBOARD_OVERSIZE_ALLOWLIST` and tracked for migration; do
-   not extend the allowlist without an inline replacement plan
-   that names the streaming/paginated/backgrounded successor.
+   row-materializing procs used to be listed in
+   `DASHBOARD_OVERSIZE_ALLOWLIST`, which is now empty; do not add
+   one without an inline replacement plan that names the
+   streaming/paginated/backgrounded successor.
 2. **No client tab is allowed to read `datasets[key].rows` or
    `datasets[key].rows.length` for ANY of the 18 dataset keys.** Use
    `getDatasetSummariesAll` for counts, `getDatasetRowsPage` /
@@ -1023,12 +1023,12 @@ expected post-upload state even with no chunked blob present.
    is for normal-but-noteworthy events; persistence failures are
    `console.error` and surface to the client response.
 5. **Default Overview mount must not enable any allowlisted heavy
-   procedure.** The only currently allowlisted proc is
-   `getDashboardOfflineMonitoring`.
+   procedure.** There are no currently allowlisted procs.
    `getDashboardOverviewSummary` and `getDashboardChangeOwnership`
    are retired from the allowlist; do not re-add them as live heavy
-   mount paths. The remaining allowlisted procedure is gated behind
-   tab-active flags + `hasUserInteractedWithDashboard`.
+   mount paths. `getDashboardOfflineMonitoring` is also retired
+   from the allowlist; use slim summary counts plus bounded fact
+   pages instead.
    `getDashboardFinancials` is not on the
    allowlist (its response is bounded), but it's heavy enough that
    it follows the same gating: enabled only on Financials/Pipeline

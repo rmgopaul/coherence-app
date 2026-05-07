@@ -192,11 +192,12 @@ describe("DASHBOARD_OVERSIZE_ALLOWLIST", () => {
     //     onto paginated `getDashboardOwnershipPage`; no other
     //     client path was reading the field, so this PR was a
     //     pure wire-strip.
-    expect([...DASHBOARD_OVERSIZE_ALLOWLIST].sort()).toEqual(
-      [
-        "solarRecDashboard.getDashboardOfflineMonitoring",
-      ].sort()
-    );
+    //   - `getSystemSnapshot` — Phase 2 PR-F-4-h (2026-05-07):
+    //     removed the last parent-level client consumer.
+    //   - `getDashboardOfflineMonitoring` — Phase 2 PR-F-4-i
+    //     (2026-05-07): stripped residual Part-II ID arrays and
+    //     moved the client to slim summary + bounded fact pages.
+    expect([...DASHBOARD_OVERSIZE_ALLOWLIST].sort()).toEqual([]);
   });
 
   it("uses fully-qualified router-prefixed paths (no bare procedure names)", () => {
@@ -237,9 +238,9 @@ describe("checkDashboardResponseSize", () => {
     expect(verdict.bytes).toBeLessThanOrEqual(1024);
   });
 
-  it("flags oversize and reports allowlisted=true only for fully-qualified entries", () => {
+  it("flags oversize and reports allowlisted=false for retired entries", () => {
     const big = { rows: Array.from({ length: 5000 }, (_, i) => ({ i })) };
-    const allowlisted = checkDashboardResponseSize(
+    const retiredProc = checkDashboardResponseSize(
       big,
       "solarRecDashboard.getDashboardOfflineMonitoring",
       { limitBytes: 1024 }
@@ -256,10 +257,10 @@ describe("checkDashboardResponseSize", () => {
       "otherRouter.getDashboardOfflineMonitoring",
       { limitBytes: 1024 }
     );
-    if (allowlisted.ok || bare.ok || otherRouter.ok) {
+    if (retiredProc.ok || bare.ok || otherRouter.ok) {
       throw new Error("expected oversize verdicts");
     }
-    expect(allowlisted.allowlisted).toBe(true);
+    expect(retiredProc.allowlisted).toBe(false);
     expect(bare.allowlisted).toBe(false);
     expect(otherRouter.allowlisted).toBe(false);
   });
@@ -310,15 +311,14 @@ describe("tRPC middleware path format", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Allowlist serialization-skip behavior. The whole point of the warn-
-// mode short-circuit is to avoid `JSON.stringify`-ing 20–60 MB
-// allowlisted responses. The "sentinel" object below has a `toJSON`
-// that throws — if the middleware tries to serialize it, the test
-// fails. Tests are at the procedure-handler level so we exercise the
-// real middleware (not just `checkDashboardResponseSize`).
+// Response guard behavior. The "sentinel" object below has a
+// `toJSON` that throws — if a test path that should skip size
+// measurement tries to serialize it, the test fails. Tests are at
+// the procedure-handler level so we exercise the real middleware
+// (not just `checkDashboardResponseSize`).
 // ---------------------------------------------------------------------------
 
-describe("dashboardResponseGuardMiddleware allowlist short-circuit", () => {
+describe("dashboardResponseGuardMiddleware", () => {
   let envSnapshot: ReturnType<typeof snapshotEnv>;
   let warnSpy: ReturnType<typeof vi.spyOn>;
 
@@ -429,46 +429,6 @@ describe("dashboardResponseGuardMiddleware allowlist short-circuit", () => {
       message.replace(`${prefix} `, "")
     ) as Record<string, unknown>;
   }
-
-  it("warn mode + allowlisted: does NOT serialize the response", async () => {
-    process.env.DASHBOARD_RESPONSE_ENFORCEMENT = "warn";
-    const caller = await buildHarness(
-      "getDashboardOfflineMonitoring",
-      sentinel()
-    );
-    // If the guard serialized the sentinel, this would throw.
-    await expect(
-      (caller.solarRecDashboard as {
-        getDashboardOfflineMonitoring: () => Promise<unknown>;
-      }).getDashboardOfflineMonitoring()
-    ).resolves.toBeTruthy();
-    expect(warnSpy).not.toHaveBeenCalled();
-  });
-
-  it("heap log-all + allowlisted: logs heap without serializing the response", async () => {
-    process.env.DASHBOARD_RESPONSE_ENFORCEMENT = "warn";
-    process.env.DASHBOARD_REQUEST_HEAP_LOG_ALL = "1";
-    mockHeapSequence(1_000, 1_001);
-    const caller = await buildHarness(
-      "getDashboardOfflineMonitoring",
-      sentinel()
-    );
-
-    await expect(
-      (caller.solarRecDashboard as {
-        getDashboardOfflineMonitoring: () => Promise<unknown>;
-      }).getDashboardOfflineMonitoring()
-    ).resolves.toBeTruthy();
-
-    expect(warnSpy).toHaveBeenCalledTimes(1);
-    const payload = parseHeapLog();
-    expect(payload.path).toBe(
-      "solarRecDashboard.getDashboardOfflineMonitoring"
-    );
-    expect(payload.allowlisted).toBe(true);
-    expect(payload.outcome).toBe("success");
-    expect(payload.reasons).toEqual(["log-all"]);
-  });
 
   it("does not log heap metrics below thresholds by default", async () => {
     process.env.DASHBOARD_RESPONSE_ENFORCEMENT = "warn";
@@ -607,20 +567,6 @@ describe("dashboardResponseGuardMiddleware allowlist short-circuit", () => {
     });
   });
 
-  it("throw mode + allowlisted: serializes (to log) but does not throw", async () => {
-    process.env.DASHBOARD_RESPONSE_ENFORCEMENT = "throw";
-    process.env.DASHBOARD_RESPONSE_LIMIT_BYTES = "32";
-    const caller = await buildHarness("getDashboardOfflineMonitoring", {
-      rows: Array.from({ length: 100 }, (_, i) => ({ i })),
-    });
-    await expect(
-      (caller.solarRecDashboard as {
-        getDashboardOfflineMonitoring: () => Promise<unknown>;
-      }).getDashboardOfflineMonitoring()
-    ).resolves.toBeTruthy();
-    expect(warnSpy).toHaveBeenCalledTimes(1);
-  });
-
   it("throw mode + non-allowlisted: serializes and throws TRPCError", async () => {
     process.env.DASHBOARD_RESPONSE_ENFORCEMENT = "throw";
     process.env.DASHBOARD_RESPONSE_LIMIT_BYTES = "32";
@@ -711,7 +657,7 @@ describe("solarRecDashboardRouter wiring", () => {
     expect(source).toMatch(/datasetKey:\s*z\.enum\(/);
   });
 
-  it("strips dead Offline Monitoring application-id maps at the wire boundary", () => {
+  it("strips Offline Monitoring high-cardinality fields at the wire boundary", () => {
     const filePath = resolve(__dirname, "solarRecDashboardRouter.ts");
     const source = readFileSync(filePath, "utf8");
     const procBlock =
@@ -724,6 +670,18 @@ describe("solarRecDashboardRouter wiring", () => {
     );
     expect(procBlock!).toMatch(
       /abpPart2VerificationDateByApplicationId:\s*\n\s*_abpPart2VerificationDateByApplicationId/
+    );
+    expect(procBlock!).toMatch(
+      /eligiblePart2ApplicationIds:\s*_eligiblePart2ApplicationIds/
+    );
+    expect(procBlock!).toMatch(
+      /eligiblePart2PortalSystemIds:\s*_eligiblePart2PortalSystemIds/
+    );
+    expect(procBlock!).toMatch(
+      /eligiblePart2TrackingIds:\s*_eligiblePart2TrackingIds/
+    );
+    expect(procBlock!).toMatch(
+      /part2VerifiedSystemIds:\s*_part2VerifiedSystemIds/
     );
   });
 
@@ -797,35 +755,20 @@ describe("solarRecDashboardRouter wiring", () => {
 // ---------------------------------------------------------------------------
 // CLAUDE.md drift rails. The repo's CLAUDE.md is loaded into every
 // model context, so claims that disagree with the code mislead every
-// future PR. Pin the allowlist count + retired-proc disclaimers so a
-// future PR that retires another entry remembers to update the prose.
+// future PR. Pin the allowlist status + retired-proc disclaimers so a
+// future PR that reintroduces an entry remembers to update the prose.
 // ---------------------------------------------------------------------------
 
 describe("CLAUDE.md drift", () => {
   const claudeMdPath = resolve(__dirname, "..", "..", "CLAUDE.md");
   const claudeMd = readFileSync(claudeMdPath, "utf8");
 
-  it("documents the current allowlist count, not a stale one", () => {
-    // The prose just above the allowlisted-procedure table claims
-    // an exact procedure count. Keep it in sync with the Set.
-    const claimedCount = DASHBOARD_OVERSIZE_ALLOWLIST.size;
-    const numberToWord: Record<number, string> = {
-      1: "One",
-      2: "Two",
-      3: "Three",
-      4: "Four",
-      5: "Five",
-      6: "Six",
-      7: "Seven",
-      8: "Eight",
-    };
-    const expectedWord = numberToWord[claimedCount];
-    expect(expectedWord).toBeDefined();
-    const sentence = new RegExp(
-      `Transitional reality:\\s*(?:${expectedWord}|${claimedCount})\\s+procedure(?:s)? still ship(?:s)? an? oversized`,
-      "i"
+  it("documents that the allowlist is empty", () => {
+    expect(DASHBOARD_OVERSIZE_ALLOWLIST.size).toBe(0);
+    expect(claudeMd).toMatch(
+      /Transitional reality:\s*no dashboard procedure currently ships an\s+accepted oversized response/i
     );
-    expect(claudeMd).toMatch(sentence);
+    expect(claudeMd).toMatch(/DASHBOARD_OVERSIZE_ALLOWLIST[\s\S]{0,120}empty/);
   });
 
   it("documents the same live allowlist entries in hard rule 5", () => {
@@ -834,19 +777,14 @@ describe("CLAUDE.md drift", () => {
     )?.[0];
     expect(hardRule).toBeDefined();
 
+    expect(hardRule).toMatch(/There are no currently allowlisted procs/);
     const currentSentence = hardRule!.match(
-      /The\s+(?:only\s+)?(?:\d+|[A-Z][a-z]+)?\s*currently allowlisted proc(?:s)? (?:is|are)([\s\S]*?)\./
-    )?.[1];
+      /There are no currently allowlisted procs\./
+    )?.[0];
     expect(currentSentence).toBeDefined();
-
-    const liveProcNames = [...DASHBOARD_OVERSIZE_ALLOWLIST].map(
-      (path) => path.split(".").at(-1)!
-    );
-    for (const procName of liveProcNames) {
-      expect(currentSentence).toContain(`\`${procName}\``);
-    }
     expect(currentSentence).not.toContain("getDashboardOverviewSummary");
     expect(currentSentence).not.toContain("getDashboardChangeOwnership");
+    expect(hardRule).not.toMatch(/The only currently allowlisted proc is/);
   });
 
   it("does NOT reference the retired CSV export procs as live", () => {
@@ -879,13 +817,12 @@ describe("CLAUDE.md drift", () => {
     expect(claudeMd).toMatch(/Do \*\*not\*\* extend\s+`getSystemSnapshot`/);
   });
 
-  it("does not document abp application-id maps as residual Offline Monitoring wire payload", () => {
-    const offlineMonitoringRow = claudeMd.match(
-      /\|\s*`solarRecDashboard\.getDashboardOfflineMonitoring`[\s\S]*?\n/
-    )?.[0];
-    expect(offlineMonitoringRow).toBeDefined();
-    expect(offlineMonitoringRow!).not.toMatch(
-      /Residual[^|]*`abp\*ByApplicationId`/
+  it("documents Offline Monitoring as retired from the allowlist", () => {
+    expect(claudeMd).toMatch(
+      /`getDashboardOfflineMonitoring` retired from the allowlist/
+    );
+    expect(claudeMd).not.toMatch(
+      /\|\s*`solarRecDashboard\.getDashboardOfflineMonitoring`\s*\|/
     );
   });
 });

@@ -3162,9 +3162,10 @@ export default function SolarRecDashboard() {
   // Phase 5e Followup #4 step 4 PR-C3 (2026-04-30) — `part2VerifiedAbpRows`
   // parent useMemo deleted. It was the LAST reader of
   // `datasets.abpReport.rows`. All consumers now flow through
-  // server aggregators (`getDashboardOfflineMonitoring`,
+  // server queries (`getDashboardSummary`,
   // `getDashboardOverviewSummary`, `getDashboardChangeOwnership`,
-  // `getDashboardFinancials`). With this delete, no client memo
+  // `getDashboardFinancials`, and bounded fact-page reads). With
+  // this delete, no client memo
   // reads `datasets[k].rows` for ANY of the 18 dataset keys —
   // PR-D (delete cloud-fallback hydration) is unblocked.
 
@@ -3181,46 +3182,13 @@ export default function SolarRecDashboard() {
     });
   const slimSummary = dashboardSummaryQuery.data;
 
-  // Heavy offline-monitoring aggregator. The largest per-system maps
-  // were stripped from its wire response and moved behind paginated
-  // fact-table reads, but the proc still carries high-cardinality
-  // Part-II ID arrays and remains allowlisted. Only fetched when:
-  //   1. The active tab consumes those Part-II arrays (Offline
-  //      Monitoring, Size, or REC performance evaluation), AND
-  //   2. The user has interacted with the dashboard (deep links to
-  //      heavy tabs do NOT auto-fire the residual all-array response —
-  //      the user must navigate at least once, which counts as
-  //      interaction).
-  const isOfflineMonitoringHeavyNeeded =
-    isOfflineMonitoringTabActive ||
-    activeTab === "size" ||
-    isPerformanceEvalTabActive;
-  const offlineMonitoringQuery =
-    solarRecTrpc.solarRecDashboard.getDashboardOfflineMonitoring.useQuery(
-      undefined,
-      {
-        staleTime: 60_000,
-        enabled:
-          isOfflineMonitoringHeavyNeeded && hasUserInteractedWithDashboard,
-      }
-    );
-
-  // Count now comes from the slim mount summary so it's available on
-  // first paint without firing the heavy offlineMonitoring query.
+  // Offline Monitoring's former high-cardinality `eligiblePart2*`
+  // payload is retired from the client. Counts come from the slim
+  // mount summary, Part-II system rows come from
+  // `getDashboardSystemsPage({ isPart2Eligible: true })`, and
+  // monitoring details come from `getDashboardMonitoringDetailsPage`.
   const abpEligibleTotalSystems =
-    slimSummary?.abpEligibleTotalSystemsCount ??
-    offlineMonitoringQuery.data?.abpEligibleTotalSystemsCount ??
-    0;
-
-  // High-cardinality eligibility set (~21k strings on prod). Only
-  // populated once the heavy offlineMonitoring query has loaded
-  // (i.e. when an offline-monitoring/ownership/size/perf-ratio tab
-  // has been activated). Empty on initial dashboard mount.
-  const abpEligibleTrackingIdsStrict = useMemo(() => {
-    return new Set<string>(
-      offlineMonitoringQuery.data?.eligiblePart2TrackingIds ?? []
-    );
-  }, [offlineMonitoringQuery.data]);
+    slimSummary?.abpEligibleTotalSystemsCount ?? 0;
 
   // Overview-summary aggregator. Pre-PR-E-4-supplement this carried
   // `ownershipRows` (~5-15 MB on prod) and was the entire reason this
@@ -3321,17 +3289,24 @@ export default function SolarRecDashboard() {
   // to the prior client-side filter — but it doesn't require
   // hydrating the ~26 MB snapshot first.
   //
-  // PR-F-4-h retires the parent `useSystemSnapshot` call entirely.
-  // Preserve the previous Financials-only activation behavior, but
-  // hydrate the parent Part-2-eligible list through bounded
-  // systems-page reads instead of the legacy full `SystemRecord[]`
-  // snapshot.
+  const isPart2EligibleSystemsNeeded =
+    activeTab === "size" ||
+    activeTab === "value" ||
+    isOfflineMonitoringTabActive ||
+    isFinancialsTabActive ||
+    isSnapshotLogTabActive;
+
+  // PR-F-4-h retired the parent `useSystemSnapshot` call entirely.
+  // PR-F-4-i broadens this bounded systems-page walk to the tabs
+  // that actually consume the Part-II system list, still keeping it
+  // off the default Overview mount.
   const part2EligibleSystemsPagesQuery =
     solarRecTrpc.solarRecDashboard.getDashboardSystemsPage.useInfiniteQuery(
       { limit: 500, isPart2Eligible: true },
       {
         staleTime: 60_000,
-        enabled: isFinancialsTabActive,
+        enabled:
+          isPart2EligibleSystemsNeeded && hasUserInteractedWithDashboard,
         getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
         initialCursor: null,
       }
@@ -3426,13 +3401,10 @@ export default function SolarRecDashboard() {
   }, [part2EligibleSystemsForSizeReporting]);
 
   const sizeBreakdownRows = useMemo(() => {
-    // Prefer the heavy-derived rows when offlineMonitoring + systems
-    // are loaded — those include delivered-value fields the
+    // Prefer the paginated Part-II system facts once a consuming tab
+    // has loaded them — those include delivered-value fields the
     // SizeReportingTab uses for its detailed value rollup.
-    if (
-      offlineMonitoringQuery.data &&
-      part2EligibleSystemsForSizeReporting.length > 0
-    ) {
+    if (part2EligibleSystemsForSizeReporting.length > 0) {
       const breakdown = ["<=10 kW AC", ">10 kW AC", "Unknown"] as SizeBucket[];
       return breakdown.map((bucket) => {
         const scoped = part2EligibleSystemsForSizeReporting.filter(
@@ -3464,8 +3436,8 @@ export default function SolarRecDashboard() {
     // Default mount / Overview-only path: take counts +
     // contractedValue from the slim summary and keep delivered-value
     // fields at 0. The SizeReportingTab's detailed value display
-    // only renders meaningfully once it activates and the heavy
-    // query loads.
+    // fills in once a consuming tab activates the bounded systems
+    // page walk.
     if (slimSummary) {
       return slimSummary.sizeBreakdownRows.map((row) => ({
         bucket: row.bucket,
@@ -3488,11 +3460,7 @@ export default function SolarRecDashboard() {
       deliveredValue: 0,
       valueDeliveredPercent: null,
     }));
-  }, [
-    offlineMonitoringQuery.data,
-    part2EligibleSystemsForSizeReporting,
-    slimSummary,
-  ]);
+  }, [part2EligibleSystemsForSizeReporting, slimSummary]);
 
   // sizeTabNotReportingPart2Rows + sizeSiteList pagination + visibleSizeSiteListRows
   // — moved to SizeReportingTab
@@ -3689,19 +3657,17 @@ export default function SolarRecDashboard() {
 
   // Per-system maps (Phase 2 PR-C-3-b, 2026-05-06): derived from a
   // `useInfiniteQuery` walk of `getDashboardMonitoringDetailsPage`
-  // (PR-C-3-a, fact-table backed) instead of the
-  // `getDashboardOfflineMonitoring` heavy proc's per-system map
-  // fields. Same gating predicate as the heavy query — both
-  // queries fire together so both data sources are warm at the
-  // same time. Same auto-walk pattern as the change-ownership
-  // pages query (PR-D-4).
+  // (fact-table backed) instead of the retired
+  // `getDashboardOfflineMonitoring` wire payload. Keep it scoped to
+  // the Offline Monitoring tab; other tabs use slim summaries or
+  // dedicated aggregates.
   const monitoringDetailsPagesQuery =
     solarRecTrpc.solarRecDashboard.getDashboardMonitoringDetailsPage.useInfiniteQuery(
       { limit: 500 },
       {
         staleTime: 60_000,
         enabled:
-          isOfflineMonitoringHeavyNeeded && hasUserInteractedWithDashboard,
+          isOfflineMonitoringTabActive && hasUserInteractedWithDashboard,
         getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
         initialCursor: null,
       }
@@ -3718,10 +3684,6 @@ export default function SolarRecDashboard() {
     monitoringDetailsPagesQuery.isFetchingNextPage,
     monitoringDetailsPagesQuery.fetchNextPage,
   ]);
-  const isMonitoringDetailsPagesComplete =
-    monitoringDetailsPagesQuery.status === "success" &&
-    !monitoringDetailsPagesQuery.hasNextPage;
-
   const abpApplicationIdBySystemKey = useMemo(() => {
     const map = new Map<string, string>();
     for (const page of monitoringDetailsPagesQuery.data?.pages ?? []) {
@@ -3729,21 +3691,6 @@ export default function SolarRecDashboard() {
         if (row.abpApplicationId) {
           map.set(row.systemKey, row.abpApplicationId);
         }
-      }
-    }
-    return map;
-  }, [monitoringDetailsPagesQuery.data]);
-
-  // Decimal columns on the fact table are wire-encoded as
-  // `string | null` (Drizzle `decimal()` convention); the
-  // `parseDecimalString` helper at module top normalizes back to
-  // `number | null` for the existing Map<string, number> contract.
-  const abpAcSizeKwBySystemKey = useMemo(() => {
-    const map = new Map<string, number>();
-    for (const page of monitoringDetailsPagesQuery.data?.pages ?? []) {
-      for (const row of page.rows) {
-        const n = parseDecimalString(row.abpAcSizeKw);
-        if (n !== null) map.set(row.systemKey, n);
       }
     }
     return map;
@@ -5051,26 +4998,6 @@ export default function SolarRecDashboard() {
           "Loading change-ownership rows… try again in a moment.",
       };
     }
-    if (offlineMonitoringQuery.status !== "success") {
-      return {
-        ready: false,
-        reason:
-          "Open Offline Monitoring (or another heavy tab) to load Part-II value data before snapshotting.",
-      };
-    }
-    // Snapshot needs the per-system maps too. After PR-C-3-b
-    // those come from the `getDashboardMonitoringDetailsPage`
-    // walk (auto-paged). The infinite query reports `success`
-    // after page 1; gate explicitly on end-of-stream so
-    // `monitoringDetailsBySystemKey` etc. are fully hydrated
-    // before `snapshotPart2ValueSummary` reads them.
-    if (!isMonitoringDetailsPagesComplete) {
-      return {
-        ready: false,
-        reason:
-          "Loading offline-monitoring per-system rows… try again in a moment.",
-      };
-    }
     // Phase 2 PR-F-4-f-2 — `snapshotPart2ValueSummary` derives from
     // `part2EligibleSystemsForSizeReporting`, which is now itself
     // a `useInfiniteQuery` walk of `getDashboardSystemsPage(
@@ -5385,18 +5312,12 @@ export default function SolarRecDashboard() {
 
   const part2FilterAudit = useMemo(() => {
     const totalAbpRows = datasetSummariesByKey["abpReport"]?.rowCount ?? 0;
-    const hasPart2SummaryCounts = Boolean(
-      slimSummary || offlineMonitoringQuery.data
-    );
+    const hasPart2SummaryCounts = Boolean(slimSummary);
     const part2Rows = hasPart2SummaryCounts
-      ? (slimSummary?.part2VerifiedAbpRowsCount ??
-        offlineMonitoringQuery.data?.part2VerifiedAbpRowsCount ??
-        null)
+      ? (slimSummary?.part2VerifiedAbpRowsCount ?? null)
       : null;
     const part2UniqueSystems = hasPart2SummaryCounts
-      ? (slimSummary?.abpEligibleTotalSystemsCount ??
-        offlineMonitoringQuery.data?.abpEligibleTotalSystemsCount ??
-        abpEligibleTotalSystems)
+      ? (slimSummary?.abpEligibleTotalSystemsCount ?? abpEligibleTotalSystems)
       : null;
     const scopedSystems = hasPart2SummaryCounts
       ? (slimSummary?.part2VerifiedSystems ??
@@ -5419,7 +5340,6 @@ export default function SolarRecDashboard() {
   }, [
     abpEligibleTotalSystems,
     datasetSummariesByKey,
-    offlineMonitoringQuery.data,
     part2EligibleSystemsForSizeReporting.length,
     slimSummary,
   ]);
@@ -5470,15 +5390,6 @@ const deliveryTrackerData = deliveryTrackerQuery.data ?? EMPTY_DELIVERY_TRACKER_
 // ── Alerts ──────────────────────────────────────────────────────
 // AlertItem type, alerts memo, alertSummary memo — moved to @/solar-rec-dashboard/components/AlertsTab
 // comparisonInstallers, comparisonPlatforms — moved to @/solar-rec-dashboard/components/ComparisonsTab
-
-// ── Financials: Part II Verified System IDs (strict) ────────────
-// Phase 5e step 4 PR-C1 (2026-04-30) — server-driven via
-// `getDashboardOfflineMonitoring.part2VerifiedSystemIds`.
-const part2VerifiedSystemIds = useMemo(() => {
-  return new Set<string>(
-    offlineMonitoringQuery.data?.part2VerifiedSystemIds ?? []
-  );
-}, [offlineMonitoringQuery.data]);
 
 // part2VerifiedSystems, financialRevenueAtRisk — moved to @/solar-rec-dashboard/components/FinancialsTab
 // ── Financials: Profit & Collateralization ──────────────────────
@@ -6276,7 +6187,6 @@ const aiDataContext = useMemo(() => {
                 <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading offline monitoring tab...</div>}>
                   <OfflineMonitoringTabLazy
                     part2EligibleSystemsForSizeReporting={part2EligibleSystemsForSizeReporting}
-                    abpEligibleTrackingIdsStrict={abpEligibleTrackingIdsStrict}
                     abpApplicationIdBySystemKey={abpApplicationIdBySystemKey}
                     monitoringDetailsBySystemKey={monitoringDetailsBySystemKey}
                     jumpToSection={jumpToSection}
