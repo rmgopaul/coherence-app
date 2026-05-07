@@ -3606,8 +3606,14 @@ export const solarRecDashboardRouter = t.router({
         paginateSnapshotLogRecovery,
         SNAPSHOT_LOG_RECOVERY_RUNNER_VERSION,
       } = await import("../services/solar/snapshotLogRecovery");
-      const SNAPSHOT_LOG_KEY = "snapshot_logs_v1";
-      const SNAPSHOT_LOG_CHUNK_PREFIX = "snapshot_logs_v1_chunk_";
+      // IMPORTANT: see snapshotLogRestore.ts for the prefix
+      // explanation. Cloud writes go through `saveDataset`, which
+      // prepends `dataset:` to the caller key. The actual storage
+      // rows live under `dataset:snapshot_logs_v1` (and
+      // `dataset:snapshot_logs_v1_chunk_*`). PR #353 shipped without
+      // the `dataset:` prefix so this proc has been a no-op since.
+      const SNAPSHOT_LOG_KEY = "dataset:snapshot_logs_v1";
+      const SNAPSHOT_LOG_CHUNK_PREFIX = "dataset:snapshot_logs_v1_chunk_";
 
       const [mainPayload, orphanRows] = await Promise.all([
         getSolarRecDashboardPayload(ctx.userId, SNAPSHOT_LOG_KEY),
