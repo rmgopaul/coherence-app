@@ -3710,6 +3710,107 @@ export const solarRecDashboardRouter = t.router({
   }),
 
   /**
+   * Snapshot-log orphan-prune mutation (Task 5.15 PR-D).
+   *
+   * Belt-and-braces companion to the cloud-sync write path. Existing
+   * client-side cloud-sync (`SolarRecDashboard.tsx` ~L4808) computes
+   * the new chunk-key set for the next payload, then deletes only
+   * the chunk keys it tracked in-memory via
+   * `remoteLogsChunkKeysRef`. That ref is `[]` on every fresh page
+   * load, so chunk rows that survived a prior session's write are
+   * never seen and never pruned. The 2026-04 production orphans
+   * (`dataset:snapshot_logs_v1_chunk_0000` through `_0005`) were
+   * created exactly that way: a session wrote the chunked payload,
+   * then a different session wrote a single-chunk payload to
+   * `dataset:snapshot_logs_v1` with `previousChunkKeys = []` because
+   * the in-memory ref was empty.
+   *
+   * This mutation accepts the chunk-key set the client just wrote
+   * (`keepChunkKeys`, may be `[]` for single-chunk writes) and
+   * deletes every `dataset:snapshot_logs_v1_chunk_*` row whose
+   * storageKey is NOT in that set. The client should call this
+   * AFTER a successful cloud-sync write — the prune is durable and
+   * survives the cloud-sync useEffect's in-memory state.
+   *
+   * Defensive: only deletes storageKeys whose name starts with the
+   * canonical `dataset:snapshot_logs_v1_chunk_` prefix. If the
+   * caller passes a `keepChunkKeys` value that doesn't match the
+   * prefix (defensive corner — should never happen from the live
+   * caller), it's still respected as a "keep" entry, but the prune
+   * scope is bounded by the prefix listing.
+   *
+   * Gated on `solar-rec-dashboard:edit` because it mutates storage
+   * rows. Same permission as the restore mutation.
+   */
+  pruneSnapshotLogChunksOutsideSet: dashboardProcedure(
+    "solar-rec-dashboard",
+    "edit"
+  )
+    .input(
+      z.object({
+        // Bare chunk keys (no `dataset:` prefix), matching the
+        // shape the client passes to `saveDataset` /
+        // `saveRemoteDataset`. The proc auto-prepends `dataset:`
+        // before computing the prune diff (mirrors `saveDataset`'s
+        // own prefix handling). Capped at 256 entries —
+        // `REMOTE_LOG_SYNC_MAX_CHUNKS = 120` is the production
+        // ceiling, double that gives operational headroom.
+        keepChunkKeysBare: z.array(z.string().min(1).max(128)).max(256),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const {
+        listSolarRecDashboardStorageByPrefix,
+        deleteSolarRecDashboardStorageByExactKeys,
+      } = await import("../db/preferences");
+      const { SNAPSHOT_LOG_RESTORE_KEYS } = await import(
+        "../services/solar/snapshotLogRestore"
+      );
+      const {
+        computeSnapshotLogChunkKeysToPrune,
+        SNAPSHOT_LOG_PRUNE_RUNNER_VERSION,
+      } = await import("../services/solar/snapshotLogPrune");
+
+      const onDiskChunkRows = await listSolarRecDashboardStorageByPrefix(
+        ctx.userId,
+        SNAPSHOT_LOG_RESTORE_KEYS.chunkPrefix,
+        { maxRows: 256 }
+      );
+      // Translate the client's bare keys to the on-disk full-key
+      // shape so the diff comparison is apples-to-apples. The
+      // `saveDataset` proc that wrote the rows prepends `dataset:`
+      // to its caller-supplied `key` to produce the storageKey;
+      // this proc reverses that mapping here. A bare key that
+      // already starts with `dataset:` is passed through unchanged
+      // (defensive corner — a future caller might already pass the
+      // full key).
+      const DATASET_PREFIX = "dataset:";
+      const keepKeysFull = input.keepChunkKeysBare.map((bare) =>
+        bare.startsWith(DATASET_PREFIX) ? bare : `${DATASET_PREFIX}${bare}`
+      );
+      const keysToPrune = computeSnapshotLogChunkKeysToPrune({
+        onDiskKeys: onDiskChunkRows.map((row) => row.storageKey),
+        keepKeysFull,
+        requireOnDiskPrefix: SNAPSHOT_LOG_RESTORE_KEYS.chunkPrefix,
+      });
+      const deletedCount =
+        keysToPrune.length === 0
+          ? 0
+          : await deleteSolarRecDashboardStorageByExactKeys(
+              ctx.userId,
+              keysToPrune
+            );
+
+      return {
+        onDiskChunkCount: onDiskChunkRows.length,
+        keptChunkCount: input.keepChunkKeysBare.length,
+        prunedChunkCount: deletedCount,
+        prunedKeys: keysToPrune,
+        _runnerVersion: SNAPSHOT_LOG_PRUNE_RUNNER_VERSION,
+      };
+    }),
+
+  /**
    * Snapshot-log raw persistence diagnostic (Task 5.15 PR-B).
    *
    * Returns the main `snapshot_logs_v1` row's payload length plus
