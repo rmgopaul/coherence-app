@@ -697,9 +697,9 @@ builder remains in-process for fact builders only.
 bounded aggregate/fact-table endpoints: `getDashboardSystemsPage`
 for paginated system facts, `getSystemFactsBySystemKeys` for
 single-system drill-in, and tab-specific dashboard aggregate procs
-for summary views. The legacy proc still exists server-side for
-compatibility while old clients age out, but it is not an accepted
-oversized response path and must not be expanded.
+for summary views. The tRPC procedure itself is now removed from
+`solarRecDashboardRouter`; the shared `buildSystemSnapshot` service
+remains in-process for server aggregates and fact builders only.
 
 **`getDashboardChangeOwnership` retired from the allowlist (Phase 2
 PR-D-4, 2026-05-06).** The proc previously embedded a per-project

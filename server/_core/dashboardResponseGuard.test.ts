@@ -190,7 +190,7 @@ describe("DASHBOARD_OVERSIZE_ALLOWLIST", () => {
     //   - `getSystemSnapshot` — Phase 2 PR-F-4-h (2026-05-07): every
     //     client consumer migrated to paginated/aggregator-backed
     //     reads. `useSystemSnapshot` hook + parent `systems` useMemo
-    //     deleted. Server-side proc still exists; no client callers.
+    //     deleted, then the router proc itself was removed.
     //   - `getDashboardOverviewSummary` — Phase 2 PR-E-4-supplement
     //     (2026-05-06): stripped `ownershipRows` (~5–15 MB) at the
     //     wire boundary.
@@ -721,6 +721,17 @@ describe("solarRecDashboardRouter wiring", () => {
     expect(procBlock![1]).toBe("query");
   });
 
+  it("does NOT re-register the retired SystemRecord[] snapshot proc", () => {
+    const filePath = resolve(__dirname, "solarRecDashboardRouter.ts");
+    const source = readFileSync(filePath, "utf8");
+    expect(source).not.toMatch(
+      /getSystemSnapshot\s*:\s*dashboardProcedure\s*\(/
+    );
+    expect(source).toMatch(
+      /getSystemSnapshotHash\s*:\s*dashboardProcedure\s*\(/
+    );
+  });
+
   it("does NOT re-register retired synchronous CSV export procs", () => {
     const filePath = resolve(__dirname, "solarRecDashboardRouter.ts");
     const source = readFileSync(filePath, "utf8");
@@ -877,6 +888,7 @@ describe("CLAUDE.md drift", () => {
       /Aggregates\s+→\s+extend\s+`getSystemSnapshot`/
     );
     expect(claudeMd).toMatch(/Do \*\*not\*\* extend\s+`getSystemSnapshot`/);
+    expect(claudeMd).toMatch(/procedure itself is now removed/);
   });
 
   it("does not list `getDashboardOfflineMonitoring` as a live allowlisted entry (retired 2026-05-07)", () => {

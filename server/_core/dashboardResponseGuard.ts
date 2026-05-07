@@ -91,7 +91,8 @@ export const DASHBOARD_REQUEST_HEAP_AFTER_WARN_BYTES_DEFAULT =
  *   - `solarRecDashboard.getSystemSnapshot` — Phase 2 PR-F-4-h
  *     removed the last parent-level `useSystemSnapshot` consumer.
  *     Tabs now read bounded aggregate/fact-table endpoints instead
- *     of hydrating the legacy full `SystemRecord[]` payload.
+ *     of hydrating the legacy full `SystemRecord[]` payload. The
+ *     router proc was later removed entirely.
  *   - `solarRecDashboard.getDashboardOfflineMonitoring` — Phase 2
  *     PR-F-4-i removed the parent client call, moved counts to
  *     `getDashboardSummary`, and moved detail rows to bounded
