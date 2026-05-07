@@ -16,7 +16,7 @@
  *   - `off`    — bypass entirely. Incident kill switch.
  *
  * The allowlist matches on the **fully-qualified** procedure path
- * (e.g. `"solarRecDashboard.getDashboardOfflineMonitoring"`) so a
+ * (e.g. `"solarRecDashboard.getDashboardChangeOwnership"`) so a
  * same-named procedure on a different router is not silently
  * allowlisted.
  *
@@ -93,10 +93,9 @@ export const DASHBOARD_REQUEST_HEAP_AFTER_WARN_BYTES_DEFAULT =
  *     Tabs now read bounded aggregate/fact-table endpoints instead
  *     of hydrating the legacy full `SystemRecord[]` payload.
  *   - `solarRecDashboard.getDashboardOfflineMonitoring` — Phase 2
- *     PR-F-4-i removed the parent client call and stripped the
- *     remaining high-cardinality Part-II ID arrays at the wire
- *     boundary. Counts now come from `getDashboardSummary`; detail
- *     rows come from bounded fact-page reads.
+ *     PR-F-4-i removed the parent client call, moved counts to
+ *     `getDashboardSummary`, and moved detail rows to bounded
+ *     fact-page reads. The router proc was later removed entirely.
  *
  * **The allowlist is now empty.** Phase 2 has retired every
  * known oversized response from the dashboard router. New procs

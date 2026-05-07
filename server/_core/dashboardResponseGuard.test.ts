@@ -184,9 +184,9 @@ describe("DASHBOARD_OVERSIZE_ALLOWLIST", () => {
   it("is empty after Phase 2 — every known oversized response has been retired", () => {
     // Retirement history (most recent first):
     //   - `getDashboardOfflineMonitoring` — Phase 2 PR-F-4-i
-    //     (2026-05-07): removed the parent client call and strips
-    //     remaining high-cardinality Part-II ID arrays at the wire
-    //     boundary.
+    //     (2026-05-07): removed the parent client call, moved reads
+    //     to summary/fact-page endpoints, then removed the router
+    //     proc entirely.
     //   - `getSystemSnapshot` — Phase 2 PR-F-4-h (2026-05-07): every
     //     client consumer migrated to paginated/aggregator-backed
     //     reads. `useSystemSnapshot` hook + parent `systems` useMemo
@@ -694,42 +694,14 @@ describe("solarRecDashboardRouter wiring", () => {
     expect(source).toMatch(/datasetKey:\s*z\.enum\(/);
   });
 
-  it("strips Offline Monitoring high-cardinality fields at the wire boundary", () => {
+  it("does NOT re-register the retired Offline Monitoring aggregate proc", () => {
     const filePath = resolve(__dirname, "solarRecDashboardRouter.ts");
     const source = readFileSync(filePath, "utf8");
-    const procBlock =
-      /getDashboardOfflineMonitoring\s*:\s*dashboardProcedure[\s\S]*?\n  \/\*\*\n   \* Phase 2 PR-C-3-a/.exec(
-        source
-      )?.[0];
-    expect(procBlock).toBeDefined();
-    // PR-C-3-b strips: per-system maps (covered separately by
-    // mountResilience rails).
-    // Application-id-keyed maps stripped via destructure-out
-    // alongside the per-system maps.
-    expect(procBlock!).toMatch(
-      /abpAcSizeKwByApplicationId:\s*_abpAcSizeKwByApplicationId/
+    expect(source).not.toMatch(
+      /getDashboardOfflineMonitoring\s*:\s*dashboardProcedure\s*\(/
     );
-    expect(procBlock!).toMatch(
-      /abpPart2VerificationDateByApplicationId:\s*\n\s*_abpPart2VerificationDateByApplicationId/
-    );
-    // Phase 2 OfflineMonitoring residual cleanup (2026-05-07)
-    // additionally strips the remaining Part-2 ID arrays. The
-    // aggregator still computes them internally for server-side
-    // fact-builder consumption; they're discarded at the wire
-    // boundary because no client path reads them after the F-4
-    // sequence retired the parent-level Sets they fed.
-    expect(procBlock!).toMatch(
-      /eligiblePart2ApplicationIds:\s*_eligiblePart2ApplicationIds/
-    );
-    expect(procBlock!).toMatch(
-      /eligiblePart2PortalSystemIds:\s*_eligiblePart2PortalSystemIds/
-    );
-    expect(procBlock!).toMatch(
-      /eligiblePart2TrackingIds:\s*_eligiblePart2TrackingIds/
-    );
-    expect(procBlock!).toMatch(
-      /part2VerifiedSystemIds:\s*_part2VerifiedSystemIds/
-    );
+    expect(source).not.toMatch(/OFFLINE_MONITORING_RUNNER_VERSION/);
+    expect(source).not.toMatch(/getOrBuildOfflineMonitoringAggregates/);
   });
 
   it("registers getSnapshotLogs as a dashboardProcedure (read-only recovery surface)", () => {
@@ -916,6 +888,7 @@ describe("CLAUDE.md drift", () => {
     expect(claudeMd).toMatch(
       /`getDashboardOfflineMonitoring` retired from the allowlist/
     );
+    expect(claudeMd).toMatch(/procedure itself is now removed/);
     expect(claudeMd).not.toMatch(
       /\|\s*`solarRecDashboard\.getDashboardOfflineMonitoring`\s*\|/
     );
