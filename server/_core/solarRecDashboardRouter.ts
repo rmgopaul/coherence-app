@@ -3531,13 +3531,12 @@ export const solarRecDashboardRouter = t.router({
    * aggregator for the Offline Monitoring tab. Originally replaced
    * four client useMemos in `SolarRecDashboard.tsx` that derived from
    * `datasets.abpReport.rows` + `datasets.solarApplications.rows`:
-   * `abpEligibleTrackingIdsStrict`, `abpApplicationIdBySystemKey`,
-   * `monitoringDetailsBySystemKey`, and the 3 ID Sets that drive
+   * `eligiblePart2TrackingIds`, `abpApplicationIdBySystemKey`,
+   * `monitoringDetailsBySystemKey`, and the 3 ID Sets that drove
    * `part2EligibleSystemsForSizeReporting`.
    *
-   * `abpEligibleTrackingIdsStrict` and the inner
-   * `eligiblePart2TrackingIds` set were byte-identical at the
-   * source — this aggregator computes them once.
+   * Phase 2 PR-F-4-i removed the parent client call to this proc,
+   * but the bounded compatibility/count surface remains available.
    *
    * Cache key bundles 2 dataset batch IDs (abpReport,
    * solarApplications). Plain JSON serde — output is all strings
@@ -3584,12 +3583,16 @@ export const solarRecDashboardRouter = t.router({
     const { result, fromCache } =
       await getOrBuildOfflineMonitoringAggregates(ctx.scopeId);
 
-    // Strip the per-system maps at the wire boundary. The
-    // aggregator's return type still carries them (the underlying
-    // computation paths haven't changed), but no client path reads
-    // them from this proc after PR-C-3-b. Underscore-prefix on
-    // the discarded bindings keeps tsc happy without changing
-    // the aggregator's shape.
+    // Strip the per-system maps + 3 dead Part-2 ID arrays at the
+    // wire boundary. The aggregator's return type still carries
+    // them (the server-side fact-table builders read the 3 ID
+    // arrays in-process to populate `isPart2Eligible`), but no
+    // client path reads them from this proc after the F-4 series.
+    // Phase 2 PR-F-4-i (2026-05-07) removes the parent client call
+    // to this proc and strips the remaining Part-II ID arrays from
+    // the wire. Counts come from `getDashboardSummary`, Part-II
+    // systems come from `getDashboardSystemsPage`, and monitoring
+    // details come from `getDashboardMonitoringDetailsPage`.
     const {
       monitoringDetailsBySystemKey: _monitoringDetailsBySystemKey,
       abpApplicationIdBySystemKey: _abpApplicationIdBySystemKey,

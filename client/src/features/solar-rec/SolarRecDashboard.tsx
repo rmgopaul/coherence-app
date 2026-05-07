@@ -3762,11 +3762,9 @@ export default function SolarRecDashboard() {
   // CSV-click does NOT flip `hasUserInteractedWithDashboard`. The
   // export job is fully server-side and the start/status responses
   // are bounded; flipping the interaction flag here would silently
-  // enable `getDashboardOverviewSummary` /
-  // `getDashboardOfflineMonitoring` / `getDashboardChangeOwnership`
-  // on the next render, dragging multi-MB JSON payloads into the
-  // browser as a side-effect of an export click. Tab navigation
-  // remains the single trigger.
+  // enable heavy tab-specific queries on the next render, dragging
+  // multi-MB JSON payloads into the browser as a side-effect of an
+  // export click. Tab navigation remains the single trigger.
   const startDashboardCsvExport =
     solarRecTrpc.solarRecDashboard.startDashboardCsvExport.useMutation();
 

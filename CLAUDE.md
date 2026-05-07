@@ -671,11 +671,14 @@ in prod). Bounded responses look like this:
 | `debugDatasetPersistenceRaw` | Raw rows from every layer + verdict | ~2 KB |
 | `getDashboard<TabName>Aggregates` (DeliveryTracker / TrendDeliveryPace / TrendsProduction / ContractVintage / AppPipelineMonthly / AppPipelineCashFlow / PerformanceRatio / Forecast / Financials) | Per-tab aggregate result | ~10–500 KB |
 
-**Transitional reality: no dashboard procedure currently ships an
-accepted oversized response.** `DASHBOARD_OVERSIZE_ALLOWLIST`
-(`server/_core/dashboardResponseGuard.ts`) is intentionally empty.
-Do not add a procedure to it without an inline replacement plan that
-names the streaming, paginated, or backgrounded successor.
+**Transitional reality: the allowlist is empty.** Phase 2
+retired every entry. `DASHBOARD_OVERSIZE_ALLOWLIST` in
+`server/_core/dashboardResponseGuard.ts` is now `new Set([])` —
+every response on the dashboard router fits under the 1 MB
+budget. New procs must respect that budget; if a future
+regression genuinely needs the allowlist mechanism, add the
+entry there with an inline replacement plan (per the prior
+retirement notes below).
 
 **`getDashboardOfflineMonitoring` retired from the allowlist (Phase
 2 PR-F-4-i, 2026-05-07).** The parent dashboard no longer calls the
@@ -1023,18 +1026,16 @@ expected post-upload state even with no chunked blob present.
    is for normal-but-noteworthy events; persistence failures are
    `console.error` and surface to the client response.
 5. **Default Overview mount must not enable any allowlisted heavy
-   procedure.** There are no currently allowlisted procs.
-   `getDashboardOverviewSummary` and `getDashboardChangeOwnership`
-   are retired from the allowlist; do not re-add them as live heavy
-   mount paths. `getDashboardOfflineMonitoring` is also retired
-   from the allowlist; use slim summary counts plus bounded fact
-   pages instead.
-   `getDashboardFinancials` is not on the
-   allowlist (its response is bounded), but it's heavy enough that
-   it follows the same gating: enabled only on Financials/Pipeline
-   tab activation. The Overview mount path reads only
-   `getDashboardSummary` + `getDashboardFinancialKpiSummary` (slim,
-   cache-only). Regression rails live in
+   procedure.** As of 2026-05-07 the allowlist is empty —
+   `getDashboardOverviewSummary`, `getDashboardChangeOwnership`,
+   `getSystemSnapshot`, and `getDashboardOfflineMonitoring` are
+   all retired. Do not re-add them as live heavy mount paths.
+   `getDashboardFinancials` is not on the allowlist (its
+   response is bounded), but it's heavy enough that it follows
+   the same gating: enabled only on Financials/Pipeline tab
+   activation. The Overview mount path reads only
+   `getDashboardSummary` + `getDashboardFinancialKpiSummary`
+   (slim, cache-only). Regression rails live in
    `client/src/solar-rec-dashboard/lib/dashboardMountResilience.test.ts`.
 6. **CSV export procs do not flip
    `hasUserInteractedWithDashboard`.** A CSV-tile click is a

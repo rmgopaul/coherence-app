@@ -97,8 +97,14 @@ export const DASHBOARD_REQUEST_HEAP_AFTER_WARN_BYTES_DEFAULT =
  *     remaining high-cardinality Part-II ID arrays at the wire
  *     boundary. Counts now come from `getDashboardSummary`; detail
  *     rows come from bounded fact-page reads.
+ *
+ * **The allowlist is now empty.** Phase 2 has retired every
+ * known oversized response from the dashboard router. New procs
+ * must stay under the 1 MB budget; if a future regression
+ * genuinely needs the allowlist mechanism, add the entry here
+ * with an inline replacement plan.
  */
-export const DASHBOARD_OVERSIZE_ALLOWLIST: ReadonlySet<string> = new Set();
+export const DASHBOARD_OVERSIZE_ALLOWLIST: ReadonlySet<string> = new Set([]);
 
 export type DashboardResponseEnforcement = "warn" | "throw" | "off";
 
