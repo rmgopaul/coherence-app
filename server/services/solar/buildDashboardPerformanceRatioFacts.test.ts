@@ -19,8 +19,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   upsertPerformanceRatioFacts: vi.fn(),
   deleteOrphanedPerformanceRatioFacts: vi.fn(),
-  getOrBuildPerformanceRatio: vi.fn(),
   upsertComputedArtifact: vi.fn(),
+  resolvePerformanceRatioBatchIds: vi.fn(),
+  loadPerformanceRatioStaticInput: vi.fn(),
+  forEachPerformanceRatioConvertedReadPage: vi.fn(),
 }));
 
 vi.mock("../../db/dashboardPerformanceRatioFacts", () => ({
@@ -33,13 +35,16 @@ vi.mock("../../db/dashboardPerformanceRatioFacts", () => ({
   getPerformanceRatioFactsCount: vi.fn(),
 }));
 
-vi.mock("./buildPerformanceRatioAggregates", async () => {
+vi.mock("./loadPerformanceRatioInput", async () => {
   const actual = await vi.importActual<
-    typeof import("./buildPerformanceRatioAggregates")
-  >("./buildPerformanceRatioAggregates");
+    typeof import("./loadPerformanceRatioInput")
+  >("./loadPerformanceRatioInput");
   return {
     ...actual,
-    getOrBuildPerformanceRatio: mocks.getOrBuildPerformanceRatio,
+    resolvePerformanceRatioBatchIds: mocks.resolvePerformanceRatioBatchIds,
+    loadPerformanceRatioStaticInput: mocks.loadPerformanceRatioStaticInput,
+    forEachPerformanceRatioConvertedReadPage:
+      mocks.forEachPerformanceRatioConvertedReadPage,
   };
 });
 
@@ -403,28 +408,93 @@ describe("buildPerformanceRatioSummaryPayload", () => {
 // ────────────────────────────────────────────────────────────────────
 // Runner-step orchestration tests
 // ────────────────────────────────────────────────────────────────────
+//
+// 2026-05-08 OOM hardening (streaming-write fix). The previous
+// orchestration mocked `getOrBuildPerformanceRatio` and asserted
+// a single upsert at the end. The streaming runner step now:
+//   1. resolvePerformanceRatioBatchIds → returns batch IDs
+//   2. loadPerformanceRatioStaticInput → returns static input
+//   3. forEachPerformanceRatioConvertedReadPage → calls onPage(rows, idx)
+//   4. accumulator.processRows + drainPendingRows per page
+//   5. upsertPerformanceRatioFacts per page (NOT once at end)
+//   6. deleteOrphanedPerformanceRatioFacts at end
+//   7. upsertComputedArtifact (summary) at end
+// The test fixtures supply a mock streaming source that drives the
+// onPage callback with synthetic converted-read rows; the real
+// `createPerformanceRatioAccumulator` runs unmocked so the
+// matched-row emission paths get exercised.
 
-function makeAggregate(rowsOverride?: PerformanceRatioRow[]) {
+function makeBatchIds() {
   return {
-    rows: rowsOverride ?? [
-      makeRow({ key: "converted-1-sys-1" }),
-      makeRow({
-        key: "converted-2-sys-2",
-        trackingSystemRefId: "tr-2",
-      }),
-    ],
-    convertedReadCount: 100,
-    matchedConvertedReads: 2,
-    unmatchedConvertedReads: 50,
-    invalidConvertedReads: 48,
-    fromCache: false,
+    convertedReadsBatchId: "cr-batch-1",
+    annualProductionBatchId: "ap-batch-1",
+    generationEntryBatchId: "ge-batch-1",
+    accountSolarGenerationBatchId: "asg-batch-1",
+    generatorDetailsBatchId: "gd-batch-1",
+    abpReportBatchId: "abp-batch-1",
+    solarApplicationsBatchId: "sa-batch-1",
   };
 }
 
-describe("performanceRatioBuildStep — orchestration", () => {
-  it("aggregator → upsert → orphan-sweep → summary order with correct args", async () => {
-    mocks.getOrBuildPerformanceRatio.mockResolvedValue(makeAggregate());
-    mocks.deleteOrphanedPerformanceRatioFacts.mockResolvedValue(7);
+function makeStaticInput() {
+  // One matchable system whose tokens line up with the synthetic
+  // converted-read rows below. Empty maps are sufficient for the
+  // streaming path to emit fact rows.
+  return {
+    systems: [
+      {
+        key: "sys-A",
+        trackingSystemRefId: "tr-A",
+        systemId: "SYS-A",
+        stateApplicationRefId: "APP-A",
+        systemName: "Acme Solar",
+        installerName: "Acme Installer",
+        monitoringPlatform: "Enphase",
+        installedKwAc: 7.5,
+        contractValue: 25000,
+        monitoringTokens: ["enphase"],
+        idTokens: ["sys-a"],
+        nameTokens: ["acme solar"],
+      },
+    ],
+    abpAcSizeKwByApplicationId: new Map(),
+    abpPart2VerificationDateByApplicationId: new Map(),
+    annualProductionByTrackingId: new Map(),
+    generationBaselineByTrackingId: new Map(),
+    generatorDateOnlineByTrackingId: new Map(),
+  };
+}
+
+function makeConvertedReadRow(overrides: Partial<{
+  monitoring: string;
+  monitoring_system_id: string;
+  monitoring_system_name: string;
+  lifetime_meter_read_wh: string;
+  read_date: string;
+}> = {}) {
+  return {
+    monitoring: "Enphase",
+    monitoring_system_id: "SYS-A",
+    monitoring_system_name: "Acme Solar",
+    lifetime_meter_read_wh: "12345678",
+    read_date: "2026-04-01",
+    ...overrides,
+  };
+}
+
+describe("performanceRatioBuildStep — orchestration (streaming-write)", () => {
+  it("static input → stream pages → upsert per page → orphan-sweep → summary, in that order", async () => {
+    mocks.resolvePerformanceRatioBatchIds.mockResolvedValue(makeBatchIds());
+    mocks.loadPerformanceRatioStaticInput.mockResolvedValue(makeStaticInput());
+    mocks.deleteOrphanedPerformanceRatioFacts.mockResolvedValue(3);
+    // Mock streaming source: 2 pages of 1 row each.
+    mocks.forEachPerformanceRatioConvertedReadPage.mockImplementation(
+      async (_scopeId: string, _batchId: string, onPage: any) => {
+        await onPage([makeConvertedReadRow()], 0);
+        await onPage([makeConvertedReadRow()], 1);
+        return 2;
+      }
+    );
 
     await performanceRatioBuildStep.run({
       scopeId: "scope-A",
@@ -432,12 +502,21 @@ describe("performanceRatioBuildStep — orchestration", () => {
       signal: new AbortController().signal,
     });
 
-    expect(mocks.getOrBuildPerformanceRatio).toHaveBeenCalledWith("scope-A");
-    expect(mocks.upsertPerformanceRatioFacts).toHaveBeenCalledTimes(1);
-    const [upsertedRows] = mocks.upsertPerformanceRatioFacts.mock.calls[0];
-    expect(upsertedRows).toHaveLength(2);
-    expect(upsertedRows[0].buildId).toBe("bld-1");
-    expect(upsertedRows[0].scopeId).toBe("scope-A");
+    expect(mocks.resolvePerformanceRatioBatchIds).toHaveBeenCalledWith("scope-A");
+    expect(mocks.loadPerformanceRatioStaticInput).toHaveBeenCalledWith(
+      "scope-A",
+      expect.objectContaining({ convertedReadsBatchId: "cr-batch-1" })
+    );
+
+    // Streaming-write contract: upsert called once PER PAGE that
+    // produced fact rows (not once at end).
+    expect(mocks.upsertPerformanceRatioFacts).toHaveBeenCalledTimes(2);
+    for (const [pageRows] of mocks.upsertPerformanceRatioFacts.mock.calls) {
+      expect(pageRows.length).toBeGreaterThan(0);
+      expect(pageRows[0].buildId).toBe("bld-1");
+      expect(pageRows[0].scopeId).toBe("scope-A");
+    }
+
     expect(mocks.deleteOrphanedPerformanceRatioFacts).toHaveBeenCalledWith(
       "scope-A",
       "bld-1"
@@ -453,40 +532,66 @@ describe("performanceRatioBuildStep — orchestration", () => {
       PERFORMANCE_RATIO_SUMMARY_VERSION_KEY
     );
     const summary = JSON.parse(summaryArgs.payload);
-    expect(summary.convertedReadCount).toBe(100);
+    expect(summary.convertedReadCount).toBe(2);
     expect(summary.matchedConvertedReads).toBe(2);
-    expect(summary.matchedSystemCount).toBe(2);
+    expect(summary.matchedSystemCount).toBe(1);
     expect(summary.buildId).toBe("bld-1");
 
-    // Order check: upsert BEFORE orphan-sweep BEFORE summary write.
-    const upsertOrder =
-      mocks.upsertPerformanceRatioFacts.mock.invocationCallOrder[0];
+    // Order check: every upsert BEFORE orphan-sweep BEFORE summary.
+    const lastUpsert =
+      mocks.upsertPerformanceRatioFacts.mock.invocationCallOrder[1];
     const sweepOrder =
       mocks.deleteOrphanedPerformanceRatioFacts.mock.invocationCallOrder[0];
     const summaryOrder =
       mocks.upsertComputedArtifact.mock.invocationCallOrder[0];
-    expect(upsertOrder).toBeLessThan(sweepOrder);
+    expect(lastUpsert).toBeLessThan(sweepOrder);
     expect(sweepOrder).toBeLessThan(summaryOrder);
   });
 
-  it("writes a zero-counter summary on cold-cache (snapshot empty) builds", async () => {
-    // Cold-cache scenario: the underlying snapshot is still building
-    // so the aggregator returns 0 matched rows + 0 counters. The
-    // step still writes the (empty) summary so the client renders
-    // 0 rather than `available: false`. The next build replaces it.
-    mocks.getOrBuildPerformanceRatio.mockResolvedValue({
-      rows: [],
-      convertedReadCount: 0,
-      matchedConvertedReads: 0,
-      unmatchedConvertedReads: 0,
-      invalidConvertedReads: 0,
-      fromCache: false,
+  it("memory-bounded: drains accumulator per page so no UPSERT carries the full row set", async () => {
+    mocks.resolvePerformanceRatioBatchIds.mockResolvedValue(makeBatchIds());
+    mocks.loadPerformanceRatioStaticInput.mockResolvedValue(makeStaticInput());
+    // 3 pages, 1 row each. Streaming-write means each page's
+    // upsert sees ONLY that page's matches — never the cumulative
+    // set. A regression that batched the writes together would
+    // make the last upsert carry all 3 rows.
+    mocks.forEachPerformanceRatioConvertedReadPage.mockImplementation(
+      async (_s: string, _b: string, onPage: any) => {
+        for (let i = 0; i < 3; i += 1) {
+          await onPage([makeConvertedReadRow()], i);
+        }
+        return 3;
+      }
+    );
+
+    await performanceRatioBuildStep.run({
+      scopeId: "scope-A",
+      buildId: "bld-1",
+      signal: new AbortController().signal,
+    });
+
+    expect(mocks.upsertPerformanceRatioFacts).toHaveBeenCalledTimes(3);
+    // Each page's upsert receives at most 1 fact row (one match per
+    // synthetic page).
+    for (const [pageRows] of mocks.upsertPerformanceRatioFacts.mock.calls) {
+      expect(pageRows.length).toBe(1);
+    }
+  });
+
+  it("skips the streaming phase when no convertedReads batch is active (zero-summary write)", async () => {
+    // Cold-cache / not-yet-uploaded scenario. The step writes a
+    // zero-counter summary so the client tab renders 0 rather
+    // than `available: false`. Mirrors `runSystemStep`'s cold
+    // handling in PR-F-2.
+    mocks.resolvePerformanceRatioBatchIds.mockResolvedValue({
+      ...makeBatchIds(),
+      convertedReadsBatchId: null,
     });
 
     await performanceRatioBuildStep.run({
       scopeId: "scope-B",
       buildId: "bld-cold",
-      signal: new AbortController().signal,
+      signal: new AbortController().signal
     });
 
     expect(mocks.upsertPerformanceRatioFacts).toHaveBeenCalledTimes(1);
@@ -501,7 +606,13 @@ describe("performanceRatioBuildStep — orchestration", () => {
   });
 
   it("propagates upsert failures (runner converts to errorMessage)", async () => {
-    mocks.getOrBuildPerformanceRatio.mockResolvedValue(makeAggregate());
+    mocks.resolvePerformanceRatioBatchIds.mockResolvedValue(makeBatchIds());
+    mocks.loadPerformanceRatioStaticInput.mockResolvedValue(makeStaticInput());
+    mocks.forEachPerformanceRatioConvertedReadPage.mockImplementation(
+      async (_s: string, _b: string, onPage: any) => {
+        await onPage([makeConvertedReadRow()], 0);
+      }
+    );
     mocks.upsertPerformanceRatioFacts.mockRejectedValue(
       new Error("upsert blew up")
     );
@@ -520,7 +631,11 @@ describe("performanceRatioBuildStep — orchestration", () => {
   });
 
   it("propagates orphan-sweep failures (does NOT swallow into summary write)", async () => {
-    mocks.getOrBuildPerformanceRatio.mockResolvedValue(makeAggregate());
+    mocks.resolvePerformanceRatioBatchIds.mockResolvedValue(makeBatchIds());
+    mocks.loadPerformanceRatioStaticInput.mockResolvedValue(makeStaticInput());
+    mocks.forEachPerformanceRatioConvertedReadPage.mockImplementation(
+      async () => 0
+    );
     mocks.deleteOrphanedPerformanceRatioFacts.mockRejectedValue(
       new Error("sweep failed")
     );
@@ -535,7 +650,7 @@ describe("performanceRatioBuildStep — orchestration", () => {
     expect(mocks.upsertComputedArtifact).not.toHaveBeenCalled();
   });
 
-  it("aborts before aggregate fetch when signal is already aborted", async () => {
+  it("aborts before batch resolution when signal is already aborted", async () => {
     const controller = new AbortController();
     controller.abort();
     await expect(
@@ -545,7 +660,8 @@ describe("performanceRatioBuildStep — orchestration", () => {
         signal: controller.signal,
       })
     ).rejects.toThrow(/aborted/);
-    expect(mocks.getOrBuildPerformanceRatio).not.toHaveBeenCalled();
+    expect(mocks.resolvePerformanceRatioBatchIds).not.toHaveBeenCalled();
+    expect(mocks.loadPerformanceRatioStaticInput).not.toHaveBeenCalled();
     expect(mocks.upsertPerformanceRatioFacts).not.toHaveBeenCalled();
     expect(mocks.upsertComputedArtifact).not.toHaveBeenCalled();
   });

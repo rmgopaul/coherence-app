@@ -111,12 +111,39 @@ type PerformanceRatioStaticInput = Omit<
   "convertedReadsRows"
 >;
 
+export type PerformanceRatioCounters = {
+  convertedReadCount: number;
+  matchedConvertedReads: number;
+  unmatchedConvertedReads: number;
+  invalidConvertedReads: number;
+};
+
 type PerformanceRatioAccumulator = {
   processRows: (
     convertedReadsRows: readonly PerformanceRatioConvertedReadRow[],
     startIndex: number
   ) => void;
   toAggregates: () => PerformanceRatioAggregates;
+  /**
+   * Streaming-drain hook for the fact-table build runner step
+   * (PR-G-2 + 2026-05-08 OOM hardening). Returns the matched
+   * rows accumulated since the last call AND clears the internal
+   * buffer so the next page starts fresh.
+   *
+   * Counters (`convertedReadCount`, `matched`, `unmatched`,
+   * `invalid`) are PRESERVED across drains — a caller that
+   * drains incrementally during streaming and reads
+   * `getCounters()` at the end gets the same totals as the
+   * legacy `toAggregates()` path.
+   *
+   * The legacy `toAggregates()` path is unaffected as long as
+   * the caller never calls `drainPendingRows()` — the rows
+   * array stays full and the final sort + return are identical.
+   * Mixing the two is undefined; pick one mode per call site.
+   */
+  drainPendingRows: () => PerformanceRatioRow[];
+  /** Snapshot of the counter state. Safe to call mid-stream. */
+  getCounters: () => PerformanceRatioCounters;
 };
 
 export function createPerformanceRatioAccumulator(
@@ -133,7 +160,7 @@ export function createPerformanceRatioAccumulator(
 
   const indexes = buildMatchIndexes(systems);
 
-  const rows: PerformanceRatioRow[] = [];
+  let rows: PerformanceRatioRow[] = [];
   let convertedReadCount = 0;
   let matchedConvertedReads = 0;
   let unmatchedConvertedReads = 0;
@@ -310,6 +337,27 @@ export function createPerformanceRatioAccumulator(
         invalidConvertedReads,
       };
     },
+    // 2026-05-08 OOM hardening — streaming-drain hook for the
+    // fact-table build runner step. Returns the matched rows
+    // accumulated since the last call AND replaces the internal
+    // buffer with a fresh empty array. Counter state is
+    // preserved (next page accumulates additional matches).
+    //
+    // Mixing `drainPendingRows()` with a later `toAggregates()`
+    // is undefined — `toAggregates()` would only see rows added
+    // after the last drain. Pick one mode per accumulator
+    // instance.
+    drainPendingRows: () => {
+      const drained = rows;
+      rows = [];
+      return drained;
+    },
+    getCounters: () => ({
+      convertedReadCount,
+      matchedConvertedReads,
+      unmatchedConvertedReads,
+      invalidConvertedReads,
+    }),
   };
 }
 
