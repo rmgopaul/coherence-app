@@ -50,6 +50,9 @@ import {
   normalizeMonitoringMatch,
   normalizeSystemIdMatch,
   normalizeSystemNameMatch,
+  parseDate,
+  parseEnergyToWh,
+  resolveLastMeterReadRawValue,
   type AnnualProductionProfile,
   type GenerationBaseline,
   type PerformanceRatioConvertedReadRow,
@@ -93,6 +96,119 @@ export const buildGeneratorDateOnlineByTrackingId =
  */
 export type ServerAnnualProductionProfile = AnnualProductionProfile;
 export type ServerGenerationBaseline = GenerationBaseline;
+
+/**
+ * Streaming dataset-page walk. Mirrors
+ * `forEachPerformanceRatioConvertedReadPage` (further down this
+ * file) but parameterized over any `srDs*` table — used by the
+ * 2026-05-08 OOM fix to incrementally fold heavy datasets
+ * (`srDsAccountSolarGeneration`, 17M+ rows) into a result Map
+ * page-by-page instead of materializing the full row set in
+ * memory.
+ *
+ * Cursor-paginated via `loadDatasetRowsPage` (already proven on
+ * convertedReads). Default page size matches
+ * `PERFORMANCE_RATIO_CONVERTED_READS_PAGE_SIZE` so the per-page
+ * memory budget is uniform across the build step.
+ */
+async function streamSrDsRowsPage(
+  scopeId: string,
+  batchId: string,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- drizzle table types are complex unions
+  table: any,
+  onPage: (rows: CsvRow[]) => void | Promise<void>,
+  options: { pageSize?: number } = {}
+): Promise<number> {
+  const pageSize = options.pageSize ?? STREAM_PAGE_SIZE_DEFAULT;
+  let cursor: string | null = null;
+  let totalRows = 0;
+  let pageCount = 0;
+  for (;;) {
+    const page = await loadDatasetRowsPage(scopeId, batchId, table, {
+      cursor,
+      limit: pageSize,
+    });
+    if (page.rows.length > 0) {
+      await onPage(page.rows);
+    }
+    totalRows += page.rows.length;
+    pageCount += 1;
+    if (pageCount === 1 || pageCount % 10 === 0 || !page.nextCursor) {
+      process.stdout.write(
+        `[loadPerformanceRatioInput] streamed page=${pageCount} ` +
+          `totalRows=${totalRows} ` +
+          `heapUsed=${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB\n`
+      );
+    }
+    if (!page.nextCursor) break;
+    cursor = page.nextCursor;
+  }
+  return totalRows;
+}
+
+const STREAM_PAGE_SIZE_DEFAULT = 5_000;
+
+/**
+ * Per-row accumulator for `srDsAccountSolarGeneration` pages.
+ * Mirrors the accountSolarGeneration branch of
+ * `buildGenerationBaselineByTrackingId` (in
+ * `@shared/solarRecPerformanceRatio.ts`) 1:1 — same field
+ * resolution, same merge rule (latest date wins; on ties,
+ * "Generation Entry" outranks "Account Solar Generation").
+ *
+ * Mutates `mapping` in place. Returns nothing — the caller owns
+ * the Map across pages.
+ *
+ * Exported so the parity test
+ * (`loadPerformanceRatioInput.streamingBaseline.test.ts`) can
+ * verify that calling this incrementally over chunked pages
+ * produces a Map equal to the bulk
+ * `buildGenerationBaselineByTrackingId([], allRows)` output.
+ */
+export function applyAccountSolarGenerationPageToBaselineMap(
+  mapping: Map<string, GenerationBaseline>,
+  page: CsvRow[]
+): void {
+  for (const row of page) {
+    const trackingSystemRefId = clean((row as SolarRecCsvRow)["GATS Gen ID"]);
+    if (!trackingSystemRefId) continue;
+    const valueWh = parseEnergyToWh(
+      resolveLastMeterReadRawValue(row as SolarRecCsvRow),
+      "Last Meter Read (kWh)",
+      "kwh"
+    );
+    if (valueWh === null) continue;
+    const date =
+      parseDate((row as SolarRecCsvRow)["Last Meter Read Date"]) ??
+      parseDate((row as SolarRecCsvRow)["Month of Generation"]);
+
+    const candidate: GenerationBaseline = {
+      valueWh,
+      date,
+      source: "Account Solar Generation",
+    };
+    const existing = mapping.get(trackingSystemRefId);
+    if (!existing) {
+      mapping.set(trackingSystemRefId, candidate);
+      continue;
+    }
+    const existingTime =
+      existing.date?.getTime() ?? Number.NEGATIVE_INFINITY;
+    const candidateTime =
+      candidate.date?.getTime() ?? Number.NEGATIVE_INFINITY;
+    if (candidateTime > existingTime) {
+      mapping.set(trackingSystemRefId, candidate);
+      continue;
+    }
+    if (candidateTime === existingTime) {
+      const existingRank = existing.source === "Generation Entry" ? 2 : 1;
+      const candidateRank = candidate.source === "Generation Entry" ? 2 : 1;
+      if (candidateRank > existingRank) {
+        mapping.set(trackingSystemRefId, candidate);
+      }
+    }
+  }
+}
 
 function uniqueNonEmpty(values: readonly (string | null | undefined)[]): string[] {
   const out: string[] = [];
@@ -457,6 +573,23 @@ export async function loadPerformanceRatioStaticInput(
   // needs the map.
   annualProductionRows = [];
 
+  // 2026-05-08 OOM fix — `srDsAccountSolarGeneration` is the dataset
+  // that OOMs the build worker on prod-shape data (17M+ rows × ~200
+  // bytes/row × the JS-object overhead = multi-GB of heap). The
+  // legacy `loadDatasetRows` materializes the full table at once,
+  // which the V8 default heap (~1.4 GB) can't tolerate.
+  //
+  // Streaming fix: load the smaller `srDsGenerationEntry` (~100k
+  // rows on prod) into a Map first, then stream
+  // `srDsAccountSolarGeneration` page-by-page through the same
+  // `updateBaseline` per-row reducer that the bulk
+  // `buildGenerationBaselineByTrackingId` uses internally. Peak
+  // memory becomes O(unique GATS Gen IDs in the Map) + one page
+  // (~5k rows) instead of O(all 17M rows). The per-row logic
+  // mirrors `buildGenerationBaselineByTrackingId`'s
+  // accountSolarGeneration branch in `@shared/solarRecPerformanceRatio.ts`
+  // 1:1 — same `clean / parseEnergyToWh / resolveLastMeterReadRawValue
+  // / parseDate` calls, same source priority, same merge rule.
   let generationEntryRows = batchIds.generationEntryBatchId
     ? await loadDatasetRows(
         scopeId,
@@ -464,19 +597,30 @@ export async function loadPerformanceRatioStaticInput(
         srDsGenerationEntry
       )
     : ([] as CsvRow[]);
-  let accountSolarGenerationRows = batchIds.accountSolarGenerationBatchId
-    ? await loadDatasetRows(
-        scopeId,
-        batchIds.accountSolarGenerationBatchId,
-        srDsAccountSolarGeneration
-      )
-    : ([] as CsvRow[]);
   const generationBaselineByTrackingId = buildGenerationBaselineByTrackingId(
     generationEntryRows,
-    accountSolarGenerationRows
-  );
+    [] // accountSolarGeneration applied incrementally below
+  ) as Map<string, GenerationBaseline>;
   generationEntryRows = [];
-  accountSolarGenerationRows = [];
+
+  if (batchIds.accountSolarGenerationBatchId) {
+    await streamSrDsRowsPage(
+      scopeId,
+      batchIds.accountSolarGenerationBatchId,
+      srDsAccountSolarGeneration,
+      (page) => {
+        applyAccountSolarGenerationPageToBaselineMap(
+          generationBaselineByTrackingId,
+          page
+        );
+      }
+    );
+    process.stdout.write(
+      `[loadPerformanceRatioInput] streamed accountSolarGeneration; ` +
+        `baselineMapSize=${generationBaselineByTrackingId.size} ` +
+        `heapUsed=${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB\n`
+    );
+  }
 
   let generatorDetailsRows = batchIds.generatorDetailsBatchId
     ? await loadDatasetRows(
