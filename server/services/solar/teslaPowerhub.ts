@@ -117,6 +117,7 @@ export type TeslaPowerhubProductionMetricsResult = {
     siteSourcePreview: unknown;
     telemetryPreviewByWindow: Record<TeslaPowerhubWindowKey, unknown>;
     telemetryErrorsByWindow: Record<TeslaPowerhubWindowKey, string | null>;
+    perSiteGapFill?: TeslaPowerhubPerSiteGapFillDebug;
     windows: Record<
       TeslaPowerhubWindowKey,
       { startDatetime: string; endDatetime: string }
@@ -135,6 +136,27 @@ type TelemetryAttempt = {
   groupRollup: string | null;
 };
 
+export type TeslaPowerhubPerSiteGapFillMode = "deep" | "group-only";
+
+type TeslaPowerhubPerSiteGapFillWindowDebug = {
+  missingSiteCount: number;
+  queriedSiteCount: number;
+  ok: number;
+  empty: number;
+  errors: number;
+  skipped: boolean;
+  skippedReason: string | null;
+  firstError: string | null;
+};
+
+export type TeslaPowerhubPerSiteGapFillDebug = {
+  mode: TeslaPowerhubPerSiteGapFillMode;
+  windows: Record<
+    TeslaPowerhubWindowKey,
+    TeslaPowerhubPerSiteGapFillWindowDebug
+  >;
+};
+
 export type TeslaPowerhubMetricsProgress = {
   currentStep: number;
   totalSteps: number;
@@ -147,6 +169,40 @@ const GLOBAL_TIMEOUT_MS = 5 * 60 * 1000;
 const INVENTORY_GLOBAL_TIMEOUT_MS = 25_000;
 const DISCOVERY_REQUEST_TIMEOUT_MS = 5_000;
 const SITE_SNAPSHOT_GLOBAL_TIMEOUT_MS = 60_000;
+const TESLA_POWERHUB_WINDOW_KEYS: TeslaPowerhubWindowKey[] = [
+  "daily",
+  "weekly",
+  "monthly",
+  "yearly",
+  "lifetime",
+];
+
+function createPerSiteGapFillWindowDebug(): TeslaPowerhubPerSiteGapFillWindowDebug {
+  return {
+    missingSiteCount: 0,
+    queriedSiteCount: 0,
+    ok: 0,
+    empty: 0,
+    errors: 0,
+    skipped: false,
+    skippedReason: null,
+    firstError: null,
+  };
+}
+
+function createPerSiteGapFillDebug(
+  mode: TeslaPowerhubPerSiteGapFillMode
+): TeslaPowerhubPerSiteGapFillDebug {
+  return {
+    mode,
+    windows: Object.fromEntries(
+      TESLA_POWERHUB_WINDOW_KEYS.map(key => [
+        key,
+        createPerSiteGapFillWindowDebug(),
+      ])
+    ) as Record<TeslaPowerhubWindowKey, TeslaPowerhubPerSiteGapFillWindowDebug>,
+  };
+}
 
 function normalizeTimeoutMs(
   timeoutMs: number | null | undefined,
@@ -1917,6 +1973,7 @@ export async function getTeslaPowerhubGroupProductionMetrics(
     globalTimeoutMs?: number;
     fetchExternalIds?: boolean;
     includeDebugPreviews?: boolean;
+    perSiteGapFillMode?: TeslaPowerhubPerSiteGapFillMode;
   }
 ): Promise<TeslaPowerhubProductionMetricsResult> {
   const totalSteps = 8;
@@ -1939,6 +1996,8 @@ export async function getTeslaPowerhubGroupProductionMetrics(
   );
   const shouldPreview = options.includeDebugPreviews !== false;
   const shouldFetchExternalIds = options.fetchExternalIds !== false;
+  const perSiteGapFillMode = options.perSiteGapFillMode ?? "deep";
+  const perSiteGapFill = createPerSiteGapFillDebug(perSiteGapFillMode);
   const checkAborted = () => {
     if (globalSignal.aborted) {
       throw globalSignal.reason instanceof Error
@@ -2165,8 +2224,43 @@ export async function getTeslaPowerhubGroupProductionMetrics(
 
   // ---- Phase 2: Per-site gap-fill -----------------------------------------
   // Phase 1 group-level queries may return per-site data for MOST sites but
-  // not all.  Phase 2 fills the gaps by querying individual sites.
-  if (combinedSiteList.length > 0 && !globalSignal.aborted) {
+  // not all. Deep mode fills the gaps by querying individual sites; standard
+  // mode records the missing coverage and returns only what the group query
+  // actually provided so large portfolios do not fan out indefinitely.
+  if (
+    combinedSiteList.length > 0 &&
+    !globalSignal.aborted &&
+    perSiteGapFillMode === "group-only"
+  ) {
+    let skippedMissingCount = 0;
+    for (const window of windows) {
+      const existingTotals =
+        totalsByWindow.get(window.key) ?? new Map<string, SiteTotal>();
+      const missingSites = combinedSiteList.filter(
+        site =>
+          !existingTotals.has(site.siteId) ||
+          existingTotals.get(site.siteId)!.totalKwh === 0
+      );
+      skippedMissingCount += missingSites.length;
+      perSiteGapFill.windows[window.key] = {
+        ...createPerSiteGapFillWindowDebug(),
+        missingSiteCount: missingSites.length,
+        skipped: missingSites.length > 0,
+        skippedReason:
+          missingSites.length > 0
+            ? "Standard scan skips individual site telemetry fallback."
+            : null,
+      };
+    }
+    emitProgress({
+      currentStep: 7,
+      totalSteps,
+      message:
+        skippedMissingCount > 0
+          ? `Per-site gap-fill skipped in standard scan (${skippedMissingCount} missing site-window checks avoided).`
+          : "Per-site gap-fill not needed; group telemetry covered all discovered sites.",
+    });
+  } else if (combinedSiteList.length > 0 && !globalSignal.aborted) {
     const perSiteThrottle = createApiThrottle(4);
 
     // Single token refresh before the entire per-site phase.
@@ -2195,6 +2289,12 @@ export async function getTeslaPowerhubGroupProductionMetrics(
       let perSiteEmpty = 0;
       let perSiteErr = 0;
       let lastPerSiteError = "";
+
+      perSiteGapFill.windows[window.key] = {
+        ...createPerSiteGapFillWindowDebug(),
+        missingSiteCount: missingSites.length,
+        queriedSiteCount: missingSites.length,
+      };
 
       emitProgress({
         currentStep: 7,
@@ -2253,6 +2353,13 @@ export async function getTeslaPowerhubGroupProductionMetrics(
         }
       });
 
+      perSiteGapFill.windows[window.key] = {
+        ...perSiteGapFill.windows[window.key],
+        ok: perSiteOk,
+        empty: perSiteEmpty,
+        errors: perSiteErr,
+        firstError: lastPerSiteError || null,
+      };
       totalsByWindow.set(window.key, existingTotals);
       if (perSiteOk > 0) telemetryErrorsByWindow[window.key] = null;
 
@@ -2325,16 +2432,22 @@ export async function getTeslaPowerhubGroupProductionMetrics(
   }
   // ---- End STE ID fetch --------------------------------------------------
 
-  const successfulWindowCount = windows.filter(
-    window => (totalsByWindow.get(window.key)?.size ?? 0) > 0
-  ).length;
+  const successfulWindowCount = windows.filter(window => {
+    const totals = totalsByWindow.get(window.key);
+    if (!totals) return false;
+    return Array.from(totals.keys()).some(siteId => siteId !== groupId);
+  }).length;
   if (successfulWindowCount === 0 && !globalSignal.aborted) {
     const allErrors = Object.entries(telemetryErrorsByWindow)
       .filter(([, error]) => error)
       .map(([key, error]) => `${key}: ${error}`)
       .join(" | ");
+    const groupOnlyHint =
+      perSiteGapFillMode === "group-only"
+        ? " Standard scan did not run individual site fallback; use deep per-site fallback only when a full slow sweep is acceptable."
+        : "";
     throw new Error(
-      `Unable to fetch telemetry for group ${groupId}. Sites from inventory: ${siteResult.sites.length}, from telemetry: ${combinedSiteList.length - siteResult.sites.length}, total: ${combinedSiteList.length}. ${allErrors || "No telemetry data returned for any window."}`.trim()
+      `Unable to fetch per-site telemetry for group ${groupId}. Sites from inventory: ${siteResult.sites.length}, from telemetry: ${combinedSiteList.length - siteResult.sites.length}, total: ${combinedSiteList.length}. ${allErrors || "No per-site telemetry data returned for any window."}${groupOnlyHint}`.trim()
     );
   }
 
@@ -2356,10 +2469,18 @@ export async function getTeslaPowerhubGroupProductionMetrics(
   // Filter out the group UUID itself — it is NOT an individual site.
   // Group-level endpoints may insert aggregated data keyed by the group ID;
   // it must never appear as an output row.
+  const hasTelemetryForSite = (siteId: string): boolean =>
+    windows.some(window => totalsByWindow.get(window.key)?.has(siteId));
+
   const rows: TeslaPowerhubSiteProductionMetrics[] = Array.from(
     siteMap.values()
   )
-    .filter(site => site.siteId !== groupId)
+    .filter(
+      site =>
+        site.siteId !== groupId &&
+        (perSiteGapFillMode !== "group-only" ||
+          hasTelemetryForSite(site.siteId))
+    )
     .map(site => {
       const dailyRaw =
         totalsByWindow.get("daily")?.get(site.siteId)?.totalKwh ?? 0;
@@ -2437,6 +2558,7 @@ export async function getTeslaPowerhubGroupProductionMetrics(
             lifetime: null,
           },
       telemetryErrorsByWindow,
+      perSiteGapFill,
       windows: {
         daily: {
           startDatetime:
@@ -2523,8 +2645,7 @@ function dedupeSiteDescriptors(
       sitesById.set(site.siteId, {
         siteId: site.siteId,
         siteName: site.siteName ?? existing?.siteName ?? null,
-        siteExternalId:
-          site.siteExternalId ?? existing?.siteExternalId ?? null,
+        siteExternalId: site.siteExternalId ?? existing?.siteExternalId ?? null,
       });
     }
   }
@@ -2639,11 +2760,15 @@ async function listTeslaPowerhubSitesWithToken(
     };
   }
 
-  const siteDiscovery = await fetchAccessibleSites(context, token.access_token, {
-    endpointUrl,
-    signal: globalSignal,
-    requestTimeoutMs: DISCOVERY_REQUEST_TIMEOUT_MS,
-  });
+  const siteDiscovery = await fetchAccessibleSites(
+    context,
+    token.access_token,
+    {
+      endpointUrl,
+      signal: globalSignal,
+      requestTimeoutMs: DISCOVERY_REQUEST_TIMEOUT_MS,
+    }
+  );
 
   throwIfSignalAborted(globalSignal);
   return {
@@ -3157,6 +3282,7 @@ export async function getTeslaPowerhubProductionMetrics(
     globalTimeoutMs?: number;
     fetchExternalIds?: boolean;
     includeDebugPreviews?: boolean;
+    perSiteGapFillMode?: TeslaPowerhubPerSiteGapFillMode;
   }
 ): Promise<TeslaPowerhubProductionMetricsResult> {
   const groupId = toNonEmptyString(options.groupId);

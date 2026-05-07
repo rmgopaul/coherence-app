@@ -168,8 +168,10 @@ async function loadGroupSites(
       groupId: connection.groupId,
       endpointUrl: connection.endpointUrl,
       signal: connection.signal,
+      globalTimeoutMs: 5 * 60 * 1000,
       fetchExternalIds: false,
       includeDebugPreviews: false,
+      perSiteGapFillMode: "group-only",
     }
   )
     .then(result => result.sites)

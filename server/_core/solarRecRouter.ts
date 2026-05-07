@@ -5069,6 +5069,7 @@ const teslaPowerhubRouter = t.router({
         groupId: z.string().min(1).optional(),
         endpointUrl: z.string().optional(),
         signal: z.string().optional(),
+        scanMode: z.enum(["standard", "deep"]).optional(),
       })
     )
     .mutation(async ({ ctx, input }) => {
@@ -5087,6 +5088,7 @@ const teslaPowerhubRouter = t.router({
         groupId: groupId || null,
         endpointUrl: input.endpointUrl?.trim() || team.endpointUrl,
         signal: input.signal?.trim() || team.signal,
+        scanMode: input.scanMode ?? "standard",
       });
     }),
 
