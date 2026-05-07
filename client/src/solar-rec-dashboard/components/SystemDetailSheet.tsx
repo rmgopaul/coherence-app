@@ -2,10 +2,9 @@
  * System Detail Sheet.
  *
  * Extracted from `SolarRecDashboard.tsx` in Phase 11. Pure reader
- * component: receives the selected key + the parent's systems
- * array and renders a right-side sheet with identifiers, REC
- * contract, status, system details, and a server-driven "Recent
- * Meter Reads" table at the bottom.
+ * component: receives the selected key and renders a right-side
+ * sheet with identifiers, REC contract, status, system details,
+ * and a server-driven "Recent Meter Reads" table at the bottom.
  *
  * The `selectedSystemKey` state stays in the parent because
  * ANY tab can open the sheet — the parent still owns
@@ -22,9 +21,16 @@
  * `datasets.convertedReads.rows` in the dashboard tree (the
  * remaining tab-priority hydration of `convertedReads` will be
  * dropped in a follow-up PR once this lands).
+ *
+ * Phase 2 PR-F-4-a (2026-05-06) — the Sheet no longer receives
+ * the parent's legacy `SystemRecord[]` snapshot. It fetches the
+ * selected row by primary key from `solarRecDashboardSystemFacts`
+ * via `getSystemFactsBySystemKeys`, so opening the sheet does not
+ * re-enable the 26 MB `getSystemSnapshot` response.
  */
 
 import { useMemo } from "react";
+import type { inferRouterOutputs } from "@trpc/server";
 import { Badge } from "@/components/ui/badge";
 import {
   Sheet,
@@ -46,7 +52,77 @@ import {
   formatNumber,
 } from "@/solar-rec-dashboard/lib/helpers";
 import { solarRecTrpc } from "@/solar-rec/solarRecTrpc";
-import type { SystemRecord } from "@/solar-rec-dashboard/state/types";
+import type { SolarRecAppRouter } from "@server/_core/solarRecRouter";
+
+type RouterOutputs = inferRouterOutputs<SolarRecAppRouter>;
+type SystemFactsByKeysOutput =
+  RouterOutputs["solarRecDashboard"]["getSystemFactsBySystemKeys"];
+type SystemFactRow = SystemFactsByKeysOutput["rows"][number];
+
+interface DetailSystem {
+  systemId: string | null;
+  stateApplicationRefId: string | null;
+  trackingSystemRefId: string | null;
+  systemName: string;
+  recPrice: number | null;
+  contractedRecs: number | null;
+  deliveredRecs: number | null;
+  contractedValue: number | null;
+  deliveredValue: number | null;
+  valueGap: number | null;
+  latestReportingDate: Date | null;
+  isReporting: boolean;
+  ownershipStatus: string;
+  contractStatusText: string;
+  installedKwAc: number | null;
+  installedKwDc: number | null;
+  monitoringPlatform: string;
+  monitoringType: string;
+  installerName: string;
+}
+
+function toNullableNumber(value: string | number | null): number | null {
+  if (value === null) return null;
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function toNullableDate(value: Date | string | null): Date | null {
+  if (value === null) return null;
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value;
+  }
+  const ymd = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  const parsed = ymd
+    ? new Date(Number(ymd[1]), Number(ymd[2]) - 1, Number(ymd[3]))
+    : new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function normalizeSystemFact(row: SystemFactRow): DetailSystem {
+  return {
+    systemId: row.systemId,
+    stateApplicationRefId: row.stateApplicationRefId,
+    trackingSystemRefId: row.trackingSystemRefId,
+    systemName: row.systemName,
+    recPrice: toNullableNumber(row.recPrice),
+    contractedRecs: toNullableNumber(row.contractedRecs),
+    deliveredRecs: toNullableNumber(row.deliveredRecs),
+    contractedValue: toNullableNumber(row.contractedValue),
+    deliveredValue: toNullableNumber(row.deliveredValue),
+    valueGap: toNullableNumber(row.valueGap),
+    latestReportingDate: toNullableDate(row.latestReportingDate),
+    isReporting: row.isReporting,
+    ownershipStatus: row.ownershipStatus,
+    contractStatusText: row.contractStatusText,
+    installedKwAc: toNullableNumber(row.installedKwAc),
+    installedKwDc: toNullableNumber(row.installedKwDc),
+    monitoringPlatform: row.monitoringPlatform,
+    monitoringType: row.monitoringType,
+    installerName: row.installerName,
+  };
+}
 
 export interface SystemDetailSheetProps {
   /**
@@ -60,20 +136,47 @@ export interface SystemDetailSheetProps {
    * The parent's state owner calls `setSelectedSystemKey(null)`.
    */
   onClose: () => void;
-  /** All parent-known systems. Sheet looks up the selected one by key. */
-  systems: SystemRecord[];
 }
 
 export default function SystemDetailSheet(props: SystemDetailSheetProps) {
-  const { selectedSystemKey, onClose, systems } = props;
+  const { selectedSystemKey, onClose } = props;
 
-  const sys = useMemo(
-    () =>
-      selectedSystemKey === null
-        ? null
-        : systems.find((s) => s.key === selectedSystemKey) ?? null,
-    [selectedSystemKey, systems]
-  );
+  const systemFactsQuery =
+    solarRecTrpc.solarRecDashboard.getSystemFactsBySystemKeys.useQuery(
+      {
+        systemKeys: selectedSystemKey === null ? [] : [selectedSystemKey],
+      },
+      {
+        enabled: selectedSystemKey !== null,
+        staleTime: 5 * 60_000,
+        refetchOnWindowFocus: false,
+      }
+    );
+
+  const sys = useMemo(() => {
+    if (selectedSystemKey === null) return null;
+    const row =
+      systemFactsQuery.data?.rows.find(
+        (candidate) => candidate.systemKey === selectedSystemKey
+      ) ?? null;
+    return row === null ? null : normalizeSystemFact(row);
+  }, [selectedSystemKey, systemFactsQuery.data]);
+
+  const isSystemDetailLoading =
+    selectedSystemKey !== null &&
+    (systemFactsQuery.isLoading ||
+      (systemFactsQuery.isFetching && systemFactsQuery.data === undefined));
+
+  const isSystemDetailError =
+    selectedSystemKey !== null && systemFactsQuery.isError;
+
+  const isSystemDetailMissing =
+    selectedSystemKey !== null &&
+    !isSystemDetailLoading &&
+    !isSystemDetailError &&
+    sys === null;
+
+  const canLoadRecentReads = sys !== null;
 
   const recentReadsQuery =
     solarRecTrpc.solarRecDashboard.getSystemRecentMeterReads.useQuery(
@@ -83,7 +186,7 @@ export default function SystemDetailSheet(props: SystemDetailSheetProps) {
         limit: 20,
       },
       {
-        enabled: sys !== null,
+        enabled: canLoadRecentReads,
         // Most recent reads can shift by the day on populated scopes;
         // 5-min stale window keeps re-opens snappy without hiding new
         // data. The underlying SELECT is sub-ms via the
@@ -107,10 +210,23 @@ export default function SystemDetailSheet(props: SystemDetailSheetProps) {
           <SheetDescription>Full details for the selected system.</SheetDescription>
         </SheetHeader>
         {(() => {
-          if (!sys)
+          if (isSystemDetailLoading)
+            return (
+              <p className="text-sm text-slate-500 mt-4">
+                Loading system details...
+              </p>
+            );
+          if (isSystemDetailError)
+            return (
+              <p className="text-sm text-rose-600 mt-4">
+                Unable to load system details.
+              </p>
+            );
+          if (isSystemDetailMissing)
             return (
               <p className="text-sm text-slate-500 mt-4">System not found.</p>
             );
+          if (!sys) return null;
 
           return (
             <div className="space-y-4 mt-4">

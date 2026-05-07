@@ -44,6 +44,12 @@ const COMPARISONS_TAB_FILE = resolve(
   "components",
   "ComparisonsTab.tsx"
 );
+const SYSTEM_DETAIL_SHEET_FILE = resolve(
+  __dirname,
+  "..",
+  "components",
+  "SystemDetailSheet.tsx"
+);
 
 const SOURCE = readFileSync(DASHBOARD_FILE, "utf8");
 const DELIVERY_TRACKER_TAB_SOURCE = readFileSync(
@@ -52,6 +58,10 @@ const DELIVERY_TRACKER_TAB_SOURCE = readFileSync(
 );
 const OWNERSHIP_TAB_SOURCE = readFileSync(OWNERSHIP_TAB_FILE, "utf8");
 const COMPARISONS_TAB_SOURCE = readFileSync(COMPARISONS_TAB_FILE, "utf8");
+const SYSTEM_DETAIL_SHEET_SOURCE = readFileSync(
+  SYSTEM_DETAIL_SHEET_FILE,
+  "utf8"
+);
 
 /** Strip block + line comments so prose docstrings don't confuse the regex. */
 function codeOnly(): string {
@@ -195,7 +205,7 @@ describe("Solar REC dashboard mount: heavy-query gates", () => {
     expect(block).toMatch(/isAlertsTabActive/);
     expect(block).toMatch(/isFinancialsTabActive/);
     expect(block).toMatch(/isForecastTabActive/);
-    expect(block).toMatch(/selectedSystemKey/);
+    expect(block).not.toMatch(/selectedSystemKey/);
     expect(block).not.toMatch(/isComparisonsTabActive/);
     // Generic interaction gating is NOT used for the snapshot.
     expect(code).not.toMatch(
@@ -823,6 +833,23 @@ describe("Solar REC dashboard mount: heavy-query gates", () => {
     expect(COMPARISONS_TAB_SOURCE).not.toMatch(/SystemRecord/);
     expect(code).toMatch(/<ComparisonsTabLazy[\s\S]{0,120}isActive=/);
     expect(code).not.toMatch(/<ComparisonsTabLazy[\s\S]{0,160}systems=/);
+  });
+
+  it("SystemDetailSheet reads one system fact by key instead of parent SystemRecord rows", () => {
+    expect(SYSTEM_DETAIL_SHEET_SOURCE).toMatch(
+      /getSystemFactsBySystemKeys\.useQuery/
+    );
+    expect(SYSTEM_DETAIL_SHEET_SOURCE).toMatch(
+      /systemKeys:\s*selectedSystemKey === null \? \[\] : \[selectedSystemKey\]/
+    );
+    expect(SYSTEM_DETAIL_SHEET_SOURCE).toMatch(
+      /getSystemRecentMeterReads\.useQuery/
+    );
+    expect(SYSTEM_DETAIL_SHEET_SOURCE).not.toMatch(
+      /import type \{ SystemRecord \}/
+    );
+    expect(code).toMatch(/<SystemDetailSheetLazy[\s\S]{0,120}selectedSystemKey=/);
+    expect(code).not.toMatch(/<SystemDetailSheetLazy[\s\S]{0,180}systems=/);
   });
 });
 

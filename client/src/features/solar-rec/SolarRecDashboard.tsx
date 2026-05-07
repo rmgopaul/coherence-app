@@ -3242,14 +3242,14 @@ export default function SolarRecDashboard() {
   // would re-enable the 26 MB fetch even if they never visited an
   // Alerts/Financials/Forecast tab. The predicate below
   // is the narrow contract — only the tabs that walk full system
-  // records, plus the SystemDetailSheet drill-in (which needs a
-  // selected system to render at all). Comparisons reads the
-  // paginated `getDashboardSystemsPage` fact table directly.
+  // records. Comparisons reads the paginated
+  // `getDashboardSystemsPage` fact table directly, and
+  // SystemDetailSheet reads one selected row via
+  // `getSystemFactsBySystemKeys`.
   const isSystemSnapshotNeeded =
     isAlertsTabActive ||
     isFinancialsTabActive ||
-    isForecastTabActive ||
-    selectedSystemKey !== null;
+    isForecastTabActive;
   const serverSnapshot = useSystemSnapshot({
     enabled: isSystemSnapshotNeeded,
   });
@@ -6972,12 +6972,12 @@ const aiDataContext = useMemo(() => {
             infrequently-used side panel, so there's no reason to
             eager-load ~12 KB of sheet/table markup on first page
             paint. Parent retains the selectedSystemKey state
-            because any tab can open the sheet. */}
+            because any tab can open the sheet; the sheet fetches
+            the selected fact row by key. */}
         <Suspense fallback={null}>
           <SystemDetailSheetLazy
             selectedSystemKey={selectedSystemKey}
             onClose={() => setSelectedSystemKey(null)}
-            systems={systems}
           />
         </Suspense>
       </div>
