@@ -5277,20 +5277,6 @@ export const solarRecDashboardRouter = t.router({
     }),
 
   /**
-   * Get the current input version hash for the system snapshot.
-   * Clients use this to check freshness without fetching the full payload.
-   */
-  getSystemSnapshotHash: dashboardProcedure("solar-rec-dashboard", "read")
-    .input(z.object({ scopeId: z.string().min(1) }))
-    .query(async ({ input }) => {
-      const { computeSystemSnapshotHash } = await import(
-        "../services/solar/buildSystemSnapshot"
-      );
-      const hash = await computeSystemSnapshotHash(input.scopeId);
-      return { inputVersionHash: hash };
-    }),
-
-  /**
    * Get the active dataset versions for a scope.
    * Used by the client to show which datasets are loaded and their batch IDs.
    */
