@@ -2546,3 +2546,138 @@ export type SolarRecDashboardSystemFact =
   typeof solarRecDashboardSystemFacts.$inferSelect;
 export type InsertSolarRecDashboardSystemFact =
   typeof solarRecDashboardSystemFacts.$inferInsert;
+
+// ────────────────────────────────────────────────────────────────────
+// Solar REC dashboard fact table — performance-ratio per matched
+// converted-read (Phase 2 PR-G-1, the fifth derived fact table).
+//
+// Replaces the per-row `PerformanceRatioRow[]` payload that
+// `getDashboardPerformanceRatio` materializes today on every cache
+// miss. The legacy proc loads the system snapshot + 6 srDs* tables
+// into one process and streams convertedReads through the
+// aggregator on the user's request hot path. PR-G-2 moves that
+// compute into the dashboard build runner so a tab read becomes a
+// paginated query against pre-built rows; PR-G-3 adds the read
+// procs; PR-G-4 migrates PerformanceRatioTab.
+//
+// Architectural shape mirrors PR-D-1 / PR-E-1 / PR-F-1:
+//   - PK `(scopeId, key)` where `key = "${convertedReadKey}-${systemKey}"`
+//     — the natural row identity from `PerformanceRatioRow.key`
+//     (one row per matched system × converted-read pair).
+//   - Build versioning via `buildId` + `(scopeId, buildId)` index
+//     for the orphan-sweep query.
+//   - UPSERT-then-orphan-sweep: the runner step writes rows tagged
+//     with the new buildId, then DELETE WHERE buildId != current.
+//
+// Field layout: 1:1 mapping to `PerformanceRatioRow` (24 fields).
+// Numeric fields use `decimal()` for precision-sensitive values
+// (lifetime meter reads can exceed 2^53; performance ratio stored
+// to 4 decimals). Date fields use `date` (4-byte). MatchType
+// stored as varchar(64) — flexible vs. mysqlEnum, matches the
+// existing convention on the sibling fact tables.
+// ────────────────────────────────────────────────────────────────────
+
+export const solarRecDashboardPerformanceRatioFacts = mysqlTable(
+  "solarRecDashboardPerformanceRatioFacts",
+  {
+    scopeId: varchar("scopeId", { length: 64 }).notNull(),
+    // PerformanceRatioRow.key — `${convertedReadKey}-${candidateKey}`
+    // composite. Capping varchar at 255 fits the worst-case combination
+    // observed in practice (`converted-N-{systemKey}` where systemKey is
+    // a system identifier ≤ 128 chars).
+    key: varchar("key", { length: 255 }).notNull(),
+
+    // PerformanceRatioRow.convertedReadKey — `converted-${globalIndex}`
+    // identifier from the streaming aggregator. Stable per converted-
+    // read row, repeated across systems when one read matches multiple.
+    convertedReadKey: varchar("convertedReadKey", { length: 64 }).notNull(),
+
+    // 22 PerformanceRatioRow display fields, mirrors the type 1:1.
+    matchType: varchar("matchType", { length: 64 }).notNull(),
+    monitoring: varchar("monitoring", { length: 128 }).notNull(),
+    monitoringSystemId: varchar("monitoringSystemId", {
+      length: 255,
+    }).notNull(),
+    monitoringSystemName: varchar("monitoringSystemName", {
+      length: 255,
+    }).notNull(),
+    readDate: date("readDate"),
+    readDateRaw: varchar("readDateRaw", { length: 64 }).notNull(),
+    // Lifetime meter reads can be very large (kWh accumulators on
+    // long-lived systems exceed 10^9 Wh). decimal(20, 4) keeps the
+    // value precise without depending on JS double quirks.
+    lifetimeReadWh: decimal("lifetimeReadWh", {
+      precision: 20,
+      scale: 4,
+    }).notNull(),
+    trackingSystemRefId: varchar("trackingSystemRefId", {
+      length: 128,
+    }).notNull(),
+    systemId: varchar("systemId", { length: 128 }),
+    stateApplicationRefId: varchar("stateApplicationRefId", {
+      length: 128,
+    }),
+    systemName: text("systemName").notNull(),
+    installerName: varchar("installerName", { length: 255 }).notNull(),
+    monitoringPlatform: varchar("monitoringPlatform", {
+      length: 255,
+    }).notNull(),
+    portalAcSizeKw: decimal("portalAcSizeKw", { precision: 18, scale: 4 }),
+    abpAcSizeKw: decimal("abpAcSizeKw", { precision: 18, scale: 4 }),
+    part2VerificationDate: date("part2VerificationDate"),
+    baselineReadWh: decimal("baselineReadWh", { precision: 20, scale: 4 }),
+    baselineDate: date("baselineDate"),
+    baselineSource: varchar("baselineSource", { length: 255 }),
+    productionDeltaWh: decimal("productionDeltaWh", {
+      precision: 20,
+      scale: 4,
+    }),
+    expectedProductionWh: decimal("expectedProductionWh", {
+      precision: 20,
+      scale: 4,
+    }),
+    // Performance ratio is a percentage; allow 4 decimals of
+    // precision and 6 digits of integer headroom (max practical
+    // value sits well below 1000% but the column is forgiving).
+    performanceRatioPercent: decimal("performanceRatioPercent", {
+      precision: 10,
+      scale: 4,
+    }),
+    contractValue: decimal("contractValue", {
+      precision: 18,
+      scale: 4,
+    }).notNull(),
+
+    // Build versioning + observability. Same shape as PR-D-1 / PR-E-1.
+    buildId: varchar("buildId", { length: 64 }).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    pk: primaryKey({
+      columns: [table.scopeId, table.key],
+      name: "solar_rec_dashboard_performance_ratio_facts_pk",
+    }),
+    // Build sweep covers the orphan-deletion query
+    // (WHERE scopeId=? AND buildId != currentBuildId).
+    scopeBuildIdx: index(
+      "solar_rec_dashboard_performance_ratio_facts_scope_build_idx"
+    ).on(table.scopeId, table.buildId),
+    // Match-type filter — PerformanceRatioTab's primary filter axis.
+    // Index covers `WHERE scopeId=? AND matchType=? ORDER BY key
+    // LIMIT N` which is PR-G-3's read pattern.
+    scopeMatchTypeIdx: index(
+      "solar_rec_dashboard_performance_ratio_facts_scope_match_type_idx"
+    ).on(table.scopeId, table.matchType),
+    // Monitoring filter — PerformanceRatioTab's secondary filter
+    // axis (per-portal slice).
+    scopeMonitoringIdx: index(
+      "solar_rec_dashboard_performance_ratio_facts_scope_monitoring_idx"
+    ).on(table.scopeId, table.monitoring),
+  })
+);
+
+export type SolarRecDashboardPerformanceRatioFact =
+  typeof solarRecDashboardPerformanceRatioFacts.$inferSelect;
+export type InsertSolarRecDashboardPerformanceRatioFact =
+  typeof solarRecDashboardPerformanceRatioFacts.$inferInsert;
