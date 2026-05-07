@@ -4,8 +4,31 @@ import {
   serializeSnapshotLogEntries,
   extractIdSetFromPayload,
   SNAPSHOT_LOG_RESTORE_RUNNER_VERSION,
+  SNAPSHOT_LOG_RESTORE_KEYS,
   type SnapshotLogRestoreDeps,
 } from "./snapshotLogRestore";
+
+describe("SNAPSHOT_LOG_RESTORE_KEYS prefix (regression rail)", () => {
+  // Cloud writes go through `saveDataset`, which prepends `dataset:`
+  // to the caller key (see solarRecDashboardRouter.ts `saveDataset`
+  // proc). The actual storage rows therefore live under
+  // `dataset:snapshot_logs_v1` (and `dataset:snapshot_logs_v1_chunk_*`).
+  // PR #353/#354/#356 shipped the recovery proc without the
+  // `dataset:` prefix, making it a silent no-op. PR-A's guard and
+  // PR-B's restore mutation both inherited the bug because they
+  // built on top of the same prefix. This rail pins the corrected
+  // values so a future "simplification" cannot reintroduce the
+  // regression.
+  it("includes the dataset: prefix on the main key", () => {
+    expect(SNAPSHOT_LOG_RESTORE_KEYS.mainKey).toBe("dataset:snapshot_logs_v1");
+  });
+
+  it("includes the dataset: prefix on the chunk prefix", () => {
+    expect(SNAPSHOT_LOG_RESTORE_KEYS.chunkPrefix).toBe(
+      "dataset:snapshot_logs_v1_chunk_"
+    );
+  });
+});
 
 function entry(id: string, createdAt: string) {
   return { id, createdAt, payload: { foo: id } };
@@ -78,7 +101,7 @@ describe("runSnapshotLogRestore", () => {
         return main;
       }),
       readOrphanRows: vi.fn(async () => [
-        { storageKey: "snapshot_logs_v1_chunk_0001", payload: orphanA },
+        { storageKey: "dataset:snapshot_logs_v1_chunk_0001", payload: orphanA },
       ]),
       writeMainPayload: vi.fn(async (payload: string) => {
         callOrder.push("writeMainPayload");
@@ -87,7 +110,7 @@ describe("runSnapshotLogRestore", () => {
       }),
       deleteStorageKeys: vi.fn(async (keys: string[]) => {
         callOrder.push("deleteStorageKeys");
-        expect(keys).toEqual(["snapshot_logs_v1_chunk_0001"]);
+        expect(keys).toEqual(["dataset:snapshot_logs_v1_chunk_0001"]);
         return keys.length;
       }),
     });
@@ -121,7 +144,7 @@ describe("runSnapshotLogRestore", () => {
       }),
       readOrphanRows: vi.fn(async () => {
         callOrder.push("readOrphanRows");
-        return [{ storageKey: "snapshot_logs_v1_chunk_0001", payload: orphanA }];
+        return [{ storageKey: "dataset:snapshot_logs_v1_chunk_0001", payload: orphanA }];
       }),
       writeMainPayload: vi.fn(async (payload: string) => {
         callOrder.push("writeMainPayload");
@@ -166,7 +189,7 @@ describe("runSnapshotLogRestore", () => {
         return JSON.stringify([entry("b", "2026-04-01T00:00:00Z")]);
       }),
       readOrphanRows: vi.fn(async () => [
-        { storageKey: "snapshot_logs_v1_chunk_0001", payload: orphanA },
+        { storageKey: "dataset:snapshot_logs_v1_chunk_0001", payload: orphanA },
       ]),
       writeMainPayload: vi.fn(async () => {
         callOrder.push("writeMainPayload");
@@ -188,7 +211,7 @@ describe("runSnapshotLogRestore", () => {
     const deps: SnapshotLogRestoreDeps = {
       readMainPayload: vi.fn(async () => null),
       readOrphanRows: vi.fn(async () => [
-        { storageKey: "snapshot_logs_v1_chunk_0001", payload: orphanA },
+        { storageKey: "dataset:snapshot_logs_v1_chunk_0001", payload: orphanA },
       ]),
       writeMainPayload: vi.fn(async () => {
         callOrder.push("writeMainPayload");
@@ -218,7 +241,7 @@ describe("runSnapshotLogRestore", () => {
       }),
       readOrphanRows: vi.fn(async () => [
         // Real orphan
-        { storageKey: "snapshot_logs_v1_chunk_0001", payload: orphanA },
+        { storageKey: "dataset:snapshot_logs_v1_chunk_0001", payload: orphanA },
         // Defensive guard: a row that listSolarRecDashboardStorageByPrefix
         // returned but whose storageKey does NOT match the canonical
         // prefix shape (shouldn't happen in practice but the helper
@@ -236,7 +259,7 @@ describe("runSnapshotLogRestore", () => {
     };
     await runSnapshotLogRestore(deps);
     expect(deletedKeys).toHaveLength(1);
-    expect(deletedKeys[0]).toEqual(["snapshot_logs_v1_chunk_0001"]);
+    expect(deletedKeys[0]).toEqual(["dataset:snapshot_logs_v1_chunk_0001"]);
   });
 
   it("returns _runnerVersion on every outcome", async () => {

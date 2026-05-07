@@ -36,8 +36,18 @@ import {
 export const SNAPSHOT_LOG_RESTORE_RUNNER_VERSION =
   "snapshot-logs-restore-v1";
 
-const SNAPSHOT_LOG_KEY = "snapshot_logs_v1";
-const SNAPSHOT_LOG_CHUNK_PREFIX = "snapshot_logs_v1_chunk_";
+// IMPORTANT: cloud writes go through `saveDataset` which prepends
+// `dataset:` to the caller-supplied key (see solarRecDashboardRouter.ts
+// `saveDataset` proc — `dbStorageKey = \`dataset:${input.key}\``).
+// The actual rows in `solarRecDashboardStorage` therefore live under
+// `dataset:snapshot_logs_v1` (and `dataset:snapshot_logs_v1_chunk_*`
+// for chunk-pointer overflow). The original recovery prefix
+// (`snapshot_logs_v1` with no leading `dataset:`) never matched
+// anything on disk — it shipped that way in PR #353 and was carried
+// forward through PR-A/PR-B, so the recovery surface has been a
+// no-op since it landed. This constant fixes that.
+const SNAPSHOT_LOG_KEY = "dataset:snapshot_logs_v1";
+const SNAPSHOT_LOG_CHUNK_PREFIX = "dataset:snapshot_logs_v1_chunk_";
 
 export type SnapshotLogRestoreOutcome = {
   alreadyConsolidated: boolean;
