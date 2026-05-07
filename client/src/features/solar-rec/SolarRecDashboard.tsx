@@ -3348,31 +3348,93 @@ export default function SolarRecDashboard() {
   const summaryDataKind: "slim" | "heavy" | "loading" =
     summary?.kind ?? "loading";
 
-  const part2EligibleSystemsForSizeReporting = useMemo(() => {
-    const data = offlineMonitoringQuery.data;
-    if (!data) return [];
-    const eligiblePart2ApplicationIds = new Set<string>(
-      data.eligiblePart2ApplicationIds
+  // Phase 2 PR-F-4-f-2 (2026-05-06) — `part2EligibleSystemsForSize
+  // Reporting` now derives from a `useInfiniteQuery` walk of
+  // `getDashboardSystemsPage({isPart2Eligible: true})` instead of
+  // filtering the heavy `systems: SystemRecord[]` snapshot
+  // client-side. The fact table's `isPart2Eligible` column
+  // (PR-F-4-f-1) is populated by the build runner using the SAME
+  // 3 ID sets the offlineMonitoring aggregator computes from
+  // `srDsAbpReport`, so server-side filtering is byte-equivalent
+  // to the prior client-side filter — but it doesn't require
+  // hydrating the ~26 MB snapshot first.
+  //
+  // Same gating predicate as `useSystemSnapshot`
+  // (`isSystemSnapshotNeeded`). The heavy snapshot stays gated
+  // for the consumers that genuinely need it (Alerts, Comparisons,
+  // Financials, Forecast, SystemDetail drill-in) until those
+  // migrations land in PR-F-4-{a,c,e}; this slice retires only
+  // the OverviewTab's parent-level walk.
+  const part2EligibleSystemsPagesQuery =
+    solarRecTrpc.solarRecDashboard.getDashboardSystemsPage.useInfiniteQuery(
+      { limit: 500, isPart2Eligible: true },
+      {
+        staleTime: 60_000,
+        enabled: isSystemSnapshotNeeded,
+        getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
+        initialCursor: null,
+      }
     );
-    const eligiblePart2PortalSystemIds = new Set<string>(
-      data.eligiblePart2PortalSystemIds
-    );
-    const eligiblePart2TrackingIds = new Set<string>(
-      data.eligiblePart2TrackingIds
-    );
+  useEffect(() => {
+    if (
+      part2EligibleSystemsPagesQuery.hasNextPage &&
+      !part2EligibleSystemsPagesQuery.isFetchingNextPage
+    ) {
+      void part2EligibleSystemsPagesQuery.fetchNextPage();
+    }
+  }, [
+    part2EligibleSystemsPagesQuery.hasNextPage,
+    part2EligibleSystemsPagesQuery.isFetchingNextPage,
+    part2EligibleSystemsPagesQuery.fetchNextPage,
+  ]);
+  const isPart2EligibleSystemsPagesComplete =
+    part2EligibleSystemsPagesQuery.status === "success" &&
+    !part2EligibleSystemsPagesQuery.hasNextPage;
 
-    return systems
-      .filter((system) => {
-        const byPortalSystemId = system.systemId ? eligiblePart2PortalSystemIds.has(system.systemId) : false;
-        const byApplicationId = system.stateApplicationRefId
-          ? eligiblePart2ApplicationIds.has(system.stateApplicationRefId)
-          : false;
-        const byTrackingId = system.trackingSystemRefId
-          ? eligiblePart2TrackingIds.has(system.trackingSystemRefId)
-          : false;
-        return byPortalSystemId || byApplicationId || byTrackingId;
-      });
-  }, [offlineMonitoringQuery.data, systems]);
+  const part2EligibleSystemsForSizeReporting = useMemo<SystemRecord[]>(() => {
+    const pages = part2EligibleSystemsPagesQuery.data?.pages ?? [];
+    const result: SystemRecord[] = [];
+    for (const page of pages) {
+      for (const row of page.rows) {
+        result.push({
+          key: row.systemKey,
+          systemId: row.systemId,
+          stateApplicationRefId: row.stateApplicationRefId,
+          trackingSystemRefId: row.trackingSystemRefId,
+          systemName: row.systemName,
+          installedKwAc: parseDecimalString(row.installedKwAc),
+          installedKwDc: parseDecimalString(row.installedKwDc),
+          sizeBucket: row.sizeBucket as SizeBucket,
+          recPrice: parseDecimalString(row.recPrice),
+          totalContractAmount: parseDecimalString(row.totalContractAmount),
+          contractedRecs: parseDecimalString(row.contractedRecs),
+          deliveredRecs: parseDecimalString(row.deliveredRecs),
+          contractedValue: parseDecimalString(row.contractedValue),
+          deliveredValue: parseDecimalString(row.deliveredValue),
+          valueGap: parseDecimalString(row.valueGap),
+          latestReportingDate: row.latestReportingDate,
+          latestReportingKwh: parseDecimalString(row.latestReportingKwh),
+          isReporting: row.isReporting,
+          isTerminated: row.isTerminated,
+          isTransferred: row.isTransferred,
+          ownershipStatus: row.ownershipStatus as OwnershipStatus,
+          hasChangedOwnership: row.hasChangedOwnership,
+          changeOwnershipStatus:
+            (row.changeOwnershipStatus as ChangeOwnershipStatus | null) ?? null,
+          contractStatusText: row.contractStatusText,
+          contractType: row.contractType,
+          zillowStatus: row.zillowStatus,
+          zillowSoldDate: row.zillowSoldDate,
+          contractedDate: row.contractedDate,
+          monitoringType: row.monitoringType,
+          monitoringPlatform: row.monitoringPlatform,
+          installerName: row.installerName,
+          part2VerificationDate: row.part2VerificationDate,
+        });
+      }
+    }
+    return result;
+  }, [part2EligibleSystemsPagesQuery.data]);
 
   // overviewPart2Totals — moved to OverviewTab (Phase 12)
 
@@ -5026,6 +5088,20 @@ export default function SolarRecDashboard() {
         ready: false,
         reason:
           "Loading offline-monitoring per-system rows… try again in a moment.",
+      };
+    }
+    // Phase 2 PR-F-4-f-2 — `snapshotPart2ValueSummary` derives from
+    // `part2EligibleSystemsForSizeReporting`, which is now itself
+    // a `useInfiniteQuery` walk of `getDashboardSystemsPage(
+    // isPart2Eligible: true)`. Same end-of-stream gate as the
+    // monitoringDetails rail above; without it a snapshot fired
+    // right after a heavy tab activation would persist truncated
+    // contractedValue / deliveredValue totals.
+    if (!isPart2EligibleSystemsPagesComplete) {
+      return {
+        ready: false,
+        reason:
+          "Loading Part-2 eligible system rows… try again in a moment.",
       };
     }
     if (!serverSnapshot.systems) {

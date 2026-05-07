@@ -133,6 +133,38 @@ describe("Solar REC dashboard mount: heavy-query gates", () => {
     expect(code).toMatch(/!\s*isMonitoringDetailsPagesComplete/);
   });
 
+  it("getDashboardSystemsPage(isPart2Eligible) walk is gated on isSystemSnapshotNeeded (Phase 2 PR-F-4-f-2)", () => {
+    // PR-F-4-f-2 retired the OverviewTab's parent-level
+    // `part2EligibleSystemsForSizeReporting` walk over `systems`
+    // and replaced it with a `useInfiniteQuery` of
+    // `getDashboardSystemsPage({isPart2Eligible: true})`. The new
+    // query must stay gated on `isSystemSnapshotNeeded` — letting
+    // it slip past would re-introduce a paginated equivalent of
+    // the heavy snapshot fetch on the default Overview mount.
+    const block = extractUseQueryBlock(
+      code,
+      "getDashboardSystemsPage.useInfiniteQuery"
+    );
+    expect(block).not.toBeNull();
+    expect(block!).toMatch(/isPart2Eligible:\s*true/);
+    expect(block!).toMatch(/enabled:\s*isSystemSnapshotNeeded/);
+  });
+
+  it("snapshot readiness gates on the Part-2 eligible walk reaching end-of-stream (Phase 2 PR-F-4-f-2)", () => {
+    // The infinite query reports `success` after the first page;
+    // `snapshotPart2ValueSummary` reduces over the full
+    // `part2EligibleSystemsForSizeReporting` array to compute
+    // contractedValue / deliveredValue totals. Gate must
+    // additionally check `!hasNextPage` (encoded as
+    // `isPart2EligibleSystemsPagesComplete`) before the snapshot
+    // fires. Mirrors the monitoringDetails + changeOwnership
+    // readiness rails.
+    expect(code).toMatch(
+      /isPart2EligibleSystemsPagesComplete\s*=[\s\S]{0,200}status\s*===\s*"success"[\s\S]{0,200}!\s*[\s\S]{0,40}hasNextPage/
+    );
+    expect(code).toMatch(/!\s*isPart2EligibleSystemsPagesComplete/);
+  });
+
   it("Ownership Status does not trigger the legacy offline-monitoring heavy query", () => {
     const start = code.indexOf("const isOfflineMonitoringHeavyNeeded");
     expect(start).toBeGreaterThan(-1);
