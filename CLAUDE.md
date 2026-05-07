@@ -690,6 +690,25 @@ The tRPC procedure itself is now removed from
 `solarRecDashboardRouter`; the shared offline-monitoring aggregate
 builder remains in-process for fact builders only.
 
+**`getDashboardPerformanceRatio` retired (Phase 2 PR-G series,
+2026-05-07).** The legacy aggregator served `PerformanceRatioRow[]`
+on the user's request hot path — loaded the system snapshot + 6
+`srDs*` tables into memory, streamed convertedReads through the
+aggregator on every cache miss, and could hang for 14+ minutes on
+production-shape data (the production failure that motivated the
+G-series migration). The G-series shipped 5 sub-PRs:
+`solarRecDashboardPerformanceRatioFacts` table + DB helpers
+(PR-G-1, #471), runner step that populates it via the existing
+aggregator + writes a slim summary side cache (PR-G-2, #472),
+paginated `getDashboardPerformanceRatioPage` + cache-only
+`getDashboardPerformanceRatioSummary` read procs (PR-G-3, #473),
+`PerformanceRatioTab.tsx` migration onto the new procs (PR-G-4,
+#476), and finally PR-G-5 retiring the legacy proc body. The
+shared aggregator (`getOrBuildPerformanceRatio` in
+`server/services/solar/buildPerformanceRatioAggregates.ts`)
+remains in-process for the build runner step; only the tRPC
+surface is gone.
+
 **`getSystemSnapshot` retired from the allowlist (Phase 2 PR-F-4-h,
 2026-05-07).** The parent dashboard no longer imports
 `useSystemSnapshot` or hydrates the full pre-computed

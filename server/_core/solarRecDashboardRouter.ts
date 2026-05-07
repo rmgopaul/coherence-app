@@ -2954,37 +2954,21 @@ export const solarRecDashboardRouter = t.router({
     };
   }),
 
-  /**
-   * Phase 5d PR 1 (2026-04-29) — server-side aggregator for the
-   * Performance Ratio tab. Replaces the client `performanceRatioResult`
-   * useMemo that walked `datasets.convertedReads.rows` (the heaviest
-   * single dataset on populated scopes — root cause of the 2026-04-29
-   * Force-Load 502). Cache key bundles 7 active batch IDs:
-   * convertedReads + annualProductionEstimates + generationEntry +
-   * accountSolarGeneration + generatorDetails + abpReport +
-   * solarApplications. Sub-second recompute once invalidated.
-   *
-   * Wire payload caps at ~200 KB on populated scopes (one row per
-   * matched-system-converted-read pair, dedup'd by the system
-   * snapshot's part-2-eligibility filter). The client tab paginates
-   * its detail table client-side from the returned rows.
-   */
-  getDashboardPerformanceRatio: dashboardProcedure(
-    "solar-rec-dashboard",
-    "read"
-  ).query(async ({ ctx }) => {
-    const {
-      getOrBuildPerformanceRatio,
-      PERFORMANCE_RATIO_RUNNER_VERSION,
-    } = await import("../services/solar/buildPerformanceRatioAggregates");
-
-    const result = await getOrBuildPerformanceRatio(ctx.scopeId);
-
-    return {
-      ...result,
-      _runnerVersion: PERFORMANCE_RATIO_RUNNER_VERSION,
-    };
-  }),
+  // Phase 2 PR-G-5 (2026-05-07) — `getDashboardPerformanceRatio`
+  // tRPC proc retired. The legacy aggregator served the user's
+  // request hot path (loaded the system snapshot + 6 srDs* tables
+  // into memory, streamed convertedReads through the aggregator on
+  // every cache miss; could hang for 14+ min on production-shape
+  // data). PR-G-4 migrated `PerformanceRatioTab.tsx` onto the
+  // bounded `getDashboardPerformanceRatioPage` +
+  // `getDashboardPerformanceRatioSummary` pair below; this PR
+  // removes the proc body itself.
+  //
+  // The shared aggregator (`getOrBuildPerformanceRatio` in
+  // `server/services/solar/buildPerformanceRatioAggregates.ts`)
+  // remains in-process — `buildDashboardPerformanceRatioFacts`'s
+  // runner step calls it to produce fact rows. Only the tRPC
+  // surface is removed.
 
   /**
    * Phase 2 PR-G-3 (OOM rebuild) — paginated read for the

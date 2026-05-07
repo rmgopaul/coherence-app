@@ -97,6 +97,17 @@ export const DASHBOARD_REQUEST_HEAP_AFTER_WARN_BYTES_DEFAULT =
  *     PR-F-4-i removed the parent client call, moved counts to
  *     `getDashboardSummary`, and moved detail rows to bounded
  *     fact-page reads. The router proc was later removed entirely.
+ *   - `solarRecDashboard.getDashboardPerformanceRatio` — Phase 2
+ *     PR-G-4 (2026-05-07) migrated `PerformanceRatioTab.tsx` onto
+ *     the bounded `getDashboardPerformanceRatioPage` +
+ *     `getDashboardPerformanceRatioSummary` pair backed by the
+ *     `solarRecDashboardPerformanceRatioFacts` table that the
+ *     build runner populates. PR-G-5 (this PR) removed the proc
+ *     body itself. Pre-fix the legacy proc loaded the system
+ *     snapshot + 6 srDs* tables on every cache miss and could
+ *     hang for 14+ min on production-shape data. The shared
+ *     aggregator (`getOrBuildPerformanceRatio`) remains in-
+ *     process for the build runner step only.
  *
  * **The allowlist is now empty.** Phase 2 has retired every
  * known oversized response from the dashboard router. New procs
