@@ -3648,10 +3648,15 @@ export const solarRecDashboardRouter = t.router({
         source: recovery.source,
         entries: page.entries,
         nextCursorCreatedAt: page.nextCursorCreatedAt,
-        // `entries.length` is the canonical "how many unique
-        // entries did we recover" — clients should read it
-        // directly. `rawEntryCount` and `duplicateCount` are
-        // diagnostics for the recovery audit.
+        // Total deduped unique-id count across the full recovery
+        // (main + orphan chunks), independent of pagination. The
+        // cloud-sync write-side guard (Task 5.15 PR-A) reads this
+        // to refuse a write when local has strictly fewer entries.
+        // Calling with `limit: 1` still returns the correct total.
+        totalUniqueCount: recovery.entries.length,
+        // `entries.length` (paginated) is the count of returned
+        // entries on this page. `rawEntryCount` and
+        // `duplicateCount` are diagnostics for the recovery audit.
         rawEntryCount: recovery.rawEntryCount,
         duplicateCount: recovery.duplicateCount,
         newestCreatedAt: recovery.newestCreatedAt,

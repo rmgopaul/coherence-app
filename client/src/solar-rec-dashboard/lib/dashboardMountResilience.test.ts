@@ -704,6 +704,36 @@ describe("Solar REC dashboard mount: heavy-query gates", () => {
     expect(propsRegion).not.toMatch(/logEntries=\{\s*logEntries\s*\}/);
   });
 
+  it("Snapshot Log cloud-sync write-side shrink guard is wired (Task 5.15 PR-A)", () => {
+    // CLAUDE.md "Snapshot Log — transitional state" hard rule:
+    // localStorage is NOT canonical; a one-entry localStorage copy
+    // must never overwrite a larger server/cloud history. This rail
+    // pins the guard's call site so a future refactor can't silently
+    // drop the check (which would re-open the 2026-05 production
+    // failure mode).
+    expect(code).toMatch(
+      /import\s*\{[^}]*shouldSkipSnapshotLogSyncForUnsafeShrink[^}]*\}\s*from\s*"@\/solar-rec-dashboard\/lib\/snapshotLogSyncGuard"/
+    );
+    // The cloud-sync useEffect must call the guard BEFORE issuing
+    // any saveRemoteDataset write keyed on REMOTE_SNAPSHOT_LOGS_KEY.
+    // Locate the guard call and assert a fetch of getSnapshotLogs
+    // sits between it and the next saveRemoteDataset for the
+    // snapshot-logs key.
+    const guardIdx = code.indexOf("shouldSkipSnapshotLogSyncForUnsafeShrink({");
+    expect(guardIdx).toBeGreaterThan(-1);
+    const fetchIdx = code.lastIndexOf(
+      "solarRecTrpcUtils.solarRecDashboard.getSnapshotLogs.fetch",
+      guardIdx
+    );
+    expect(fetchIdx).toBeGreaterThan(-1);
+    expect(fetchIdx).toBeLessThan(guardIdx);
+    // The guard is consulted before the snapshot-logs-key writes
+    // farther down the effect — the FIRST saveRemoteDataset after
+    // the guard should be the one keyed on REMOTE_SNAPSHOT_LOGS_KEY.
+    const writeIdx = code.indexOf("REMOTE_SNAPSHOT_LOGS_KEY", guardIdx);
+    expect(writeIdx).toBeGreaterThan(guardIdx);
+  });
+
   it("deserializeDashboardLogs is per-item safe — one malformed entry can't poison the whole batch (Codex P2)", () => {
     // Pre-fix the per-entry processing was inside the OUTER
     // try/catch, so any throw from the per-entry .map (e.g.

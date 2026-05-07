@@ -158,6 +158,10 @@ import { base64ToBytes, bytesToBase64 } from "@/solar-rec-dashboard/lib/binaryEn
 // itself was already dead after Phases 5a–5c removed IDB.
 import { resolveHydrationKeys } from "@/solar-rec-dashboard/lib/hydrationKeys";
 import { isSolarRecDebugEnabled } from "@/solar-rec-dashboard/lib/debugFlag";
+import {
+  shouldSkipSnapshotLogSyncForUnsafeShrink,
+  SNAPSHOT_LOG_UNSAFE_SHRINK_NOTICE,
+} from "@/solar-rec-dashboard/lib/snapshotLogSyncGuard";
 // Phase 5e step 4 PR-D (2026-04-30): the hydrationErrors module is
 // no longer imported — its consumers (cloud-fallback hydration's
 // per-key error mapping) are gone.
@@ -4814,6 +4818,37 @@ export default function SolarRecDashboard() {
         const nextSignature = buildLogSyncSignature(logEntries);
         if (remoteLogsSignatureRef.current === nextSignature) return;
 
+        // Task 5.15 PR-A — write-side shrink guard. Refuses any
+        // cloud-sync write when local has strictly fewer entries
+        // than the cloud's deduped unique-id count. Protects
+        // against a fresh-browser one-entry localStorage copy
+        // silently overwriting the larger cloud history (the
+        // 2026-05 production failure mode). The fetch resolves
+        // against the same `getSnapshotLogs` proc the recovery
+        // hydration uses; `limit: 1` keeps the response small
+        // while `totalUniqueCount` reflects the full deduped set.
+        // On fetch error: skip without updating the signature so
+        // the next genuine local change retries — refusing to
+        // write unguarded is safer than risking a clobber.
+        try {
+          const cloudLogState =
+            await solarRecTrpcUtils.solarRecDashboard.getSnapshotLogs.fetch({
+              limit: 1,
+            });
+          if (
+            shouldSkipSnapshotLogSyncForUnsafeShrink({
+              localCount: logEntries.length,
+              serverUniqueIdCount: cloudLogState.totalUniqueCount,
+            })
+          ) {
+            setStorageNotice(SNAPSHOT_LOG_UNSAFE_SHRINK_NOTICE);
+            return;
+          }
+        } catch {
+          setStorageNotice("Could not verify snapshot log cloud state — sync paused.");
+          return;
+        }
+
         const previousChunkKeys = remoteLogsChunkKeysRef.current ?? [];
         // Phase 13a: same parallel-chunk pattern as saveRemotePayloadWithChunks
         // but kept inline here because it mixes in the REMOTE_LOG_SYNC_MAX_CHUNKS
@@ -4908,6 +4943,7 @@ export default function SolarRecDashboard() {
     logEntries,
     remoteDashboardStateQuery.status,
     remoteStateHydrated,
+    solarRecTrpcUtils,
   ]);
 
   // compliant source localStorage sync + URL.revokeObjectURL cleanup
