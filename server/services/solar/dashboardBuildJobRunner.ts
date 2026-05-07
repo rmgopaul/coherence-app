@@ -78,12 +78,25 @@ const HEARTBEAT_INTERVAL_MS = 60 * 1000; // 60 seconds (5× margin)
 /**
  * Per-step timeout. Each fact-builder gets at most this long to
  * complete before the runner gives up on it. Defends against a
- * runaway query that holds the claim forever. Bumped on the
- * generous side because cold-cache aggregator runs on a busy
- * scope can take 30s+; the heartbeat keeps the row alive past
- * the stale-claim window during legitimate long runs.
+ * runaway query that holds the claim forever. The heartbeat
+ * keeps the row alive past the stale-claim window during
+ * legitimate long runs.
+ *
+ * 2026-05-08 bumped from 4 min to 30 min — the
+ * `performanceRatioFacts` step streams through ~13M
+ * convertedReads + ~17M accountSolarGeneration + ~273k
+ * solarApplications + ~243k abpReport on prod-shape data; even
+ * with bounded per-page memory (#478, #479, #482) the wall-clock
+ * is dominated by per-page DB round-trips × per-page sync match
+ * work, which legitimately runs ~10-15 min on prod. The 4-min
+ * cap from the PR-B skeleton (when steps were expected to be
+ * fast aggregator calls) was killing legitimate streaming work
+ * with `aborted mid-stream` errors. 30 min gives wide headroom
+ * while still bounding worst-case runaway. The streaming
+ * accumulator design ensures memory stays bounded regardless of
+ * how long the step runs.
  */
-const PER_STEP_TIMEOUT_MS = 4 * 60 * 1000; // 4 minutes
+const PER_STEP_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 
 // ────────────────────────────────────────────────────────────────────
 // Step registry — the seam Phase 2 PR-C+ will plug into
