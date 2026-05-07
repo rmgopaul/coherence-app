@@ -2987,6 +2987,171 @@ export const solarRecDashboardRouter = t.router({
   }),
 
   /**
+   * Phase 2 PR-G-3 (OOM rebuild) — paginated read for the
+   * performance-ratio fact table written by the build runner
+   * (PR-G-2's `performanceRatioBuildStep`). The eventual
+   * REPLACEMENT for the per-row `PerformanceRatioRow[]` payload
+   * that `getDashboardPerformanceRatio` materializes today on
+   * every cache miss (~14-min hangs on production-shape
+   * convertedReads).
+   *
+   * Returns one page of fact rows ordered by `key` (ASC) — the
+   * `${convertedReadKey}-${systemKey}` composite that uniquely
+   * identifies one system × converted-read match. Caller
+   * paginates by passing the response's `nextCursor` back as the
+   * next request's `cursor` input. `nextCursor === null`
+   * signals end-of-stream. The input field is named `cursor`
+   * (not `cursorAfter`) so the proc plays cleanly with tRPC
+   * v11's `useInfiniteQuery`, which auto-injects the cursor into
+   * the `cursor` field by convention (matches
+   * `getDashboardChangeOwnershipPage` etc.).
+   *
+   * **Two filter axes — independent and combinable.**
+   *   - `matchType` — the PerformanceRatioTab's primary control,
+   *     a 3-value enum from `PerformanceRatioMatchType`. Backed
+   *     by the covering index `(scopeId, matchType)` PR-G-1
+   *     added.
+   *   - `monitoring` — the per-portal slice (Enphase / SolarEdge
+   *     / etc.). Backed by the covering index `(scopeId,
+   *     monitoring)` PR-G-1 added. Free-form string because the
+   *     set of platforms expands when new vendors are added; a
+   *     value the builder doesn't write resolves to an empty
+   *     page (consistent with "no rows match" UX).
+   *
+   * Combining both filters falls back to one of the two indexes
+   * plus a post-index filter on the other column. The DB helper
+   * (`getPerformanceRatioFactsPage`) handles the AND composition.
+   *
+   * Wire payload: bounded to 1000 rows × ~28 columns (~250-300
+   * KB at limit=1000); default limit=200 gives ~50-80 KB per
+   * page on real data, well under the 1 MB dashboard response
+   * budget.
+   *
+   * Empty-table behavior: until the PerformanceRatioTab migrates
+   * onto this proc, the table is EMPTY for any scope that
+   * hasn't had a build run via `startDashboardBuild`. The proc
+   * returns an empty page rather than synthesizing facts on
+   * demand — building is the explicit "rebuild" action the
+   * operator initiates.
+   */
+  getDashboardPerformanceRatioPage: dashboardProcedure(
+    "solar-rec-dashboard",
+    "read"
+  )
+    .input(
+      z.object({
+        cursor: z.string().min(1).max(255).nullable().optional(),
+        limit: z.number().int().min(1).max(1000).default(200),
+        // Match the 3-value PerformanceRatioMatchType union.
+        // Exact-match `WHERE matchType = ?`; an unknown value
+        // resolves to an empty page.
+        matchType: z
+          .enum([
+            "Monitoring + System ID + System Name",
+            "Monitoring + System ID",
+            "Monitoring + System Name",
+          ])
+          .nullable()
+          .optional(),
+        // Free-form per-portal slice (Enphase / SolarEdge / Solis
+        // / etc.). Trimmed + length-bounded to fit the schema's
+        // varchar(128) column.
+        monitoring: z.string().min(1).max(128).nullable().optional(),
+      })
+    )
+    .query(async ({ ctx, input }) => {
+      const { getPerformanceRatioFactsPage } = await import(
+        "../db/dashboardPerformanceRatioFacts"
+      );
+      const rows = await getPerformanceRatioFactsPage(ctx.scopeId, {
+        cursorAfter: input.cursor ?? null,
+        limit: input.limit,
+        matchType: input.matchType ?? null,
+        monitoring: input.monitoring ?? null,
+      });
+      const nextCursor =
+        rows.length === input.limit
+          ? rows[rows.length - 1]?.key ?? null
+          : null;
+      return {
+        _checkpoint: "performance-ratio-page-v1",
+        _runnerVersion: "phase-2-pr-g-3@1" as const,
+        rows,
+        nextCursor,
+        hasMore: nextCursor !== null,
+      };
+    }),
+
+  /**
+   * Phase 2 PR-G-3 (OOM rebuild) — slim cache-only summary read
+   * for the PerformanceRatioTab's headline tile values.
+   *
+   * Reads the side-cache row written by PR-G-2's
+   * `performanceRatioBuildStep` under
+   * `solarRecComputedArtifacts(scopeId, "performanceRatioSummary",
+   * "current")`. The row carries:
+   *   - `convertedReadCount` — total converted-read rows the
+   *     aggregator scanned (matched + unmatched + invalid).
+   *   - `matchedConvertedReads` / `unmatchedConvertedReads` /
+   *     `invalidConvertedReads` — per-bucket counts.
+   *   - `matchedSystemCount` — unique systems represented across
+   *     the matched fact rows.
+   *   - `buildId` + `aggregatorVersion` + `builtAt` —
+   *     observability stamps so a stale summary can be detected.
+   *
+   * NEVER triggers a row materialization. When the side cache
+   * is cold (no build has run yet for this scope), returns
+   * `{ available: false, _runnerVersion }` and the client
+   * renders the headline tiles as "—" / "N/A" placeholders
+   * instead of silent zeros. This is the "summary first paint
+   * never blocks on aggregator" contract.
+   *
+   * Wire payload: ~150-200 bytes (8 scalars + 3 strings).
+   */
+  getDashboardPerformanceRatioSummary: dashboardProcedure(
+    "solar-rec-dashboard",
+    "read"
+  ).query(async ({ ctx }) => {
+    const { getComputedArtifact } = await import("../db/solarRecDatasets");
+    const {
+      PERFORMANCE_RATIO_SUMMARY_ARTIFACT_TYPE,
+      PERFORMANCE_RATIO_SUMMARY_VERSION_KEY,
+    } = await import(
+      "../services/solar/buildDashboardPerformanceRatioFacts"
+    );
+    const cached = await getComputedArtifact(
+      ctx.scopeId,
+      PERFORMANCE_RATIO_SUMMARY_ARTIFACT_TYPE,
+      PERFORMANCE_RATIO_SUMMARY_VERSION_KEY
+    );
+    const _runnerVersion = "phase-2-pr-g-3-summary@1" as const;
+    if (!cached?.payload) {
+      return { available: false as const, _runnerVersion };
+    }
+    try {
+      const summary = JSON.parse(cached.payload) as {
+        convertedReadCount: number;
+        matchedConvertedReads: number;
+        unmatchedConvertedReads: number;
+        invalidConvertedReads: number;
+        matchedSystemCount: number;
+        buildId: string;
+        aggregatorVersion: string;
+        builtAt: string;
+      };
+      return {
+        available: true as const,
+        ...summary,
+        _runnerVersion,
+      };
+    } catch {
+      // Corrupt payload — surface as not-available so the client
+      // doesn't render garbage. The next build will overwrite.
+      return { available: false as const, _runnerVersion };
+    }
+  }),
+
+  /**
    * Phase 5d PR 2 (2026-04-29) — server-side aggregator for the
    * Forecast tab. Replaces the client `forecastProjections` useMemo
    * that walked `performanceSourceRows` × annualProductionByTrackingId
