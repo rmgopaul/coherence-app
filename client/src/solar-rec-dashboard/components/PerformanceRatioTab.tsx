@@ -175,6 +175,13 @@ function reviveNullableDate(value: unknown): Date | null {
   return null;
 }
 
+/**
+ * Phase 2 PR-G-4 (2026-05-07) — retained for compatibility with
+ * the existing test fixture in
+ * `server/services/solar/buildPerformanceRatioAggregates.test.ts`.
+ * Production code now uses `factRowToPerformanceRatioRow` (per-row,
+ * inside the page-walk flatten).
+ */
 export function revivePerformanceRatioRows(
   rows: unknown
 ): PerformanceRatioRow[] {
@@ -189,6 +196,124 @@ export function revivePerformanceRatioRows(
       part2VerificationDate: reviveNullableDate(row.part2VerificationDate),
       baselineDate: reviveNullableDate(row.baselineDate),
     }));
+}
+
+/**
+ * Convert one `decimal(p,s)` string back to `number | null`.
+ * Drizzle MySQL `decimal()` columns wire as `string | null`;
+ * `PerformanceRatioRow` carries `number | null`. NaN / Infinity
+ * resolve to null.
+ */
+function parsePerfRatioDecimal(
+  value: string | number | null
+): number | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+/**
+ * Phase 2 PR-G-4 (2026-05-07) — wire shape from
+ * `getDashboardPerformanceRatioPage`, matching
+ * `solarRecDashboardPerformanceRatioFacts` 1:1.
+ */
+type PerformanceRatioFactWireRow = {
+  scopeId: string;
+  key: string;
+  convertedReadKey: string;
+  matchType: string;
+  monitoring: string;
+  monitoringSystemId: string;
+  monitoringSystemName: string;
+  readDate: string | Date | null;
+  readDateRaw: string;
+  lifetimeReadWh: string | number | null;
+  trackingSystemRefId: string;
+  systemId: string | null;
+  stateApplicationRefId: string | null;
+  systemName: string;
+  installerName: string;
+  monitoringPlatform: string;
+  portalAcSizeKw: string | number | null;
+  abpAcSizeKw: string | number | null;
+  part2VerificationDate: string | Date | null;
+  baselineReadWh: string | number | null;
+  baselineDate: string | Date | null;
+  baselineSource: string | null;
+  productionDeltaWh: string | number | null;
+  expectedProductionWh: string | number | null;
+  performanceRatioPercent: string | number | null;
+  contractValue: string | number | null;
+  buildId: string;
+};
+
+/**
+ * Convert one fact-table row (the wire shape tRPC ships from
+ * `getDashboardPerformanceRatioPage`) into the
+ * `PerformanceRatioRow` shape the tab's filter / sort / summary
+ * memos consume. 8 decimal fields parse from string to number;
+ * 3 nullable date fields revive via `reviveNullableDate`.
+ *
+ * `lifetimeReadWh` and `contractValue` are NOT NULL in the
+ * fact-table schema; the runner step drops rows whose values are
+ * non-finite. We coerce to 0 here defensively for malformed rows.
+ */
+function factRowToPerformanceRatioRow(
+  row: PerformanceRatioFactWireRow
+): PerformanceRatioRow {
+  return {
+    key: row.key,
+    convertedReadKey: row.convertedReadKey,
+    matchType: row.matchType as PerformanceRatioMatchType,
+    monitoring: row.monitoring,
+    monitoringSystemId: row.monitoringSystemId,
+    monitoringSystemName: row.monitoringSystemName,
+    readDate: reviveNullableDate(row.readDate),
+    readDateRaw: row.readDateRaw,
+    lifetimeReadWh: parsePerfRatioDecimal(row.lifetimeReadWh) ?? 0,
+    trackingSystemRefId: row.trackingSystemRefId,
+    systemId: row.systemId,
+    stateApplicationRefId: row.stateApplicationRefId,
+    systemName: row.systemName,
+    installerName: row.installerName,
+    monitoringPlatform: row.monitoringPlatform,
+    portalAcSizeKw: parsePerfRatioDecimal(row.portalAcSizeKw),
+    abpAcSizeKw: parsePerfRatioDecimal(row.abpAcSizeKw),
+    part2VerificationDate: reviveNullableDate(row.part2VerificationDate),
+    baselineReadWh: parsePerfRatioDecimal(row.baselineReadWh),
+    baselineDate: reviveNullableDate(row.baselineDate),
+    baselineSource: row.baselineSource,
+    productionDeltaWh: parsePerfRatioDecimal(row.productionDeltaWh),
+    expectedProductionWh: parsePerfRatioDecimal(row.expectedProductionWh),
+    performanceRatioPercent: parsePerfRatioDecimal(
+      row.performanceRatioPercent
+    ),
+    contractValue: parsePerfRatioDecimal(row.contractValue) ?? 0,
+  };
+}
+
+/**
+ * Re-sort flattened pages by readDate DESC then performanceRatio
+ * DESC then systemName ASC — matches the existing aggregator's
+ * final sort. The fact-table read returns rows ordered by `key`
+ * (the cursor column).
+ */
+function sortPerformanceRatioRowsForDisplay(
+  rows: PerformanceRatioRow[]
+): PerformanceRatioRow[] {
+  return rows.slice().sort((a, b) => {
+    const aTime = a.readDate?.getTime() ?? Number.NEGATIVE_INFINITY;
+    const bTime = b.readDate?.getTime() ?? Number.NEGATIVE_INFINITY;
+    if (aTime !== bTime) return bTime - aTime;
+    const aRatio = a.performanceRatioPercent ?? Number.NEGATIVE_INFINITY;
+    const bRatio = b.performanceRatioPercent ?? Number.NEGATIVE_INFINITY;
+    if (aRatio !== bRatio) return bRatio - aRatio;
+    return a.systemName.localeCompare(b.systemName, undefined, {
+      sensitivity: "base",
+      numeric: true,
+    });
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -299,20 +424,90 @@ export default memo(function PerformanceRatioTab(props: PerformanceRatioTabProps
   // `annualProductionEstimatesLabel` to surface a clear "upload
   // these CSVs first" message — those 4 props stay.
   // -------------------------------------------------------------------------
-  const performanceRatioQuery =
-    solarRecTrpc.solarRecDashboard.getDashboardPerformanceRatio.useQuery();
+  // Phase 2 PR-G-4 (2026-05-07) — migrated off the legacy
+  // `getDashboardPerformanceRatio` proc that materialized the full
+  // `PerformanceRatioRow[]` payload on the user's request hot path
+  // (loaded the system snapshot + 6 srDs* tables into memory, then
+  // streamed convertedReads through the aggregator on every cache
+  // miss; could hang for 14+ min on production-shape data). The
+  // tab now reads:
+  //   - `getDashboardPerformanceRatioSummary` — slim cache-only
+  //     summary (~150 B). Returns `available: false` when no build
+  //     has run for this scope; the tab renders a "Build the
+  //     dashboard to populate" empty-state in that case rather
+  //     than blocking on aggregator compute.
+  //   - `getDashboardPerformanceRatioPage` — paginated read off
+  //     `solarRecDashboardPerformanceRatioFacts` (the table PR-G-2's
+  //     build runner populates). Auto-walks every page until end-
+  //     of-stream, same pattern as ChangeOwnership / Ownership /
+  //     SystemFacts / MonitoringDetails. Each page is bounded
+  //     under 250 KB so first paint never crosses the 1 MB
+  //     dashboard wire-payload budget.
+  // The compute stays in the build runner where it has timeouts,
+  // structured metric logging, and DB-backed claim semantics —
+  // the user's request hot path is now O(N pages × cursor read).
+  const performanceRatioSummaryQuery =
+    solarRecTrpc.solarRecDashboard.getDashboardPerformanceRatioSummary.useQuery(
+      undefined,
+      { staleTime: 60_000 },
+    );
+  const performanceRatioPagesQuery =
+    solarRecTrpc.solarRecDashboard.getDashboardPerformanceRatioPage.useInfiniteQuery(
+      { limit: 500 },
+      {
+        staleTime: 60_000,
+        getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
+        initialCursor: null,
+      },
+    );
 
-  // Cache-miss elapsed-time tracker. The server aggregator streams
-  // ~200 pages of converted reads + 7 dataset loads on a cold cache,
-  // which can take 30–60s on prod-scale data. Without this counter
-  // the user has no signal that work is in progress — the tile grid
-  // renders 0/0/0 (the same numbers a successful empty result would
-  // show), which is indistinguishable from a stuck/errored query.
+  // Auto-walk: same pattern as `changeOwnershipPagesQuery` /
+  // `monitoringDetailsPagesQuery` / `getDashboardSystemsPage`. The
+  // tab API expects the FULL row set (filter/sort/paginate are
+  // client-side), so we drive the walk to completion before
+  // declaring the read "ready."
+  useEffect(() => {
+    if (
+      performanceRatioPagesQuery.hasNextPage &&
+      !performanceRatioPagesQuery.isFetchingNextPage
+    ) {
+      void performanceRatioPagesQuery.fetchNextPage();
+    }
+  }, [
+    performanceRatioPagesQuery.hasNextPage,
+    performanceRatioPagesQuery.isFetchingNextPage,
+    performanceRatioPagesQuery.fetchNextPage,
+  ]);
+
+  const isPerformanceRatioPagesComplete =
+    performanceRatioPagesQuery.status === "success" &&
+    !performanceRatioPagesQuery.hasNextPage;
+
+  // Pending only while the FIRST page is loading. The paginated
+  // walk's subsequent pages stream in incrementally; once the
+  // summary tile values + page 1 are visible the user has a
+  // working tab even if later pages are still en route.
+  const performanceRatioFirstPagePending =
+    performanceRatioPagesQuery.status === "pending";
+  const performanceRatioIsBuilding =
+    performanceRatioSummaryQuery.data &&
+    performanceRatioSummaryQuery.data.available === false;
+  const performanceRatioQueryIsPending =
+    performanceRatioFirstPagePending ||
+    performanceRatioSummaryQuery.isPending;
+  const performanceRatioQueryError =
+    performanceRatioSummaryQuery.error ?? performanceRatioPagesQuery.error;
+
+  // Cache-miss elapsed-time tracker. Surfaces only while the
+  // first page is loading or the summary hasn't landed yet — once
+  // either is available the tile grid renders real values and the
+  // counter is no longer informative. Subsequent page fetches are
+  // background work; we don't gate the tab on them.
   const performanceRatioStartedAtRef = useRef<number | null>(null);
   const [performanceRatioElapsedSec, setPerformanceRatioElapsedSec] =
     useState(0);
   useEffect(() => {
-    if (!performanceRatioQuery.isPending) {
+    if (!performanceRatioQueryIsPending) {
       performanceRatioStartedAtRef.current = null;
       setPerformanceRatioElapsedSec(0);
       return;
@@ -329,13 +524,32 @@ export default memo(function PerformanceRatioTab(props: PerformanceRatioTabProps
       }
     }, 1000);
     return () => window.clearInterval(interval);
-  }, [performanceRatioQuery.isPending]);
+  }, [performanceRatioQueryIsPending]);
 
-  const performanceRatioResult = useMemo(() => {
-    const data = performanceRatioQuery.data;
-    if (!data) {
+  type PerformanceRatioResult = {
+    rows: PerformanceRatioRow[];
+    convertedReadCount: number;
+    matchedConvertedReads: number;
+    unmatchedConvertedReads: number;
+    invalidConvertedReads: number;
+  };
+  const performanceRatioResult = useMemo<PerformanceRatioResult>(() => {
+    const summary = performanceRatioSummaryQuery.data;
+    const pages = performanceRatioPagesQuery.data?.pages ?? [];
+    const rawRows: PerformanceRatioFactWireRow[] = [];
+    for (const page of pages) {
+      // Page row shape mirrors `solarRecDashboardPerformanceRatioFacts`
+      // 1:1; the type assertion is safe because the proc returns
+      // exactly the row shape (decimal-as-string, Date round-tripped
+      // by superjson).
+      rawRows.push(...(page.rows as unknown as PerformanceRatioFactWireRow[]));
+    }
+    const rows = sortPerformanceRatioRowsForDisplay(
+      rawRows.map(factRowToPerformanceRatioRow),
+    );
+    if (!summary || summary.available === false) {
       return {
-        rows: [] as PerformanceRatioRow[],
+        rows,
         convertedReadCount: 0,
         matchedConvertedReads: 0,
         unmatchedConvertedReads: 0,
@@ -343,13 +557,36 @@ export default memo(function PerformanceRatioTab(props: PerformanceRatioTabProps
       };
     }
     return {
-      rows: revivePerformanceRatioRows(data.rows),
-      convertedReadCount: data.convertedReadCount,
-      matchedConvertedReads: data.matchedConvertedReads,
-      unmatchedConvertedReads: data.unmatchedConvertedReads,
-      invalidConvertedReads: data.invalidConvertedReads,
+      rows,
+      convertedReadCount: summary.convertedReadCount,
+      matchedConvertedReads: summary.matchedConvertedReads,
+      unmatchedConvertedReads: summary.unmatchedConvertedReads,
+      invalidConvertedReads: summary.invalidConvertedReads,
     };
-  }, [performanceRatioQuery.data]);
+  }, [performanceRatioSummaryQuery.data, performanceRatioPagesQuery.data]);
+
+  // Compatibility shim: the rest of the tab reads
+  // `performanceRatioQuery.{isPending, isError, error}` to render
+  // the loading + error UX. Mapping the new query pair onto that
+  // shape keeps the JSX render path unchanged.
+  const performanceRatioQuery = useMemo(
+    () => ({
+      isPending: performanceRatioQueryIsPending,
+      isError: Boolean(performanceRatioQueryError),
+      error: performanceRatioQueryError,
+      isLoadingMore:
+        performanceRatioPagesQuery.isFetchingNextPage ||
+        !isPerformanceRatioPagesComplete,
+      isBuilding: Boolean(performanceRatioIsBuilding),
+    }),
+    [
+      performanceRatioQueryIsPending,
+      performanceRatioQueryError,
+      performanceRatioPagesQuery.isFetchingNextPage,
+      isPerformanceRatioPagesComplete,
+      performanceRatioIsBuilding,
+    ],
+  );
 
   // -------------------------------------------------------------------------
   // Filters / sort / summary / pagination
@@ -1171,27 +1408,60 @@ export default memo(function PerformanceRatioTab(props: PerformanceRatioTabProps
         </Card>
       ) : (
         <>
-          {performanceRatioQuery.isPending && (
-            <Card className="border-sky-200 bg-sky-50/60">
+          {performanceRatioQuery.isBuilding && (
+            <Card className="border-amber-200 bg-amber-50/60">
               <CardHeader>
-                <CardTitle className="text-base flex items-center gap-2 text-sky-900">
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  Computing performance ratio…
-                  {performanceRatioElapsedSec > 0 && (
-                    <span className="text-sm font-normal text-sky-700">
-                      ({performanceRatioElapsedSec}s)
-                    </span>
-                  )}
+                <CardTitle className="text-base text-amber-900">
+                  Performance ratio facts not yet built for this scope
                 </CardTitle>
-                <CardDescription className="text-sky-800">
-                  Streaming converted reads from the database and joining
-                  against the system snapshot + ABP Part II data. The first
-                  load after a deploy can take up to a minute while the
-                  cache rebuilds; subsequent loads are served from cache.
+                <CardDescription className="text-amber-800">
+                  The Performance Ratio tab now reads from a pre-built fact
+                  table populated by the dashboard build runner. No build
+                  has populated the table for this scope yet — trigger a
+                  rebuild from the dashboard header (or another tab's
+                  rebuild button) to populate it. Once a build succeeds
+                  this tab loads in under a second.
                 </CardDescription>
               </CardHeader>
             </Card>
           )}
+          {performanceRatioQuery.isPending &&
+            !performanceRatioQuery.isBuilding && (
+              <Card className="border-sky-200 bg-sky-50/60">
+                <CardHeader>
+                  <CardTitle className="text-base flex items-center gap-2 text-sky-900">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Loading performance ratio…
+                    {performanceRatioElapsedSec > 0 && (
+                      <span className="text-sm font-normal text-sky-700">
+                        ({performanceRatioElapsedSec}s)
+                      </span>
+                    )}
+                  </CardTitle>
+                  <CardDescription className="text-sky-800">
+                    Reading the pre-built fact table page-by-page. First
+                    page typically lands in &lt; 1s; remaining pages stream
+                    in incrementally.
+                  </CardDescription>
+                </CardHeader>
+              </Card>
+            )}
+          {performanceRatioQuery.isLoadingMore &&
+            !performanceRatioQuery.isPending &&
+            !performanceRatioQuery.isBuilding && (
+              <Card className="border-sky-100 bg-sky-50/30">
+                <CardHeader className="py-3">
+                  <CardTitle className="text-sm flex items-center gap-2 text-sky-900">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Loading additional rows…
+                  </CardTitle>
+                  <CardDescription className="text-sky-800 text-xs">
+                    Tile values + page 1 are already accurate; deeper
+                    rows are still streaming in the background.
+                  </CardDescription>
+                </CardHeader>
+              </Card>
+            )}
           {performanceRatioQuery.isError && (
             <Card className="border-rose-200 bg-rose-50/60">
               <CardHeader>
