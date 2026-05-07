@@ -211,6 +211,50 @@ export async function listSolarRecDashboardStorageByPrefix(
   }));
 }
 
+/**
+ * Delete `solarRecDashboardStorage` rows whose `storageKey` is in
+ * the given exact-match list, scoped to the caller. Returns the
+ * count of rows actually deleted (mysql2's `affectedRows` —
+ * cumulative across all matching `chunkIndex` rows for a given
+ * storageKey).
+ *
+ * Used by the snapshot-log restore mutation (Task 5.15 PR-B) to
+ * prune orphaned `snapshot_logs_v1_chunk_NNNN` rows after the
+ * consolidated payload is durably written + verified. Empty input
+ * short-circuits to 0 — the caller may legitimately pass `[]` when
+ * there are no orphans to remove.
+ */
+export async function deleteSolarRecDashboardStorageByExactKeys(
+  userId: number,
+  storageKeys: ReadonlyArray<string>
+): Promise<number> {
+  if (storageKeys.length === 0) return 0;
+  const db = await getDb();
+  if (!db) return 0;
+  const ensured = await ensureSolarRecDashboardStorageTable();
+  if (!ensured) return 0;
+  const scopeId = await resolveScopeIdFromUserId(userId);
+
+  const result = await withDbRetry(
+    "delete solar rec dashboard storage by exact keys",
+    async () =>
+      db
+        .delete(solarRecDashboardStorage)
+        .where(
+          and(
+            eq(solarRecDashboardStorage.scopeId, scopeId),
+            inArray(solarRecDashboardStorage.storageKey, [...storageKeys])
+          )
+        )
+  );
+
+  // mysql2's drizzle adapter returns `[ResultSetHeader, FieldPacket[]]`
+  // where header.affectedRows is the count. Defensive against the
+  // shape changing under future driver upgrades.
+  const header = (result as unknown as Array<{ affectedRows?: number }>)[0];
+  return typeof header?.affectedRows === "number" ? header.affectedRows : 0;
+}
+
 export async function saveSolarRecDashboardPayload(userId: number, storageKey: string, payload: string): Promise<boolean> {
   const db = await getDb();
   if (!db) return false;

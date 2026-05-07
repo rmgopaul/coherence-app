@@ -734,6 +734,39 @@ describe("Solar REC dashboard mount: heavy-query gates", () => {
     expect(writeIdx).toBeGreaterThan(guardIdx);
   });
 
+  it("Snapshot Log restore mutation is wired with onSuccess invalidation (Task 5.15 PR-B)", () => {
+    // The restore mutation must:
+    //   (a) declare a useMutation hook for
+    //       restoreSnapshotLogsFromOrphanChunks,
+    //   (b) invalidate getSnapshotLogs onSuccess so the banner
+    //       disappears (next read sees source === "main"),
+    //   (c) clear the local recovered-entries shadow state so the
+    //       cloud-sync effect doesn't double-count entries.
+    expect(code).toMatch(
+      /restoreSnapshotLogsFromOrphanChunks\.useMutation/
+    );
+    const useMutationIdx = code.indexOf(
+      "restoreSnapshotLogsFromOrphanChunks.useMutation"
+    );
+    expect(useMutationIdx).toBeGreaterThan(-1);
+    // Slice forward to grab the call's option object — the
+    // onSuccess callback must invalidate getSnapshotLogs and reset
+    // the recovered-entries state.
+    const optionsRegion = code.slice(useMutationIdx, useMutationIdx + 1200);
+    expect(optionsRegion).toMatch(
+      /onSuccess\s*:[\s\S]{0,400}getSnapshotLogs\.invalidate/
+    );
+    expect(optionsRegion).toMatch(
+      /onSuccess\s*:[\s\S]{0,400}setRecoveredSnapshotLogEntries\s*\(\s*\[\s*\]\s*\)/
+    );
+    // The handler must NOT optimistically update local logEntries —
+    // that would re-trigger the cloud-sync write-back path. Server
+    // is the source of truth for the new consolidated entries.
+    expect(optionsRegion).not.toMatch(
+      /onSuccess\s*:[\s\S]{0,400}setLogEntries/
+    );
+  });
+
   it("deserializeDashboardLogs is per-item safe — one malformed entry can't poison the whole batch (Codex P2)", () => {
     // Pre-fix the per-entry processing was inside the OUTER
     // try/catch, so any throw from the per-entry .map (e.g.

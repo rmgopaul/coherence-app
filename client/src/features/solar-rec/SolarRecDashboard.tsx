@@ -2118,6 +2118,34 @@ export default function SolarRecDashboard() {
     setRecoveredSnapshotLogEntries(revived);
   }, [snapshotLogsServerQuery.data]);
 
+  // Task 5.15 PR-B — operator-driven restore mutation. Consolidates
+  // orphaned `snapshot_logs_v1_chunk_*` rows back into the canonical
+  // `snapshot_logs_v1` key. Idempotent server-side; on success we
+  // invalidate the recovery query so the banner disappears (next
+  // read sees `source === "main"`) and clear the recovered-entries
+  // shadow state because they now live in the main key the cloud-
+  // sync effect will pick up on the next genuine local change.
+  const [restoreErrorMessage, setRestoreErrorMessage] = useState<
+    string | null
+  >(null);
+  const restoreSnapshotLogsMutation =
+    solarRecTrpc.solarRecDashboard.restoreSnapshotLogsFromOrphanChunks.useMutation(
+      {
+        onSuccess: () => {
+          setRestoreErrorMessage(null);
+          setRecoveredSnapshotLogEntries([]);
+          void solarRecTrpcUtils.solarRecDashboard.getSnapshotLogs.invalidate();
+        },
+        onError: (err) => {
+          setRestoreErrorMessage(err.message);
+        },
+      }
+    );
+  const handleRestoreSnapshotLogOrphans = useCallback(() => {
+    setRestoreErrorMessage(null);
+    restoreSnapshotLogsMutation.mutate();
+  }, [restoreSnapshotLogsMutation]);
+
   // Display-only union of local + server-recovered entries.
   // SnapshotLogTab receives this list; the underlying `logEntries`
   // state is the unmutated authoritative local copy that the
@@ -6290,6 +6318,13 @@ const aiDataContext = useMemo(() => {
                     onCreateLogEntry={createLogEntry}
                     onClearLogs={clearLogs}
                     onDeleteLogEntry={deleteLogEntry}
+                    recoverySource={snapshotLogsServerQuery.data?.source}
+                    recoveryTotalUniqueCount={
+                      snapshotLogsServerQuery.data?.totalUniqueCount
+                    }
+                    onRestoreOrphans={handleRestoreSnapshotLogOrphans}
+                    isRestoringOrphans={restoreSnapshotLogsMutation.isPending}
+                    restoreErrorMessage={restoreErrorMessage}
                   />
                 </Suspense>
               </TabErrorBoundary>
