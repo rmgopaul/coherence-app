@@ -1051,6 +1051,83 @@ describe("Solar REC dashboard mount: high-cardinality fields stay off mount path
     expect(performanceRatioSource).not.toMatch(/abpAcSizeKwBySystemKey/);
   });
 
+  it("PerformanceRatioTab reads from the fact-table procs, NOT the legacy aggregator (Phase 2 PR-G-4)", () => {
+    // PR-G-4 retired the user's request hot path off the legacy
+    // `getDashboardPerformanceRatio` proc (which loaded the
+    // system snapshot + 6 srDs* tables on every cache miss).
+    // The tab now reads:
+    //   - getDashboardPerformanceRatioSummary (slim cache-only,
+    //     ~150 B response — never triggers a row materialization)
+    //   - getDashboardPerformanceRatioPage (paginated walk over
+    //     pre-built fact rows, bounded under 1 MB per page)
+    // A regression that re-introduces `getDashboardPerformanceRatio
+    // .useQuery` would re-introduce the 14-min hangs on cold cache.
+    const performanceRatioSource = readFileSync(
+      resolve(
+        __dirname,
+        "..",
+        "components",
+        "PerformanceRatioTab.tsx"
+      ),
+      "utf8"
+    );
+    expect(performanceRatioSource).toMatch(
+      /getDashboardPerformanceRatioSummary\.useQuery/
+    );
+    expect(performanceRatioSource).toMatch(
+      /getDashboardPerformanceRatioPage\.useInfiniteQuery/
+    );
+    expect(performanceRatioSource).not.toMatch(
+      /getDashboardPerformanceRatio\.useQuery/
+    );
+    // Belt-and-braces: the auto-walk hook + completion gate.
+    // Without these, the tab would only see page 1 and the
+    // filter/sort/CSV-export memos would silently truncate.
+    expect(performanceRatioSource).toMatch(
+      /performanceRatioPagesQuery\.fetchNextPage/
+    );
+    expect(performanceRatioSource).toMatch(
+      /isPerformanceRatioPagesComplete/
+    );
+  });
+
+  it("PerformanceRatioTab fact-row converter strips Drizzle decimal-as-string into number|null (Phase 2 PR-G-4)", () => {
+    // The wire shape from `getDashboardPerformanceRatioPage` carries
+    // 8 decimal columns as `string | null` (Drizzle convention); the
+    // tab's existing memos consume `number | null`. The boundary
+    // converter `factRowToPerformanceRatioRow` MUST handle every
+    // decimal field — a regression that misses one would silently
+    // pass strings through to numeric comparisons (e.g. sort by
+    // performanceRatioPercent) where "12.5" sorts before "9" by
+    // string-compare semantics.
+    const performanceRatioSource = readFileSync(
+      resolve(
+        __dirname,
+        "..",
+        "components",
+        "PerformanceRatioTab.tsx"
+      ),
+      "utf8"
+    );
+    expect(performanceRatioSource).toMatch(/factRowToPerformanceRatioRow/);
+    // Spot-check the 6 nullable-decimal fields the converter must
+    // pass through `parsePerfRatioDecimal`. The 2 NOT NULL decimals
+    // (lifetimeReadWh, contractValue) are also converted with a
+    // 0-fallback for defense-in-depth.
+    for (const field of [
+      "portalAcSizeKw",
+      "abpAcSizeKw",
+      "baselineReadWh",
+      "productionDeltaWh",
+      "expectedProductionWh",
+      "performanceRatioPercent",
+    ]) {
+      expect(performanceRatioSource).toMatch(
+        new RegExp(`${field}:\\s*parsePerfRatioDecimal`)
+      );
+    }
+  });
+
   it("cumulativeKwAcPart2 / cumulativeKwDcPart2 flow into OverviewTab from the slim summary", () => {
     expect(code).toMatch(/cumulativeKwAcPart2:\s*\n?\s*slimSummary\.cumulativeKwAcPart2/);
     expect(code).toMatch(/cumulativeKwDcPart2:\s*\n?\s*slimSummary\.cumulativeKwDcPart2/);

@@ -113,7 +113,14 @@ describe("Solar REC shared dataset invalidation", () => {
     expect(handler!).toContain("result.mappingText");
   });
 
-  it("Performance Ratio rows revive server dates before render-time date math", () => {
+  it("Performance Ratio rows revive server dates before render-time date math (Phase 2 PR-G-4)", () => {
+    // PR-G-4 (2026-05-07) migrated the tab off the legacy
+    // `getDashboardPerformanceRatio.useQuery` (which materialized
+    // the full PerformanceRatioRow[] payload) onto the paginated
+    // fact-table read `getDashboardPerformanceRatioPage`. The
+    // boundary converter is now `factRowToPerformanceRatioRow`.
+    // Date revival still happens via `reviveNullableDate` on the
+    // same 3 fields (readDate / baselineDate / part2VerificationDate).
     const performanceRatioFile = resolve(
       __dirname,
       "..",
@@ -121,12 +128,19 @@ describe("Solar REC shared dataset invalidation", () => {
       "PerformanceRatioTab.tsx"
     );
     const source = readFileSync(performanceRatioFile, "utf8");
-    expect(source).toContain("revivePerformanceRatioRows");
+    expect(source).toContain("factRowToPerformanceRatioRow");
     expect(source).toContain("reviveNullableDate(row.readDate)");
     expect(source).toContain(
       "part2VerificationDate: reviveNullableDate(row.part2VerificationDate)"
     );
-    expect(source).toContain("baselineDate: reviveNullableDate(row.baselineDate)");
-    expect(source).toContain("rows: revivePerformanceRatioRows(data.rows)");
+    expect(source).toContain(
+      "baselineDate: reviveNullableDate(row.baselineDate)"
+    );
+    expect(source).toContain("rawRows.map(factRowToPerformanceRatioRow)");
+    // Legacy converter is still EXPORTED (the server aggregator
+    // test fixture imports it) but is NO LONGER called from the
+    // tab's render path.
+    expect(source).toContain("export function revivePerformanceRatioRows");
+    expect(source).not.toContain("rows: revivePerformanceRatioRows(data.rows)");
   });
 });
