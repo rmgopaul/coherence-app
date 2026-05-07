@@ -32,7 +32,7 @@
  * The function is a pure reducer over its inputs — no React, no
  * closures, no browser globals — which lets it run isomorphically
  * on the server (dynamic-imported by buildSystemSnapshot.ts) and
- * in the ParityReportPanel's client-side recompute verification.
+ * in unit tests.
  */
 
 import { clean } from "@/lib/helpers";
@@ -185,8 +185,7 @@ export interface BuildSystemsInput {
  * This function is pure: given the same input it produces the same
  * output, touches no shared state, and has no side effects. It runs
  * isomorphically on the Node server (from
- * `server/services/solar/buildSystemSnapshot.ts`) and in the
- * ParityReportPanel's client-side recompute verification.
+ * `server/services/solar/buildSystemSnapshot.ts`) and in unit tests.
  */
 export function buildSystems(input: BuildSystemsInput): SystemRecord[] {
   const {

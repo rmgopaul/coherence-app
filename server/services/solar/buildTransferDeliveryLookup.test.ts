@@ -4,8 +4,9 @@
  *
  * The client and server both implement the same algorithm: Carbon
  * Solutions ↔ Illinois utility direction filter, June-1 energy-year
- * bucketing, case-insensitive tracking IDs. If these diverge, the
- * parity check (ParityReportPanel) will see phantom mismatches.
+ * bucketing, case-insensitive tracking IDs. Server-side aggregators
+ * (e.g. `buildSystemSnapshot.ts`) and client-side helpers must agree
+ * field-for-field; these tests pin the server side of that contract.
  *
  * These tests exercise `computeTransferDeliveryLookupFromRows`
  * directly (no DB) so they run in the same millisecond-range as
