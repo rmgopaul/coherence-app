@@ -387,7 +387,7 @@ describe("teslaPowerhubProductionJobs — runner", () => {
     ).toHaveBeenCalledWith(
       fakeApiContext,
       expect.objectContaining({
-        fetchExternalIds: false,
+        fetchExternalIds: true,
         includeDebugPreviews: false,
         perSiteGapFillMode: "group-only",
       })

@@ -814,13 +814,13 @@ export default function TeslaPowerhubMeterReads() {
                   Deep per-site fallback
                 </Label>
                 <p className="text-xs text-muted-foreground">
-                  Queries missing sites individually and can take much longer on
-                  large portfolios.
+                  Standard keeps STE IDs; deep adds individual production
+                  fallback for missing readings.
                 </p>
               </div>
             </div>
             <Badge variant={deepScanEnabled ? "secondary" : "outline"}>
-              {deepScanEnabled ? "Deep" : "Standard"}
+              {deepScanEnabled ? "Deep" : "Standard + STE"}
             </Badge>
           </div>
 

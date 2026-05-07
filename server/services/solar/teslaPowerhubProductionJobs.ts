@@ -504,7 +504,7 @@ export async function runTeslaPowerhubProductionJob(
       endpointUrl: config.endpointUrl,
       signal: config.signal,
       globalTimeoutMs: TESLA_POWERHUB_PRODUCTION_JOB_TIMEOUT_MS,
-      fetchExternalIds: useDeepScan,
+      fetchExternalIds: true,
       includeDebugPreviews: useDeepScan,
       perSiteGapFillMode: useDeepScan ? "deep" : "group-only",
       onProgress,
