@@ -163,8 +163,17 @@ function reasonText(reason: unknown): string {
 // ---------------------------------------------------------------------------
 
 export interface FinancialsTabProps {
-  // Master system list (parent-owned)
-  systems: SystemRecord[];
+  // Part-2 eligible systems (parent-owned, paginated). Sourced from
+  // `getDashboardSystemsPage({isPart2Eligible: true})`'s
+  // `useInfiniteQuery` walk in the parent (Phase 2 PR-F-4-f-2). The
+  // tab still filters for `part2VerificationDate !== null` to compute
+  // revenue-at-risk — the additional narrowing is a defensive
+  // measure for the rare case where eligible-by-ID-match diverges
+  // from verified-by-date. Phase 2 PR-F-4-e (2026-05-07) replaced
+  // the parent's heavy `systems: SystemRecord[]` prop with this
+  // pre-filtered list, retiring the last `systems={systems}` prop
+  // pass and unblocking PR-F-4-h (`useSystemSnapshot` retirement).
+  part2EligibleSystems: SystemRecord[];
 
   // Financials profit/collateralization data. Computed by the parent's
   // `financialProfitData` useMemo, which is gated on `isFinancialsTabActive
@@ -253,7 +262,7 @@ type EditingFinancialRow = {
 
 export default memo(function FinancialsTab(props: FinancialsTabProps) {
   const {
-    systems,
+    part2EligibleSystems,
     financialProfitData,
     contractScanResults,
     contractScanStatus,
@@ -298,18 +307,35 @@ export default memo(function FinancialsTab(props: FinancialsTabProps) {
 
   // -------------------------------------------------------------------------
   // Derived: part-2-verified systems (drives revenue at risk)
+  //
+  // `part2EligibleSystems` (the prop) is already filtered server-
+  // side by `isPart2Eligible: true`. This additional
+  // `part2VerificationDate !== null` narrowing is a defensive
+  // measure: eligible-by-ID-match should imply
+  // verified-by-date in practice (both pipelines source from
+  // `isPart2VerifiedAbpRow` filtering of `srDsAbpReport`), but if
+  // the two ever diverge, financial calculations stay narrowed to
+  // systems with an actual verification date attached.
   // -------------------------------------------------------------------------
   const part2VerifiedSystems = useMemo(
-    () => systems.filter((sys) => sys.part2VerificationDate !== null),
-    [systems],
+    () =>
+      part2EligibleSystems.filter((sys) => sys.part2VerificationDate !== null),
+    [part2EligibleSystems],
   );
 
   // -------------------------------------------------------------------------
   // Revenue at risk = offline or terminated systems with contracted value
+  //
+  // `key` is carried through the row shape so the rendered
+  // `systemNameLink` can reference the system's snapshot key without
+  // having to re-find it via `systems.find` at render time. Phase 2
+  // PR-F-4-e (2026-05-07) added the field; the prior shape required
+  // a full-systems list at render time which is no longer available.
   // -------------------------------------------------------------------------
   const financialRevenueAtRisk = useMemo(() => {
     const now = new Date();
     const atRiskSystems: {
+      key: string;
       name: string;
       riskType: string;
       value: number;
@@ -331,6 +357,7 @@ export default memo(function FinancialsTab(props: FinancialsTabProps) {
           )
         : 999;
       atRiskSystems.push({
+        key: sys.key,
         name: sys.systemName,
         riskType,
         value: sys.contractedValue ?? 0,
@@ -848,28 +875,19 @@ export default memo(function FinancialsTab(props: FinancialsTabProps) {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {financialRevenueAtRisk.systems.slice(0, 50).map((s, i) => {
-                  const matchedSys = systems.find((sys) => sys.systemName === s.name);
-                  return (
-                    <TableRow key={i}>
-                      <TableCell>
-                        {matchedSys ? (
-                          systemNameLink(s.name, matchedSys.key)
-                        ) : (
-                          <span className="font-medium">{s.name}</span>
-                        )}
-                      </TableCell>
-                      <TableCell>
-                        <Badge variant={s.riskType === "Offline" ? "destructive" : "secondary"}>
-                          {s.riskType}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="text-right">${formatNumber(s.value)}</TableCell>
-                      <TableCell>{s.lastDate}</TableCell>
-                      <TableCell className="text-right">{s.daysOffline}</TableCell>
-                    </TableRow>
-                  );
-                })}
+                {financialRevenueAtRisk.systems.slice(0, 50).map((s, i) => (
+                  <TableRow key={i}>
+                    <TableCell>{systemNameLink(s.name, s.key)}</TableCell>
+                    <TableCell>
+                      <Badge variant={s.riskType === "Offline" ? "destructive" : "secondary"}>
+                        {s.riskType}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="text-right">${formatNumber(s.value)}</TableCell>
+                    <TableCell>{s.lastDate}</TableCell>
+                    <TableCell className="text-right">{s.daysOffline}</TableCell>
+                  </TableRow>
+                ))}
               </TableBody>
             </Table>
           )}
