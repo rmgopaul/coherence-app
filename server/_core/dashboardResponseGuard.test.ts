@@ -704,6 +704,29 @@ describe("solarRecDashboardRouter wiring", () => {
     expect(source).not.toMatch(/getOrBuildOfflineMonitoringAggregates/);
   });
 
+  it("does NOT re-register the retired Performance Ratio aggregate proc (Phase 2 PR-G-5)", () => {
+    // PR-G-5 (2026-05-07) removed the legacy `getDashboardPerformance
+    // Ratio` proc body. PR-G-4 had migrated `PerformanceRatioTab.tsx`
+    // onto the bounded fact-page + slim-summary read pair below.
+    // The shared aggregator (`getOrBuildPerformanceRatio`) still
+    // exists in `server/services/solar/buildPerformanceRatioAggregates.ts`
+    // — the build runner step calls it — but the tRPC surface is
+    // gone. A regression that re-registers the proc would expose
+    // the user's request hot path to the legacy 14+-min compute.
+    const filePath = resolve(__dirname, "solarRecDashboardRouter.ts");
+    const source = readFileSync(filePath, "utf8");
+    expect(source).not.toMatch(
+      /getDashboardPerformanceRatio\s*:\s*dashboardProcedure\s*\(/
+    );
+    // The replacement procs MUST still be registered.
+    expect(source).toMatch(
+      /getDashboardPerformanceRatioPage\s*:\s*dashboardProcedure\s*\(/
+    );
+    expect(source).toMatch(
+      /getDashboardPerformanceRatioSummary\s*:\s*dashboardProcedure\s*\(/
+    );
+  });
+
   it("registers getSnapshotLogs as a dashboardProcedure (read-only recovery surface)", () => {
     const filePath = resolve(__dirname, "solarRecDashboardRouter.ts");
     const source = readFileSync(filePath, "utf8");
