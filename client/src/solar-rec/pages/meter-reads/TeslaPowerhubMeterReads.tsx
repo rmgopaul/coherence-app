@@ -30,6 +30,7 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import {
@@ -161,6 +162,7 @@ export default function TeslaPowerhubMeterReads() {
   const [groupIdInput, setGroupIdInput] = useState("");
   const [signalInput, setSignalInput] = useState("");
   const [endpointUrlInput, setEndpointUrlInput] = useState("");
+  const [deepScanEnabled, setDeepScanEnabled] = useState(false);
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
@@ -342,6 +344,7 @@ export default function TeslaPowerhubMeterReads() {
         groupId,
         endpointUrl: clean(endpointUrlInput) || undefined,
         signal: clean(signalInput) || undefined,
+        scanMode: deepScanEnabled ? "deep" : "standard",
       });
       setActiveJobId(job.jobId);
       setJobPollIntervalMs(1200);
@@ -794,6 +797,31 @@ export default function TeslaPowerhubMeterReads() {
                 placeholder="Optional Tesla endpoint URL"
               />
             </div>
+          </div>
+
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border bg-muted/30 px-3 py-2">
+            <div className="flex items-start gap-2">
+              <Checkbox
+                id="tesla-powerhub-deep-scan"
+                checked={deepScanEnabled}
+                disabled={isJobRunning}
+                onCheckedChange={checked =>
+                  setDeepScanEnabled(checked === true)
+                }
+              />
+              <div className="grid gap-1">
+                <Label htmlFor="tesla-powerhub-deep-scan">
+                  Deep per-site fallback
+                </Label>
+                <p className="text-xs text-muted-foreground">
+                  Standard keeps STE IDs; deep adds individual production
+                  fallback for missing readings.
+                </p>
+              </div>
+            </div>
+            <Badge variant={deepScanEnabled ? "secondary" : "outline"}>
+              {deepScanEnabled ? "Deep" : "Standard + STE"}
+            </Badge>
           </div>
 
           <div className="flex flex-wrap items-end gap-2">

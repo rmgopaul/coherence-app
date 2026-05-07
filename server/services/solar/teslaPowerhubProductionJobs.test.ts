@@ -39,10 +39,10 @@ function fakeReset(): void {
   fakeDb.length = 0;
 }
 function fakeFind(scopeId: string, id: string): FakeRow | undefined {
-  return fakeDb.find((r) => r.scopeId === scopeId && r.id === id);
+  return fakeDb.find(r => r.scopeId === scopeId && r.id === id);
 }
 function fakeFindById(id: string): FakeRow | undefined {
-  return fakeDb.find((r) => r.id === id);
+  return fakeDb.find(r => r.id === id);
 }
 
 vi.mock("../../db/teslaPowerhubProductionJobs", () => ({
@@ -81,8 +81,8 @@ vi.mock("../../db/teslaPowerhubProductionJobs", () => ({
   listRecentTeslaPowerhubProductionJobs: vi.fn(
     async (scopeId: string): Promise<FakeRow[]> =>
       fakeDb
-        .filter((r) => r.scopeId === scopeId)
-        .map((r) => ({ ...r }))
+        .filter(r => r.scopeId === scopeId)
+        .map(r => ({ ...r }))
         .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
   ),
   claimTeslaPowerhubProductionJob: vi.fn(
@@ -208,7 +208,7 @@ vi.mock("../../db/teslaPowerhubProductionJobs", () => ({
   pruneTerminalTeslaPowerhubProductionJobs: vi.fn(
     async (olderThan: Date): Promise<FakeRow[]> => {
       const doomed = fakeDb.filter(
-        (r) =>
+        r =>
           (r.status === "completed" || r.status === "failed") &&
           r.finishedAt !== null &&
           r.finishedAt < olderThan
@@ -217,7 +217,7 @@ vi.mock("../../db/teslaPowerhubProductionJobs", () => ({
         const idx = fakeDb.indexOf(d);
         if (idx >= 0) fakeDb.splice(idx, 1);
       }
-      return doomed.map((r) => ({ ...r }));
+      return doomed.map(r => ({ ...r }));
     }
   ),
 }));
@@ -249,7 +249,9 @@ const fakeApiContext = {
   // The runner only forwards apiContext to
   // getTeslaPowerhubProductionMetrics; the mocked fetch never reads
   // these fields.
-} as unknown as Parameters<typeof startTeslaPowerhubProductionJob>[0]["apiContext"];
+} as unknown as Parameters<
+  typeof startTeslaPowerhubProductionJob
+>[0]["apiContext"];
 
 beforeEach(() => {
   fakeReset();
@@ -295,6 +297,7 @@ describe("teslaPowerhubProductionJobs — start", () => {
       groupId: "g-1",
       endpointUrl: "https://endpoint.example",
       signal: "v1",
+      scanMode: "standard",
     });
     expect(row.runnerVersion).toBe(
       TESLA_POWERHUB_PRODUCTION_JOB_RUNNER_VERSION
@@ -313,7 +316,7 @@ describe("teslaPowerhubProductionJobs — start", () => {
       async () => {
         runnerCalls += 1;
       },
-      (cb) => {
+      cb => {
         schedulerCalls += 1;
         cb();
       }
@@ -335,9 +338,11 @@ describe("teslaPowerhubProductionJobs — runner", () => {
       windows: [],
       debug: null,
     };
-    (teslaPowerhubMock.getTeslaPowerhubProductionMetrics as ReturnType<
-      typeof vi.fn
-    >).mockResolvedValueOnce(fakeResult);
+    (
+      teslaPowerhubMock.getTeslaPowerhubProductionMetrics as ReturnType<
+        typeof vi.fn
+      >
+    ).mockResolvedValueOnce(fakeResult);
 
     const { jobId } = await startTeslaPowerhubProductionJob(
       {
@@ -359,10 +364,73 @@ describe("teslaPowerhubProductionJobs — runner", () => {
     expect(row.finishedAt).toBeInstanceOf(Date);
   });
 
+  it("uses bounded standard scan options by default", async () => {
+    (
+      teslaPowerhubMock.getTeslaPowerhubProductionMetrics as ReturnType<
+        typeof vi.fn
+      >
+    ).mockResolvedValueOnce({ sites: [], windows: [], debug: null });
+
+    const { jobId } = await startTeslaPowerhubProductionJob(
+      {
+        scopeId: SCOPE,
+        createdBy: 1,
+        apiContext: fakeApiContext,
+      },
+      async () => undefined,
+      () => undefined
+    );
+    await runTeslaPowerhubProductionJob(jobId, fakeApiContext);
+
+    expect(
+      teslaPowerhubMock.getTeslaPowerhubProductionMetrics
+    ).toHaveBeenCalledWith(
+      fakeApiContext,
+      expect.objectContaining({
+        fetchExternalIds: true,
+        includeDebugPreviews: false,
+        perSiteGapFillMode: "group-only",
+      })
+    );
+  });
+
+  it("preserves the previous deep scan behavior when requested", async () => {
+    (
+      teslaPowerhubMock.getTeslaPowerhubProductionMetrics as ReturnType<
+        typeof vi.fn
+      >
+    ).mockResolvedValueOnce({ sites: [], windows: [], debug: null });
+
+    const { jobId } = await startTeslaPowerhubProductionJob(
+      {
+        scopeId: SCOPE,
+        createdBy: 1,
+        apiContext: fakeApiContext,
+        scanMode: "deep",
+      },
+      async () => undefined,
+      () => undefined
+    );
+    await runTeslaPowerhubProductionJob(jobId, fakeApiContext);
+
+    expect(
+      teslaPowerhubMock.getTeslaPowerhubProductionMetrics
+    ).toHaveBeenCalledWith(
+      fakeApiContext,
+      expect.objectContaining({
+        fetchExternalIds: true,
+        includeDebugPreviews: true,
+        perSiteGapFillMode: "deep",
+      })
+    );
+  });
+
   it("marks failed with the error message on a thrown fetch", async () => {
-    (teslaPowerhubMock.getTeslaPowerhubProductionMetrics as ReturnType<
-      typeof vi.fn
-    >).mockRejectedValueOnce(new Error("boom"));
+    (
+      teslaPowerhubMock.getTeslaPowerhubProductionMetrics as ReturnType<
+        typeof vi.fn
+      >
+    ).mockRejectedValueOnce(new Error("boom"));
 
     const { jobId } = await startTeslaPowerhubProductionJob(
       {
@@ -384,9 +452,11 @@ describe("teslaPowerhubProductionJobs — runner", () => {
   it("formats global-timeout errors with actionable copy", async () => {
     const err = new Error("Operation aborted due to timeout");
     err.name = "TimeoutError";
-    (teslaPowerhubMock.getTeslaPowerhubProductionMetrics as ReturnType<
-      typeof vi.fn
-    >).mockRejectedValueOnce(err);
+    (
+      teslaPowerhubMock.getTeslaPowerhubProductionMetrics as ReturnType<
+        typeof vi.fn
+      >
+    ).mockRejectedValueOnce(err);
 
     const { jobId } = await startTeslaPowerhubProductionJob(
       {
@@ -406,9 +476,11 @@ describe("teslaPowerhubProductionJobs — runner", () => {
   });
 
   it("noops if the row was already claimed by a different worker", async () => {
-    (teslaPowerhubMock.getTeslaPowerhubProductionMetrics as ReturnType<
-      typeof vi.fn
-    >).mockResolvedValue({ sites: [], windows: [], debug: null });
+    (
+      teslaPowerhubMock.getTeslaPowerhubProductionMetrics as ReturnType<
+        typeof vi.fn
+      >
+    ).mockResolvedValue({ sites: [], windows: [], debug: null });
 
     const { jobId } = await startTeslaPowerhubProductionJob(
       {
@@ -450,7 +522,9 @@ describe("teslaPowerhubProductionJobs — snapshot", () => {
       () => undefined
     );
 
-    expect(await getTeslaPowerhubProductionJobSnapshot(SCOPE, "missing")).toBeNull();
+    expect(
+      await getTeslaPowerhubProductionJobSnapshot(SCOPE, "missing")
+    ).toBeNull();
     expect(
       await getTeslaPowerhubProductionJobSnapshot(OTHER_SCOPE, jobId)
     ).toBeNull();
@@ -480,6 +554,7 @@ describe("teslaPowerhubProductionJobs — snapshot", () => {
       groupId: "g-99",
       endpointUrl: null,
       signal: null,
+      scanMode: "standard",
     });
     expect(snap.progress.percent).toBe(0);
     expect(snap.progress.message).toBe("Queued");
@@ -491,9 +566,11 @@ describe("teslaPowerhubProductionJobs — snapshot", () => {
   });
 
   it("reconstructs a completed snapshot with result + 100% progress", async () => {
-    (teslaPowerhubMock.getTeslaPowerhubProductionMetrics as ReturnType<
-      typeof vi.fn
-    >).mockResolvedValueOnce({
+    (
+      teslaPowerhubMock.getTeslaPowerhubProductionMetrics as ReturnType<
+        typeof vi.fn
+      >
+    ).mockResolvedValueOnce({
       sites: [{ siteId: "s-1" }, { siteId: "s-2" }],
       windows: [],
       debug: null,
@@ -540,7 +617,7 @@ describe("teslaPowerhubProductionJobs — scope isolation", () => {
       await getTeslaPowerhubProductionJobSnapshot(OTHER_SCOPE, jobId)
     ).toBeNull();
     const debug = await debugTeslaPowerhubProductionJobs(OTHER_SCOPE);
-    expect(debug.jobs.find((j) => j.id === jobId)).toBeUndefined();
+    expect(debug.jobs.find(j => j.id === jobId)).toBeUndefined();
   });
 });
 
@@ -599,7 +676,7 @@ describe("teslaPowerhubProductionJobs — stale claim recovery", () => {
         TESLA_POWERHUB_PRODUCTION_JOB_RUNNER_VERSION
       ),
     ]);
-    expect([a, b].filter((r) => r === true)).toHaveLength(1);
+    expect([a, b].filter(r => r === true)).toHaveLength(1);
   });
 });
 
@@ -666,6 +743,7 @@ describe("teslaPowerhubProductionJobs — parsers", () => {
       groupId: null,
       endpointUrl: null,
       signal: null,
+      scanMode: "standard",
     });
   });
 

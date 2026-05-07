@@ -96,7 +96,10 @@ interface ConfigShape {
   groupId: string | null;
   endpointUrl: string | null;
   signal: string | null;
+  scanMode: TeslaPowerhubProductionScanMode;
 }
+
+export type TeslaPowerhubProductionScanMode = "standard" | "deep";
 
 export type TeslaPowerhubProductionJobSnapshot = {
   id: string;
@@ -149,15 +152,23 @@ function defaultProgress(): ProgressShape {
 }
 
 function defaultConfig(): ConfigShape {
-  return { groupId: null, endpointUrl: null, signal: null };
+  return {
+    groupId: null,
+    endpointUrl: null,
+    signal: null,
+    scanMode: "standard",
+  };
+}
+
+function parseScanMode(value: unknown): TeslaPowerhubProductionScanMode {
+  return value === "deep" ? "deep" : "standard";
 }
 
 function parseProgress(value: unknown): ProgressShape {
   if (!value || typeof value !== "object") return defaultProgress();
   const v = value as Record<string, unknown>;
   return {
-    currentStep:
-      typeof v.currentStep === "number" ? v.currentStep : 0,
+    currentStep: typeof v.currentStep === "number" ? v.currentStep : 0,
     totalSteps: typeof v.totalSteps === "number" ? v.totalSteps : 8,
     percent: typeof v.percent === "number" ? v.percent : 0,
     message: typeof v.message === "string" ? v.message : "",
@@ -172,6 +183,7 @@ function parseConfig(value: unknown): ConfigShape {
     groupId: typeof v.groupId === "string" ? v.groupId : null,
     endpointUrl: typeof v.endpointUrl === "string" ? v.endpointUrl : null,
     signal: typeof v.signal === "string" ? v.signal : null,
+    scanMode: parseScanMode(v.scanMode),
   };
 }
 
@@ -270,6 +282,7 @@ export interface StartTeslaPowerhubProductionJobInput {
   groupId?: string | null;
   endpointUrl?: string | null;
   signal?: string | null;
+  scanMode?: TeslaPowerhubProductionScanMode;
 }
 
 export interface StartTeslaPowerhubProductionJobResult {
@@ -294,7 +307,7 @@ export async function startTeslaPowerhubProductionJob(
     jobId: string,
     apiContext: TeslaPowerhubApiContext
   ) => Promise<void> = runTeslaPowerhubProductionJob,
-  scheduler: (cb: () => void) => void = (cb) => setImmediate(cb)
+  scheduler: (cb: () => void) => void = cb => setImmediate(cb)
 ): Promise<StartTeslaPowerhubProductionJobResult> {
   await sweepStaleAndPruned();
 
@@ -303,6 +316,7 @@ export async function startTeslaPowerhubProductionJob(
     groupId: input.groupId ?? null,
     endpointUrl: input.endpointUrl ?? null,
     signal: input.signal ?? null,
+    scanMode: parseScanMode(input.scanMode),
   };
   await insertTeslaPowerhubProductionJob({
     id: jobId,
@@ -315,7 +329,7 @@ export async function startTeslaPowerhubProductionJob(
   });
 
   scheduler(() => {
-    runner(jobId, input.apiContext).catch((err) => {
+    runner(jobId, input.apiContext).catch(err => {
       console.error(
         `${METRIC_PREFIX} runner threw for jobId=${jobId}: ${
           err instanceof Error ? err.message : String(err)
@@ -366,8 +380,10 @@ export async function getTeslaPowerhubProductionJobSnapshot(
   return buildSnapshot(row);
 }
 
-interface TeslaPowerhubProductionJobDebugView
-  extends Omit<TeslaPowerhubProductionJobSnapshot, "result"> {
+interface TeslaPowerhubProductionJobDebugView extends Omit<
+  TeslaPowerhubProductionJobSnapshot,
+  "result"
+> {
   resultSiteCount: number | null;
   hasDebug: boolean;
 }
@@ -382,7 +398,7 @@ export async function debugTeslaPowerhubProductionJobs(
   const rows = await listRecentTeslaPowerhubProductionJobs(scopeId);
   return {
     _runnerVersion: TESLA_POWERHUB_PRODUCTION_JOB_RUNNER_VERSION,
-    jobs: rows.map((row) => {
+    jobs: rows.map(row => {
       const snap = buildSnapshot(row);
       const { result, ...rest } = snap;
       return {
@@ -482,19 +498,21 @@ export async function runTeslaPowerhubProductionJob(
   };
 
   try {
+    const useDeepScan = config.scanMode === "deep";
     const result = await getTeslaPowerhubProductionMetrics(apiContext, {
       groupId: config.groupId,
       endpointUrl: config.endpointUrl,
       signal: config.signal,
       globalTimeoutMs: TESLA_POWERHUB_PRODUCTION_JOB_TIMEOUT_MS,
+      fetchExternalIds: true,
+      includeDebugPreviews: useDeepScan,
+      perSiteGapFillMode: useDeepScan ? "deep" : "group-only",
       onProgress,
     });
 
     const finalProgress: ProgressShape = {
-      currentStep:
-        pendingProgress?.totalSteps ?? defaultProgress().totalSteps,
-      totalSteps:
-        pendingProgress?.totalSteps ?? defaultProgress().totalSteps,
+      currentStep: pendingProgress?.totalSteps ?? defaultProgress().totalSteps,
+      totalSteps: pendingProgress?.totalSteps ?? defaultProgress().totalSteps,
       percent: 100,
       message: "Completed",
       windowKey: null,
@@ -517,7 +535,7 @@ export async function runTeslaPowerhubProductionJob(
     }
   } catch (err) {
     if (claimLost) return;
-    const message = formatTeslaPowerhubJobError(err);
+    const message = formatTeslaPowerhubJobError(err, config);
     const failedProgress: ProgressShape = {
       ...(pendingProgress ?? defaultProgress()),
       message: "Failed",
@@ -542,7 +560,10 @@ export async function runTeslaPowerhubProductionJob(
   }
 }
 
-function formatTeslaPowerhubJobError(error: unknown): string {
+function formatTeslaPowerhubJobError(
+  error: unknown,
+  config: ConfigShape = defaultConfig()
+): string {
   const message = error instanceof Error ? error.message : "Unknown job error.";
   const name = error instanceof Error ? error.name : "";
   if (
@@ -550,6 +571,11 @@ function formatTeslaPowerhubJobError(error: unknown): string {
     /aborted due to timeout/i.test(message) ||
     /global timeout/i.test(message)
   ) {
+    if (config.scanMode === "deep") {
+      return `Tesla Powerhub production job exceeded ${Math.round(
+        TESLA_POWERHUB_PRODUCTION_JOB_TIMEOUT_MS / 60_000
+      )} minutes while running deep per-site fallback. Try the standard scan, or narrow the request with a group ID or endpoint override.`;
+    }
     return `Tesla Powerhub production job exceeded ${Math.round(
       TESLA_POWERHUB_PRODUCTION_JOB_TIMEOUT_MS / 60_000
     )} minutes. Try again with a group ID or endpoint override so the job can avoid broad discovery.`;
