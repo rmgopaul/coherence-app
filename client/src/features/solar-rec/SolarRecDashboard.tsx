@@ -6181,7 +6181,6 @@ const aiDataContext = useMemo(() => {
                     part2EligibleSystemsForSizeReporting={part2EligibleSystemsForSizeReporting}
                     sizeBreakdownRows={sizeBreakdownRows}
                     ownershipStackedChartRows={ownershipStackedChartRows}
-                    systems={systems}
                     slimPart2Totals={
                       slimSummary
                         ? {

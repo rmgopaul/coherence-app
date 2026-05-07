@@ -133,8 +133,6 @@ export interface OverviewTabProps {
    * prior client useMemo over `part2VerifiedAbpRows × systems`.
    */
   ownershipStackedChartRows: readonly OverviewOwnershipStackedChartRow[];
-  /** Foundation memo — the 440-line parent `systems` list. */
-  systems: SystemRecord[];
   /**
    * Slim mount summary's pre-computed Part-II totals. Overview
    * uses these directly so first-paint values are correct without
@@ -168,7 +166,6 @@ export default memo(function OverviewTab(props: OverviewTabProps) {
     part2EligibleSystemsForSizeReporting,
     sizeBreakdownRows,
     ownershipStackedChartRows,
-    systems,
     slimPart2Totals,
     onDownloadOwnershipTile,
     onDownloadChangeOwnershipTile,
