@@ -52,8 +52,6 @@ describe("Solar REC shared dataset invalidation", () => {
       "getDatasetSummariesAll",
       "getDatasetCloudStatuses",
       "getActiveDatasetVersions",
-      "getSystemSnapshot",
-      "getSystemSnapshotHash",
       "getDashboardSystemsPage",
       "getTransferDeliveryLookup",
       "getDashboardDeliveryTrackerAggregates",

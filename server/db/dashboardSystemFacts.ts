@@ -5,8 +5,8 @@
  * Backs the `solarRecDashboardSystemFacts` table that PR-F-2
  * will populate via the build runner. PR-F-3 will add the
  * paginated read proc that retires the legacy
- * `getSystemSnapshot` payload (~26 MB on prod, the largest of
- * the remaining `DASHBOARD_OVERSIZE_ALLOWLIST` entries).
+ * `getSystemSnapshot` payload (~26 MB on prod, formerly the
+ * largest `DASHBOARD_OVERSIZE_ALLOWLIST` entry).
  *
  * PR-F-1 is helpers ONLY — no caller wires these in yet.
  *
