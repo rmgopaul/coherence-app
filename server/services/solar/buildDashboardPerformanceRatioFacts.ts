@@ -36,9 +36,14 @@
 
 import type { DashboardBuildStep } from "./dashboardBuildJobRunner";
 import {
-  getOrBuildPerformanceRatio,
+  createPerformanceRatioAccumulator,
   PERFORMANCE_RATIO_RUNNER_VERSION,
 } from "./buildPerformanceRatioAggregates";
+import {
+  forEachPerformanceRatioConvertedReadPage,
+  loadPerformanceRatioStaticInput,
+  resolvePerformanceRatioBatchIds,
+} from "./loadPerformanceRatioInput";
 import type { PerformanceRatioRow } from "@shared/solarRecPerformanceRatio";
 import {
   upsertPerformanceRatioFacts,
@@ -223,20 +228,52 @@ async function writePerformanceRatioSummary(
 
 /**
  * Runner step. Drives the whole table-refresh in one pass:
- * aggregator → reshape → upsert → orphan-sweep → summary.
+ * load static input → stream convertedReads page-by-page →
+ * per page: match + emit fact rows + UPSERT + drain → orphan-
+ * sweep → summary write.
  *
  * Step contract (from `DashboardBuildStep`): never throws unless
  * the work genuinely failed. The runner converts thrown errors
  * into the build row's `errorMessage` and stops at the first
  * failing step.
  *
- * **Cold-cache behavior.** When `getOrBuildPerformanceRatio`
- * returns 0 rows because the system snapshot was still building
- * (fire-and-forget), we still write the (empty) summary so the
- * client sees `convertedReadCount: 0` rather than `available:
- * false`. The next scheduled or user-triggered build picks up
- * the warmed snapshot and replaces the empty summary. This
- * matches `runSystemStep`'s behavior in PR-F-2.
+ * **2026-05-08 OOM hardening — streaming-write fact rows.**
+ * The pre-fix path called `getOrBuildPerformanceRatio` (which
+ * accumulates ALL matched rows in memory before returning), then
+ * upserted in one batch. On prod-shape data (~13M convertedReads
+ * with thousands of matched rows + the static input maps + the
+ * system snapshot) heap headroom was insufficient — the worker
+ * OOMed during the convertedReads streaming/match phase, before
+ * the aggregator could write its `withArtifactCache` row. The
+ * stale-claim sweep eventually marked the build failed.
+ *
+ * Streaming fix: bypass `getOrBuildPerformanceRatio`. Manually
+ * call `loadPerformanceRatioStaticInput` once, then stream
+ * convertedReads through `forEachPerformanceRatioConvertedReadPage`,
+ * draining the accumulator's matched rows after EACH page and
+ * UPSERTing them immediately. Memory peak is bounded by ONE
+ * page's worth of fact rows (~5k max) instead of all matched
+ * rows accumulating across the full stream.
+ *
+ * Bonus: the per-page DB upsert acts as a regular event-loop
+ * yield point so the runner's heartbeat timer fires on cadence
+ * — the pre-fix path's long synchronous match-then-upsert phase
+ * could starve the heartbeat for minutes, which is what
+ * triggered the false "stale claim" failure path even when the
+ * worker was technically alive.
+ *
+ * **Side effects.** This step does NOT populate the
+ * `performanceRatio` artifact-cache row that the legacy
+ * `getOrBuildPerformanceRatio` proc reads. After PR-G-5 retired
+ * the legacy tRPC proc, no client reads that cache row; the
+ * fact table + slim summary side cache are the only consumers.
+ *
+ * **Cold-cache behavior.** When the underlying snapshot is still
+ * building (fire-and-forget) and `loadPerformanceRatioStaticInput`
+ * returns empty systems, the matcher emits 0 fact rows and the
+ * summary writes 0 counters. The next scheduled or user-
+ * triggered build picks up the warmed snapshot and replaces the
+ * empty summary. Matches `runSystemStep`'s behavior in PR-F-2.
  */
 async function runPerformanceRatioStep(args: {
   scopeId: string;
@@ -247,18 +284,86 @@ async function runPerformanceRatioStep(args: {
   const heapBefore = process.memoryUsage().heapUsed;
   const startedAt = Date.now();
 
-  if (signal.aborted) throw new Error("aborted before aggregate fetch");
-  const aggregate = await getOrBuildPerformanceRatio(scopeId);
-  if (signal.aborted) throw new Error("aborted after aggregate fetch");
+  if (signal.aborted) throw new Error("aborted before batch resolution");
+  const batchIds = await resolvePerformanceRatioBatchIds(scopeId);
 
-  const factRows = buildPerformanceRatioFactRows({
+  // No convertedReads → empty result, write zero summary + return.
+  if (!batchIds.convertedReadsBatchId) {
+    if (signal.aborted) throw new Error("aborted before empty summary write");
+    await upsertPerformanceRatioFacts([]);
+    const orphanedDeleted = await deleteOrphanedPerformanceRatioFacts(
+      scopeId,
+      buildId
+    );
+    const summary = buildPerformanceRatioSummaryPayload({
+      buildId,
+      builtAt: new Date(),
+      aggregate: {
+        convertedReadCount: 0,
+        matchedConvertedReads: 0,
+        unmatchedConvertedReads: 0,
+        invalidConvertedReads: 0,
+      },
+      factRows: [],
+    });
+    await writePerformanceRatioSummary(scopeId, summary);
+    // eslint-disable-next-line no-console
+    console.log(
+      `${METRIC_PREFIX} metric ${JSON.stringify({
+        scopeId,
+        buildId,
+        skipped: true,
+        reason: "no convertedReads batch",
+        orphanedDeleted,
+        elapsedMs: Date.now() - startedAt,
+      })}`
+    );
+    return;
+  }
+
+  if (signal.aborted) throw new Error("aborted before static input load");
+  const staticInput = await loadPerformanceRatioStaticInput(scopeId, batchIds);
+  if (signal.aborted) throw new Error("aborted after static input load");
+
+  const accumulator = createPerformanceRatioAccumulator(staticInput);
+  const matchedSystemKeys = new Set<string>();
+  let totalFactsWritten = 0;
+  let pageCount = 0;
+
+  await forEachPerformanceRatioConvertedReadPage(
     scopeId,
-    buildId,
-    rows: aggregate.rows,
-  });
-
-  if (signal.aborted) throw new Error("aborted before upsert");
-  await upsertPerformanceRatioFacts(factRows);
+    batchIds.convertedReadsBatchId,
+    async (pageRows, startIndex) => {
+      if (signal.aborted) throw new Error("aborted mid-stream");
+      accumulator.processRows(pageRows, startIndex);
+      const drained = accumulator.drainPendingRows();
+      pageCount += 1;
+      if (drained.length === 0) return;
+      const factRows = buildPerformanceRatioFactRows({
+        scopeId,
+        buildId,
+        rows: drained,
+      });
+      if (factRows.length === 0) return;
+      await upsertPerformanceRatioFacts(factRows);
+      totalFactsWritten += factRows.length;
+      for (const r of factRows) {
+        if (r.trackingSystemRefId) {
+          matchedSystemKeys.add(r.trackingSystemRefId);
+        }
+      }
+      // Periodic progress log for ops visibility (every 10 pages
+      // matches the streamSrDsRowsPage cadence in
+      // loadPerformanceRatioInput.ts).
+      if (pageCount === 1 || pageCount % 10 === 0) {
+        process.stdout.write(
+          `[buildDashboardPerformanceRatioFacts] streamed page=${pageCount} ` +
+            `factsWrittenSoFar=${totalFactsWritten} ` +
+            `heapUsed=${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB\n`
+        );
+      }
+    }
+  );
 
   if (signal.aborted) throw new Error("aborted before orphan sweep");
   const orphanedDeleted = await deleteOrphanedPerformanceRatioFacts(
@@ -267,12 +372,17 @@ async function runPerformanceRatioStep(args: {
   );
 
   if (signal.aborted) throw new Error("aborted before summary write");
-  const summary = buildPerformanceRatioSummaryPayload({
+  const counters = accumulator.getCounters();
+  const summary: PerformanceRatioSummaryPayload = {
+    convertedReadCount: counters.convertedReadCount,
+    matchedConvertedReads: counters.matchedConvertedReads,
+    unmatchedConvertedReads: counters.unmatchedConvertedReads,
+    invalidConvertedReads: counters.invalidConvertedReads,
+    matchedSystemCount: matchedSystemKeys.size,
     buildId,
-    builtAt: new Date(),
-    aggregate,
-    factRows,
-  });
+    aggregatorVersion: PERFORMANCE_RATIO_RUNNER_VERSION,
+    builtAt: new Date().toISOString(),
+  };
   await writePerformanceRatioSummary(scopeId, summary);
 
   const heapAfter = process.memoryUsage().heapUsed;
@@ -282,14 +392,15 @@ async function runPerformanceRatioStep(args: {
     `${METRIC_PREFIX} metric ${JSON.stringify({
       scopeId,
       buildId,
-      rowsWritten: factRows.length,
+      rowsWritten: totalFactsWritten,
+      pageCount,
       orphanedDeleted,
-      convertedReadCount: aggregate.convertedReadCount,
-      matchedConvertedReads: aggregate.matchedConvertedReads,
-      unmatchedConvertedReads: aggregate.unmatchedConvertedReads,
-      invalidConvertedReads: aggregate.invalidConvertedReads,
-      matchedSystemCount: summary.matchedSystemCount,
-      fromCache: aggregate.fromCache,
+      convertedReadCount: counters.convertedReadCount,
+      matchedConvertedReads: counters.matchedConvertedReads,
+      unmatchedConvertedReads: counters.unmatchedConvertedReads,
+      invalidConvertedReads: counters.invalidConvertedReads,
+      matchedSystemCount: matchedSystemKeys.size,
+      streaming: true,
       elapsedMs,
       heapDeltaBytes: heapAfter - heapBefore,
     })}`
