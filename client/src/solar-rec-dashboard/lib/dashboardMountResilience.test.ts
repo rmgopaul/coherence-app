@@ -147,21 +147,22 @@ describe("Solar REC dashboard mount: heavy-query gates", () => {
     expect(code).toMatch(/!\s*isMonitoringDetailsPagesComplete/);
   });
 
-  it("getDashboardSystemsPage(isPart2Eligible) walk is gated on isSystemSnapshotNeeded (Phase 2 PR-F-4-f-2)", () => {
+  it("getDashboardSystemsPage(isPart2Eligible) walk preserves its Financials-only gate", () => {
     // PR-F-4-f-2 retired the OverviewTab's parent-level
     // `part2EligibleSystemsForSizeReporting` walk over `systems`
     // and replaced it with a `useInfiniteQuery` of
     // `getDashboardSystemsPage({isPart2Eligible: true})`. The new
-    // query must stay gated on `isSystemSnapshotNeeded` — letting
-    // it slip past would re-introduce a paginated equivalent of
-    // the heavy snapshot fetch on the default Overview mount.
+    // PR-F-4-h removes the snapshot hook but keeps this bounded row
+    // walk on the same Financials-only activation path. Letting it
+    // slip past would re-introduce a paginated equivalent of the
+    // heavy snapshot fetch on the default Overview mount.
     const block = extractUseQueryBlock(
       code,
       "getDashboardSystemsPage.useInfiniteQuery"
     );
     expect(block).not.toBeNull();
     expect(block!).toMatch(/isPart2Eligible:\s*true/);
-    expect(block!).toMatch(/enabled:\s*isSystemSnapshotNeeded/);
+    expect(block!).toMatch(/enabled:\s*isFinancialsTabActive/);
   });
 
   it("snapshot readiness gates on the Part-2 eligible walk reaching end-of-stream (Phase 2 PR-F-4-f-2)", () => {
@@ -238,24 +239,16 @@ describe("Solar REC dashboard mount: heavy-query gates", () => {
     expect(code).toMatch(/!\s*isChangeOwnershipPagesComplete/);
   });
 
-  it("useSystemSnapshot is invoked with a narrow tab-specific predicate, not generic interaction", () => {
-    // Generic-interaction gates re-enable the legacy 26 MB
-    // SystemRecord[] payload as soon as the user clicks anything.
-    // The predicate must be tab-specific.
-    expect(code).toMatch(
-      /useSystemSnapshot\s*\(\s*\{\s*[\s\S]*?enabled\s*:\s*isSystemSnapshotNeeded/
-    );
-    const start = code.indexOf("const isSystemSnapshotNeeded");
-    expect(start).toBeGreaterThan(-1);
-    const block = code.slice(start, start + 400);
-    expect(block).not.toMatch(/isAlertsTabActive/);
-    expect(block).toMatch(/isFinancialsTabActive/);
-    expect(block).not.toMatch(/isForecastTabActive/);
-    expect(block).not.toMatch(/selectedSystemKey/);
-    expect(block).not.toMatch(/isComparisonsTabActive/);
-    // Generic interaction gating is NOT used for the snapshot.
+  it("parent no longer invokes the legacy SystemRecord[] snapshot", () => {
+    // PR-F-4-h retires the parent-level snapshot hook entirely.
+    // A regression here would bring the legacy ~26 MB payload back
+    // into the mount graph.
+    expect(code).not.toMatch(/useSystemSnapshot/);
+    expect(code).not.toMatch(/getSystemSnapshot\.useQuery/);
+    expect(code).not.toMatch(/const\s+isSystemSnapshotNeeded\b/);
+    expect(code).not.toMatch(/const\s+serverSnapshot\b/);
     expect(code).not.toMatch(
-      /useSystemSnapshot\s*\(\s*\{\s*[\s\S]{0,200}enabled\s*:\s*hasUserInteractedWithDashboard/
+      /const\s+systems\s*=\s*useMemo\s*<\s*SystemRecord\[\]\s*>/
     );
   });
 
@@ -913,15 +906,14 @@ describe("Solar REC dashboard mount: heavy-query gates", () => {
     // PR-F-4-e replaced FinancialsTab's `systems: SystemRecord[]`
     // prop with `part2EligibleSystems`, sourced from the parent's
     // existing `useInfiniteQuery` of
-    // `getDashboardSystemsPage({isPart2Eligible: true})` (already
-    // gated on `isSystemSnapshotNeeded`). The tab keeps its
+    // `getDashboardSystemsPage({isPart2Eligible: true})` (gated
+    // directly on the Financials tab after PR-F-4-h). The tab keeps its
     // `part2VerificationDate !== null` filter as a defensive
     // narrowing — eligible-by-ID-match should imply
     // verified-by-date but the explicit filter avoids any drift.
     // A regression that re-introduces `systems={systems}` on the
     // FinancialsTab prop pass would re-couple it to
-    // `useSystemSnapshot` — exactly what PR-F-4-h is about to
-    // retire.
+    // the retired `useSystemSnapshot` path.
     expect(code).toMatch(
       /<FinancialsTabLazy[\s\S]{0,200}part2EligibleSystems=\{part2EligibleSystemsForSizeReporting\}/
     );

@@ -610,7 +610,8 @@ This section locks down the architecture established by PRs #120–#276
 (the data-flow series + Task 5.12 + Task 5.13 + Task 5.14 + Phase 5d
 deferred-tab migrations + Phase 5e dead-code sweep). Read this before
 adding any new tRPC procedure that touches dashboard data, before
-changing how rows are loaded, or before extending `getSystemSnapshot`.
+changing how rows are loaded, or before touching the legacy
+`getSystemSnapshot` path.
 
 ### Source of truth per dataset
 
@@ -670,22 +671,32 @@ in prod). Bounded responses look like this:
 | `debugDatasetPersistenceRaw` | Raw rows from every layer + verdict | ~2 KB |
 | `getDashboard<TabName>Aggregates` (DeliveryTracker / TrendDeliveryPace / TrendsProduction / ContractVintage / AppPipelineMonthly / AppPipelineCashFlow / PerformanceRatio / Forecast / Financials) | Per-tab aggregate result | ~10–500 KB |
 
-**Transitional reality: Two procedures still ship oversized
-responses.** They live in `DASHBOARD_OVERSIZE_ALLOWLIST`
-(`server/_core/dashboardResponseGuard.ts`) and are accepted as
-known regressions in warn mode. Neither fires on Overview
-default mount — they're scoped behind tab-active gates +
-`hasUserInteractedWithDashboard`. Each entry is **unscheduled
+**Transitional reality: One procedure still ships an oversized
+response.** It lives in `DASHBOARD_OVERSIZE_ALLOWLIST`
+(`server/_core/dashboardResponseGuard.ts`) and is accepted as a
+known regression in warn mode. It does not fire on Overview
+default mount — it is scoped behind tab-active gates +
+`hasUserInteractedWithDashboard`. The entry is **unscheduled
 transitional debt** — a sketch of the replacement shape, NOT a
-committed delivery plan. Neither has a tracking issue or a target
-sprint as of 2026-05-06. Mark a row with the issue / phase / PR
-number when work actually gets scheduled; until then assume the
-sketch may stay aspirational indefinitely.
+committed delivery plan. It does not have a tracking issue or a
+target sprint as of 2026-05-07. Mark the row with the issue /
+phase / PR number when work actually gets scheduled; until then
+assume the sketch may stay aspirational indefinitely.
 
 | Allowlisted procedure | Wire shape today | Sketch of future replacement (unscheduled) |
 |---|---|---|
-| `solarRecDashboard.getSystemSnapshot` | Full pre-computed `SystemRecord[]` (~26 MB on prod) | Paginated `getDashboardSystemsPage` + a derived `solarRecDashboardSystemFacts` table; tab-specific reads would target only the columns they need. |
 | `solarRecDashboard.getDashboardOfflineMonitoring` | After Phase 2 PR-C-3-b the per-system maps are gone (~12 MB OOM driver retired), and a follow-up stripped the two dead `abp*ByApplicationId` maps from the wire response. Residual high-cardinality payload is now Part-II ID arrays + `part2VerifiedSystemIds` + 2 scalar counts derived from `srDsAbpReport`. | A fact table is the wrong shape (these aren't per-system snapshots). Slim dedicated aggregator endpoint OR paginated `srDsAbpReport` reads — both keep the row table canonical. Triggered when prod data shows the residual is still painful. |
+
+**`getSystemSnapshot` retired from the allowlist (Phase 2 PR-F-4-h,
+2026-05-07).** The parent dashboard no longer imports
+`useSystemSnapshot` or hydrates the full pre-computed
+`SystemRecord[]` payload (~26 MB on prod). Tab surfaces now use
+bounded aggregate/fact-table endpoints: `getDashboardSystemsPage`
+for paginated system facts, `getSystemFactsBySystemKeys` for
+single-system drill-in, and tab-specific dashboard aggregate procs
+for summary views. The legacy proc still exists server-side for
+compatibility while old clients age out, but it is not an accepted
+oversized response path and must not be expanded.
 
 **`getDashboardChangeOwnership` retired from the allowlist (Phase 2
 PR-D-4, 2026-05-06).** The proc previously embedded a per-project
@@ -842,8 +853,8 @@ Pattern for any new tab aggregate:
   query backed by a shared aggregator + `solarRecComputedArtifacts`
   cache, or add a paginated fact-table read when the response would
   otherwise be row-shaped / high-cardinality. Do **not** extend
-  `getSystemSnapshot` for new tab work; it is one of the remaining
-  allowlisted oversized payloads and is being retired, not expanded.
+  `getSystemSnapshot` for new tab work; it is retired from the
+  allowlist and exists only as a legacy compatibility path.
   The canonical templates are `buildDeliveryTrackerData.ts` (single-
   dataset, Date round-trip via superjson) and
   `buildContractVintageAggregates.ts` (multi-dataset, joins through
@@ -949,9 +960,12 @@ the next chunk loop iteration short-circuits). The companion
 compound widget — hidden file input + `<UploadProgressDialog>`. On
 the `done` status, calls the parent's `onSuccess(jobId)` callback;
 the dataset-card slot wires it to invalidate
-`getDatasetSummariesAll`, `getSystemSnapshot`,
-`getDatasetCloudStatuses`, and `listDatasetUploadJobs`. (No
-`getDataset` invalidation — it's a mutation, not a query.)
+`getDatasetSummariesAll`, `getDatasetCloudStatuses`,
+`getActiveDatasetVersions`, `getDashboardSystemsPage`, and
+`listDatasetUploadJobs`. The same central helper invalidates only
+the transfer lookup and tab aggregates whose dataset dependencies
+actually changed. (No `getDataset` invalidation — it's a mutation,
+not a query.)
 
 **Diagnostic markers:** every v2 proc returns `_runnerVersion`. The
 job row's `errorMessage` field carries finalize-time errors;
@@ -1009,14 +1023,13 @@ expected post-upload state even with no chunked blob present.
    is for normal-but-noteworthy events; persistence failures are
    `console.error` and surface to the client response.
 5. **Default Overview mount must not enable any allowlisted heavy
-   procedure.** The 2 currently allowlisted procs are
-   `getSystemSnapshot` and `getDashboardOfflineMonitoring`.
+   procedure.** The only currently allowlisted proc is
+   `getDashboardOfflineMonitoring`.
    `getDashboardOverviewSummary` and `getDashboardChangeOwnership`
    are retired from the allowlist; do not re-add them as live heavy
-   mount paths. The remaining allowlisted procedures are gated
-   behind tab-active flags + `hasUserInteractedWithDashboard`, or
-   behind a narrower tab-specific predicate when generic interaction
-   would be too broad. `getDashboardFinancials` is not on the
+   mount paths. The remaining allowlisted procedure is gated behind
+   tab-active flags + `hasUserInteractedWithDashboard`.
+   `getDashboardFinancials` is not on the
    allowlist (its response is bounded), but it's heavy enough that
    it follows the same gating: enabled only on Financials/Pipeline
    tab activation. The Overview mount path reads only

@@ -112,7 +112,6 @@ import { parseTabularFile } from "@/lib/csvParsing";
 import {
   EMPTY_DELIVERY_TRACKER_DATA,
 } from "@/solar-rec-dashboard/lib/buildDeliveryTrackerData";
-import { useSystemSnapshot } from "@/solar-rec-dashboard/hooks/useSystemSnapshot";
 import { useTransferDeliveryLookup } from "@/solar-rec-dashboard/hooks/useTransferDeliveryLookup";
 // Phase 3 of the IndexedDB-removal refactor (docs/server-side-
 // dashboard-refactor.md): the v2 server-side upload button. ONE
@@ -1079,8 +1078,8 @@ function mergeUploadSourcesForDisplay(
 //     progressive hydration + diff-save path
 // Phase 5a no-op'd the load/save bodies; Phase 5b verified no parent-
 // level `.rows` consumer needed them; Phase 5c deletes the lot.
-// Server-side aggregators (`useSystemSnapshot`,
-// `getDashboard*Aggregates`) are now the canonical source for tabs.
+// Server-side paginated facts and `getDashboard*Aggregates` are now
+// the canonical source for tabs.
 
 function serializeDashboardLogs(
   logEntries: DashboardLogEntry[],
@@ -1649,11 +1648,10 @@ export default function SolarRecDashboard() {
 
   /**
    * Core-dataset keys whose uploads should re-sync into the typed
-   * srDs* tables so the server-side system snapshot stays fresh.
-   * Other keys (non-core datasets that don't feed the snapshot)
-   * are skipped — saving time.
+   * srDs* tables that feed the dashboard facts and aggregators.
+   * Other keys are skipped — saving time.
    */
-  const CORE_DATASET_KEYS_FOR_SNAPSHOT = useMemo(
+  const CORE_DATASET_KEYS_FOR_TYPED_SYNC = useMemo(
     () =>
       new Set<string>([
         "solarApplications",
@@ -1712,12 +1710,6 @@ export default function SolarRecDashboard() {
           keys: allDatasetKeys,
         }),
         solarRecTrpcUtils.solarRecDashboard.getActiveDatasetVersions.invalidate({
-          scopeId: sid,
-        }),
-        solarRecTrpcUtils.solarRecDashboard.getSystemSnapshot.invalidate({
-          scopeId: sid,
-        }),
-        solarRecTrpcUtils.solarRecDashboard.getSystemSnapshotHash.invalidate({
           scopeId: sid,
         }),
         solarRecTrpcUtils.solarRecDashboard.getDashboardSystemsPage.invalidate(),
@@ -1831,10 +1823,10 @@ export default function SolarRecDashboard() {
    * `finishCoreDatasetSync` delegates to the shared invalidation
    * helper so upload success and Schedule B changes refresh the same
    * downstream server aggregates.
-   */
+  */
   const triggerCoreDatasetSrDsSync = useCallback(
     (key: string) => {
-      if (!CORE_DATASET_KEYS_FOR_SNAPSHOT.has(key)) return;
+      if (!CORE_DATASET_KEYS_FOR_TYPED_SYNC.has(key)) return;
 
       void (async () => {
         let jobId: string;
@@ -1947,7 +1939,7 @@ export default function SolarRecDashboard() {
     [
       CORE_DATASET_SYNC_POLL_INTERVAL_MS,
       CORE_DATASET_SYNC_POLL_TIMEOUT_MS,
-      CORE_DATASET_KEYS_FOR_SNAPSHOT,
+      CORE_DATASET_KEYS_FOR_TYPED_SYNC,
       finishCoreDatasetSync,
       setDatabaseSyncProgressFromStatus,
       setDatasetSyncProgressState,
@@ -2673,7 +2665,7 @@ export default function SolarRecDashboard() {
           setLocalOnlyDatasets((previous) => ({ ...previous, [key]: false }));
           setDatasetCloudSyncBadge(key, "pending");
           invalidateDatasetCloudStatuses();
-          if (CORE_DATASET_KEYS_FOR_SNAPSHOT.has(key)) {
+          if (CORE_DATASET_KEYS_FOR_TYPED_SYNC.has(key)) {
             triggerCoreDatasetSrDsSync(key);
           } else {
             setDatasetSyncProgressState(key, {
@@ -2727,10 +2719,10 @@ export default function SolarRecDashboard() {
         invalidateDatasetCloudStatuses();
 
         // Phase 8.1.5: fire-and-forget srDs sync for core datasets
-        // so the server-side system snapshot rebuilds with the new
+        // so server-side facts and aggregators rebuild with the new
         // rows. Doesn't block the user — if the sync fails the old
         // srDs batch stays active as the reader's source of truth.
-        if (CORE_DATASET_KEYS_FOR_SNAPSHOT.has(key)) {
+        if (CORE_DATASET_KEYS_FOR_TYPED_SYNC.has(key)) {
           triggerCoreDatasetSrDsSync(key);
         } else {
           setDatasetSyncProgressState(key, {
@@ -2763,7 +2755,7 @@ export default function SolarRecDashboard() {
       setDatasetCloudSyncBadge,
       setDatasetSyncProgressState,
       triggerCoreDatasetSrDsSync,
-      CORE_DATASET_KEYS_FOR_SNAPSHOT,
+      CORE_DATASET_KEYS_FOR_TYPED_SYNC,
     ]
   );
 
@@ -3230,32 +3222,6 @@ export default function SolarRecDashboard() {
     );
   }, [offlineMonitoringQuery.data]);
 
-  // System snapshot is the legacy ~26 MB allowlisted SystemRecord[]
-  // payload. Only the tabs that genuinely need a per-system row
-  // walk should enable it. Overview, Change Ownership summary,
-  // Offline Monitoring summary, and CSV export do NOT — they are
-  // backed by the slim summary or by future paginated/server-side
-  // export endpoints.
-  //
-  // Generic interaction is too broad: a user clicking through tabs
-  // would re-enable the 26 MB fetch even if they never visited an
-  // Financials tab. The predicate below is the narrow contract —
-  // only the tabs that walk full system records. Alerts and
-  // Comparisons read the paginated `getDashboardSystemsPage` fact
-  // table directly, Forecast reads `getDashboardForecast`, and
-  // SystemDetailSheet reads one selected row via
-  // `getSystemFactsBySystemKeys`.
-  const isSystemSnapshotNeeded = isFinancialsTabActive;
-  const serverSnapshot = useSystemSnapshot({
-    enabled: isSystemSnapshotNeeded,
-  });
-
-  const systems = useMemo<SystemRecord[]>(
-    () => serverSnapshot.systems ?? [],
-    [serverSnapshot.systems],
-  );
-
-
   // Overview-summary aggregator. Pre-PR-E-4-supplement this carried
   // `ownershipRows` (~5-15 MB on prod) and was the entire reason this
   // proc lived on `DASHBOARD_OVERSIZE_ALLOWLIST`. PR-E-4-supplement
@@ -3355,18 +3321,17 @@ export default function SolarRecDashboard() {
   // to the prior client-side filter — but it doesn't require
   // hydrating the ~26 MB snapshot first.
   //
-  // Same gating predicate as `useSystemSnapshot`
-  // (`isSystemSnapshotNeeded`). The heavy snapshot stays gated
-  // for the consumers that genuinely need it (Financials, Forecast)
-  // until those migrations land in PR-F-4-e / PR-F-4-b; this path
-  // exists only for the OverviewTab's parent-level size-reporting
-  // value summary.
+  // PR-F-4-h retires the parent `useSystemSnapshot` call entirely.
+  // Preserve the previous Financials-only activation behavior, but
+  // hydrate the parent Part-2-eligible list through bounded
+  // systems-page reads instead of the legacy full `SystemRecord[]`
+  // snapshot.
   const part2EligibleSystemsPagesQuery =
     solarRecTrpc.solarRecDashboard.getDashboardSystemsPage.useInfiniteQuery(
       { limit: 500, isPart2Eligible: true },
       {
         staleTime: 60_000,
-        enabled: isSystemSnapshotNeeded,
+        enabled: isFinancialsTabActive,
         getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
         initialCursor: null,
       }
@@ -5736,13 +5701,32 @@ const aiDataContext = useMemo(() => {
     for (const k of keys) if (k in obj) result[k] = obj[k];
     return result;
   };
+  const summaryContext = summary
+    ? pick(summary as unknown as Record<string, unknown>, [
+        "totalSystems",
+        "reportingSystems",
+        "reportingPercent",
+        "smallSystems",
+        "largeSystems",
+        "unknownSizeSystems",
+        "totalContractedValue",
+        "ownershipOverview",
+      ])
+    : null;
+  const summarySystemCount =
+    typeof summaryContext?.totalSystems === "number"
+      ? summaryContext.totalSystems
+      : 0;
 
   try {
     switch (activeTab) {
       case "forecast":
         // forecastProjections moved into ForecastTab — chat context
         // loses the per-contract payload but still tracks the tab.
-        return JSON.stringify({ tab: "forecast", systemCount: systems.length });
+        return JSON.stringify({
+          tab: "forecast",
+          systemCount: summarySystemCount,
+        });
       case "financials":
         return JSON.stringify({
           tab: "financials",
@@ -5777,18 +5761,8 @@ const aiDataContext = useMemo(() => {
       case "overview":
         return JSON.stringify({
           tab: "overview",
-          systems: truncate(
-            systems.map((s) =>
-              pick(s as unknown as Record<string, unknown>, [
-                "systemName", "systemId", "trackingSystemRefId",
-                "installedKwAc", "recPrice", "contractedRecs",
-                "deliveredRecs", "contractedValue", "deliveredValue",
-                "valueGap", "isReporting", "isTerminated",
-                "latestReportingDate", "installerName", "monitoringPlatform",
-              ])
-            )
-          ),
-          totalSystems: systems.length,
+          summary: summaryContext,
+          sizeBreakdownRows: truncate(sizeBreakdownRows, 20),
         });
       case "alerts":
         // alerts/alertSummary moved into AlertsTab — chat context loses
@@ -5801,7 +5775,7 @@ const aiDataContext = useMemo(() => {
       default:
         return JSON.stringify({
           tab: activeTab,
-          systemCount: systems.length,
+          systemCount: summarySystemCount,
           note: "Limited context for this tab. Ask general portfolio questions.",
         });
     }
@@ -5809,8 +5783,12 @@ const aiDataContext = useMemo(() => {
     return JSON.stringify({ tab: activeTab, error: "Failed to serialize data context" });
   }
 }, [
-  activeTab, financialProfitData,
-  performanceSourceRows, deliveryTrackerData, systems,
+  activeTab,
+  financialProfitData,
+  performanceSourceRows,
+  deliveryTrackerData,
+  summary,
+  sizeBreakdownRows,
 ]);
 
   return (
@@ -7000,7 +6978,7 @@ const aiDataContext = useMemo(() => {
                             // chunked-CSV reader) so it isn't
                             // invalidatable; the central helper
                             // refreshes the row counts, active
-                            // versions, system snapshot, and only the
+                            // versions, paginated system facts, and only the
                             // dependent transfer lookup/tab aggregates.
                             void invalidateServerDerivedSolarData(key);
                           }}

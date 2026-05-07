@@ -16,8 +16,9 @@
  *   - `off`    — bypass entirely. Incident kill switch.
  *
  * The allowlist matches on the **fully-qualified** procedure path
- * (e.g. `"solarRecDashboard.getSystemSnapshot"`) so a same-named
- * procedure on a different router is not silently allowlisted.
+ * (e.g. `"solarRecDashboard.getDashboardOfflineMonitoring"`) so a
+ * same-named procedure on a different router is not silently
+ * allowlisted.
  *
  * The middleware also records lightweight request-level heap
  * telemetry. That path never serializes `result.data`; it only logs
@@ -87,12 +88,12 @@ export const DASHBOARD_REQUEST_HEAP_AFTER_WARN_BYTES_DEFAULT =
  *     wire output shrinks. The slim response is now a few KB of
  *     scalars + the small `ownershipOverview` count object — well
  *     under the 1 MB budget.
+ *   - `solarRecDashboard.getSystemSnapshot` — Phase 2 PR-F-4-h
+ *     removed the last parent-level `useSystemSnapshot` consumer.
+ *     Tabs now read bounded aggregate/fact-table endpoints instead
+ *     of hydrating the legacy full `SystemRecord[]` payload.
  */
 export const DASHBOARD_OVERSIZE_ALLOWLIST: ReadonlySet<string> = new Set([
-  // Returns the full pre-computed system record set; rebuild plan replaces
-  // with `getDashboardSystemsPage` + a derived `solarRecDashboardSystemFacts`
-  // table.
-  "solarRecDashboard.getSystemSnapshot",
   // Phase 2 PR-C-3-b (2026-05-06) stripped the 3 per-system maps
   // (`monitoringDetailsBySystemKey`, `abpApplicationIdBySystemKey`,
   // `abpAcSizeKwBySystemKey`) at the wire boundary — those drove the
