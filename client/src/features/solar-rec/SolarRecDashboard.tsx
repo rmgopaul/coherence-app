@@ -4878,6 +4878,36 @@ export default function SolarRecDashboard() {
         }
 
         const previousChunkKeys = remoteLogsChunkKeysRef.current ?? [];
+        // Task 5.15 PR-D — durable orphan prune. After every
+        // successful write, sweep any `dataset:snapshot_logs_v1_chunk_*`
+        // rows on disk that aren't part of the new chunk set. The
+        // existing `previousChunkKeys` ref is in-memory and starts as
+        // `[]` on every fresh page load, so chunks that survived a
+        // prior session are invisible to the local diff path. The
+        // 2026-04 production orphans (chunks 0000–0005) were created
+        // exactly that way: a session wrote a chunked payload, then a
+        // different session wrote a single-chunk payload to the main
+        // key with `previousChunkKeys = []`. The new
+        // `pruneSnapshotLogChunksOutsideSet` mutation queries the
+        // server for the actual on-disk chunk set and deletes the
+        // diff, surviving in-memory state loss across sessions.
+        const pruneOrphanChunks = async (newChunkKeys: ReadonlyArray<string>) => {
+          try {
+            await solarRecTrpcUtils.client.solarRecDashboard.pruneSnapshotLogChunksOutsideSet.mutate({
+              keepChunkKeysBare: [...newChunkKeys],
+            });
+          } catch (err) {
+            // Prune failure is non-fatal — the new write succeeded,
+            // any orphans get pruned on the next sync. Log so a
+            // persistent failure becomes visible in Render's error
+            // surface, but don't surface to the user (would mask
+            // the successful write).
+            console.error(
+              "[snapshot-log] prune failed (write succeeded):",
+              err instanceof Error ? err.message : err
+            );
+          }
+        };
         // Phase 13a: same parallel-chunk pattern as saveRemotePayloadWithChunks
         // but kept inline here because it mixes in the REMOTE_LOG_SYNC_MAX_CHUNKS
         // guard + the stale-chunk diff. All mutations inside are independent.
@@ -4936,6 +4966,9 @@ export default function SolarRecDashboard() {
             }
             remoteLogsChunkKeysRef.current = [];
             remoteLogsSignatureRef.current = nextSignature;
+            // PR-D: also prune any chunks the in-memory ref didn't
+            // know about (cleared-from-fresh-browser case).
+            await pruneOrphanChunks([]);
           } catch {
             setStorageNotice("Could not clear snapshot logs from cloud storage.");
           }
@@ -4947,12 +4980,16 @@ export default function SolarRecDashboard() {
         try {
           remoteLogsChunkKeysRef.current = await syncLogsPayload(payload);
           remoteLogsSignatureRef.current = nextSignature;
+          // PR-D: durable orphan prune. Sweep any on-disk chunks
+          // not in the new keep set, regardless of in-memory ref.
+          await pruneOrphanChunks(remoteLogsChunkKeysRef.current);
         } catch {
           try {
             const compactLogs = compactLogsForRemoteSync(logEntries);
             const compactPayload = safeJsonStringify(compactLogs) ?? "[]";
             remoteLogsChunkKeysRef.current = await syncLogsPayload(compactPayload);
             remoteLogsSignatureRef.current = nextSignature;
+            await pruneOrphanChunks(remoteLogsChunkKeysRef.current);
             setStorageNotice(
               "Cloud sync saved compact snapshot logs due size limits. Full history remains on this browser."
             );

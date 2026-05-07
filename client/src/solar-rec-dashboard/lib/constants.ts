@@ -111,6 +111,22 @@ export const REMOTE_DATASET_CHUNK_CHAR_LIMIT = 250_000;
 // false-positive "too large" notice. Don't reintroduce without a
 // concrete request-size failure to point at.
 export const REMOTE_LOG_SYNC_MAX_CHUNKS = 120;
+/**
+ * Hard cap on the localStorage `solarRecDashboardLogsV1` payload size.
+ * Exceeding this triggers `loadPersistedLogs()` to silently delete the
+ * entry and return `[]` — that may look like a footgun but is
+ * deliberate now that the server-of-truth path exists. Browser
+ * localStorage has a ~5 MB origin-wide limit shared across every
+ * personal-app feature; growing snapshot-log history past the cap
+ * would either corrupt other features or get rejected by the
+ * browser. The cap forces a graceful degrade to "let the server-side
+ * recovery hydration provide the long history" (see
+ * `getSnapshotLogs` + `recoveredSnapshotLogEntries` in
+ * `SolarRecDashboard.tsx`). The cloud-sync useEffect's PR-A
+ * write-side guard prevents a localStorage shrink from clobbering
+ * a larger cloud history. Cloud is canonical; localStorage is a
+ * working draft of the most recent local edits.
+ */
 export const MAX_LOCAL_LOG_STORAGE_CHARS = 250_000;
 export const REMOTE_DATASET_KEY_MANIFEST = "dataset_manifest_v1";
 export const REMOTE_SNAPSHOT_LOGS_KEY = "snapshot_logs_v1";

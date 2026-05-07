@@ -734,6 +734,29 @@ describe("Solar REC dashboard mount: heavy-query gates", () => {
     expect(writeIdx).toBeGreaterThan(guardIdx);
   });
 
+  it("Cloud-sync useEffect prunes orphan chunks after every successful write (Task 5.15 PR-D)", () => {
+    // The 2026-04 production orphan bug: the cloud-sync's
+    // `previousChunkKeys` ref is in-memory and starts as `[]` on
+    // every fresh page load, so chunks from a prior session were
+    // never seen and never pruned. PR-D adds a server-side prune
+    // call that surveys the actual on-disk chunk set and deletes
+    // anything outside `keepChunkKeysBare`. This rail pins the
+    // wiring so a refactor can't silently drop the prune call.
+    expect(code).toMatch(
+      /pruneSnapshotLogChunksOutsideSet\.mutate\s*\(\s*\{\s*[\s\S]{0,200}keepChunkKeysBare/
+    );
+    expect(code).toMatch(/const\s+pruneOrphanChunks\s*=\s*async\s*\(/);
+    // Single-chunk / multi-chunk write success → prune with the new
+    // keep set.
+    expect(code).toMatch(
+      /remoteLogsChunkKeysRef\.current\s*=\s*await\s+syncLogsPayload[\s\S]{0,200}pruneOrphanChunks\s*\(\s*remoteLogsChunkKeysRef\.current\s*\)/
+    );
+    // Cleared-cloud branch (logEntries.length === 0) → prune with [].
+    expect(code).toMatch(
+      /remoteLogsChunkKeysRef\.current\s*=\s*\[\][\s\S]{0,300}pruneOrphanChunks\s*\(\s*\[\s*\]\s*\)/
+    );
+  });
+
   it("Snapshot Log restore mutation is wired with onSuccess invalidation (Task 5.15 PR-B)", () => {
     // The restore mutation must:
     //   (a) declare a useMutation hook for
