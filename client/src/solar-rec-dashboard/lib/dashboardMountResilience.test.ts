@@ -1116,18 +1116,34 @@ describe("Solar REC dashboard: snapshot-readiness gate (PR #337 follow-up item 1
     expect(fnSlice!).toMatch(/return\s*;/);
   });
 
-  it("snapshotReadiness gates on ALL FIVE heavy inputs (PR #338 follow-up item 2)", () => {
-    // Each heavy input feeds a required field of the log entry.
+  it("snapshotReadiness gates on every required heavy input (PR #338 follow-up item 2 + Phase 2 PR-F-4-g)", () => {
+    // Each gated input feeds a required field of the log entry.
     // Pre-fix #337: button always live → silent 0s.
     // Pre-fix #338: gate covered four — `recPerformanceContracts2025`
     // was still persisted as `[]` when `performanceSourceRowsQuery`
     // hadn't run.
+    // PR-F-4-g (2026-05-07) dropped the vestigial
+    // `!serverSnapshot.systems` gate after PR-F-4-f-2 moved
+    // `part2EligibleSystemsForSizeReporting` onto the paginated
+    // `getDashboardSystemsPage(isPart2Eligible: true)` walk.
+    // `createLogEntry` no longer derives anything from
+    // `serverSnapshot.systems`; the gate surfaced a misleading
+    // "Open Alerts / Comparisons / Financials / Forecast" UX
+    // message.
     expect(code).toMatch(/snapshotReadiness/);
     expect(code).toMatch(/summary\?\.kind\s*!==\s*["']heavy["']/);
     expect(code).toMatch(/changeOwnershipQuery\.status\s*!==\s*["']success["']/);
+    expect(code).toMatch(/!\s*isChangeOwnershipPagesComplete/);
     expect(code).toMatch(/offlineMonitoringQuery\.status\s*!==\s*["']success["']/);
-    expect(code).toMatch(/!serverSnapshot\.systems/);
+    expect(code).toMatch(/!\s*isMonitoringDetailsPagesComplete/);
+    expect(code).toMatch(/!\s*isPart2EligibleSystemsPagesComplete/);
     expect(code).toMatch(/performanceSourceRowsQuery\.status\s*!==\s*["']success["']/);
+    // The vestigial gate must NOT come back. Snapshot creation no
+    // longer depends on the heavy `systems: SystemRecord[]` array
+    // hydrating; reintroducing it would block snapshots on a
+    // narrower set of heavy-tab activations than the data
+    // dependencies actually require.
+    expect(code).not.toMatch(/!serverSnapshot\.systems/);
   });
 
   it("snapshotReadiness type CARRIES the narrowed values it gates on (PR #338 follow-up item 3)", () => {

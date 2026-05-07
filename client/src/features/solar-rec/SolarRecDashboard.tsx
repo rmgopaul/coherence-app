@@ -5007,18 +5007,38 @@ export default function SolarRecDashboard() {
 
   // PR #337 follow-up item 1 + PR #338 follow-up items 2 & 3
   // (2026-05-04 / 2026-05-05). The snapshot persists a
-  // `DashboardLogEntry` whose required fields draw on FIVE
+  // `DashboardLogEntry` whose required fields draw on
   // independent server queries:
-  //   - heavy overview-summary (terminated breakdown, system counts)
-  //   - heavy change-ownership rows (per-status counts +
-  //     `cooStatuses` map)
-  //   - heavy offline-monitoring (drives `part2EligibleSystemsForSize
-  //     Reporting` → `snapshotPart2ValueSummary`)
-  //   - system snapshot (back-fills `deliveredValue` per system,
-  //     used by `snapshotPart2ValueSummary.totalDeliveredValue`)
+  //   - slim overview-summary (terminated breakdown, system
+  //     counts; `getDashboardOverviewSummary` post-PR-E-4-
+  //     supplement no longer ships per-row payloads)
+  //   - paginated change-ownership rows
+  //     (`getDashboardChangeOwnershipPage` walk; per-status
+  //     counts + `cooStatuses` map)
+  //   - paginated Part-2 eligible systems
+  //     (`getDashboardSystemsPage({isPart2Eligible: true})` walk;
+  //     drives `snapshotPart2ValueSummary.{contractedValue,
+  //     deliveredValue, gap}` totals)
+  //   - heavy offline-monitoring (still residual; drives
+  //     `snapshotPart2ValueSummary` totals when present)
+  //   - paginated monitoring details
+  //     (`getDashboardMonitoringDetailsPage` walk)
   //   - REC performance source rows (drives
   //     `recPerformanceSnapshotContracts2025`, the per-contract
   //     shortfall rollup persisted on the entry)
+  //
+  // Phase 2 PR-F-4-g (2026-05-07): the legacy
+  // `useSystemSnapshot` gate was retired here. After PR-F-4-f-2
+  // moved `part2EligibleSystemsForSizeReporting` onto the
+  // paginated systems-page walk, no createLogEntry output draws
+  // on the heavy `systems: SystemRecord[]` array. The
+  // `serverSnapshot.systems` gate that previously demanded a
+  // heavy-tab visit before snapshotting was vestigial and
+  // surfaced the wrong UX message ("Open Alerts / Comparisons /
+  // Financials / Forecast (or pick a system) so the system
+  // snapshot loads…"). Dropping it lets snapshots fire from any
+  // path that hydrates the slim summary + the three paginated
+  // walks + REC performance rows — the actual data dependencies.
   //
   // Pre-fix #337: snapshot button was always live → silent 0s.
   // Pre-fix #338: gate covered four of the five queries —
@@ -5102,13 +5122,6 @@ export default function SolarRecDashboard() {
         ready: false,
         reason:
           "Loading Part-2 eligible system rows… try again in a moment.",
-      };
-    }
-    if (!serverSnapshot.systems) {
-      return {
-        ready: false,
-        reason:
-          "Open Alerts / Comparisons / Financials / Forecast (or pick a system) so the system snapshot loads before snapshotting.",
       };
     }
     if (performanceSourceRowsQuery.status !== "success") {
