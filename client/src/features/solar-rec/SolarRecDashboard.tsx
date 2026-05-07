@@ -2009,6 +2009,31 @@ export default function SolarRecDashboard() {
   // values come from the slim summary instead.
   const [hasUserInteractedWithDashboard, setHasUserInteractedWithDashboard] =
     useState(false);
+  // Task 5.15 PR-F — snapshot intent flag. PR-E auto-tripped
+  // `hasUserInteractedWithDashboard` when the user clicked Log
+  // Snapshot from Overview-with-slim, but that only unblocked the
+  // overview-summary query. The other 4 snapshot dependencies
+  // (`getDashboardChangeOwnership`, the change-ownership-page
+  // walk, the part-2 systems-page walk, and the REC-performance-
+  // source-rows query) are each separately gated on their OWN
+  // tab being active — so a user who never visits those tabs
+  // would still hit `Open the X tab` toasts on every subsequent
+  // click. PR-F adds this single intent flag that, when set,
+  // unblocks all 5 dependency queries simultaneously. Memory
+  // safety: the historical OOM-causing payloads
+  // (`getSystemSnapshot`, `getDashboardOverviewSummary.ownershipRows`,
+  // `getDashboardChangeOwnership.rows`, `getDatasetAssembled`)
+  // are all retired; what remains is bounded under 1 MB per
+  // response by `dashboardProcedure` middleware. Total
+  // accumulated heap for firing all 5 in parallel is under 10 MB.
+  const [snapshotIntentRequested, setSnapshotIntentRequested] =
+    useState(false);
+  // PR-F auto-fire trigger: when the user clicks Log Snapshot
+  // and queries are still loading, this flag is set so the
+  // useEffect below auto-fires the snapshot the moment readiness
+  // resolves. Avoids requiring a second click after the loading
+  // toast.
+  const [snapshotPendingFire, setSnapshotPendingFire] = useState(false);
   // pipeline{Count,Kw,Interconnected,CashFlow}Range, pipelineReportLoading,
   // generatePipelineReport — moved to @/solar-rec-dashboard/components/AppPipelineTab
   // Tab-active flags kept in the parent are the ones that still
@@ -3235,7 +3260,12 @@ export default function SolarRecDashboard() {
       undefined,
       {
         staleTime: 60_000,
-        enabled: isOverviewTabActive && hasUserInteractedWithDashboard,
+        // PR-F: also fire when snapshot intent is requested. The
+        // `hasUserInteractedWithDashboard` part stays as the engaged-
+        // user gate (createLogEntry trips both flags together).
+        enabled:
+          (isOverviewTabActive || snapshotIntentRequested) &&
+          hasUserInteractedWithDashboard,
       }
     );
   type OverviewSummaryData = NonNullable<typeof overviewSummaryQuery.data>;
@@ -3328,7 +3358,12 @@ export default function SolarRecDashboard() {
     activeTab === "value" ||
     isOfflineMonitoringTabActive ||
     isFinancialsTabActive ||
-    isSnapshotLogTabActive;
+    isSnapshotLogTabActive ||
+    // PR-F: snapshot intent triggers the part-2 systems walk too
+    // (createLogEntry needs `snapshotPart2ValueSummary`). Keep
+    // Overview OUT of this list — that's the rule the mount-
+    // resilience rail pins.
+    snapshotIntentRequested;
 
   // PR-F-4-h retired the parent `useSystemSnapshot` call entirely.
   // PR-F-4-i broadens this bounded systems-page walk to the tabs
@@ -3537,8 +3572,10 @@ export default function SolarRecDashboard() {
       undefined,
       {
         staleTime: 60_000,
+        // PR-F: also fire on snapshot intent.
         enabled:
-          isChangeOwnershipTabActive && hasUserInteractedWithDashboard,
+          (isChangeOwnershipTabActive || snapshotIntentRequested) &&
+          hasUserInteractedWithDashboard,
       }
     );
   type ChangeOwnershipData = NonNullable<typeof changeOwnershipQuery.data>;
@@ -3611,8 +3648,12 @@ export default function SolarRecDashboard() {
       { limit: 500 },
       {
         staleTime: 60_000,
+        // PR-F: also fire on snapshot intent — createLogEntry needs
+        // the full row set to compute `cooStatuses` + per-status
+        // counts.
         enabled:
-          isChangeOwnershipTabActive && hasUserInteractedWithDashboard,
+          (isChangeOwnershipTabActive || snapshotIntentRequested) &&
+          hasUserInteractedWithDashboard,
         getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
         initialCursor: null,
       }
@@ -4174,7 +4215,12 @@ export default function SolarRecDashboard() {
     solarRecTrpc.solarRecDashboard.getDashboardPerformanceSourceRows.useQuery(
       undefined,
       {
-        enabled: isPerformanceEvalTabActive,
+        // PR-F: also fire on snapshot intent. createLogEntry persists
+        // `recPerformanceContracts2025` from this query's rows, so a
+        // snapshot taken without REC Performance Eval / Snapshot Log
+        // tab activation used to silently bake `[]` until the gate
+        // was added in PR #338.
+        enabled: isPerformanceEvalTabActive || snapshotIntentRequested,
         staleTime: 60_000,
       }
     );
@@ -5072,26 +5118,16 @@ export default function SolarRecDashboard() {
     | SnapshotReadyState
     | { ready: false; reason: string };
   const snapshotReadiness: SnapshotReadiness = ((): SnapshotReadiness => {
+    // PR-F: when snapshot intent is requested OR the relevant tab
+    // is active, the queries are firing — show "Loading…" instead
+    // of "Open the X tab". The "Open the X tab" copy is reserved
+    // for the genuine "user hasn't initiated anything yet" state
+    // (which is rare now that createLogEntry auto-trips intent).
     if (summary?.kind !== "heavy") {
-      // Differentiate two failure modes that previously shared the
-      // same misleading "Open the Overview tab" message:
-      //   1. User is on Overview but heavy hasn't loaded yet —
-      //      either because `hasUserInteractedWithDashboard` is
-      //      still false (default landing on /solar-rec/dashboard
-      //      without clicking any tab) or because the heavy query
-      //      is still in flight. The createLogEntry click handler
-      //      auto-trips the interaction flag in this case.
-      //   2. User is on a non-Overview tab where the heavy query
-      //      can never fire (its `enabled` predicate gates on
-      //      `isOverviewTabActive`).
-      // Pre-fix: case (1) showed "Open the Overview tab" even
-      // though the user was already on it. Surfaced as a UX
-      // dead-end because the button was also disabled.
-      if (isOverviewTabActive) {
+      if (snapshotIntentRequested || isOverviewTabActive) {
         return {
           ready: false,
-          reason:
-            "Loading full summary… click Log Snapshot again in a moment.",
+          reason: "Loading full summary…",
         };
       }
       return {
@@ -5101,6 +5137,12 @@ export default function SolarRecDashboard() {
       };
     }
     if (changeOwnershipQuery.status !== "success") {
+      if (snapshotIntentRequested || isChangeOwnershipTabActive) {
+        return {
+          ready: false,
+          reason: "Loading change-ownership data…",
+        };
+      }
       return {
         ready: false,
         reason:
@@ -5116,8 +5158,7 @@ export default function SolarRecDashboard() {
     if (!isChangeOwnershipPagesComplete) {
       return {
         ready: false,
-        reason:
-          "Loading change-ownership rows… try again in a moment.",
+        reason: "Loading change-ownership rows…",
       };
     }
     // Phase 2 PR-F-4-f-2 — `snapshotPart2ValueSummary` derives from
@@ -5130,11 +5171,16 @@ export default function SolarRecDashboard() {
     if (!isPart2EligibleSystemsPagesComplete) {
       return {
         ready: false,
-        reason:
-          "Loading Part-2 eligible system rows… try again in a moment.",
+        reason: "Loading Part-2 eligible system rows…",
       };
     }
     if (performanceSourceRowsQuery.status !== "success") {
+      if (snapshotIntentRequested || isPerformanceEvalTabActive) {
+        return {
+          ready: false,
+          reason: "Loading REC performance source rows…",
+        };
+      }
       return {
         ready: false,
         reason:
@@ -5151,45 +5197,21 @@ export default function SolarRecDashboard() {
     };
   })();
 
-  const createLogEntry = () => {
-    if (!snapshotReadiness.ready) {
-      // PR-E (Task 5.15) — auto-trip the interaction flag when the
-      // user clicks Log Snapshot from Overview-with-slim. The click
-      // is a deliberate user action that justifies firing the heavy
-      // overview-summary query (gated on `isOverviewTabActive &&
-      // hasUserInteractedWithDashboard`). Pre-fix: a user who
-      // landed on the default Overview tab without clicking any
-      // tab first had `hasUserInteractedWithDashboard = false`, so
-      // the heavy query was disabled, so `summary.kind` stayed
-      // "slim", so the button was disabled forever — with a
-      // tooltip telling them to "Open the Overview tab" while
-      // they were already on it.
-      if (
-        isOverviewTabActive &&
-        summary?.kind === "slim" &&
-        !hasUserInteractedWithDashboard
-      ) {
-        setHasUserInteractedWithDashboard(true);
-        toast.info(
-          "Loading full summary… click Log Snapshot again in a moment."
-        );
-        return;
-      }
-      toast.error(snapshotReadiness.reason);
-      return;
-    }
-    // All required heavy data is bound to `snapshotReadiness` and
-    // narrowed by the discriminator. No outer-variable reads here —
-    // a future PR that disables a query without updating
-    // `snapshotReadiness` cannot accidentally re-introduce the
-    // silent-zero bug.
+  // PR-F: extracted from createLogEntry so both the click handler
+  // (sync fire when ready) and the auto-fire useEffect (queued
+  // pending fire when click happened during loading) share one
+  // implementation. Pure dependency on `snapshotReadiness` payload
+  // narrowed to ready — no closure on dynamic outer state beyond
+  // `datasets` (used for the dataset-summary list baked into the
+  // entry).
+  const buildAndPersistSnapshot = (ready: SnapshotReadyState) => {
     const {
       summary: heavySummary,
       changeOwnershipRows: cooRows,
       snapshotPart2ValueSummary: valueSummary,
       recPerformanceContracts,
       changeOwnershipSummary: cooSummary,
-    } = snapshotReadiness;
+    } = ready;
 
     const statusCount = (status: ChangeOwnershipStatus) =>
       cooRows.filter((system) => system.changeOwnershipStatus === status).length;
@@ -5242,6 +5264,54 @@ export default function SolarRecDashboard() {
 
     setLogEntries((previous) => [entry, ...previous].slice(0, 500));
   };
+
+  const createLogEntry = () => {
+    if (snapshotReadiness.ready) {
+      buildAndPersistSnapshot(snapshotReadiness);
+      // Successful fire — clear any leftover pending state so a
+      // subsequent click doesn't trip the auto-fire effect against
+      // stale flags.
+      if (snapshotPendingFire) setSnapshotPendingFire(false);
+      if (snapshotIntentRequested) setSnapshotIntentRequested(false);
+      return;
+    }
+    // PR-F (Task 5.15) — clicking Log Snapshot when readiness is
+    // false trips ALL the dependency-query gates simultaneously
+    // (interaction + intent flags) and queues an auto-fire so the
+    // snapshot lands without a second click. Replaces PR-E's
+    // single-gate auto-trip (Overview-only) with a uniform
+    // dependency-load-on-intent pattern that covers all 5 gates.
+    if (!hasUserInteractedWithDashboard) {
+      setHasUserInteractedWithDashboard(true);
+    }
+    if (!snapshotIntentRequested) {
+      setSnapshotIntentRequested(true);
+    }
+    if (!snapshotPendingFire) {
+      setSnapshotPendingFire(true);
+      toast.info(
+        "Loading snapshot dependencies… snapshot will fire automatically when ready."
+      );
+    } else {
+      toast.info("Still loading snapshot dependencies…");
+    }
+  };
+
+  // PR-F auto-fire: when readiness resolves AND a click is queued,
+  // build + persist the snapshot once. Clearing
+  // `snapshotPendingFire` + `snapshotIntentRequested` first keeps
+  // the effect from re-firing on the next render. The effect's
+  // dep is `snapshotReadiness.ready` (boolean primitive) so it
+  // doesn't churn on every readiness recompute.
+  useEffect(() => {
+    if (!snapshotPendingFire) return;
+    if (!snapshotReadiness.ready) return;
+    setSnapshotPendingFire(false);
+    setSnapshotIntentRequested(false);
+    buildAndPersistSnapshot(snapshotReadiness);
+    toast.success("Snapshot logged.");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [snapshotPendingFire, snapshotReadiness.ready]);
 
   const clearLogs = () => {
     setLogEntries([]);
@@ -5868,23 +5938,24 @@ const aiDataContext = useMemo(() => {
             <Button
               variant="outline"
               onClick={createLogEntry}
-              // PR-E: keep clickable when on Overview-with-slim so
-              // the click handler can trip
-              // `hasUserInteractedWithDashboard` and start loading
-              // the heavy summary. Disabled state still applies on
-              // non-Overview tabs (where heavy can never fire) and
-              // while paginated walks / REC-perf rows are still
-              // loading — those failure modes are user-actionable
-              // (switch tabs, wait) but don't need the click to
-              // unstick anything.
-              disabled={
-                !snapshotReadiness.ready &&
-                !(isOverviewTabActive && summary?.kind === "slim")
-              }
+              // PR-F: button is always clickable. The handler is
+              // smart enough to:
+              //   - fire the snapshot immediately when ready;
+              //   - trip all 5 dependency-query flags AND queue an
+              //     auto-fire when not ready;
+              //   - acknowledge a duplicate click during loading.
+              // Disabled-state was the wrong UX primitive: a
+              // disabled button can't even communicate "click to
+              // start loading", so users hit dead-ends. The
+              // hover-tooltip now explains what's happening
+              // mid-load.
+              disabled={false}
               title={
                 snapshotReadiness.ready
                   ? "Persist the current dashboard state to the snapshot log."
-                  : snapshotReadiness.reason
+                  : snapshotPendingFire
+                    ? "Loading snapshot dependencies — snapshot will fire automatically when ready."
+                    : snapshotReadiness.reason
               }
             >
               Log Snapshot

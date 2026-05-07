@@ -1325,15 +1325,28 @@ describe("Solar REC dashboard: snapshot-readiness gate (PR #337 follow-up item 1
   const code = codeOnly();
 
   it("createLogEntry refuses to persist when heavy data is missing — no silent-zero log entries", () => {
-    // The function must early-return on the !ready path and call
-    // `toast.error(<reason>)` so the user understands why the
-    // snapshot didn't take.
+    // PR-F update: the original "no silent-zero" property is now
+    // enforced by the discriminated `snapshotReadiness` type +
+    // pending-fire pattern, NOT by an early-return + toast.error.
+    // When readiness is false, createLogEntry queues a pending
+    // fire (setSnapshotPendingFire(true)) and returns. The
+    // auto-fire useEffect predicates on `snapshotReadiness.ready`
+    // before calling `buildAndPersistSnapshot`, so a snapshot
+    // cannot land while data is missing. If readiness regresses
+    // (e.g. a query errors), the effect skips. Same safety
+    // property, different shape.
     const fnSlice = sliceCreateLogEntryBody();
     expect(fnSlice).not.toBeNull();
     expect(fnSlice!).toMatch(/snapshotReadiness/);
-    expect(fnSlice!).toMatch(/!\s*snapshotReadiness\.ready/);
-    expect(fnSlice!).toMatch(/toast\.error\s*\(/);
-    expect(fnSlice!).toMatch(/return\s*;/);
+    // The handler MUST early-return on the not-ready path —
+    // never falling through to `setLogEntries`.
+    expect(fnSlice!).toMatch(/snapshotReadiness\.ready[\s\S]{0,2000}return\s*;/);
+    // Auto-fire effect must gate on readiness.ready before
+    // persisting (verified separately by the PR-F rail below;
+    // double-checked here for the no-silent-zero contract).
+    expect(code).toMatch(
+      /useEffect\s*\([\s\S]{0,400}snapshotPendingFire[\s\S]{0,200}snapshotReadiness\.ready[\s\S]{0,400}buildAndPersistSnapshot/
+    );
   });
 
   it("snapshotReadiness gates on every required heavy input (PR #338 follow-up item 2 + Phase 2 PR-F-4-g)", () => {
@@ -1385,34 +1398,61 @@ describe("Solar REC dashboard: snapshot-readiness gate (PR #337 follow-up item 1
     expect(fnSlice!).not.toMatch(/Belt-and-braces/);
   });
 
-  it("Log Snapshot button is tooltipped while readiness is false; click trips overview-heavy load (Task 5.15 PR-E)", () => {
-    // PR-E: button stays clickable when on Overview-with-slim so
-    // the click handler can flip `hasUserInteractedWithDashboard`
-    // and trigger the heavy `getDashboardOverviewSummary` query.
-    // Disabled state still applies on non-Overview tabs (where the
-    // heavy query can never fire) and while paginated walks /
-    // REC-perf rows are still loading on Overview-with-heavy.
+  it("Log Snapshot button trips ALL snapshot dependencies on click + auto-fires when ready (Task 5.15 PR-F)", () => {
+    // PR-F: clicking Log Snapshot when readiness is false trips
+    // all 5 dependency-query gates (interaction + intent flags)
+    // and queues an auto-fire. The button itself is no longer
+    // disabled — the handler decides what to do, and the auto-fire
+    // useEffect persists the snapshot the moment readiness
+    // resolves. Replaces PR-E's single-gate auto-trip with a
+    // uniform pattern that covers all 5 gates.
+
+    // 1. Intent + pending state declarations.
     expect(code).toMatch(
-      /disabled\s*=\s*\{[\s\S]{0,200}!snapshotReadiness\.ready[\s\S]{0,400}isOverviewTabActive[\s\S]{0,200}summary\?\.kind\s*===\s*"slim"[\s\S]{0,400}Log Snapshot/
+      /\[\s*snapshotIntentRequested\s*,\s*setSnapshotIntentRequested\s*\][^;]*useState/
     );
     expect(code).toMatch(
-      /title\s*=\s*\{[\s\S]{0,200}snapshotReadiness\.ready[\s\S]{0,200}snapshotReadiness\.reason[\s\S]{0,400}Log Snapshot/
+      /\[\s*snapshotPendingFire\s*,\s*setSnapshotPendingFire\s*\][^;]*useState/
     );
-    // PR-E adds a distinct readiness-reason for the
-    // Overview-with-slim case so the user isn't told to open the
-    // tab they're already on. The `Loading full summary…` string
-    // is the new path; the `Open the Overview tab` string still
-    // exists for the genuine non-Overview case.
-    expect(code).toMatch(/Loading full summary/);
-    expect(code).toMatch(/Open the Overview tab to load the full summary/);
-    // The createLogEntry handler must auto-trip the interaction
-    // flag when clicked from Overview-with-slim — that's the
-    // only way for a fresh-mount user (default Overview, no tab
-    // clicks) to ever load the heavy summary.
+
+    // 2. Each of the 5 dependency queries' enabled predicate must
+    // include `snapshotIntentRequested` so a single intent flip
+    // fires them all.
+    const enabledClauses = code.match(/enabled\s*:[^,}]+/g) ?? [];
+    const intentClauses = enabledClauses.filter((clause) =>
+      clause.includes("snapshotIntentRequested")
+    );
+    // Overview, ChangeOwnership query, ChangeOwnershipPage walk,
+    // PerformanceSourceRows. (The Part-2 systems walk uses the
+    // `isPart2EligibleSystemsNeeded` predicate, asserted below.)
+    expect(intentClauses.length).toBeGreaterThanOrEqual(4);
+    // The Part-2 predicate must include intent.
+    const part2Predicate = code.match(
+      /const\s+isPart2EligibleSystemsNeeded\s*=[\s\S]{0,500};/
+    );
+    expect(part2Predicate).not.toBeNull();
+    expect(part2Predicate![0]).toMatch(/snapshotIntentRequested/);
+
+    // 3. Button is unconditionally clickable post-PR-F. The
+    // disabled-state UX was the dead-end that drove the original
+    // bug; the handler now does all the gating internally.
+    expect(code).toMatch(
+      /disabled\s*=\s*\{\s*false\s*\}[\s\S]{0,400}Log Snapshot/
+    );
+
+    // 4. createLogEntry trips all three flags and uses pending
+    // fire as the queue.
     const fnSlice = sliceCreateLogEntryBody();
     expect(fnSlice).not.toBeNull();
     expect(fnSlice!).toMatch(/setHasUserInteractedWithDashboard\s*\(\s*true\s*\)/);
-    expect(fnSlice!).toMatch(/isOverviewTabActive[\s\S]{0,200}summary\?\.kind\s*===\s*"slim"/);
+    expect(fnSlice!).toMatch(/setSnapshotIntentRequested\s*\(\s*true\s*\)/);
+    expect(fnSlice!).toMatch(/setSnapshotPendingFire\s*\(\s*true\s*\)/);
+
+    // 5. Auto-fire useEffect calls the snapshot builder when
+    // readiness resolves AND a click is pending.
+    expect(code).toMatch(
+      /useEffect\s*\(\s*\(\s*\)\s*=>\s*\{[\s\S]{0,800}snapshotPendingFire[\s\S]{0,400}snapshotReadiness\.ready[\s\S]{0,400}buildAndPersistSnapshot/
+    );
   });
 });
 
