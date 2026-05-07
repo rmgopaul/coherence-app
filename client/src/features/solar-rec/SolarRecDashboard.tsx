@@ -6448,7 +6448,7 @@ const aiDataContext = useMemo(() => {
               <TabErrorBoundary tabLabel="Financials">
                 <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading financials tab...</div>}>
                   <FinancialsTabLazy
-                    systems={systems}
+                    part2EligibleSystems={part2EligibleSystemsForSizeReporting}
                     financialProfitData={financialProfitData}
                     contractScanResults={contractScanResultsQuery.data ?? []}
                     contractScanStatus={contractScanResultsQuery.status}

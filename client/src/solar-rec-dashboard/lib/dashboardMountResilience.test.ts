@@ -890,6 +890,25 @@ describe("Solar REC dashboard mount: heavy-query gates", () => {
     expect(code).not.toMatch(/<AlertsTabLazy[\s\S]{0,200}systems=/);
   });
 
+  it("Financials tab consumes the parent's Part-2-eligible systems list (Phase 2 PR-F-4-e)", () => {
+    // PR-F-4-e replaced FinancialsTab's `systems: SystemRecord[]`
+    // prop with `part2EligibleSystems`, sourced from the parent's
+    // existing `useInfiniteQuery` of
+    // `getDashboardSystemsPage({isPart2Eligible: true})` (already
+    // gated on `isSystemSnapshotNeeded`). The tab keeps its
+    // `part2VerificationDate !== null` filter as a defensive
+    // narrowing — eligible-by-ID-match should imply
+    // verified-by-date but the explicit filter avoids any drift.
+    // A regression that re-introduces `systems={systems}` on the
+    // FinancialsTab prop pass would re-couple it to
+    // `useSystemSnapshot` — exactly what PR-F-4-h is about to
+    // retire.
+    expect(code).toMatch(
+      /<FinancialsTabLazy[\s\S]{0,200}part2EligibleSystems=\{part2EligibleSystemsForSizeReporting\}/
+    );
+    expect(code).not.toMatch(/<FinancialsTabLazy[\s\S]{0,400}systems=\{systems\}/);
+  });
+
   it("SystemDetailSheet reads one system fact by key instead of parent SystemRecord rows", () => {
     expect(SYSTEM_DETAIL_SHEET_SOURCE).toMatch(
       /getSystemFactsBySystemKeys\.useQuery/
