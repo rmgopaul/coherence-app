@@ -3253,9 +3253,11 @@ export default function SolarRecDashboard() {
   //
   // Pre-slim consumers that show delivered-value tiles MUST narrow
   // before reading those fields and render an explicit "—" / "N/A"
-  // placeholder when slim. ownershipRows stays unavailable on slim
-  // and must not be used for export — server-side
-  // `exportOwnershipTileCsv` is the canonical path.
+  // placeholder when slim. PR-E-4-supplement (2026-05-06) stripped
+  // `ownershipRows` from the heavy proc's wire shape too, so it's
+  // unavailable on either path. CSV exports go through the
+  // background-job flow (`startDashboardCsvExport({ exportType:
+  // "ownershipTileCsv" })` → `getDashboardCsvExportJobStatus`).
   // PR #337 follow-up item 6 (2026-05-04). Slim variant is now an
   // inferred tRPC type (NonNullable<typeof dashboardSummaryQuery.data>)
   // so a server-side change to `SlimDashboardSummary` propagates to
@@ -3790,24 +3792,24 @@ export default function SolarRecDashboard() {
    * running, leaving an orphaned artifact and a confused user — see
    * PR #347 follow-up).
    *
-   * **Status-poll errors and `notFound` are NOT terminal.** Two
-   * sources of transient lookup failure:
+   * **Status-poll errors are transient; `notFound` is terminal.**
    *   1. `getDashboardCsvExportJobStatus.fetch(...)` rejection
-   *      (network blip, 5xx, rate limit).
-   *   2. Server returns `status: "notFound"` because the in-memory
-   *      job registry was wiped by a process restart / deploy /
-   *      OOM. The server's running-prune-skip rule means a
-   *      not-yet-terminal job CAN'T be pruned mid-flight, but a
-   *      restart wipes the entire `Map` and orphans every
-   *      in-flight jobId. Until Phase 6 ships a DB-backed
-   *      registry, treat notFound as transient and let the TTL
-   *      window be the only terminal boundary.
-   * Both paths surface the same "Still preparing; connection
-   * interrupted, retrying status check…" toast and keep polling.
+   *      (network blip, 5xx, rate limit) → keep polling. Surfaces
+   *      the "Still preparing; connection interrupted, retrying
+   *      status check…" toast.
+   *   2. Server returns `status: "notFound"` → terminal failure.
+   *      Phase 6 PR-B replaced the in-memory `Map` registry with
+   *      the DB-backed `dashboardCsvExportJobs` table, so a
+   *      `notFound` response genuinely means the row was pruned
+   *      (TTL elapsed) or never existed for this scope. Pre-fix
+   *      (PR #352) treated this as retryable because process
+   *      restarts wiped the Map mid-flight; that workaround was
+   *      reverted alongside the table migration.
    *
-   * The ONLY terminal client-side outcomes are:
+   * The terminal client-side outcomes are:
    *   - server returns `succeeded` (download or no-rows toast)
    *   - server returns `failed` (real server-side failure)
+   *   - server returns `notFound` (job pruned or unknown)
    *   - the start mutation itself fails (no jobId to poll)
    *   - the 30-min TTL window elapses with no terminal server status
    *

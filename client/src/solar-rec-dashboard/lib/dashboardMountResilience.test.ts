@@ -1146,8 +1146,13 @@ describe("Solar REC dashboard mount: slim summary discriminator (PR #332 follow-
 
   it("dead `ownershipCountTileRows` memo (which read summary.ownershipRows) is gone", () => {
     // The memo was the only client reader of `summary.ownershipRows`,
-    // and it had no consumers. CSV exports go through the server-side
-    // `exportOwnershipTileCsv` proc instead.
+    // and it had no consumers. CSV exports go through the
+    // background-job flow (`startDashboardCsvExport({ exportType:
+    // "ownershipTileCsv" })` → `getDashboardCsvExportJobStatus`).
+    // PR-E-4-supplement (2026-05-06) additionally stripped
+    // `ownershipRows` from the heavy proc's wire shape, so the
+    // field is no longer available on the wire to read in the
+    // first place — the second assertion below is belt-and-braces.
     expect(code).not.toMatch(/const\s+ownershipCountTileRows\s*=/);
     expect(code).not.toMatch(/summary\.ownershipRows\.filter/);
   });
