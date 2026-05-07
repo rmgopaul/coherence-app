@@ -5471,14 +5471,13 @@ const deliveryTrackerData = deliveryTrackerQuery.data ?? EMPTY_DELIVERY_TRACKER_
 // AlertItem type, alerts memo, alertSummary memo — moved to @/solar-rec-dashboard/components/AlertsTab
 // comparisonInstallers, comparisonPlatforms — moved to @/solar-rec-dashboard/components/ComparisonsTab
 
-// ── Financials: Part II Verified System IDs (strict) ────────────
-// Phase 5e step 4 PR-C1 (2026-04-30) — server-driven via
-// `getDashboardOfflineMonitoring.part2VerifiedSystemIds`.
-const part2VerifiedSystemIds = useMemo(() => {
-  return new Set<string>(
-    offlineMonitoringQuery.data?.part2VerifiedSystemIds ?? []
-  );
-}, [offlineMonitoringQuery.data]);
+// part2VerifiedSystemIds — retired 2026-05-07. The parent's
+// `Set<string>` useMemo had no consumers — last reader migrated
+// during the F-4 series (FinancialsTab now derives Part-2-verified
+// systems from `part2EligibleSystemsForSizeReporting` filtered
+// client-side by `part2VerificationDate !== null`). The wire
+// field is dropped from `getDashboardOfflineMonitoring`'s response
+// in the same PR.
 
 // part2VerifiedSystems, financialRevenueAtRisk — moved to @/solar-rec-dashboard/components/FinancialsTab
 // ── Financials: Profit & Collateralization ──────────────────────

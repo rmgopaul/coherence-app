@@ -3581,12 +3581,25 @@ export const solarRecDashboardRouter = t.router({
     const { result, fromCache } =
       await getOrBuildOfflineMonitoringAggregates(ctx.scopeId);
 
-    // Strip the per-system maps at the wire boundary. The
-    // aggregator's return type still carries them (the underlying
-    // computation paths haven't changed), but no client path reads
-    // them from this proc after PR-C-3-b. Underscore-prefix on
-    // the discarded bindings keeps tsc happy without changing
-    // the aggregator's shape.
+    // Strip the per-system maps + 3 dead Part-2 ID arrays at the
+    // wire boundary. The aggregator's return type still carries
+    // them (the server-side fact-table builders read the 3 ID
+    // arrays in-process to populate `isPart2Eligible`), but no
+    // client path reads them from this proc after the F-4 series.
+    // Phase 2 OfflineMonitoring residual cleanup (2026-05-07)
+    // strips the last dead wire fields:
+    //   - `eligiblePart2ApplicationIds` / `eligiblePart2PortalSystemIds`:
+    //     never read client-side (the Sets the parent built from
+    //     them were dropped during the F-4 sequence).
+    //   - `part2VerifiedSystemIds`: parent built a Set from this
+    //     but never read it; pure dead useMemo.
+    // The remaining live wire shape is `eligiblePart2TrackingIds`
+    // (drives the OfflineMonitoringTab's
+    // `abpEligibleTrackingIdsStrict` filter) plus
+    // `abpEligibleTotalSystemsCount` + `part2VerifiedAbpRowsCount`
+    // scalar tile values. Total response ≈ 250 KB on prod —
+    // comfortably under the 1 MB budget, retiring the entry from
+    // `DASHBOARD_OVERSIZE_ALLOWLIST`.
     const {
       monitoringDetailsBySystemKey: _monitoringDetailsBySystemKey,
       abpApplicationIdBySystemKey: _abpApplicationIdBySystemKey,
@@ -3594,6 +3607,9 @@ export const solarRecDashboardRouter = t.router({
       abpAcSizeKwByApplicationId: _abpAcSizeKwByApplicationId,
       abpPart2VerificationDateByApplicationId:
         _abpPart2VerificationDateByApplicationId,
+      eligiblePart2ApplicationIds: _eligiblePart2ApplicationIds,
+      eligiblePart2PortalSystemIds: _eligiblePart2PortalSystemIds,
+      part2VerifiedSystemIds: _part2VerifiedSystemIds,
       ...rest
     } = result;
 
