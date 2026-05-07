@@ -37,9 +37,54 @@ import {
   computeFoundationHash,
   loadInputVersions,
 } from "./buildFoundationArtifact";
-import { loadDatasetRows } from "./buildSystemSnapshot";
+import { loadDatasetRows, loadDatasetRowsPage } from "./buildSystemSnapshot";
 import { getOrBuildFoundation } from "./foundationRunner";
 import { jsonSerde, withArtifactCache } from "./withArtifactCache";
+
+// ---------------------------------------------------------------------------
+// 2026-05-08 streaming helper — mirrors `streamSrDsRowsPage` in
+// `loadPerformanceRatioInput.ts`. Kept local to avoid a circular
+// import; if a third aggregator wants the same primitive, lift this
+// to `buildSystemSnapshot.ts` alongside `loadDatasetRowsPage`.
+// ---------------------------------------------------------------------------
+
+const STREAM_PAGE_SIZE_DEFAULT = 5_000;
+
+async function streamSrDsRowsPage(
+  scopeId: string,
+  batchId: string,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- drizzle table types
+  table: any,
+  onPage: (rows: CsvRow[]) => void | Promise<void>,
+  label: string,
+  options: { pageSize?: number } = {}
+): Promise<number> {
+  const pageSize = options.pageSize ?? STREAM_PAGE_SIZE_DEFAULT;
+  let cursor: string | null = null;
+  let totalRows = 0;
+  let pageCount = 0;
+  for (;;) {
+    const page = await loadDatasetRowsPage(scopeId, batchId, table, {
+      cursor,
+      limit: pageSize,
+    });
+    if (page.rows.length > 0) {
+      await onPage(page.rows);
+    }
+    totalRows += page.rows.length;
+    pageCount += 1;
+    if (pageCount === 1 || pageCount % 10 === 0 || !page.nextCursor) {
+      process.stdout.write(
+        `[buildOfflineMonitoringAggregates] streamed ${label} page=${pageCount} ` +
+          `totalRows=${totalRows} ` +
+          `heapUsed=${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB\n`
+      );
+    }
+    if (!page.nextCursor) break;
+    cursor = page.nextCursor;
+  }
+  return totalRows;
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -170,10 +215,302 @@ export interface OfflineMonitoringAggregate {
 }
 
 // ---------------------------------------------------------------------------
-// Pure builder
+// Streaming accumulator (2026-05-08 OOM hardening)
+// ---------------------------------------------------------------------------
+//
+// `createOfflineMonitoringAccumulator` factors the bulk
+// `buildOfflineMonitoringAggregates` body into per-page reducers
+// so the cached entrypoint can stream `srDsAbpReport` (243k rows
+// on prod) and `srDsSolarApplications` (273k rows on prod)
+// page-by-page. With `rawRow` resident on each row the bulk
+// `loadDatasetRows` peak was hundreds of MB per table; together
+// with the system snapshot + the in-progress maps it OOMed the
+// build worker.
+//
+// API:
+//   - `processAbpReportPage(rows)` — fold one page into the
+//     eligibility sets + abp* maps + part2 dedupe set. Order-
+//     within-page matters for the dedupe-key index (same as the
+//     bulk `forEach((row, index) => ...)` behavior).
+//   - `processSolarApplicationsPage(rows)` — fold one page into
+//     `monitoringDetailsBySystemKey`. Order-independent: the
+//     merge rule is "first-non-empty wins" per (id|tracking|name)
+//     key.
+//   - `finalize()` — emit the aggregate. ISO-string-serializes
+//     dates exactly like the bulk path.
+//
+// Bulk `buildOfflineMonitoringAggregates` below calls the
+// accumulator under the hood so the existing test fixture +
+// cross-tab parity test stay valid.
+// ---------------------------------------------------------------------------
+
+export interface OfflineMonitoringAccumulator {
+  processAbpReportPage(rows: readonly CsvRow[]): void;
+  processSolarApplicationsPage(rows: readonly CsvRow[]): void;
+  finalize(): OfflineMonitoringAggregate;
+}
+
+export function createOfflineMonitoringAccumulator(
+  input: { eligibleApplicationIds?: Set<string> } = {}
+): OfflineMonitoringAccumulator {
+  const foundationEligibleApplicationIds = input.eligibleApplicationIds;
+
+  const eligibleApplicationIds = new Set<string>();
+  const eligiblePortalSystemIds = new Set<string>();
+  const eligibleTrackingIds = new Set<string>();
+  const abpApplicationIdBySystemKey: Record<string, string> = {};
+  const abpAcSizeKwBySystemKey: Record<string, number> = {};
+  const abpAcSizeKwByApplicationId: Record<string, number> = {};
+  const abpPart2VerificationDateByApplicationId: Record<string, Date> = {};
+  const part2VerifiedSystemIdSet = new Set<string>();
+  const part2DedupeKeys = new Set<string>();
+  const monitoringDetailsBySystemKey: Record<string, MonitoringDetailsRecord> =
+    {};
+  let part2VerifiedAbpRowsCount = 0;
+  // Global ABP-row index across all pages. Used by
+  // `resolvePart2ProjectIdentity` for fallback dedupe-key
+  // generation when neither applicationId nor systemId is
+  // present (matches the bulk `forEach((row, index) => ...)`
+  // semantics).
+  let abpReportGlobalIndex = 0;
+
+  const setIfMissingNumber = (
+    target: Record<string, number>,
+    key: string,
+    value: number | null
+  ) => {
+    if (!key || value === null || !Number.isFinite(value)) return;
+    if (Object.prototype.hasOwnProperty.call(target, key)) return;
+    target[key] = value;
+  };
+
+  const mergeMonitoringDetails = (
+    key: string,
+    detail: MonitoringDetailsRecord
+  ) => {
+    const current = monitoringDetailsBySystemKey[key];
+    if (!current) {
+      monitoringDetailsBySystemKey[key] = detail;
+      return;
+    }
+    const merged: MonitoringDetailsRecord = { ...current };
+    (Object.keys(detail) as Array<keyof MonitoringDetailsRecord>).forEach(
+      (field) => {
+        if (!merged[field] && detail[field]) merged[field] = detail[field];
+      }
+    );
+    monitoringDetailsBySystemKey[key] = merged;
+  };
+
+  return {
+    processAbpReportPage(rows) {
+      for (const row of rows) {
+        const index = abpReportGlobalIndex;
+        abpReportGlobalIndex += 1;
+
+        const applicationIdForFilter = clean(row.Application_ID);
+        if (foundationEligibleApplicationIds) {
+          if (
+            !applicationIdForFilter ||
+            !foundationEligibleApplicationIds.has(applicationIdForFilter)
+          ) {
+            continue;
+          }
+        } else if (!isPart2VerifiedAbpRow(row)) {
+          continue;
+        }
+        part2VerifiedAbpRowsCount += 1;
+
+        const applicationId = applicationIdForFilter;
+        const portalSystemId = clean(row.system_id);
+        const trackingId =
+          clean(row.PJM_GATS_or_MRETS_Unit_ID_Part_2) ||
+          clean(row.tracking_system_ref_id);
+
+        if (applicationId) eligibleApplicationIds.add(applicationId);
+        if (portalSystemId) eligiblePortalSystemIds.add(portalSystemId);
+        if (trackingId) eligibleTrackingIds.add(trackingId);
+
+        const abpApplicationId = applicationId || portalSystemId;
+        const projectName =
+          clean(row.Project_Name) || clean(row.system_name);
+        const projectNameKey = projectName.toLowerCase();
+
+        if (abpApplicationId) {
+          abpApplicationIdBySystemKey[`id:${abpApplicationId}`] =
+            abpApplicationId;
+          if (trackingId) {
+            abpApplicationIdBySystemKey[`tracking:${trackingId}`] =
+              abpApplicationId;
+          }
+          if (projectName) {
+            abpApplicationIdBySystemKey[`name:${projectNameKey}`] =
+              abpApplicationId;
+          }
+        }
+
+        const acSizeKw = parseAbpAcSizeKw(row);
+        if (abpApplicationId) {
+          setIfMissingNumber(
+            abpAcSizeKwBySystemKey,
+            `id:${abpApplicationId}`,
+            acSizeKw
+          );
+        }
+        if (trackingId) {
+          setIfMissingNumber(
+            abpAcSizeKwBySystemKey,
+            `tracking:${trackingId}`,
+            acSizeKw
+          );
+        }
+        if (projectName) {
+          setIfMissingNumber(
+            abpAcSizeKwBySystemKey,
+            `name:${projectNameKey}`,
+            acSizeKw
+          );
+        }
+
+        const appIdLowerFallback =
+          clean(row.Application_ID) || clean(row.application_id);
+        if (appIdLowerFallback && acSizeKw !== null) {
+          if (
+            !Object.prototype.hasOwnProperty.call(
+              abpAcSizeKwByApplicationId,
+              appIdLowerFallback
+            )
+          ) {
+            abpAcSizeKwByApplicationId[appIdLowerFallback] = acSizeKw;
+          }
+        }
+
+        const part2VerifiedDateRaw =
+          clean(row.Part_2_App_Verification_Date) ||
+          clean(row.part_2_app_verification_date);
+        const part2VerifiedDate = parsePart2VerificationDate(
+          part2VerifiedDateRaw
+        );
+        if (part2VerifiedDate && abpApplicationId) {
+          const existing =
+            abpPart2VerificationDateByApplicationId[abpApplicationId];
+          if (!existing || part2VerifiedDate < existing) {
+            abpPart2VerificationDateByApplicationId[abpApplicationId] =
+              part2VerifiedDate;
+          }
+        }
+
+        const verifiedSystemId = applicationId || portalSystemId;
+        if (verifiedSystemId) part2VerifiedSystemIdSet.add(verifiedSystemId);
+
+        const { dedupeKey } = resolvePart2ProjectIdentity(row, index);
+        part2DedupeKeys.add(dedupeKey);
+      }
+    },
+
+    processSolarApplicationsPage(rows) {
+      for (const row of rows) {
+        const systemId = clean(row.system_id) || clean(row.Application_ID);
+        const trackingId =
+          clean(row.tracking_system_ref_id) ||
+          clean(row.reporting_entity_ref_id) ||
+          clean(row.PJM_GATS_or_MRETS_Unit_ID_Part_2);
+        const systemName = clean(row.system_name) || clean(row.Project_Name);
+        if (!systemId && !trackingId && !systemName) continue;
+
+        const detail: MonitoringDetailsRecord = {
+          online_monitoring_access_type: clean(row.online_monitoring_access_type),
+          online_monitoring: clean(row.online_monitoring),
+          online_monitoring_granted_username: clean(
+            row.online_monitoring_granted_username
+          ),
+          online_monitoring_username: clean(row.online_monitoring_username),
+          online_monitoring_system_name: clean(
+            row.online_monitoring_system_name
+          ),
+          online_monitoring_system_id: clean(row.online_monitoring_system_id),
+          online_monitoring_password: clean(row.online_monitoring_password),
+          online_monitoring_website_api_link: clean(
+            row.online_monitoring_website_api_link
+          ),
+          online_monitoring_entry_method: clean(
+            row.online_monitoring_entry_method
+          ),
+          online_monitoring_notes: clean(row.online_monitoring_notes),
+          online_monitoring_self_report: clean(
+            row.online_monitoring_self_report
+          ),
+          online_monitoring_rgm_info: clean(row.online_monitoring_rgm_info),
+          online_monitoring_no_submit_generation: clean(
+            row.online_monitoring_no_submit_generation
+          ),
+          system_online: clean(row.system_online),
+          last_reported_online_date: clean(row.last_reported_online_date),
+        };
+
+        if (systemId) mergeMonitoringDetails(`id:${systemId}`, detail);
+        if (trackingId)
+          mergeMonitoringDetails(`tracking:${trackingId}`, detail);
+        if (systemName)
+          mergeMonitoringDetails(`name:${systemName.toLowerCase()}`, detail);
+      }
+    },
+
+    finalize() {
+      // Serialize Date values to ISO yyyy-mm-dd strings for plain-
+      // JSON serde. Client wraps each back in `new Date(...)` once
+      // when building the consumer Map.
+      const abpPart2VerificationDateByApplicationIdString: Record<
+        string,
+        string
+      > = {};
+      for (const [key, date] of Object.entries(
+        abpPart2VerificationDateByApplicationId
+      )) {
+        abpPart2VerificationDateByApplicationIdString[key] = date
+          .toISOString()
+          .slice(0, 10);
+      }
+
+      return {
+        eligiblePart2ApplicationIds: Array.from(eligibleApplicationIds).sort(),
+        eligiblePart2PortalSystemIds:
+          Array.from(eligiblePortalSystemIds).sort(),
+        eligiblePart2TrackingIds: Array.from(eligibleTrackingIds).sort(),
+        abpApplicationIdBySystemKey,
+        monitoringDetailsBySystemKey,
+        abpAcSizeKwBySystemKey,
+        abpAcSizeKwByApplicationId,
+        abpPart2VerificationDateByApplicationId:
+          abpPart2VerificationDateByApplicationIdString,
+        part2VerifiedSystemIds: Array.from(part2VerifiedSystemIdSet).sort(),
+        part2VerifiedAbpRowsCount,
+        abpEligibleTotalSystemsCount: part2DedupeKeys.size,
+      };
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Pure builder (back-compat — calls the accumulator under the hood)
 // ---------------------------------------------------------------------------
 
 export function buildOfflineMonitoringAggregates(
+  input: BuildOfflineMonitoringInput
+): OfflineMonitoringAggregate {
+  const acc = createOfflineMonitoringAccumulator({
+    eligibleApplicationIds: input.eligibleApplicationIds,
+  });
+  acc.processAbpReportPage(input.abpReportRows);
+  acc.processSolarApplicationsPage(input.solarApplicationsRows);
+  return acc.finalize();
+}
+
+// ---------------------------------------------------------------------------
+// Legacy pure-builder body (PRESERVED for reference / parity test).
+// ---------------------------------------------------------------------------
+
+function buildOfflineMonitoringAggregatesLegacyForReference(
   input: BuildOfflineMonitoringInput
 ): OfflineMonitoringAggregate {
   const {
@@ -539,25 +876,44 @@ export async function getOrBuildOfflineMonitoringAggregates(
         Object.keys(agg.abpPart2VerificationDateByApplicationId).length +
         agg.part2VerifiedSystemIds.length,
       recompute: async () => {
-        const [foundationResult, abpReportRows, solarApplicationsRows] =
-          await Promise.all([
-            getOrBuildFoundation(scopeId),
-            abpReportBatchId
-              ? loadDatasetRows(scopeId, abpReportBatchId, srDsAbpReport)
-              : Promise.resolve([] as CsvRow[]),
-            solarApplicationsBatchId
-              ? loadDatasetRows(
-                  scopeId,
-                  solarApplicationsBatchId,
-                  srDsSolarApplications
-                )
-              : Promise.resolve([] as CsvRow[]),
-          ]);
-        return buildOfflineMonitoringAggregatesWithFoundationOverlay(
-          foundationResult.payload,
-          abpReportRows,
-          solarApplicationsRows
-        );
+        // 2026-05-08 OOM hardening — stream `srDsAbpReport` (243k
+        // rows) and `srDsSolarApplications` (273k rows) into the
+        // accumulator page-by-page instead of loading both tables
+        // in full via `loadDatasetRows`. Pre-fix peak was ~500 MB
+        // for the two bulk loads + the heavy maps + the system
+        // snapshot + the in-progress aggregate state, which OOMed
+        // the build worker. Streaming bounds the row-load peak to
+        // one page (~5-10 MB) at a time; the resulting Maps fit
+        // comfortably.
+        const foundationResult = await getOrBuildFoundation(scopeId);
+        const acc = createOfflineMonitoringAccumulator({
+          eligibleApplicationIds: collectFoundationEligibleApplicationIds(
+            foundationResult.payload
+          ),
+        });
+        if (abpReportBatchId) {
+          await streamSrDsRowsPage(
+            scopeId,
+            abpReportBatchId,
+            srDsAbpReport,
+            (page) => {
+              acc.processAbpReportPage(page);
+            },
+            "abpReport"
+          );
+        }
+        if (solarApplicationsBatchId) {
+          await streamSrDsRowsPage(
+            scopeId,
+            solarApplicationsBatchId,
+            srDsSolarApplications,
+            (page) => {
+              acc.processSolarApplicationsPage(page);
+            },
+            "solarApplications"
+          );
+        }
+        return acc.finalize();
       },
     }
   );

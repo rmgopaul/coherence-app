@@ -242,34 +242,64 @@ function buildAbpAcSizeKwByApplicationId(
   abpRows: CsvRow[]
 ): Map<string, number> {
   const mapping = new Map<string, number>();
-  abpRows.forEach((row) => {
+  applyAbpReportPageToAcSizeKwMap(mapping, abpRows);
+  return mapping;
+}
+
+/**
+ * 2026-05-08 OOM hardening — per-page accumulator for
+ * `srDsAbpReport` pages. Mirrors `buildAbpAcSizeKwByApplicationId`'s
+ * per-row logic (first-non-null wins per applicationId) but
+ * mutates an externally-owned Map so the caller can stream
+ * pages and keep peak memory bounded.
+ *
+ * Exported for the streaming-parity test
+ * (`loadPerformanceRatioInput.streamingAbpReport.test.ts`).
+ */
+export function applyAbpReportPageToAcSizeKwMap(
+  mapping: Map<string, number>,
+  page: CsvRow[]
+): void {
+  for (const row of page) {
     const applicationId =
       clean(row.Application_ID) || clean(row.application_id);
-    if (!applicationId) return;
+    if (!applicationId) continue;
     const ac = parseAbpAcSizeKw(row);
-    if (ac === null || !Number.isFinite(ac)) return;
+    if (ac === null || !Number.isFinite(ac)) continue;
     if (!mapping.has(applicationId)) mapping.set(applicationId, ac);
-  });
-  return mapping;
+  }
 }
 
 function buildAbpPart2VerificationDateByApplicationId(
   abpRows: CsvRow[]
 ): Map<string, Date> {
   const mapping = new Map<string, Date>();
-  abpRows.forEach((row) => {
+  applyAbpReportPageToPart2VerificationDateMap(mapping, abpRows);
+  return mapping;
+}
+
+/**
+ * 2026-05-08 OOM hardening — per-page accumulator. Mirrors
+ * `buildAbpPart2VerificationDateByApplicationId`'s per-row logic
+ * (latest-date wins per applicationId) but mutates an externally-
+ * owned Map.
+ */
+export function applyAbpReportPageToPart2VerificationDateMap(
+  mapping: Map<string, Date>,
+  page: CsvRow[]
+): void {
+  for (const row of page) {
     const applicationId =
       clean(row.Application_ID) || clean(row.application_id);
-    if (!applicationId) return;
+    if (!applicationId) continue;
     const date =
       parsePart2VerificationDate(
         row.Part_2_App_Verification_Date ?? row.part_2_app_verification_date
       ) ?? null;
-    if (!date) return;
+    if (!date) continue;
     const existing = mapping.get(applicationId);
     if (!existing || date > existing) mapping.set(applicationId, date);
-  });
-  return mapping;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -292,7 +322,24 @@ function buildMonitoringDetailsBySystemKey(
   solarApplicationsRows: CsvRow[]
 ): Map<string, MonitoringDetailsRecord> {
   const mapping = new Map<string, MonitoringDetailsRecord>();
+  applySolarApplicationsPageToMonitoringDetailsMap(
+    mapping,
+    solarApplicationsRows
+  );
+  return mapping;
+}
 
+/**
+ * 2026-05-08 OOM hardening — per-page accumulator for
+ * `srDsSolarApplications`. Mirrors
+ * `buildMonitoringDetailsBySystemKey`'s per-row logic
+ * (first-non-empty merge per (id|tracking|name) key) but mutates
+ * an externally-owned Map.
+ */
+export function applySolarApplicationsPageToMonitoringDetailsMap(
+  mapping: Map<string, MonitoringDetailsRecord>,
+  page: CsvRow[]
+): void {
   const merge = (key: string, detail: MonitoringDetailsRecord) => {
     const current = mapping.get(key);
     if (!current) {
@@ -308,7 +355,7 @@ function buildMonitoringDetailsBySystemKey(
     mapping.set(key, merged);
   };
 
-  for (const row of solarApplicationsRows) {
+  for (const row of page) {
     const systemId = clean(row.system_id) || clean(row.Application_ID);
     const trackingId =
       clean(row.tracking_system_ref_id) ||
@@ -331,8 +378,6 @@ function buildMonitoringDetailsBySystemKey(
     if (trackingId) merge(`tracking:${trackingId}`, detail);
     if (systemName) merge(`name:${systemName.toLowerCase()}`, detail);
   }
-
-  return mapping;
 }
 
 function getMonitoringDetailsForSystem(
@@ -634,27 +679,59 @@ export async function loadPerformanceRatioStaticInput(
   );
   generatorDetailsRows = [];
 
-  let abpReportRows = batchIds.abpReportBatchId
-    ? await loadDatasetRows(scopeId, batchIds.abpReportBatchId, srDsAbpReport)
-    : ([] as CsvRow[]);
-  const abpAcSizeKwByApplicationId = buildAbpAcSizeKwByApplicationId(
-    abpReportRows
-  );
-  const abpPart2VerificationDateByApplicationId =
-    buildAbpPart2VerificationDateByApplicationId(abpReportRows);
-  abpReportRows = [];
+  // 2026-05-08 OOM fix follow-up — stream `srDsAbpReport` (243k
+  // rows on prod) and `srDsSolarApplications` (273k rows on prod)
+  // page-by-page. Each row carries `rawRow` JSON, so the bulk
+  // `loadDatasetRows` peak was hundreds of MB per table; together
+  // with the system snapshot + the other static maps it pushed
+  // the build worker over V8's default heap ceiling. Streaming
+  // bounds peak to one page (~5-10 MB) plus the resulting Maps,
+  // which are dramatically smaller than the source rows.
+  const abpAcSizeKwByApplicationId = new Map<string, number>();
+  const abpPart2VerificationDateByApplicationId = new Map<string, Date>();
+  if (batchIds.abpReportBatchId) {
+    await streamSrDsRowsPage(
+      scopeId,
+      batchIds.abpReportBatchId,
+      srDsAbpReport,
+      (page) => {
+        applyAbpReportPageToAcSizeKwMap(abpAcSizeKwByApplicationId, page);
+        applyAbpReportPageToPart2VerificationDateMap(
+          abpPart2VerificationDateByApplicationId,
+          page
+        );
+      }
+    );
+    process.stdout.write(
+      `[loadPerformanceRatioInput] streamed abpReport; ` +
+        `acSizeKwMapSize=${abpAcSizeKwByApplicationId.size} ` +
+        `part2DateMapSize=${abpPart2VerificationDateByApplicationId.size} ` +
+        `heapUsed=${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB\n`
+    );
+  }
 
-  let solarApplicationsRows = batchIds.solarApplicationsBatchId
-    ? await loadDatasetRows(
-        scopeId,
-        batchIds.solarApplicationsBatchId,
-        srDsSolarApplications
-      )
-    : ([] as CsvRow[]);
-  const monitoringDetailsBySystemKey = buildMonitoringDetailsBySystemKey(
-    solarApplicationsRows
-  );
-  solarApplicationsRows = [];
+  const monitoringDetailsBySystemKey = new Map<
+    string,
+    MonitoringDetailsRecord
+  >();
+  if (batchIds.solarApplicationsBatchId) {
+    await streamSrDsRowsPage(
+      scopeId,
+      batchIds.solarApplicationsBatchId,
+      srDsSolarApplications,
+      (page) => {
+        applySolarApplicationsPageToMonitoringDetailsMap(
+          monitoringDetailsBySystemKey,
+          page
+        );
+      }
+    );
+    process.stdout.write(
+      `[loadPerformanceRatioInput] streamed solarApplications; ` +
+        `monitoringDetailsMapSize=${monitoringDetailsBySystemKey.size} ` +
+        `heapUsed=${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB\n`
+    );
+  }
 
   // Tokenize systems. Filter to part-2-eligible-for-size-reporting
   // + has-trackingSystemRefId (matches the client's
