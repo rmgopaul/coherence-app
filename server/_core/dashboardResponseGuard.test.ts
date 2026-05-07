@@ -183,11 +183,10 @@ describe("dashboard request heap env helpers", () => {
 describe("DASHBOARD_OVERSIZE_ALLOWLIST", () => {
   it("is empty after Phase 2 — every known oversized response has been retired", () => {
     // Retirement history (most recent first):
-    //   - `getDashboardOfflineMonitoring` — Phase 2 OfflineMonitoring
-    //     residual cleanup (2026-05-07): stripped 3 dead Part-2 ID
-    //     arrays + dropped the dead parent `part2VerifiedSystemIds`
-    //     useMemo. Remaining wire shape (eligiblePart2TrackingIds +
-    //     2 scalars) fits under 1 MB.
+    //   - `getDashboardOfflineMonitoring` — Phase 2 PR-F-4-i
+    //     (2026-05-07): removed the parent client call and strips
+    //     remaining high-cardinality Part-II ID arrays at the wire
+    //     boundary.
     //   - `getSystemSnapshot` — Phase 2 PR-F-4-h (2026-05-07): every
     //     client consumer migrated to paginated/aggregator-backed
     //     reads. `useSystemSnapshot` hook + parent `systems` useMemo
@@ -323,15 +322,14 @@ describe("tRPC middleware path format", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Allowlist serialization-skip behavior. The whole point of the warn-
-// mode short-circuit is to avoid `JSON.stringify`-ing 20–60 MB
-// allowlisted responses. The "sentinel" object below has a `toJSON`
-// that throws — if the middleware tries to serialize it, the test
-// fails. Tests are at the procedure-handler level so we exercise the
-// real middleware (not just `checkDashboardResponseSize`).
+// Response guard behavior. The "sentinel" object below has a
+// `toJSON` that throws — if a test path that should skip size
+// measurement tries to serialize it, the test fails. Tests are at
+// the procedure-handler level so we exercise the real middleware
+// (not just `checkDashboardResponseSize`).
 // ---------------------------------------------------------------------------
 
-describe("dashboardResponseGuardMiddleware allowlist short-circuit", () => {
+describe("dashboardResponseGuardMiddleware", () => {
   let envSnapshot: ReturnType<typeof snapshotEnv>;
   let warnSpy: ReturnType<typeof vi.spyOn>;
 
@@ -696,7 +694,7 @@ describe("solarRecDashboardRouter wiring", () => {
     expect(source).toMatch(/datasetKey:\s*z\.enum\(/);
   });
 
-  it("strips dead Offline Monitoring fields at the wire boundary", () => {
+  it("strips Offline Monitoring high-cardinality fields at the wire boundary", () => {
     const filePath = resolve(__dirname, "solarRecDashboardRouter.ts");
     const source = readFileSync(filePath, "utf8");
     const procBlock =
@@ -715,7 +713,7 @@ describe("solarRecDashboardRouter wiring", () => {
       /abpPart2VerificationDateByApplicationId:\s*\n\s*_abpPart2VerificationDateByApplicationId/
     );
     // Phase 2 OfflineMonitoring residual cleanup (2026-05-07)
-    // additionally strips the 3 dead Part-2 ID arrays. The
+    // additionally strips the remaining Part-2 ID arrays. The
     // aggregator still computes them internally for server-side
     // fact-builder consumption; they're discarded at the wire
     // boundary because no client path reads them after the F-4
@@ -725,6 +723,9 @@ describe("solarRecDashboardRouter wiring", () => {
     );
     expect(procBlock!).toMatch(
       /eligiblePart2PortalSystemIds:\s*_eligiblePart2PortalSystemIds/
+    );
+    expect(procBlock!).toMatch(
+      /eligiblePart2TrackingIds:\s*_eligiblePart2TrackingIds/
     );
     expect(procBlock!).toMatch(
       /part2VerifiedSystemIds:\s*_part2VerifiedSystemIds/
@@ -801,8 +802,8 @@ describe("solarRecDashboardRouter wiring", () => {
 // ---------------------------------------------------------------------------
 // CLAUDE.md drift rails. The repo's CLAUDE.md is loaded into every
 // model context, so claims that disagree with the code mislead every
-// future PR. Pin the allowlist count + retired-proc disclaimers so a
-// future PR that retires another entry remembers to update the prose.
+// future PR. Pin the allowlist status + retired-proc disclaimers so a
+// future PR that reintroduces an entry remembers to update the prose.
 // ---------------------------------------------------------------------------
 
 describe("CLAUDE.md drift", () => {
@@ -838,6 +839,7 @@ describe("CLAUDE.md drift", () => {
       "i"
     );
     expect(claudeMd).toMatch(sentence);
+    expect(claudeMd).toMatch(/DASHBOARD_OVERSIZE_ALLOWLIST[\s\S]{0,120}empty/);
   });
 
   it("documents the same live allowlist entries in hard rule 5", () => {
@@ -864,7 +866,6 @@ describe("CLAUDE.md drift", () => {
       /The\s+(?:only\s+)?(?:\d+|[A-Z][a-z]+)?\s*currently allowlisted proc(?:s)? (?:is|are)([\s\S]*?)\./
     )?.[1];
     expect(currentSentence).toBeDefined();
-
     const liveProcNames = [...DASHBOARD_OVERSIZE_ALLOWLIST].map(
       (path) => path.split(".").at(-1)!
     );
@@ -873,6 +874,7 @@ describe("CLAUDE.md drift", () => {
     }
     expect(currentSentence).not.toContain("getDashboardOverviewSummary");
     expect(currentSentence).not.toContain("getDashboardChangeOwnership");
+    expect(hardRule).not.toMatch(/The only currently allowlisted proc is/);
   });
 
   it("does NOT reference the retired CSV export procs as live", () => {
@@ -911,6 +913,9 @@ describe("CLAUDE.md drift", () => {
     // the historical retirement-notes section, never as a live
     // table row. Source signal: no markdown table cell of the
     // form `\| `solarRecDashboard.getDashboardOfflineMonitoring` \|`.
+    expect(claudeMd).toMatch(
+      /`getDashboardOfflineMonitoring` retired from the allowlist/
+    );
     expect(claudeMd).not.toMatch(
       /\|\s*`solarRecDashboard\.getDashboardOfflineMonitoring`\s*\|/
     );

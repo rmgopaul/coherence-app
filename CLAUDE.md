@@ -680,22 +680,15 @@ regression genuinely needs the allowlist mechanism, add the
 entry there with an inline replacement plan (per the prior
 retirement notes below).
 
-**`getDashboardOfflineMonitoring` retired from the allowlist
-(Phase 2 OfflineMonitoring residual cleanup, 2026-05-07).**
-PR-C-3-b had already stripped the per-system maps (~12 MB OOM
-driver). This cleanup strips the 3 dead Part-2 ID arrays
-(`eligiblePart2ApplicationIds`, `eligiblePart2PortalSystemIds`,
-`part2VerifiedSystemIds`) at the wire boundary after the F-4
-series retired their parent-level consumers, and drops the
-parent's dead `part2VerifiedSystemIds` useMemo (a Set with no
-readers). Remaining wire shape is `eligiblePart2TrackingIds`
-(~250 KB; drives the OfflineMonitoringTab's
-`abpEligibleTrackingIdsStrict` filter) plus 2 scalar tile
-values — comfortably under the 1 MB budget. The aggregator's
-internal computations are unchanged (server-side fact builders
-in `buildDashboardSystemFacts.ts` /
-`buildDashboardMonitoringDetailsFacts.ts` still read the 3
-dropped ID arrays in-process); only the wire output shrinks.
+**`getDashboardOfflineMonitoring` retired from the allowlist (Phase
+2 PR-F-4-i, 2026-05-07).** The parent dashboard no longer calls the
+proc for Part-II ID arrays. Counts come from `getDashboardSummary`,
+Part-II systems come from the bounded
+`getDashboardSystemsPage({ isPart2Eligible: true })` walk, and
+monitoring details come from `getDashboardMonitoringDetailsPage`.
+The proc still exists server-side as a bounded compatibility/count
+surface, but the high-cardinality fields are stripped at the wire
+boundary and it is not an accepted oversized response path.
 
 **`getSystemSnapshot` retired from the allowlist (Phase 2 PR-F-4-h,
 2026-05-07).** The parent dashboard no longer imports
@@ -1013,10 +1006,10 @@ expected post-upload state even with no chunked blob present.
    purposes. Use `loadDatasetRowsPage` for pagination or
    `loadDatasetRows` only when the result is consumed in-process
    by an aggregator that itself returns a small result. Existing
-   row-materializing procs are listed in
-   `DASHBOARD_OVERSIZE_ALLOWLIST` and tracked for migration; do
-   not extend the allowlist without an inline replacement plan
-   that names the streaming/paginated/backgrounded successor.
+   row-materializing procs used to be listed in
+   `DASHBOARD_OVERSIZE_ALLOWLIST`, which is now empty; do not add
+   one without an inline replacement plan that names the
+   streaming/paginated/backgrounded successor.
 2. **No client tab is allowed to read `datasets[key].rows` or
    `datasets[key].rows.length` for ANY of the 18 dataset keys.** Use
    `getDatasetSummariesAll` for counts, `getDatasetRowsPage` /

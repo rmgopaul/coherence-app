@@ -11,9 +11,9 @@
  *   - 2 CSV download callbacks
  *
  * Upstream computed data (part2EligibleSystemsForSizeReporting,
- * abpEligibleTrackingIdsStrict, abpApplicationIdBySystemKey,
- * monitoringDetailsBySystemKey) is passed in via props — these
- * lookups are shared with other tabs and stay in the parent.
+ * abpApplicationIdBySystemKey, monitoringDetailsBySystemKey) is
+ * passed in via props — these lookups are shared with other tabs and
+ * stay in the parent.
  *
  * The tab only mounts when `activeTab === "offline-monitoring"`, so
  * none of these memos run while the user is on any other tab.
@@ -73,7 +73,6 @@ import { useDashboardBuildControl } from "@/solar-rec-dashboard/hooks/useDashboa
 export interface OfflineMonitoringTabProps {
   // Upstream computed data (shared with other tabs; computed in parent)
   part2EligibleSystemsForSizeReporting: SystemRecord[];
-  abpEligibleTrackingIdsStrict: Set<string>;
   abpApplicationIdBySystemKey: Map<string, string>;
   monitoringDetailsBySystemKey: Map<string, MonitoringDetailsRecord>;
 
@@ -108,7 +107,6 @@ export default memo(function OfflineMonitoringTab(
 ) {
   const {
     part2EligibleSystemsForSizeReporting,
-    abpEligibleTrackingIdsStrict,
     abpApplicationIdBySystemKey,
     monitoringDetailsBySystemKey,
     jumpToSection,
@@ -151,8 +149,8 @@ export default memo(function OfflineMonitoringTab(
 
   const refreshOfflineMonitoringRows = useCallback(() => {
     return Promise.all([
-      utils.solarRecDashboard.getDashboardOfflineMonitoring.invalidate(),
       utils.solarRecDashboard.getDashboardMonitoringDetailsPage.invalidate(),
+      utils.solarRecDashboard.getDashboardSystemsPage.invalidate(),
     ]).then(() => undefined);
   }, [utils]);
 
@@ -167,11 +165,9 @@ export default memo(function OfflineMonitoringTab(
   const offlineBaseSystems = useMemo<SystemRecord[]>(
     () =>
       part2EligibleSystemsForSizeReporting.filter(
-        (system) =>
-          !!system.trackingSystemRefId &&
-          abpEligibleTrackingIdsStrict.has(system.trackingSystemRefId),
+        (system) => !!system.trackingSystemRefId,
       ),
-    [abpEligibleTrackingIdsStrict, part2EligibleSystemsForSizeReporting],
+    [part2EligibleSystemsForSizeReporting],
   );
 
   const offlineSystems = useMemo(

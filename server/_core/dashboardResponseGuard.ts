@@ -93,19 +93,10 @@ export const DASHBOARD_REQUEST_HEAP_AFTER_WARN_BYTES_DEFAULT =
  *     Tabs now read bounded aggregate/fact-table endpoints instead
  *     of hydrating the legacy full `SystemRecord[]` payload.
  *   - `solarRecDashboard.getDashboardOfflineMonitoring` — Phase 2
- *     OfflineMonitoring residual cleanup (2026-05-07) stripped
- *     the 3 dead Part-2 ID arrays (`eligiblePart2ApplicationIds`,
- *     `eligiblePart2PortalSystemIds`, `part2VerifiedSystemIds`)
- *     at the wire boundary after the F-4 series retired their
- *     parent-level consumers. PR-C-3-b had already stripped the
- *     per-system maps (~12 MB OOM driver). The remaining wire
- *     shape — `eligiblePart2TrackingIds` (~250 KB, drives the
- *     OfflineMonitoringTab's `abpEligibleTrackingIdsStrict`
- *     filter) plus 2 scalar tile values — fits comfortably under
- *     the 1 MB budget. The aggregator's internal computations
- *     are unchanged (server-side fact builders still read the 3
- *     dropped ID arrays in-process); only the wire output
- *     shrinks.
+ *     PR-F-4-i removed the parent client call and stripped the
+ *     remaining high-cardinality Part-II ID arrays at the wire
+ *     boundary. Counts now come from `getDashboardSummary`; detail
+ *     rows come from bounded fact-page reads.
  *
  * **The allowlist is now empty.** Phase 2 has retired every
  * known oversized response from the dashboard router. New procs
