@@ -45,6 +45,7 @@ import {
   deleteOrphanedMonitoringDetailsFacts,
 } from "../../db/dashboardMonitoringDetailsFacts";
 import type { InsertSolarRecDashboardMonitoringDetailsFact } from "../../../drizzle/schema";
+import { startDashboardJobMetric } from "./dashboardJobMetrics";
 
 const STEP_NAME = "monitoringDetailsFacts";
 const METRIC_PREFIX = "[dashboard:fact-build:monitoringDetails]";
@@ -168,56 +169,57 @@ async function runMonitoringDetailsStep(args: {
   signal: AbortSignal;
 }): Promise<void> {
   const { scopeId, buildId, signal } = args;
-  const heapBefore = process.memoryUsage().heapUsed;
-  const startedAt = Date.now();
-
-  // 1. Build (or fetch from artifact cache) the existing
-  // OfflineMonitoring aggregate. The cached path is a sub-second
-  // read; the cache-miss path can take 5-15 seconds on a busy
-  // scope. Either way, the runner's per-step timeout (4 minutes)
-  // gives us plenty of headroom.
-  if (signal.aborted) throw new Error("aborted before aggregate fetch");
-  const { result, fromCache } =
-    await getOrBuildOfflineMonitoringAggregates(scopeId);
-
-  if (signal.aborted) throw new Error("aborted after aggregate fetch");
-
-  // 2. Reshape into fact rows.
-  const rows = buildMonitoringDetailsFactRows({
-    scopeId,
-    buildId,
-    monitoringDetailsBySystemKey: result.monitoringDetailsBySystemKey,
-    abpApplicationIdBySystemKey: result.abpApplicationIdBySystemKey,
-    abpAcSizeKwBySystemKey: result.abpAcSizeKwBySystemKey,
+  // 2026-05-08 (consolidation) — see buildDashboardChangeOwnershipFacts.ts
+  // for the consolidation rationale; this builder follows the same shape.
+  const metric = startDashboardJobMetric({
+    prefix: METRIC_PREFIX,
+    jobId: buildId,
+    context: { scopeId },
   });
 
-  // 3. UPSERT then orphan-sweep. The two-step pattern guarantees
-  // the table reflects EXACTLY the current build's systems after
-  // the step completes. Order matters: UPSERT first (so current
-  // systems' rows are tagged with the new buildId), then DELETE
-  // orphans (rows still tagged with a prior buildId).
-  if (signal.aborted) throw new Error("aborted before upsert");
-  await upsertMonitoringDetailsFacts(rows);
-  if (signal.aborted) throw new Error("aborted before orphan sweep");
-  const orphanedDeleted = await deleteOrphanedMonitoringDetailsFacts(
-    scopeId,
-    buildId
-  );
+  try {
+    // 1. Build (or fetch from artifact cache) the existing
+    // OfflineMonitoring aggregate. The cached path is a sub-second
+    // read; the cache-miss path can take 5-15 seconds on a busy
+    // scope. Either way, the runner's per-step timeout (4 minutes)
+    // gives us plenty of headroom.
+    if (signal.aborted) throw new Error("aborted before aggregate fetch");
+    const { result, fromCache } =
+      await getOrBuildOfflineMonitoringAggregates(scopeId);
 
-  const heapAfter = process.memoryUsage().heapUsed;
-  const elapsedMs = Date.now() - startedAt;
-  // eslint-disable-next-line no-console
-  console.log(
-    `${METRIC_PREFIX} metric ${JSON.stringify({
+    if (signal.aborted) throw new Error("aborted after aggregate fetch");
+
+    // 2. Reshape into fact rows.
+    const rows = buildMonitoringDetailsFactRows({
       scopeId,
       buildId,
+      monitoringDetailsBySystemKey: result.monitoringDetailsBySystemKey,
+      abpApplicationIdBySystemKey: result.abpApplicationIdBySystemKey,
+      abpAcSizeKwBySystemKey: result.abpAcSizeKwBySystemKey,
+    });
+
+    // 3. UPSERT then orphan-sweep. The two-step pattern guarantees
+    // the table reflects EXACTLY the current build's systems after
+    // the step completes. Order matters: UPSERT first (so current
+    // systems' rows are tagged with the new buildId), then DELETE
+    // orphans (rows still tagged with a prior buildId).
+    if (signal.aborted) throw new Error("aborted before upsert");
+    await upsertMonitoringDetailsFacts(rows);
+    if (signal.aborted) throw new Error("aborted before orphan sweep");
+    const orphanedDeleted = await deleteOrphanedMonitoringDetailsFacts(
+      scopeId,
+      buildId
+    );
+
+    metric.finish({
       rowsWritten: rows.length,
       orphanedDeleted,
       fromCache,
-      elapsedMs,
-      heapDeltaBytes: heapAfter - heapBefore,
-    })}`
-  );
+    });
+  } catch (err) {
+    metric.fail(err);
+    throw err;
+  }
 }
 
 /**
