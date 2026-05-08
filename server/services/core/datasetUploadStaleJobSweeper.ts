@@ -24,11 +24,20 @@
  *                                    Set to 0 to disable the timer
  *                                    (boot sweep still runs).
  */
-import { sweepStaleDatasetUploadJobs } from "../../db/datasetUploadJobs";
+import {
+  pruneOldTerminalDatasetUploadJobs,
+  sweepStaleDatasetUploadJobs,
+} from "../../db/datasetUploadJobs";
 import { schedulerTickAllowed } from "../../_core/runtimeTarget";
 
 const DEFAULT_STALE_AFTER_MS = 10 * 60 * 1000; // 10 min
 const DEFAULT_SWEEP_INTERVAL_MS = 5 * 60 * 1000; // 5 min
+// 2026-05-08 (Phase 7 fragment) — TTL retention for terminal-status
+// upload jobs. Default 7 days: long enough for a user to find a
+// recent failed upload by scrolling the history list, short enough
+// to keep the table from accumulating multi-thousand rows.
+// Tunable via `DATASET_UPLOAD_TERMINAL_RETENTION_MS`.
+const DEFAULT_TERMINAL_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
 let timer: NodeJS.Timeout | null = null;
 let sweeping = false;
@@ -41,7 +50,10 @@ function readEnvNumber(name: string, fallback: number): number {
   return parsed;
 }
 
-async function runSweep(staleAfterMs: number): Promise<void> {
+async function runSweep(
+  staleAfterMs: number,
+  terminalRetentionMs: number
+): Promise<void> {
   // Concern #4 PR-3 in-tick safety net — see monitoringScheduler.ts
   // for rationale. The sweeper is the chattiest of the three
   // (every 5 min by default), so the once-per-process log inside
@@ -61,6 +73,31 @@ async function runSweep(staleAfterMs: number): Promise<void> {
         `[datasetUploadStaleJobSweeper] auto-failed ${swept} stale upload ` +
           `job${swept === 1 ? "" : "s"} (older than ${Math.round(
             staleAfterMs / 1000
+          )}s).`
+      );
+    }
+
+    // 2026-05-08 (Phase 7 fragment) — TTL prune terminal rows older
+    // than `terminalRetentionMs`. Runs on every sweep tick; bounded
+    // by the per-row delete (children first), best-effort on
+    // failures. Idempotent: a row that already raced to deletion
+    // returns 0 from `deleteDatasetUploadJob` and isn't counted.
+    let pruned = 0;
+    try {
+      pruned = await pruneOldTerminalDatasetUploadJobs(terminalRetentionMs);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        "[datasetUploadStaleJobSweeper] terminal-prune failed:",
+        err instanceof Error ? err.message : err
+      );
+    }
+    if (pruned > 0) {
+      // eslint-disable-next-line no-console
+      console.log(
+        `[datasetUploadStaleJobSweeper] pruned ${pruned} terminal upload ` +
+          `job${pruned === 1 ? "" : "s"} (older than ${Math.round(
+            terminalRetentionMs / 1000
           )}s).`
       );
     }
@@ -93,9 +130,15 @@ export function startDatasetUploadStaleJobSweeper(): () => void {
     "DATASET_UPLOAD_SWEEP_INTERVAL_MS",
     DEFAULT_SWEEP_INTERVAL_MS
   );
+  // 2026-05-08 (Phase 7 fragment) — terminal-row TTL retention.
+  // Default 7 days; tunable via the env var of the same name.
+  const terminalRetentionMs = readEnvNumber(
+    "DATASET_UPLOAD_TERMINAL_RETENTION_MS",
+    DEFAULT_TERMINAL_RETENTION_MS
+  );
 
   // Boot sweep — fire-and-forget; don't block server start.
-  void runSweep(staleAfterMs);
+  void runSweep(staleAfterMs, terminalRetentionMs);
 
   if (timer) {
     clearInterval(timer);
@@ -104,7 +147,7 @@ export function startDatasetUploadStaleJobSweeper(): () => void {
 
   if (intervalMs > 0) {
     timer = setInterval(() => {
-      void runSweep(staleAfterMs);
+      void runSweep(staleAfterMs, terminalRetentionMs);
     }, intervalMs);
     // Don't keep the Node process alive just for this timer.
     if (typeof timer.unref === "function") timer.unref();

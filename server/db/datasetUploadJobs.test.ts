@@ -30,6 +30,7 @@ import {
   insertDatasetUploadJob,
   listDatasetUploadJobErrors,
   listDatasetUploadJobs,
+  pruneOldTerminalDatasetUploadJobs,
   recordDatasetUploadJobError,
   sweepStaleDatasetUploadJobs,
   touchDatasetUploadJob,
@@ -512,6 +513,63 @@ describe("sweepStaleDatasetUploadJobs", () => {
     mocks.getDb.mockResolvedValue(null);
     const swept = await sweepStaleDatasetUploadJobs(60 * 1000);
     expect(swept).toBe(0);
+  });
+});
+
+describe("pruneOldTerminalDatasetUploadJobs", () => {
+  it("loads terminal-status rows older than cutoff and deletes each via deleteDatasetUploadJob", async () => {
+    const terminalRows = [
+      { id: "old-done", scopeId: "scope-1" },
+      { id: "old-failed", scopeId: "scope-1" },
+    ];
+    // Two SELECT rows (one per delete: errors + job).
+    const stub = makeDbStub({
+      selectRows: [terminalRows],
+      deleteAffected: 1,
+    });
+    mocks.getDb.mockResolvedValue(stub);
+
+    const pruned = await pruneOldTerminalDatasetUploadJobs(
+      7 * 24 * 60 * 60 * 1000
+    );
+    expect(pruned).toBe(2);
+
+    const deletes = stub.calls.filter((c) => c.kind === "delete");
+    // Each row hits two DELETEs (errors then job) — total = rows × 2.
+    expect(deletes).toHaveLength(4);
+  });
+
+  it("returns 0 when no rows are old enough to prune", async () => {
+    const stub = makeDbStub({ selectRows: [[]] });
+    mocks.getDb.mockResolvedValue(stub);
+    const pruned = await pruneOldTerminalDatasetUploadJobs(
+      24 * 60 * 60 * 1000
+    );
+    expect(pruned).toBe(0);
+  });
+
+  it("returns 0 when DB is unavailable", async () => {
+    mocks.getDb.mockResolvedValue(null);
+    const pruned = await pruneOldTerminalDatasetUploadJobs(60 * 1000);
+    expect(pruned).toBe(0);
+  });
+
+  it("continues pruning when an individual row delete fails", async () => {
+    const terminalRows = [
+      { id: "row-a", scopeId: "scope-1" },
+      { id: "row-b", scopeId: "scope-1" },
+    ];
+    // Both rows return affected=0 — interpreted as "not deleted"
+    // by the helper, but no exception. Pruned count is 0; the
+    // sweep continues across all rows without throwing.
+    const stub = makeDbStub({
+      selectRows: [terminalRows],
+      deleteAffected: 0,
+    });
+    mocks.getDb.mockResolvedValue(stub);
+
+    const pruned = await pruneOldTerminalDatasetUploadJobs(60 * 1000);
+    expect(pruned).toBe(0);
   });
 });
 
