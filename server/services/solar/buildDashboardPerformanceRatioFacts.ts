@@ -251,9 +251,12 @@ async function writePerformanceRatioSummary(
  * call `loadPerformanceRatioStaticInput` once, then stream
  * convertedReads through `forEachPerformanceRatioConvertedReadPage`,
  * draining the accumulator's matched rows after EACH page and
- * UPSERTing them immediately. Memory peak is bounded by ONE
- * page's worth of fact rows (~5k max) instead of all matched
- * rows accumulating across the full stream.
+ * UPSERTing them immediately. Memory peak is bounded by ONE page's
+ * worth of fact rows (~2.5k max — see
+ * `PERFORMANCE_RATIO_CONVERTED_READS_PAGE_SIZE` in
+ * `loadPerformanceRatioInput.ts`; PR #488 cut from 5k to 2.5k for
+ * additional OOM headroom) instead of all matched rows accumulating
+ * across the full stream.
  *
  * Bonus: the per-page DB upsert acts as a regular event-loop
  * yield point so the runner's heartbeat timer fires on cadence
