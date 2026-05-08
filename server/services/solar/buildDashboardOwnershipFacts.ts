@@ -32,6 +32,7 @@ import {
   deleteOrphanedOwnershipFacts,
 } from "../../db/dashboardOwnershipFacts";
 import type { InsertSolarRecDashboardOwnershipFact } from "../../../drizzle/schema";
+import { startDashboardJobMetric } from "./dashboardJobMetrics";
 
 const STEP_NAME = "ownershipFacts";
 const METRIC_PREFIX = "[dashboard:fact-build:ownership]";
@@ -101,42 +102,43 @@ async function runOwnershipStep(args: {
   signal: AbortSignal;
 }): Promise<void> {
   const { scopeId, buildId, signal } = args;
-  const heapBefore = process.memoryUsage().heapUsed;
-  const startedAt = Date.now();
-
-  if (signal.aborted) throw new Error("aborted before aggregate fetch");
-  const { result, fromCache } = await getOrBuildOverviewSummary(scopeId);
-
-  if (signal.aborted) throw new Error("aborted after aggregate fetch");
-
-  const rows = buildOwnershipFactRows({
-    scopeId,
-    buildId,
-    rows: result.ownershipRows,
+  // 2026-05-08 (consolidation) — see buildDashboardChangeOwnershipFacts.ts
+  // for the consolidation rationale; this builder follows the same shape.
+  const metric = startDashboardJobMetric({
+    prefix: METRIC_PREFIX,
+    jobId: buildId,
+    context: { scopeId },
   });
 
-  if (signal.aborted) throw new Error("aborted before upsert");
-  await upsertOwnershipFacts(rows);
-  if (signal.aborted) throw new Error("aborted before orphan sweep");
-  const orphanedDeleted = await deleteOrphanedOwnershipFacts(
-    scopeId,
-    buildId
-  );
+  try {
+    if (signal.aborted) throw new Error("aborted before aggregate fetch");
+    const { result, fromCache } = await getOrBuildOverviewSummary(scopeId);
 
-  const heapAfter = process.memoryUsage().heapUsed;
-  const elapsedMs = Date.now() - startedAt;
-  // eslint-disable-next-line no-console
-  console.log(
-    `${METRIC_PREFIX} metric ${JSON.stringify({
+    if (signal.aborted) throw new Error("aborted after aggregate fetch");
+
+    const rows = buildOwnershipFactRows({
       scopeId,
       buildId,
+      rows: result.ownershipRows,
+    });
+
+    if (signal.aborted) throw new Error("aborted before upsert");
+    await upsertOwnershipFacts(rows);
+    if (signal.aborted) throw new Error("aborted before orphan sweep");
+    const orphanedDeleted = await deleteOrphanedOwnershipFacts(
+      scopeId,
+      buildId
+    );
+
+    metric.finish({
       rowsWritten: rows.length,
       orphanedDeleted,
       fromCache,
-      elapsedMs,
-      heapDeltaBytes: heapAfter - heapBefore,
-    })}`
-  );
+    });
+  } catch (err) {
+    metric.fail(err);
+    throw err;
+  }
 }
 
 /**

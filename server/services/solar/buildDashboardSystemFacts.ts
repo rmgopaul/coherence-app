@@ -36,6 +36,7 @@ import {
   deleteOrphanedSystemFacts,
 } from "../../db/dashboardSystemFacts";
 import type { InsertSolarRecDashboardSystemFact } from "../../../drizzle/schema";
+import { startDashboardJobMetric } from "./dashboardJobMetrics";
 
 const STEP_NAME = "systemFacts";
 const METRIC_PREFIX = "[dashboard:fact-build:system]";
@@ -215,67 +216,71 @@ async function runSystemStep(args: {
   signal: AbortSignal;
 }): Promise<void> {
   const { scopeId, buildId, signal } = args;
-  const heapBefore = process.memoryUsage().heapUsed;
-  const startedAt = Date.now();
-
-  if (signal.aborted) throw new Error("aborted before aggregate fetch");
-  // Fetch both aggregators sequentially. `getOrBuildOfflineMonitoring
-  // Aggregates` reads `srDsAbpReport` to compute the 3 eligible-Part-2
-  // ID sets; `getOrBuildSystemSnapshot` reads the full system list.
-  // Both are cached via `withArtifactCache`, so the second of two
-  // back-to-back builds for the same scope hits the cache for both.
-  const offlineMonitoring = await getOrBuildOfflineMonitoringAggregates(
-    scopeId
-  );
-  if (signal.aborted) throw new Error("aborted after offline-monitoring fetch");
-  const { systems, fromCache } = await getOrBuildSystemSnapshot(scopeId);
-
-  if (signal.aborted) throw new Error("aborted after aggregate fetch");
-
-  const eligibility: Part2EligibilityIdSets = {
-    applicationIds: new Set(
-      offlineMonitoring.result.eligiblePart2ApplicationIds
-    ),
-    portalSystemIds: new Set(
-      offlineMonitoring.result.eligiblePart2PortalSystemIds
-    ),
-    trackingIds: new Set(offlineMonitoring.result.eligiblePart2TrackingIds),
-  };
-
-  // Cast `unknown[]` → `SystemRecordSubset[]`. The aggregator IS
-  // the source of these rows; this is the validated boundary
-  // every other downstream consumer assumes.
-  const rows = buildSystemFactRows({
-    scopeId,
-    buildId,
-    rows: systems as readonly SystemRecordSubset[],
-    eligibility,
+  // 2026-05-08 (consolidation) — see buildDashboardChangeOwnershipFacts.ts
+  // for the consolidation rationale; this builder follows the same shape.
+  // Caller-supplied `extra` carries `part2EligibleCount` in addition
+  // to the standard `rowsWritten` / `orphanedDeleted` / `fromCache`.
+  const metric = startDashboardJobMetric({
+    prefix: METRIC_PREFIX,
+    jobId: buildId,
+    context: { scopeId },
   });
 
-  if (signal.aborted) throw new Error("aborted before upsert");
-  await upsertSystemFacts(rows);
-  if (signal.aborted) throw new Error("aborted before orphan sweep");
-  const orphanedDeleted = await deleteOrphanedSystemFacts(scopeId, buildId);
+  try {
+    if (signal.aborted) throw new Error("aborted before aggregate fetch");
+    // Fetch both aggregators sequentially. `getOrBuildOfflineMonitoring
+    // Aggregates` reads `srDsAbpReport` to compute the 3 eligible-Part-2
+    // ID sets; `getOrBuildSystemSnapshot` reads the full system list.
+    // Both are cached via `withArtifactCache`, so the second of two
+    // back-to-back builds for the same scope hits the cache for both.
+    const offlineMonitoring = await getOrBuildOfflineMonitoringAggregates(
+      scopeId
+    );
+    if (signal.aborted) throw new Error("aborted after offline-monitoring fetch");
+    const { systems, fromCache } = await getOrBuildSystemSnapshot(scopeId);
 
-  const heapAfter = process.memoryUsage().heapUsed;
-  const elapsedMs = Date.now() - startedAt;
-  let part2EligibleCount = 0;
-  for (const row of rows) {
-    if (row.isPart2Eligible) part2EligibleCount += 1;
-  }
-  // eslint-disable-next-line no-console
-  console.log(
-    `${METRIC_PREFIX} metric ${JSON.stringify({
+    if (signal.aborted) throw new Error("aborted after aggregate fetch");
+
+    const eligibility: Part2EligibilityIdSets = {
+      applicationIds: new Set(
+        offlineMonitoring.result.eligiblePart2ApplicationIds
+      ),
+      portalSystemIds: new Set(
+        offlineMonitoring.result.eligiblePart2PortalSystemIds
+      ),
+      trackingIds: new Set(offlineMonitoring.result.eligiblePart2TrackingIds),
+    };
+
+    // Cast `unknown[]` → `SystemRecordSubset[]`. The aggregator IS
+    // the source of these rows; this is the validated boundary
+    // every other downstream consumer assumes.
+    const rows = buildSystemFactRows({
       scopeId,
       buildId,
+      rows: systems as readonly SystemRecordSubset[],
+      eligibility,
+    });
+
+    if (signal.aborted) throw new Error("aborted before upsert");
+    await upsertSystemFacts(rows);
+    if (signal.aborted) throw new Error("aborted before orphan sweep");
+    const orphanedDeleted = await deleteOrphanedSystemFacts(scopeId, buildId);
+
+    let part2EligibleCount = 0;
+    for (const row of rows) {
+      if (row.isPart2Eligible) part2EligibleCount += 1;
+    }
+
+    metric.finish({
       rowsWritten: rows.length,
       part2EligibleCount,
       orphanedDeleted,
       fromCache,
-      elapsedMs,
-      heapDeltaBytes: heapAfter - heapBefore,
-    })}`
-  );
+    });
+  } catch (err) {
+    metric.fail(err);
+    throw err;
+  }
 }
 
 /**

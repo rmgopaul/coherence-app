@@ -35,6 +35,7 @@ import {
   deleteOrphanedChangeOwnershipFacts,
 } from "../../db/dashboardChangeOwnershipFacts";
 import type { InsertSolarRecDashboardChangeOwnershipFact } from "../../../drizzle/schema";
+import { startDashboardJobMetric } from "./dashboardJobMetrics";
 
 const STEP_NAME = "changeOwnershipFacts";
 const METRIC_PREFIX = "[dashboard:fact-build:changeOwnership]";
@@ -112,42 +113,49 @@ async function runChangeOwnershipStep(args: {
   signal: AbortSignal;
 }): Promise<void> {
   const { scopeId, buildId, signal } = args;
-  const heapBefore = process.memoryUsage().heapUsed;
-  const startedAt = Date.now();
-
-  if (signal.aborted) throw new Error("aborted before aggregate fetch");
-  const { result, fromCache } = await getOrBuildChangeOwnership(scopeId);
-
-  if (signal.aborted) throw new Error("aborted after aggregate fetch");
-
-  const rows = buildChangeOwnershipFactRows({
-    scopeId,
-    buildId,
-    rows: result.rows,
+  // 2026-05-08 (consolidation) — was an ad-hoc heap-before/heap-after
+  // log inline. Switched to `startDashboardJobMetric` so every
+  // dashboard background job emits the same envelope shape (per
+  // CLAUDE.md hard rule #7). The metric utility owns the
+  // `jobId` / `outcome` / `elapsedMs` / `heapBeforeBytes` /
+  // `heapAfterBytes` fields; caller-supplied `context` carries
+  // `scopeId`, and `finish()` extras carry `rowsWritten` /
+  // `orphanedDeleted` / `fromCache`.
+  const metric = startDashboardJobMetric({
+    prefix: METRIC_PREFIX,
+    jobId: buildId,
+    context: { scopeId },
   });
 
-  if (signal.aborted) throw new Error("aborted before upsert");
-  await upsertChangeOwnershipFacts(rows);
-  if (signal.aborted) throw new Error("aborted before orphan sweep");
-  const orphanedDeleted = await deleteOrphanedChangeOwnershipFacts(
-    scopeId,
-    buildId
-  );
+  try {
+    if (signal.aborted) throw new Error("aborted before aggregate fetch");
+    const { result, fromCache } = await getOrBuildChangeOwnership(scopeId);
 
-  const heapAfter = process.memoryUsage().heapUsed;
-  const elapsedMs = Date.now() - startedAt;
-  // eslint-disable-next-line no-console
-  console.log(
-    `${METRIC_PREFIX} metric ${JSON.stringify({
+    if (signal.aborted) throw new Error("aborted after aggregate fetch");
+
+    const rows = buildChangeOwnershipFactRows({
       scopeId,
       buildId,
+      rows: result.rows,
+    });
+
+    if (signal.aborted) throw new Error("aborted before upsert");
+    await upsertChangeOwnershipFacts(rows);
+    if (signal.aborted) throw new Error("aborted before orphan sweep");
+    const orphanedDeleted = await deleteOrphanedChangeOwnershipFacts(
+      scopeId,
+      buildId
+    );
+
+    metric.finish({
       rowsWritten: rows.length,
       orphanedDeleted,
       fromCache,
-      elapsedMs,
-      heapDeltaBytes: heapAfter - heapBefore,
-    })}`
-  );
+    });
+  } catch (err) {
+    metric.fail(err);
+    throw err;
+  }
 }
 
 /**
