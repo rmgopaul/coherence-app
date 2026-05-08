@@ -48,7 +48,12 @@ import { jsonSerde, withArtifactCache } from "./withArtifactCache";
 // to `buildSystemSnapshot.ts` alongside `loadDatasetRowsPage`.
 // ---------------------------------------------------------------------------
 
-const STREAM_PAGE_SIZE_DEFAULT = 5_000;
+// 2026-05-08 step-4 hardening — was 5_000. Mirrors the cut in
+// `loadPerformanceRatioInput.ts`. The offline-monitoring aggregator
+// streams the same two source tables (abpReport + solarApplications)
+// via `createOfflineMonitoringAccumulator`; halving the page bounds
+// the transient page-allocation footprint identically.
+const STREAM_PAGE_SIZE_DEFAULT = 2_500;
 
 async function streamSrDsRowsPage(
   scopeId: string,

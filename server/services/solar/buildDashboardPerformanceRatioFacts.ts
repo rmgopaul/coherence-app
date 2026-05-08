@@ -352,16 +352,30 @@ async function runPerformanceRatioStep(args: {
           matchedSystemKeys.add(r.trackingSystemRefId);
         }
       }
-      // Periodic progress log for ops visibility (every 10 pages
-      // matches the streamSrDsRowsPage cadence in
-      // loadPerformanceRatioInput.ts).
-      if (pageCount === 1 || pageCount % 10 === 0) {
-        process.stdout.write(
-          `[buildDashboardPerformanceRatioFacts] streamed page=${pageCount} ` +
-            `factsWrittenSoFar=${totalFactsWritten} ` +
-            `heapUsed=${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB\n`
-        );
-      }
+      // 2026-05-08 step-4 hardening — log heap on EVERY page (was
+      // every 10) so the next failed build's logs pinpoint the page
+      // at which heap pressure crossed the threshold. The cost of
+      // one process.stdout.write per page is negligible vs. the
+      // diagnostic value when a worker dies mid-stream.
+      const heapMb = Math.round(
+        process.memoryUsage().heapUsed / 1024 / 1024
+      );
+      process.stdout.write(
+        `[buildDashboardPerformanceRatioFacts] streamed page=${pageCount} ` +
+          `factsWrittenSoFar=${totalFactsWritten} ` +
+          `heapUsed=${heapMb}MB\n`
+      );
+      // 2026-05-08 step-4 hardening — yield to the event loop so the
+      // heartbeat setInterval can fire even if upserts are queueing
+      // microtasks back-to-back. await on a setImmediate gives the
+      // timer queue a definite chance to drain. Belt-and-braces:
+      // upsert's await on the DB driver already yields, but on a
+      // hot inner loop with cached connections the DB roundtrip can
+      // be fast enough that the timer task never gets a slot before
+      // the next upsert starts.
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
+      });
     }
   );
 
