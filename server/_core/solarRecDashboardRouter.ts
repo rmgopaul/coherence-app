@@ -610,10 +610,26 @@ export const solarRecDashboardRouter = t.router({
       "state.json"
     );
     const dbStorageKey = "state";
-    return loadDashboardPayloadSingleFlight(
+    const result = await loadDashboardPayloadSingleFlight(
       `state:${key}`,
       () => loadDashboardPayload(ctx.userId, dbStorageKey, key, legacyKey)
     );
+    // 2026-05-08 (Phase H-1 diagnostic) — log every getState read's
+    // payload size so we can detect blob-bloat regressions early.
+    // Today's prod state.json is ~42 KB; if a future client write
+    // pushes it past a few MB, this log line surfaces it before the
+    // wire-payload guard or heap-pressure circuit-breaker has to
+    // catch it. Cheap (one console.log per call, ~80 chars). Phase
+    // H's structural fix decomposes state.json into typed slices —
+    // this log retires with H-5.
+    console.log(
+      `[dashboard:state-payload-size] ${JSON.stringify({
+        userId: ctx.userId,
+        bytes: result?.payload.length ?? 0,
+        present: result !== null,
+      })}`
+    );
+    return result;
   }),
   saveState: dashboardProcedure("solar-rec-dashboard", "edit")
     .input(
@@ -653,6 +669,98 @@ export const solarRecDashboardRouter = t.router({
         throw storageError;
       }
     }),
+
+  /**
+   * 2026-05-08 (Phase H-1 diagnostic) — process-level memory snapshot.
+   *
+   * Returns a structured view of in-process memory state suitable for
+   * attribution of heap-pressure incidents. Built specifically to
+   * diagnose the 1.68 GB residual baseline that triggered the
+   * 2026-05-08 prod 502 cascade — state.json on prod is 42 KB so the
+   * blob itself isn't the bloat source; this proc surfaces the
+   * actual heap consumers (V8 heap stats per space, in-flight
+   * dashboard load count, semaphore queue depth, state.json blob
+   * size).
+   *
+   * Admin permission because this exposes process internals (heap
+   * sizes, V8 ceiling, queue depths) that aren't sensitive but
+   * shouldn't be readable by every dashboard viewer.
+   *
+   * Cheap to call — `process.memoryUsage()` and
+   * `v8.getHeapStatistics()` are O(1) syscalls. Safe to poll
+   * (e.g. every 10 s during incident triage) without amplifying
+   * heap pressure.
+   *
+   * Companion observability: setting
+   * `DASHBOARD_REQUEST_HEAP_LOG_ALL=true` makes the response-guard
+   * middleware log heap on EVERY dashboard call (not just outliers),
+   * giving a full timeline of allocation across all procs. Flip on
+   * for short windows to find the leak source, then turn off.
+   */
+  debugProcessMemorySnapshot: dashboardProcedure(
+    "solar-rec-dashboard",
+    "admin"
+  ).query(async ({ ctx }) => {
+    const v8 = await import("node:v8");
+    const memoryUsage = process.memoryUsage();
+    const heapStatistics = v8.getHeapStatistics();
+    const heapSpaces = v8.getHeapSpaceStatistics().map((space) => ({
+      name: space.space_name,
+      sizeBytes: space.space_size,
+      usedBytes: space.space_used_size,
+      availableBytes: space.space_available_size,
+      physicalSizeBytes: space.physical_space_size,
+    }));
+
+    // Module-local state — captured here, not via getter, because
+    // these references are file-private. Future PRs that add more
+    // module-locals worth surfacing extend this object.
+    const inFlightLoads = inFlightDashboardPayloadLoads.size;
+    const semaphoreStats = dashboardLoadSemaphore.stats();
+
+    // state.json blob size — useful to detect bloat regressions in
+    // the same response that surfaces heap state.
+    let stateBlobBytes = 0;
+    try {
+      const payload = await getSolarRecDashboardPayload(
+        ctx.userId,
+        "state"
+      );
+      stateBlobBytes = payload?.length ?? 0;
+    } catch {
+      stateBlobBytes = -1;
+    }
+
+    return {
+      _runnerVersion: "phase-h-1@1",
+      now: new Date().toISOString(),
+      memoryUsage: {
+        heapUsedBytes: memoryUsage.heapUsed,
+        heapTotalBytes: memoryUsage.heapTotal,
+        rssBytes: memoryUsage.rss,
+        externalBytes: memoryUsage.external,
+        arrayBuffersBytes: memoryUsage.arrayBuffers,
+      },
+      heapStatistics: {
+        heapSizeLimitBytes: heapStatistics.heap_size_limit,
+        totalHeapSizeBytes: heapStatistics.total_heap_size,
+        totalAvailableSizeBytes: heapStatistics.total_available_size,
+        usedHeapSizeBytes: heapStatistics.used_heap_size,
+        mallocedMemoryBytes: heapStatistics.malloced_memory,
+        externalMemoryBytes: heapStatistics.external_memory,
+        numberOfNativeContexts: heapStatistics.number_of_native_contexts,
+        numberOfDetachedContexts:
+          heapStatistics.number_of_detached_contexts,
+      },
+      heapSpaces,
+      dashboard: {
+        inFlightPayloadLoads: inFlightLoads,
+        loadSemaphore: semaphoreStats,
+      },
+      stateBlobBytes,
+    };
+  }),
+
   getDataset: dashboardProcedure("solar-rec-dashboard", "read")
     .input(
       z.object({
