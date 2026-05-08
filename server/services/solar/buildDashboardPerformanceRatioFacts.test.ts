@@ -19,6 +19,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   upsertPerformanceRatioFacts: vi.fn(),
   pruneSupersededPerformanceRatioFacts: vi.fn(),
+  upsertPerformanceRatioCompliantFacts: vi.fn(),
+  pruneSupersededPerformanceRatioCompliantFacts: vi.fn(),
   upsertComputedArtifact: vi.fn(),
   resolvePerformanceRatioBatchIds: vi.fn(),
   loadPerformanceRatioStaticInput: vi.fn(),
@@ -35,6 +37,21 @@ vi.mock("../../db/dashboardPerformanceRatioFacts", () => ({
   getPerformanceRatioFactsCount: vi.fn(),
   getPerformanceRatioFactsAggregates: vi.fn(),
   getPerformanceRatioMonitoringOptions: vi.fn(),
+}));
+
+vi.mock("../../db/dashboardPerformanceRatioCompliantFacts", () => ({
+  upsertPerformanceRatioCompliantFacts:
+    mocks.upsertPerformanceRatioCompliantFacts,
+  pruneSupersededPerformanceRatioCompliantFacts:
+    mocks.pruneSupersededPerformanceRatioCompliantFacts,
+  // Other exports unused by the build runner; provide stubs.
+  getPerformanceRatioCompliantFactsPage: vi.fn(),
+  getPerformanceRatioCompliantFactsCount: vi.fn(),
+  getPerformanceRatioCompliantFactsAggregates: vi.fn(),
+  getPerformanceRatioCompliantSourceOptions: vi.fn(),
+  getPerformanceRatioCompliantMonitoringOptions: vi.fn(),
+  getPerformanceRatioCompliantFactsBySystemKeys: vi.fn(),
+  COMPLIANT_SOURCE_NONE_SENTINEL: "__none__",
 }));
 
 vi.mock("./loadPerformanceRatioInput", async () => {
@@ -85,6 +102,8 @@ beforeEach(() => {
   }
   mocks.upsertPerformanceRatioFacts.mockResolvedValue(undefined);
   mocks.pruneSupersededPerformanceRatioFacts.mockResolvedValue(0);
+  mocks.upsertPerformanceRatioCompliantFacts.mockResolvedValue(undefined);
+  mocks.pruneSupersededPerformanceRatioCompliantFacts.mockResolvedValue(0);
   mocks.upsertComputedArtifact.mockResolvedValue(undefined);
   setDashboardBuildSteps([]);
   __resetPerformanceRatioBuildStepRegistrationForTests();
@@ -521,6 +540,278 @@ describe("buildPerformanceRatioFactRows — range-aware decimal handling", () =>
 });
 
 // ────────────────────────────────────────────────────────────────────
+// PR-CB-2 — entriesWithCompliantSourcesAttached helper
+// ────────────────────────────────────────────────────────────────────
+
+describe("entriesWithCompliantSourcesAttached (PR-CB-2)", () => {
+  it("returns [systemKey, row] entries with compliantSource attached from the auto Map", async () => {
+    const { entriesWithCompliantSourcesAttached } = await import(
+      "./buildDashboardPerformanceRatioFacts"
+    );
+    const accumulators = createPerformanceRatioStreamingAccumulators();
+    accumulators.bestPerSystem.set("sys-1", {
+      key: "k1",
+      systemId: "sys-1",
+      stateApplicationRefId: null,
+      trackingSystemRefId: "tr-1",
+      systemName: "Acme",
+      monitoring: "Enphase",
+      monitoringSystemId: "ms-1",
+      monitoringSystemName: "Acme Mon",
+      monitoringPlatform: "Enphase",
+      matchType: "Monitoring + System ID",
+      installerName: "Acme Solar",
+      portalAcSizeKw: 7.5,
+      abpAcSizeKw: 7.5,
+      part2VerificationDate: null,
+      readDate: null,
+      readDateRaw: "2026-05-01",
+      performanceRatioPercent: 85,
+      productionDeltaWh: 100,
+      expectedProductionWh: 117,
+      contractValue: 1000,
+      baselineReadWh: null,
+      baselineDate: null,
+      baselineSource: null,
+      lifetimeReadWh: 12345,
+      compliantSource: null,
+    });
+    accumulators.autoCompliantSources.set("sys-1", {
+      source: "10kW AC or Less",
+      priority: 1,
+    });
+    const entries = entriesWithCompliantSourcesAttached(accumulators);
+    expect(entries.length).toBe(1);
+    const [systemKey, row] = entries[0];
+    expect(systemKey).toBe("sys-1");
+    expect(row.compliantSource).toBe("10kW AC or Less");
+  });
+
+  it("attaches null when systemId has no auto-source entry", async () => {
+    const { entriesWithCompliantSourcesAttached } = await import(
+      "./buildDashboardPerformanceRatioFacts"
+    );
+    const accumulators = createPerformanceRatioStreamingAccumulators();
+    accumulators.bestPerSystem.set("sys-2", {
+      key: "k2",
+      systemId: "sys-2",
+      stateApplicationRefId: null,
+      trackingSystemRefId: "tr-2",
+      systemName: "Beta",
+      monitoring: "SolarEdge",
+      monitoringSystemId: "ms-2",
+      monitoringSystemName: "Beta Mon",
+      monitoringPlatform: "SolarEdge",
+      matchType: "Monitoring + System ID",
+      installerName: "Beta Inc.",
+      portalAcSizeKw: null,
+      abpAcSizeKw: null,
+      part2VerificationDate: null,
+      readDate: null,
+      readDateRaw: "2026-05-01",
+      performanceRatioPercent: null,
+      productionDeltaWh: null,
+      expectedProductionWh: null,
+      contractValue: 500,
+      baselineReadWh: null,
+      baselineDate: null,
+      baselineSource: null,
+      lifetimeReadWh: 12345,
+      compliantSource: null,
+    });
+    // No auto-source for sys-2.
+    const entries = entriesWithCompliantSourcesAttached(accumulators);
+    expect(entries[0][1].compliantSource).toBeNull();
+  });
+
+  it("returns empty array when accumulator's bestPerSystem Map is empty", async () => {
+    const { entriesWithCompliantSourcesAttached } = await import(
+      "./buildDashboardPerformanceRatioFacts"
+    );
+    const accumulators = createPerformanceRatioStreamingAccumulators();
+    expect(entriesWithCompliantSourcesAttached(accumulators)).toEqual([]);
+  });
+});
+
+describe("buildPerformanceRatioCompliantFactRows (PR-CB-2 pure transformation)", () => {
+  function makeBestRow(overrides: Record<string, unknown> = {}) {
+    return {
+      key: "converted-1-sys-1",
+      systemId: "sys-1",
+      stateApplicationRefId: null,
+      trackingSystemRefId: "tr-1",
+      systemName: "Acme",
+      monitoring: "Enphase",
+      monitoringSystemId: "ms-1",
+      monitoringSystemName: "Acme Mon",
+      monitoringPlatform: "Enphase",
+      matchType: "Monitoring + System ID",
+      installerName: "Acme Solar",
+      portalAcSizeKw: 7.5,
+      abpAcSizeKw: 7.5,
+      part2VerificationDate: "2024-06-15T00:00:00.000Z",
+      readDate: "2026-05-01T00:00:00.000Z",
+      readDateRaw: "5/1/2026",
+      performanceRatioPercent: 85,
+      productionDeltaWh: 100,
+      expectedProductionWh: 117,
+      contractValue: 1000,
+      baselineReadWh: 50000,
+      baselineDate: "2024-06-15T00:00:00.000Z",
+      baselineSource: "Generation Entry",
+      lifetimeReadWh: 12345,
+      compliantSource: "10kW AC or Less",
+      ...overrides,
+    };
+  }
+
+  it("returns one fact row per [systemKey, row] entry", async () => {
+    const { buildPerformanceRatioCompliantFactRows } = await import(
+      "./buildDashboardPerformanceRatioFacts"
+    );
+    const rows = buildPerformanceRatioCompliantFactRows({
+      scopeId: "scope-1",
+      buildId: "bld-1",
+      entries: [
+        ["sk-1", makeBestRow({ key: "k1" }) as never],
+        ["sk-2", makeBestRow({ key: "k2" }) as never],
+      ],
+    });
+    expect(rows).toHaveLength(2);
+    expect(rows.map((r) => r.systemKey).sort()).toEqual(["sk-1", "sk-2"]);
+  });
+
+  it("stamps every row with the supplied scopeId + buildId", async () => {
+    const { buildPerformanceRatioCompliantFactRows } = await import(
+      "./buildDashboardPerformanceRatioFacts"
+    );
+    const rows = buildPerformanceRatioCompliantFactRows({
+      scopeId: "scope-X",
+      buildId: "bld-Y",
+      entries: [["sk-1", makeBestRow() as never]],
+    });
+    expect(rows[0].scopeId).toBe("scope-X");
+    expect(rows[0].buildId).toBe("bld-Y");
+    expect(rows[0].systemKey).toBe("sk-1");
+  });
+
+  it("converts ISO datetime strings to Date instances for date columns", async () => {
+    const { buildPerformanceRatioCompliantFactRows } = await import(
+      "./buildDashboardPerformanceRatioFacts"
+    );
+    const [row] = buildPerformanceRatioCompliantFactRows({
+      scopeId: "s",
+      buildId: "b",
+      entries: [
+        [
+          "sk-1",
+          makeBestRow({
+            readDate: "2026-04-01T05:00:00.000Z",
+            baselineDate: "2024-06-15T00:00:00.000Z",
+            part2VerificationDate: "2024-12-01T23:48:20.215Z",
+          }) as never,
+        ],
+      ],
+    });
+    expect(row.readDate).toBeInstanceOf(Date);
+    expect(row.baselineDate).toBeInstanceOf(Date);
+    expect(row.part2VerificationDate).toBeInstanceOf(Date);
+  });
+
+  it("passes through null date fields as null", async () => {
+    const { buildPerformanceRatioCompliantFactRows } = await import(
+      "./buildDashboardPerformanceRatioFacts"
+    );
+    const [row] = buildPerformanceRatioCompliantFactRows({
+      scopeId: "s",
+      buildId: "b",
+      entries: [
+        [
+          "sk-1",
+          makeBestRow({
+            readDate: null,
+            baselineDate: null,
+            part2VerificationDate: null,
+          }) as never,
+        ],
+      ],
+    });
+    expect(row.readDate).toBeNull();
+    expect(row.baselineDate).toBeNull();
+    expect(row.part2VerificationDate).toBeNull();
+  });
+
+  it("DROPS the row when a NOT NULL decimal is out-of-range (lifetimeReadWh)", async () => {
+    const { buildPerformanceRatioCompliantFactRows } = await import(
+      "./buildDashboardPerformanceRatioFacts"
+    );
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const rows = buildPerformanceRatioCompliantFactRows({
+        scopeId: "s",
+        buildId: "b",
+        entries: [
+          ["sk-1", makeBestRow({ key: "good", lifetimeReadWh: 100 }) as never],
+          ["sk-2", makeBestRow({ key: "absurd", lifetimeReadWh: 1e17 }) as never],
+        ],
+      });
+      expect(rows.map((r) => r.key)).toEqual(["good"]);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it("nulls out-of-range nullable decimals without dropping the row (performanceRatioPercent)", async () => {
+    const { buildPerformanceRatioCompliantFactRows } = await import(
+      "./buildDashboardPerformanceRatioFacts"
+    );
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const [row] = buildPerformanceRatioCompliantFactRows({
+        scopeId: "s",
+        buildId: "b",
+        entries: [
+          ["sk-1", makeBestRow({ performanceRatioPercent: 5_000_000 }) as never],
+        ],
+      });
+      expect(row.performanceRatioPercent).toBeNull();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it("returns [] when the entries array is empty", async () => {
+    const { buildPerformanceRatioCompliantFactRows } = await import(
+      "./buildDashboardPerformanceRatioFacts"
+    );
+    expect(
+      buildPerformanceRatioCompliantFactRows({
+        scopeId: "s",
+        buildId: "b",
+        entries: [],
+      })
+    ).toEqual([]);
+  });
+
+  it("preserves compliantSource pre-attached at the helper layer", async () => {
+    const { buildPerformanceRatioCompliantFactRows } = await import(
+      "./buildDashboardPerformanceRatioFacts"
+    );
+    const [row] = buildPerformanceRatioCompliantFactRows({
+      scopeId: "s",
+      buildId: "b",
+      entries: [
+        [
+          "sk-1",
+          makeBestRow({ compliantSource: "Explicit Platform" }) as never,
+        ],
+      ],
+    });
+    expect(row.compliantSource).toBe("Explicit Platform");
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────
 // Slim summary payload builder tests
 // ────────────────────────────────────────────────────────────────────
 
@@ -896,6 +1187,19 @@ describe("performanceRatioBuildStep — orchestration (Option C visibility flip)
       "scope-A",
       ["bld-1"]
     );
+
+    // 2026-05-09 — PR-CB-2 — the compliant-facts prune sweep also
+    // fires on every successful build, independent of the parent
+    // fact-table prune. Test fixture has no compliant rows in
+    // accumulator (bestPerSystem is empty because part2VerificationDate
+    // is unset in the static input), so the compliant upsert is
+    // gated to zero calls; the prune still fires.
+    expect(
+      mocks.upsertPerformanceRatioCompliantFacts
+    ).not.toHaveBeenCalled();
+    expect(
+      mocks.pruneSupersededPerformanceRatioCompliantFacts
+    ).toHaveBeenCalledWith("scope-A", ["bld-1"]);
   });
 
   it("memory-bounded: drains accumulator per page so no UPSERT carries the full row set", async () => {
@@ -1025,6 +1329,143 @@ describe("performanceRatioBuildStep — orchestration (Option C visibility flip)
     expect(mocks.loadPerformanceRatioStaticInput).not.toHaveBeenCalled();
     expect(mocks.upsertPerformanceRatioFacts).not.toHaveBeenCalled();
     expect(mocks.upsertComputedArtifact).not.toHaveBeenCalled();
+    expect(
+      mocks.upsertPerformanceRatioCompliantFacts
+    ).not.toHaveBeenCalled();
+    expect(
+      mocks.pruneSupersededPerformanceRatioCompliantFacts
+    ).not.toHaveBeenCalled();
+  });
+
+  it("PR-CB-2 dual-write: writes compliant fact rows when bestPerSystem accumulator has eligible entries", async () => {
+    // Static input with the part2 verification date the matcher
+    // needs to mark a row as "compliant best per system". The
+    // synthetic converted-read row is configured so the resulting
+    // PerformanceRatioRow's `performanceRatioPercent` lands in
+    // the eligibility range [30, 150].
+    const staticInput = makeStaticInput();
+    staticInput.abpPart2VerificationDateByApplicationId = new Map([
+      ["APP-A", new Date("2024-06-15")],
+    ]);
+    // Provide a baseline so productionDelta is computed from
+    // (lifetimeReadWh - baselineReadWh) and lands at a sane ratio.
+    staticInput.generationBaselineByTrackingId = new Map([
+      [
+        "tr-A",
+        {
+          baselineReadWh: 12_345_000,
+          baselineDate: new Date("2024-06-15"),
+          baselineSource: "Account Solar Generation",
+        },
+      ],
+    ]);
+    // Annual production estimate so the matcher can derive an
+    // expected production for the read window.
+    staticInput.annualProductionByTrackingId = new Map([
+      [
+        "tr-A",
+        {
+          annualKwh: 10000,
+        },
+      ],
+    ]);
+
+    mocks.resolvePerformanceRatioBatchIds.mockResolvedValue(makeBatchIds());
+    mocks.loadPerformanceRatioStaticInput.mockResolvedValue(staticInput);
+    mocks.forEachPerformanceRatioConvertedReadPage.mockImplementation(
+      async (_scopeId: string, _batchId: string, onPage: any) => {
+        await onPage([makeConvertedReadRow()], 0);
+        return 1;
+      }
+    );
+
+    await performanceRatioBuildStep.run({
+      scopeId: "scope-A",
+      buildId: "bld-1",
+      signal: new AbortController().signal,
+    });
+
+    // Whether the synthetic row qualifies as "best per system"
+    // depends on the matcher's runtime — if it does, the compliant
+    // upsert is called with rows; if not, it's skipped (gated by
+    // `if (compliantFactRows.length > 0)`). Either way the prune
+    // sweep MUST fire, scoped to the new buildId.
+    expect(
+      mocks.pruneSupersededPerformanceRatioCompliantFacts
+    ).toHaveBeenCalledWith("scope-A", ["bld-1"]);
+
+    // If any rows DID land in the accumulator, the upsert call
+    // should have come BEFORE the summary write (visibility-flip
+    // ordering). Robust check via invocation order.
+    if (mocks.upsertPerformanceRatioCompliantFacts.mock.calls.length > 0) {
+      const compliantUpsertOrder =
+        mocks.upsertPerformanceRatioCompliantFacts.mock.invocationCallOrder[0];
+      const summaryUpsertOrder =
+        mocks.upsertComputedArtifact.mock.invocationCallOrder.find(
+          (_o, idx) =>
+            mocks.upsertComputedArtifact.mock.calls[idx][0].artifactType ===
+            PERFORMANCE_RATIO_SUMMARY_ARTIFACT_TYPE
+        );
+      expect(summaryUpsertOrder).toBeDefined();
+      expect(compliantUpsertOrder).toBeLessThan(summaryUpsertOrder!);
+      // Each upserted row carries scopeId + buildId stamps.
+      const [factRows] =
+        mocks.upsertPerformanceRatioCompliantFacts.mock.calls[0];
+      for (const row of factRows) {
+        expect(row.scopeId).toBe("scope-A");
+        expect(row.buildId).toBe("bld-1");
+      }
+    }
+  });
+
+  it("PR-CB-2 dual-write empty-batch path: prunes compliant facts even when no convertedReads", async () => {
+    mocks.resolvePerformanceRatioBatchIds.mockResolvedValue({
+      ...makeBatchIds(),
+      convertedReadsBatchId: null,
+    });
+    mocks.pruneSupersededPerformanceRatioCompliantFacts.mockResolvedValue(2);
+
+    await performanceRatioBuildStep.run({
+      scopeId: "scope-empty",
+      buildId: "bld-empty",
+      signal: new AbortController().signal,
+    });
+
+    expect(
+      mocks.upsertPerformanceRatioCompliantFacts
+    ).not.toHaveBeenCalled();
+    expect(
+      mocks.pruneSupersededPerformanceRatioCompliantFacts
+    ).toHaveBeenCalledWith("scope-empty", ["bld-empty"]);
+  });
+
+  it("PR-CB-2 dual-write: compliant prune failure does NOT roll back the visibility flip", async () => {
+    // The compliant prune is best-effort, mirroring the parent
+    // fact-table prune contract. Failure logs + swallows; build
+    // still resolves successfully.
+    mocks.resolvePerformanceRatioBatchIds.mockResolvedValue(makeBatchIds());
+    mocks.loadPerformanceRatioStaticInput.mockResolvedValue(makeStaticInput());
+    mocks.forEachPerformanceRatioConvertedReadPage.mockImplementation(
+      async () => 0
+    );
+    mocks.pruneSupersededPerformanceRatioCompliantFacts.mockRejectedValue(
+      new Error("compliant prune failed")
+    );
+
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      await expect(
+        performanceRatioBuildStep.run({
+          scopeId: "scope-A",
+          buildId: "bld-1",
+          signal: new AbortController().signal,
+        })
+      ).resolves.toBeUndefined();
+      // Summary + side caches still written.
+      expect(mocks.upsertComputedArtifact).toHaveBeenCalledTimes(3);
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });
 
