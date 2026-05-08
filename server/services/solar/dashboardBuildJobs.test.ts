@@ -13,6 +13,8 @@ const mocks = vi.hoisted(() => ({
   getSolarRecDashboardBuild: vi.fn(),
   failStaleSolarRecDashboardBuilds: vi.fn(),
   pruneTerminalSolarRecDashboardBuilds: vi.fn(),
+  getActiveDashboardBuildForScope: vi.fn(),
+  markSolarRecDashboardBuildSuperseded: vi.fn(),
 }));
 
 vi.mock("../../db/solarRecDashboardBuilds", () => ({
@@ -21,6 +23,9 @@ vi.mock("../../db/solarRecDashboardBuilds", () => ({
   failStaleSolarRecDashboardBuilds: mocks.failStaleSolarRecDashboardBuilds,
   pruneTerminalSolarRecDashboardBuilds:
     mocks.pruneTerminalSolarRecDashboardBuilds,
+  getActiveDashboardBuildForScope: mocks.getActiveDashboardBuildForScope,
+  markSolarRecDashboardBuildSuperseded:
+    mocks.markSolarRecDashboardBuildSuperseded,
   // Other exports (claim, complete, refresh, updateProgress) are
   // exercised by the runner tests via direct mocks there.
   claimSolarRecDashboardBuild: vi.fn(),
@@ -43,9 +48,14 @@ beforeEach(() => {
   mocks.getSolarRecDashboardBuild.mockReset();
   mocks.failStaleSolarRecDashboardBuilds.mockReset();
   mocks.pruneTerminalSolarRecDashboardBuilds.mockReset();
+  mocks.getActiveDashboardBuildForScope.mockReset();
+  mocks.markSolarRecDashboardBuildSuperseded.mockReset();
   mocks.insertSolarRecDashboardBuild.mockResolvedValue(undefined);
   mocks.failStaleSolarRecDashboardBuilds.mockResolvedValue(0);
   mocks.pruneTerminalSolarRecDashboardBuilds.mockResolvedValue([]);
+  // Default: no active build for this scope (the common path).
+  mocks.getActiveDashboardBuildForScope.mockResolvedValue(null);
+  mocks.markSolarRecDashboardBuildSuperseded.mockResolvedValue(true);
 });
 
 afterEach(() => {
@@ -136,6 +146,102 @@ describe("startDashboardBuild", () => {
     expect(errorSpy).toHaveBeenCalled();
     const [msg] = errorSpy.mock.calls[errorSpy.mock.calls.length - 1];
     expect(String(msg)).toMatch(/runner threw outside row capture/);
+  });
+
+  // ──────────────────────────────────────────────────────────────
+  // 2026-05-09 — Option C — same-scope build dedup
+  // ──────────────────────────────────────────────────────────────
+
+  it("REUSES an existing queued build when one already exists for this scope", async () => {
+    // Pre-existing queued build for the same scope.
+    mocks.getActiveDashboardBuildForScope.mockResolvedValue({
+      id: "bld-existing",
+      scopeId: "scope-dedup-1",
+      status: "queued",
+      claimedBy: null,
+      claimedAt: null,
+      createdAt: new Date(),
+    });
+    const runner = vi.fn().mockResolvedValue(undefined);
+    const scheduler = vi.fn((cb: () => void) => cb());
+    const result = await startDashboardBuild("scope-dedup-1", null, {
+      runner,
+      scheduler,
+    });
+    expect(result.buildId).toBe("bld-existing");
+    expect(result.reused).toBe(true);
+    // No insert + no scheduling for the dupe call.
+    expect(mocks.insertSolarRecDashboardBuild).not.toHaveBeenCalled();
+    expect(scheduler).not.toHaveBeenCalled();
+    expect(runner).not.toHaveBeenCalled();
+  });
+
+  it("REUSES an existing running build with a fresh claim", async () => {
+    mocks.getActiveDashboardBuildForScope.mockResolvedValue({
+      id: "bld-running",
+      scopeId: "scope-dedup-2",
+      status: "running",
+      claimedBy: "pid-host-suffix",
+      claimedAt: new Date(),
+      createdAt: new Date(),
+    });
+    const runner = vi.fn();
+    const result = await startDashboardBuild("scope-dedup-2", 1, { runner });
+    expect(result.buildId).toBe("bld-running");
+    expect(result.reused).toBe(true);
+    expect(mocks.insertSolarRecDashboardBuild).not.toHaveBeenCalled();
+  });
+
+  it("starts a NEW build when the existing one is stale-claimed (sweeper would have failed it)", async () => {
+    // Even though there's a row, pretend it's stale — the helper
+    // returns `null` because `claimedAt < staleClaimBefore`. The
+    // service-layer behavior under that assumption is "no
+    // active build" → start a new one.
+    mocks.getActiveDashboardBuildForScope.mockResolvedValue(null);
+    const runner = vi.fn().mockResolvedValue(undefined);
+    const scheduler = vi.fn((cb: () => void) => cb());
+    const result = await startDashboardBuild("scope-dedup-3", 7, {
+      runner,
+      scheduler,
+    });
+    expect(result.reused).toBe(false);
+    expect(result.buildId).toMatch(/^bld-[0-9a-f]{32}$/);
+    expect(mocks.insertSolarRecDashboardBuild).toHaveBeenCalledTimes(1);
+    expect(runner).toHaveBeenCalledWith(result.buildId);
+  });
+
+  it("race-loser detection: when a competing build appears post-INSERT, marks our row superseded and returns the winner", async () => {
+    // First check (pre-INSERT): no active build.
+    // Second check (post-INSERT): a DIFFERENT buildId is now active.
+    mocks.getActiveDashboardBuildForScope
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({
+        id: "bld-winner",
+        scopeId: "scope-race",
+        status: "queued",
+        claimedBy: null,
+        claimedAt: null,
+        createdAt: new Date(),
+      });
+    const runner = vi.fn();
+    const scheduler = vi.fn();
+    const result = await startDashboardBuild("scope-race", null, {
+      runner,
+      scheduler,
+    });
+    expect(result.buildId).toBe("bld-winner");
+    expect(result.reused).toBe(true);
+    // Our row was marked superseded.
+    expect(
+      mocks.markSolarRecDashboardBuildSuperseded,
+    ).toHaveBeenCalledTimes(1);
+    const [supersededId, winnerId] =
+      mocks.markSolarRecDashboardBuildSuperseded.mock.calls[0];
+    expect(supersededId).toMatch(/^bld-[0-9a-f]{32}$/);
+    expect(winnerId).toBe("bld-winner");
+    // Runner NOT scheduled for the superseded row.
+    expect(scheduler).not.toHaveBeenCalled();
+    expect(runner).not.toHaveBeenCalled();
   });
 });
 

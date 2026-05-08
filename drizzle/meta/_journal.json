@@ -442,6 +442,13 @@
       "when": 1778175148898,
       "tag": "0066_add_dashboard_performance_ratio_facts",
       "breakpoints": true
+    },
+    {
+      "idx": 67,
+      "version": "5",
+      "when": 1778248884849,
+      "tag": "0067_perf_ratio_facts_per_build_pk",
+      "breakpoints": true
     }
   ]
 }

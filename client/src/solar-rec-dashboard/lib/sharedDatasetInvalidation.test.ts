@@ -113,14 +113,15 @@ describe("Solar REC shared dataset invalidation", () => {
     expect(handler!).toContain("result.mappingText");
   });
 
-  it("Performance Ratio rows revive server dates before render-time date math (Phase 2 PR-G-4)", () => {
-    // PR-G-4 (2026-05-07) migrated the tab off the legacy
-    // `getDashboardPerformanceRatio.useQuery` (which materialized
-    // the full PerformanceRatioRow[] payload) onto the paginated
-    // fact-table read `getDashboardPerformanceRatioPage`. The
-    // boundary converter is now `factRowToPerformanceRatioRow`.
-    // Date revival still happens via `reviveNullableDate` on the
-    // same 3 fields (readDate / baselineDate / part2VerificationDate).
+  it("Performance Ratio rows revive server dates before render-time date math (Option C)", () => {
+    // 2026-05-09 — Option C — the boundary converter is still
+    // `factRowToPerformanceRatioRow`, called once per row in the
+    // visible page (not once per row in the full set). Date
+    // revival still happens via `reviveNullableDate` on the same
+    // 3 fields (readDate / baselineDate / part2VerificationDate).
+    // Pre-cutover the converter ran inside `rawRows.map(...)` over
+    // the auto-walked pages; under Option C it runs over the
+    // single visible page only.
     const performanceRatioFile = resolve(
       __dirname,
       "..",
@@ -136,11 +137,13 @@ describe("Solar REC shared dataset invalidation", () => {
     expect(source).toContain(
       "baselineDate: reviveNullableDate(row.baselineDate)"
     );
-    expect(source).toContain("rawRows.map(factRowToPerformanceRatioRow)");
-    // Legacy converter is still EXPORTED (the server aggregator
-    // test fixture imports it) but is NO LONGER called from the
-    // tab's render path.
+    // The visible-page memo maps wire rows → revived rows.
+    expect(source).toContain("wireRows.map(factRowToPerformanceRatioRow)");
+    // The legacy converter is still EXPORTED (server aggregator
+    // test fixture imports it).
     expect(source).toContain("export function revivePerformanceRatioRows");
+    // The pre-cutover auto-walk pattern is gone:
+    expect(source).not.toContain("rawRows.map(factRowToPerformanceRatioRow)");
     expect(source).not.toContain("rows: revivePerformanceRatioRows(data.rows)");
   });
 });

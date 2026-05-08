@@ -402,6 +402,19 @@ function stringifyDeliveryScheduleRows(
   );
 }
 
+// ---------------------------------------------------------------------------
+// 2026-05-09 — Option C — Performance Ratio wire shapes + helpers
+// live in `@shared/solarRecPerformanceRatio` so the client tab can
+// import them. The summary-payload parser is defined in the
+// `buildDashboardPerformanceRatioFacts` build-runner module so the
+// payload-shape contract has a single audit point. Both are
+// re-exported here for ergonomics + so the router-side tests can
+// pin the typed shape against the proc projection.
+// ---------------------------------------------------------------------------
+
+import type { PerformanceRatioPageRow } from "@shared/solarRecPerformanceRatio";
+export type { PerformanceRatioPageRow } from "@shared/solarRecPerformanceRatio";
+
 function inferDeliveryScheduleHeaders(
   rows: readonly DeliveryScheduleBaseRow[]
 ): string[] {
@@ -3352,52 +3365,40 @@ export const solarRecDashboardRouter = t.router({
   // surface is removed.
 
   /**
-   * Phase 2 PR-G-3 (OOM rebuild) — paginated read for the
-   * performance-ratio fact table written by the build runner
-   * (PR-G-2's `performanceRatioBuildStep`). The eventual
-   * REPLACEMENT for the per-row `PerformanceRatioRow[]` payload
-   * that `getDashboardPerformanceRatio` materializes today on
-   * every cache miss (~14-min hangs on production-shape
-   * convertedReads).
+   * 2026-05-09 — Option C — paginated, server-filtered/sorted/
+   * searched read for the performance-ratio fact table. Replaces
+   * the pre-cutover proc that auto-walked the full per-build set
+   * client-side.
    *
-   * Returns one page of fact rows ordered by `key` (ASC) — the
-   * `${convertedReadKey}-${systemKey}` composite that uniquely
-   * identifies one system × converted-read match. Caller
-   * paginates by passing the response's `nextCursor` back as the
-   * next request's `cursor` input. `nextCursor === null`
-   * signals end-of-stream. The input field is named `cursor`
-   * (not `cursorAfter`) so the proc plays cleanly with tRPC
-   * v11's `useInfiniteQuery`, which auto-injects the cursor into
-   * the `cursor` field by convention (matches
-   * `getDashboardChangeOwnershipPage` etc.).
+   * **Visibility — summary as build pointer.** Reads the
+   * `performanceRatioSummary` artifact's `buildId` first; the
+   * page query filters on that buildId. Rows from in-flight or
+   * superseded builds are NEVER visible. If no summary exists
+   * (no completed build for this scope), returns
+   * `{ available: false, rows: [] }` and the client renders an
+   * "Build the dashboard to populate" empty state.
    *
-   * **Two filter axes — independent and combinable.**
-   *   - `matchType` — the PerformanceRatioTab's primary control,
-   *     a 3-value enum from `PerformanceRatioMatchType`. Backed
-   *     by the covering index `(scopeId, matchType)` PR-G-1
-   *     added.
-   *   - `monitoring` — the per-portal slice (Enphase / SolarEdge
-   *     / etc.). Backed by the covering index `(scopeId,
-   *     monitoring)` PR-G-1 added. Free-form string because the
-   *     set of platforms expands when new vendors are added; a
-   *     value the builder doesn't write resolves to an empty
-   *     page (consistent with "no rows match" UX).
+   * **Wire shape.** Each row in `rows` is the visible projection:
+   * `scopeId` and `buildId` are STRIPPED so the wire payload
+   * doesn't repeat them N times. `createdAt` / `updatedAt` are
+   * also stripped — the client never reads them. Cursor is
+   * page-number based (`nextCursor` = next OFFSET as string);
+   * `hasMore` mirrors `(offset + rows.length) < totalCount`.
    *
-   * Combining both filters falls back to one of the two indexes
-   * plus a post-index filter on the other column. The DB helper
-   * (`getPerformanceRatioFactsPage`) handles the AND composition.
+   * **Sort + filter axes.**
+   *   - `matchType`: enum from `PerformanceRatioMatchType`.
+   *   - `monitoring`: free-form vendor slice.
+   *   - `search`: case-insensitive LIKE %term% across systemName /
+   *     systemId / trackingSystemRefId / monitoring /
+   *     monitoringSystemId / monitoringSystemName / installerName.
+   *   - `sortBy`: one of `performanceRatioPercent`,
+   *     `productionDeltaWh`, `expectedProductionWh`, `systemName`,
+   *     `readDate` (defaults to `readDate`).
+   *   - `sortDir`: `asc | desc` (defaults to `desc`).
    *
-   * Wire payload: bounded to 1000 rows × ~28 columns (~250-300
-   * KB at limit=1000); default limit=200 gives ~50-80 KB per
-   * page on real data, well under the 1 MB dashboard response
-   * budget.
-   *
-   * Empty-table behavior: until the PerformanceRatioTab migrates
-   * onto this proc, the table is EMPTY for any scope that
-   * hasn't had a build run via `startDashboardBuild`. The proc
-   * returns an empty page rather than synthesizing facts on
-   * demand — building is the explicit "rebuild" action the
-   * operator initiates.
+   * Wire payload: bounded by `limit` (1..1000); default `limit=100`
+   * is ~80 KB on real data — well under the 1 MB dashboard
+   * guardrail.
    */
   getDashboardPerformanceRatioPage: dashboardProcedure(
     "solar-rec-dashboard",
@@ -3405,11 +3406,8 @@ export const solarRecDashboardRouter = t.router({
   )
     .input(
       z.object({
-        cursor: z.string().min(1).max(255).nullable().optional(),
-        limit: z.number().int().min(1).max(1000).default(200),
-        // Match the 3-value PerformanceRatioMatchType union.
-        // Exact-match `WHERE matchType = ?`; an unknown value
-        // resolves to an empty page.
+        offset: z.number().int().min(0).default(0),
+        limit: z.number().int().min(1).max(1000).default(100),
         matchType: z
           .enum([
             "Monitoring + System ID + System Name",
@@ -3418,60 +3416,138 @@ export const solarRecDashboardRouter = t.router({
           ])
           .nullable()
           .optional(),
-        // Free-form per-portal slice (Enphase / SolarEdge / Solis
-        // / etc.). Trimmed + length-bounded to fit the schema's
-        // varchar(128) column.
         monitoring: z.string().min(1).max(128).nullable().optional(),
+        // Trimmed + lowercased server-side; bounded to keep LIKE
+        // patterns sane.
+        search: z.string().max(200).nullable().optional(),
+        sortBy: z
+          .enum([
+            "performanceRatioPercent",
+            "productionDeltaWh",
+            "expectedProductionWh",
+            "systemName",
+            "readDate",
+          ])
+          .default("readDate"),
+        sortDir: z.enum(["asc", "desc"]).default("desc"),
       })
     )
     .query(async ({ ctx, input }) => {
-      const { getPerformanceRatioFactsPage } = await import(
-        "../db/dashboardPerformanceRatioFacts"
+      const _runnerVersion = "phase-2-pr-g-option-c-page@1" as const;
+      const _checkpoint = "performance-ratio-page-option-c";
+
+      const { getComputedArtifact } = await import("../db/solarRecDatasets");
+      const {
+        PERFORMANCE_RATIO_SUMMARY_ARTIFACT_TYPE,
+        PERFORMANCE_RATIO_SUMMARY_VERSION_KEY,
+        parsePerformanceRatioSummaryPayload,
+      } = await import(
+        "../services/solar/buildDashboardPerformanceRatioFacts"
       );
-      const rows = await getPerformanceRatioFactsPage(ctx.scopeId, {
-        cursorAfter: input.cursor ?? null,
-        limit: input.limit,
+
+      const summaryRow = await getComputedArtifact(
+        ctx.scopeId,
+        PERFORMANCE_RATIO_SUMMARY_ARTIFACT_TYPE,
+        PERFORMANCE_RATIO_SUMMARY_VERSION_KEY
+      );
+      // Parse once; read both `buildId` (for the visibility filter)
+      // and `builtAt` (for the response) from the same parsed
+      // object. Pre-fix this proc parsed the JSON twice via
+      // separate buildId / builtAt helpers.
+      const summary = parsePerformanceRatioSummaryPayload(
+        summaryRow?.payload ?? null
+      );
+      const buildId = summary?.buildId ?? null;
+      if (!buildId) {
+        return {
+          _checkpoint,
+          _runnerVersion,
+          available: false as const,
+          rows: [] as PerformanceRatioPageRow[],
+          totalCount: 0,
+          offset: input.offset,
+          nextCursor: null as string | null,
+          hasMore: false,
+          buildId: null,
+          builtAt: null,
+        };
+      }
+
+      const {
+        getPerformanceRatioFactsPage,
+        getPerformanceRatioFactsCount,
+      } = await import("../db/dashboardPerformanceRatioFacts");
+
+      const filters = {
+        scopeId: ctx.scopeId,
+        buildId,
         matchType: input.matchType ?? null,
         monitoring: input.monitoring ?? null,
-      });
-      const nextCursor =
-        rows.length === input.limit
-          ? rows[rows.length - 1]?.key ?? null
-          : null;
+        search: input.search ?? null,
+      };
+      const [factRows, totalCount] = await Promise.all([
+        getPerformanceRatioFactsPage(filters, {
+          offset: input.offset,
+          limit: input.limit,
+          sortBy: input.sortBy,
+          sortDir: input.sortDir,
+        }),
+        getPerformanceRatioFactsCount(filters),
+      ]);
+
+      const rows: PerformanceRatioPageRow[] = factRows.map((row) => ({
+        key: row.key,
+        convertedReadKey: row.convertedReadKey,
+        matchType: row.matchType,
+        monitoring: row.monitoring,
+        monitoringSystemId: row.monitoringSystemId,
+        monitoringSystemName: row.monitoringSystemName,
+        readDate: row.readDate ? row.readDate.toISOString() : null,
+        readDateRaw: row.readDateRaw,
+        lifetimeReadWh: row.lifetimeReadWh,
+        trackingSystemRefId: row.trackingSystemRefId,
+        systemId: row.systemId,
+        stateApplicationRefId: row.stateApplicationRefId,
+        systemName: row.systemName,
+        installerName: row.installerName,
+        monitoringPlatform: row.monitoringPlatform,
+        portalAcSizeKw: row.portalAcSizeKw,
+        abpAcSizeKw: row.abpAcSizeKw,
+        part2VerificationDate: row.part2VerificationDate
+          ? row.part2VerificationDate.toISOString()
+          : null,
+        baselineReadWh: row.baselineReadWh,
+        baselineDate: row.baselineDate ? row.baselineDate.toISOString() : null,
+        baselineSource: row.baselineSource,
+        productionDeltaWh: row.productionDeltaWh,
+        expectedProductionWh: row.expectedProductionWh,
+        performanceRatioPercent: row.performanceRatioPercent,
+        contractValue: row.contractValue,
+      }));
+
+      const nextOffset = input.offset + rows.length;
+      const hasMore = nextOffset < totalCount;
       return {
-        _checkpoint: "performance-ratio-page-v1",
-        _runnerVersion: "phase-2-pr-g-3@1" as const,
+        _checkpoint,
+        _runnerVersion,
+        available: true as const,
         rows,
-        nextCursor,
-        hasMore: nextCursor !== null,
+        totalCount,
+        offset: input.offset,
+        nextCursor: hasMore ? String(nextOffset) : null,
+        hasMore,
+        buildId,
+        builtAt: summary?.builtAt ?? null,
       };
     }),
 
   /**
-   * Phase 2 PR-G-3 (OOM rebuild) — slim cache-only summary read
-   * for the PerformanceRatioTab's headline tile values.
-   *
-   * Reads the side-cache row written by PR-G-2's
-   * `performanceRatioBuildStep` under
-   * `solarRecComputedArtifacts(scopeId, "performanceRatioSummary",
-   * "current")`. The row carries:
-   *   - `convertedReadCount` — total converted-read rows the
-   *     aggregator scanned (matched + unmatched + invalid).
-   *   - `matchedConvertedReads` / `unmatchedConvertedReads` /
-   *     `invalidConvertedReads` — per-bucket counts.
-   *   - `matchedSystemCount` — unique systems represented across
-   *     the matched fact rows.
-   *   - `buildId` + `aggregatorVersion` + `builtAt` —
-   *     observability stamps so a stale summary can be detected.
-   *
-   * NEVER triggers a row materialization. When the side cache
-   * is cold (no build has run yet for this scope), returns
-   * `{ available: false, _runnerVersion }` and the client
-   * renders the headline tiles as "—" / "N/A" placeholders
-   * instead of silent zeros. This is the "summary first paint
-   * never blocks on aggregator" contract.
-   *
-   * Wire payload: ~150-200 bytes (8 scalars + 3 strings).
+   * 2026-05-09 — Option C — slim summary read for the
+   * PerformanceRatioTab's headline tiles + filter dropdown
+   * options. Adds the streaming-aggregated server-side counts +
+   * sums + monitoring options. Wire payload: ~5–10 KB depending
+   * on monitoring-options cardinality (typically ~10 vendors ×
+   * ~30 chars).
    */
   getDashboardPerformanceRatioSummary: dashboardProcedure(
     "solar-rec-dashboard",
@@ -3481,6 +3557,7 @@ export const solarRecDashboardRouter = t.router({
     const {
       PERFORMANCE_RATIO_SUMMARY_ARTIFACT_TYPE,
       PERFORMANCE_RATIO_SUMMARY_VERSION_KEY,
+      parsePerformanceRatioSummaryPayload,
     } = await import(
       "../services/solar/buildDashboardPerformanceRatioFacts"
     );
@@ -3489,29 +3566,220 @@ export const solarRecDashboardRouter = t.router({
       PERFORMANCE_RATIO_SUMMARY_ARTIFACT_TYPE,
       PERFORMANCE_RATIO_SUMMARY_VERSION_KEY
     );
-    const _runnerVersion = "phase-2-pr-g-3-summary@1" as const;
-    if (!cached?.payload) {
+    const _runnerVersion = "phase-2-pr-g-option-c-summary@1" as const;
+    // 2026-05-09 codex review fixup — validate every required
+    // Option-C field via the shared parser. Pre-fix the proc
+    // type-cast the JSON unchecked, which would have surfaced
+    // NaN tile values + an empty monitoring-options dropdown if
+    // a pre-Option-C summary payload survived the migration.
+    const summary = parsePerformanceRatioSummaryPayload(
+      cached?.payload ?? null
+    );
+    if (!summary) {
+      return { available: false as const, _runnerVersion };
+    }
+    return {
+      available: true as const,
+      ...summary,
+      _runnerVersion,
+    };
+  }),
+
+  /**
+   * 2026-05-09 — Option C — filtered aggregates for the headline
+   * tiles when the user has applied filters. The summary
+   * artifact's totals are global (everything in the build); when
+   * the tab applies `matchType` / `monitoring` / `search`, the
+   * tile values should re-render to reflect the filtered subset.
+   *
+   * Returns the same `allocationCount` / counts / sums / portfolio
+   * ratio as the summary, but computed over the filter scope. Wire
+   * payload: ~150 B. Same filter-arg surface as
+   * `getDashboardPerformanceRatioPage` so the client can reuse the
+   * filter state as the query key.
+   */
+  getDashboardPerformanceRatioFilteredAggregates: dashboardProcedure(
+    "solar-rec-dashboard",
+    "read"
+  )
+    .input(
+      z.object({
+        matchType: z
+          .enum([
+            "Monitoring + System ID + System Name",
+            "Monitoring + System ID",
+            "Monitoring + System Name",
+          ])
+          .nullable()
+          .optional(),
+        monitoring: z.string().min(1).max(128).nullable().optional(),
+        search: z.string().max(200).nullable().optional(),
+      })
+    )
+    .query(async ({ ctx, input }) => {
+      const _runnerVersion =
+        "phase-2-pr-g-option-c-filtered-agg@1" as const;
+      const { getComputedArtifact } = await import("../db/solarRecDatasets");
+      const {
+        PERFORMANCE_RATIO_SUMMARY_ARTIFACT_TYPE,
+        PERFORMANCE_RATIO_SUMMARY_VERSION_KEY,
+        extractPerformanceRatioVisibleBuildId,
+        computePortfolioRatioPercent,
+      } = await import(
+        "../services/solar/buildDashboardPerformanceRatioFacts"
+      );
+      const summaryRow = await getComputedArtifact(
+        ctx.scopeId,
+        PERFORMANCE_RATIO_SUMMARY_ARTIFACT_TYPE,
+        PERFORMANCE_RATIO_SUMMARY_VERSION_KEY
+      );
+      const buildId = extractPerformanceRatioVisibleBuildId(
+        summaryRow?.payload ?? null
+      );
+      if (!buildId) {
+        return {
+          _runnerVersion,
+          available: false as const,
+        };
+      }
+      const { getPerformanceRatioFactsAggregates } = await import(
+        "../db/dashboardPerformanceRatioFacts"
+      );
+      const aggregates = await getPerformanceRatioFactsAggregates({
+        scopeId: ctx.scopeId,
+        buildId,
+        matchType: input.matchType ?? null,
+        monitoring: input.monitoring ?? null,
+        search: input.search ?? null,
+      });
+      // Reuses the build-runner's portfolio-ratio formula so a
+      // future change to the rounding / non-finite handling lands
+      // in ONE place. Pre-fix this proc inlined a near-identical
+      // formula that lacked the build-runner's `Number.isFinite`
+      // guards.
+      const portfolioRatioPercent = computePortfolioRatioPercent(
+        aggregates.totalDeltaWh,
+        aggregates.totalExpectedWh
+      );
+      return {
+        _runnerVersion,
+        available: true as const,
+        buildId,
+        ...aggregates,
+        portfolioRatioPercent,
+      };
+    }),
+
+  /**
+   * 2026-05-09 — Option C — auto-compliant + best-per-system
+   * context for the bottom-of-tab "Compliant Sources" section.
+   * Pre-cutover the client iterated every fact row to derive
+   * these maps; now they're pre-aggregated by the build runner
+   * and cached as separate artifacts.
+   *
+   * Returns:
+   *   - `autoSources`: `Record<systemId, source>` for the auto-
+   *     compliant resolver. Capped at 25k entries; `truncated`
+   *     surfaces when production exceeds the cap.
+   *   - `bestPerSystem`: `Array<PerformanceRatioCompliantBestRow>`
+   *     pre-reduced (most-recent month → highest ratio →
+   *     most-recent readDate); each row has `compliantSource`
+   *     pre-attached from the auto map.
+   *   - `buildId` from each artifact for the client to verify
+   *     they match the summary's `buildId` (race-detection on
+   *     rebuild).
+   *
+   * Wire payload: 750 KB worst case (auto sources at cap) + 300
+   * KB worst case (best-per-system at cap) ≈ 1 MB total. Sits
+   * RIGHT at the 1 MB dashboard guardrail; if production reliably
+   * exceeds, split into two paginated procs.
+   */
+  getDashboardPerformanceRatioCompliantContext: dashboardProcedure(
+    "solar-rec-dashboard",
+    "read"
+  ).query(async ({ ctx }) => {
+    const _runnerVersion =
+      "phase-2-pr-g-option-c-compliant@1" as const;
+    const { getComputedArtifact } = await import("../db/solarRecDatasets");
+    const {
+      PERFORMANCE_RATIO_SUMMARY_ARTIFACT_TYPE,
+      PERFORMANCE_RATIO_SUMMARY_VERSION_KEY,
+      PERFORMANCE_RATIO_AUTO_COMPLIANT_ARTIFACT_TYPE,
+      PERFORMANCE_RATIO_AUTO_COMPLIANT_VERSION_KEY,
+      PERFORMANCE_RATIO_BEST_PER_SYSTEM_ARTIFACT_TYPE,
+      PERFORMANCE_RATIO_BEST_PER_SYSTEM_VERSION_KEY,
+      extractPerformanceRatioVisibleBuildId,
+    } = await import(
+      "../services/solar/buildDashboardPerformanceRatioFacts"
+    );
+    // 2026-05-09 codex review fixup — gate compliant-context
+    // visibility on the SUMMARY's buildId. Pre-fix this proc
+    // returned the latest side-cache rows whether or not the
+    // summary visibility flip had completed, so a build that
+    // failed AFTER side-cache writes but BEFORE the summary
+    // write would surface its (now-superseded) compliant rows
+    // alongside the OLD main table — inconsistent UI.
+    const [summaryRow, autoRow, bestRow] = await Promise.all([
+      getComputedArtifact(
+        ctx.scopeId,
+        PERFORMANCE_RATIO_SUMMARY_ARTIFACT_TYPE,
+        PERFORMANCE_RATIO_SUMMARY_VERSION_KEY
+      ),
+      getComputedArtifact(
+        ctx.scopeId,
+        PERFORMANCE_RATIO_AUTO_COMPLIANT_ARTIFACT_TYPE,
+        PERFORMANCE_RATIO_AUTO_COMPLIANT_VERSION_KEY
+      ),
+      getComputedArtifact(
+        ctx.scopeId,
+        PERFORMANCE_RATIO_BEST_PER_SYSTEM_ARTIFACT_TYPE,
+        PERFORMANCE_RATIO_BEST_PER_SYSTEM_VERSION_KEY
+      ),
+    ]);
+    const visibleBuildId = extractPerformanceRatioVisibleBuildId(
+      summaryRow?.payload ?? null
+    );
+    if (!visibleBuildId || !autoRow?.payload || !bestRow?.payload) {
       return { available: false as const, _runnerVersion };
     }
     try {
-      const summary = JSON.parse(cached.payload) as {
-        convertedReadCount: number;
-        matchedConvertedReads: number;
-        unmatchedConvertedReads: number;
-        invalidConvertedReads: number;
-        matchedSystemCount: number;
+      const autoPayload = JSON.parse(autoRow.payload) as {
         buildId: string;
-        aggregatorVersion: string;
         builtAt: string;
+        sources: Record<string, string>;
+        truncated: boolean;
+        totalEntries: number;
       };
+      const bestPayload = JSON.parse(bestRow.payload) as {
+        buildId: string;
+        builtAt: string;
+        rows: Array<Record<string, unknown>>;
+        truncated: boolean;
+        totalEntries: number;
+      };
+      // Three-way buildId match: summary === auto === best. Any
+      // mismatch means the side caches are from a different (in-
+      // flight or failed) build than what the summary points at;
+      // refuse to surface them as the visible compliant context.
+      if (
+        autoPayload.buildId !== visibleBuildId ||
+        bestPayload.buildId !== visibleBuildId
+      ) {
+        return { available: false as const, _runnerVersion };
+      }
       return {
         available: true as const,
-        ...summary,
         _runnerVersion,
+        autoSources: autoPayload.sources,
+        autoSourcesTruncated: autoPayload.truncated,
+        autoSourcesTotalEntries: autoPayload.totalEntries,
+        bestPerSystem: bestPayload.rows,
+        bestPerSystemTruncated: bestPayload.truncated,
+        bestPerSystemTotalEntries: bestPayload.totalEntries,
+        buildId: visibleBuildId,
+        builtAt: bestPayload.builtAt,
       };
     } catch {
-      // Corrupt payload — surface as not-available so the client
-      // doesn't render garbage. The next build will overwrite.
       return { available: false as const, _runnerVersion };
     }
   }),
@@ -3813,6 +4081,24 @@ export const solarRecDashboardRouter = t.router({
         }),
         z.object({
           exportType: z.literal("deliveryTrackerUnmatchedTransfersCsv"),
+        }),
+        z.object({
+          // 2026-05-09 — Option C — full export of the
+          // PerformanceRatioTab's currently-filtered/sorted view.
+          // Args mirror the page proc so the CSV file matches
+          // what the user sees on screen.
+          exportType: z.literal("performanceRatioCsv"),
+          matchType: z.string().nullable(),
+          monitoring: z.string().nullable(),
+          search: z.string().nullable(),
+          sortBy: z.enum([
+            "performanceRatioPercent",
+            "productionDeltaWh",
+            "expectedProductionWh",
+            "systemName",
+            "readDate",
+          ]),
+          sortDir: z.enum(["asc", "desc"]),
         }),
       ])
     )

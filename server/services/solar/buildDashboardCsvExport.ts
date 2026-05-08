@@ -547,7 +547,13 @@ function buildCsvRowLine(
   return headers.map(h => escapeCsvCell(row[h] ?? "")).join(",");
 }
 
-function escapeCsvCell(value: string): string {
+/**
+ * 2026-05-09 — promoted from private to a named export so other
+ * dashboard CSV builders (`buildPerformanceRatioCsvExport` and
+ * future siblings) can reuse the same escape semantics rather
+ * than re-implementing `,` / `"` / `\n` handling each time.
+ */
+export function escapeCsvCell(value: string): string {
   if (value.includes(",") || value.includes('"') || value.includes("\n")) {
     return `"${value.replace(/"/g, '""')}"`;
   }

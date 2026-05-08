@@ -16,14 +16,18 @@ import {
 } from "@/solar-rec-dashboard/lib/constants";
 import { firstNonEmptyString } from "./misc";
 
-// Match-key normalizers live in `@shared/solarRecPerformanceRatio` so
-// the server aggregator and this tab share one source of truth. Re-
-// exported here so existing call sites (`@/solar-rec-dashboard/lib/
-// helpers/monitoring`) don't change.
+// Match-key normalizers + compliant-source helpers live in
+// `@shared/solarRecPerformanceRatio` so the server aggregator and
+// this tab share one source of truth. Re-exported here so existing
+// call sites (`@/solar-rec-dashboard/lib/helpers/monitoring`) don't
+// change.
 import {
   normalizeMonitoringMatch,
   normalizeSystemIdMatch,
   normalizeSystemNameMatch,
+  resolveMonitoringPlatformCompliantSource as _resolveMonitoringPlatformCompliantSourceShared,
+  getAutoCompliantSourcePriority as _getAutoCompliantSourcePriorityShared,
+  isTenKwAcOrLess as _isTenKwAcOrLessShared,
 } from "@shared/solarRecPerformanceRatio";
 export {
   normalizeMonitoringMatch,
@@ -215,25 +219,14 @@ export function resolveOfflineMonitoringAccessFields(
   };
 }
 
-export function resolveMonitoringPlatformCompliantSource(
-  value: string | null | undefined,
-): string | null {
-  const normalized = normalizeMonitoringMatch(value);
-  if (!normalized) return null;
-  return AUTO_MONITORING_PLATFORM_COMPLIANT_SOURCE_BY_KEY[normalized] ?? null;
-}
-
-export function getAutoCompliantSourcePriority(value: string): number {
-  return value === TEN_KW_COMPLIANT_SOURCE ? 1 : 2;
-}
-
-export function isTenKwAcOrLess(
-  portalAcSizeKw: number | null,
-  abpAcSizeKw: number | null,
-): boolean {
-  const hasAnySize = portalAcSizeKw !== null || abpAcSizeKw !== null;
-  if (!hasAnySize) return false;
-  const portalOk = portalAcSizeKw === null || portalAcSizeKw <= 10;
-  const abpOk = abpAcSizeKw === null || abpAcSizeKw <= 10;
-  return portalOk && abpOk;
-}
+// 2026-05-09 — Option C — these used to live here as inline
+// implementations; moved to `@shared/solarRecPerformanceRatio` so
+// server procs can share the same lookup table + priority scheme.
+// Local re-exports preserve every existing import. The lookup map +
+// `TEN_KW_COMPLIANT_SOURCE` constant referenced above are also
+// re-exported from shared via the constants barrel.
+export const resolveMonitoringPlatformCompliantSource =
+  _resolveMonitoringPlatformCompliantSourceShared;
+export const getAutoCompliantSourcePriority =
+  _getAutoCompliantSourcePriorityShared;
+export const isTenKwAcOrLess = _isTenKwAcOrLessShared;

@@ -21,8 +21,10 @@
 import { randomBytes } from "node:crypto";
 import {
   failStaleSolarRecDashboardBuilds,
+  getActiveDashboardBuildForScope,
   getSolarRecDashboardBuild,
   insertSolarRecDashboardBuild,
+  markSolarRecDashboardBuildSuperseded,
   pruneTerminalSolarRecDashboardBuilds,
 } from "../../db/solarRecDashboardBuilds";
 import {
@@ -88,14 +90,32 @@ export interface DashboardBuildStatusSnapshot {
  *
  * `runner` and `scheduler` are dependency-injected for tests; in
  * production they default to `runDashboardBuildJob` and
- * `setImmediate`. Mirrors the CSV export module's start contract.
+ * `setImmediate`.
  *
- * `inputVersionsJson` is a stub for PR-B (empty object). PR-C+
- * will pass the active source-batch IDs (`solarApplications`,
- * `transferHistory`, etc.) so the build knows which inputs it's
- * deriving from, and the cache key Phase 6's `inputVersionHash`
- * already produces gets a durable home on the row.
+ * **2026-05-09 — Option C — same-scope dedup.** If a `queued` or
+ * `running` build already exists for this scope, return its
+ * `buildId` instead of starting a new build that would race the
+ * existing one through orphan sweeps + fact writes. The result
+ * shape adds `reused: true` so the caller can surface "already
+ * building" UX vs. a fresh start.
+ *
+ * Stale-claim safety: a `running` build whose `claimedAt` is older
+ * than `STALE_CLAIM_MS` is treated as NOT active — the periodic
+ * sweeper would have flipped it to `failed` on its next tick, and
+ * waiting for it would deadlock the new caller.
+ *
+ * Race window: two concurrent calls both see "no active build",
+ * both insert queued rows. Race-loser detection: after insert,
+ * re-query for the active build; if it's a DIFFERENT buildId
+ * (because the loser inserted later), mark our row as superseded
+ * and return the winner's ID. The runner is NOT scheduled for
+ * the superseded row.
  */
+export interface StartDashboardBuildResult {
+  buildId: string;
+  reused: boolean;
+}
+
 export async function startDashboardBuild(
   scopeId: string,
   createdByUserId: number | null,
@@ -104,7 +124,19 @@ export async function startDashboardBuild(
     runner?: (buildId: string) => Promise<void>;
     scheduler?: (cb: () => void) => void;
   }
-): Promise<{ buildId: string }> {
+): Promise<StartDashboardBuildResult> {
+  // Check #1 — pre-insert. Cheapest path: existing build wins, we
+  // return early with `reused: true`.
+  const staleClaimBefore = new Date(Date.now() - STALE_CLAIM_MS);
+  const existing = await getActiveDashboardBuildForScope(
+    scopeId,
+    staleClaimBefore
+  );
+  if (existing) {
+    return { buildId: existing.id, reused: true };
+  }
+
+  // No active build seen — insert ours.
   const buildId = newBuildId();
   await insertSolarRecDashboardBuild({
     id: buildId,
@@ -114,8 +146,40 @@ export async function startDashboardBuild(
     status: "queued",
     runnerVersion: DASHBOARD_BUILD_RUNNER_VERSION,
   });
+
+  // Check #2 — post-insert race-loser detection. If another build
+  // for this scope is now the canonical active row (i.e. it was
+  // inserted between check #1 and our insert AND has lower
+  // createdAt), mark our row as superseded and return the
+  // winner's buildId. `getActiveDashboardBuildForScope` orders by
+  // createdAt ASC, so the OLDEST active build wins; our just-
+  // inserted row is the youngest by definition.
+  const activeNow = await getActiveDashboardBuildForScope(
+    scopeId,
+    staleClaimBefore
+  );
+  if (activeNow && activeNow.id !== buildId) {
+    const marked = await markSolarRecDashboardBuildSuperseded(
+      buildId,
+      activeNow.id
+    );
+    if (!marked) {
+      // Defensive: if our row already got claimed (impossible in
+      // practice — the runner is scheduled BELOW this check), log
+      // and fall through to scheduling. Mark-superseded only
+      // succeeds for `status='queued' AND claimedBy IS NULL` so a
+      // false return here means the row already changed state,
+      // which means the runner is taking over and we shouldn't
+      // re-schedule. Just return the winner's ID.
+      console.warn(
+        `${METRIC_PREFIX} race-loser mark failed for buildId=${buildId} (winner=${activeNow.id}); returning winner anyway`
+      );
+    }
+    return { buildId: activeNow.id, reused: true };
+  }
+
   scheduleBuildRunner(buildId, options?.runner, options?.scheduler);
-  return { buildId };
+  return { buildId, reused: false };
 }
 
 /**

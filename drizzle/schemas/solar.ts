@@ -2654,26 +2654,70 @@ export const solarRecDashboardPerformanceRatioFacts = mysqlTable(
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   (table) => ({
+    // 2026-05-09 — Option C build-isolation refactor. Pre-fix the PK
+    // was (scopeId, key) which let a failed/overlapping build silently
+    // overwrite visible rows: the upsert-on-duplicate-key collapsed
+    // build-A and build-B's writes for the same (scopeId, key). With
+    // build_A in flight when build_B starts (or build_A failing
+    // post-row-write but pre-summary-write), the visible fact set
+    // mixed rows from both. The fix is to make rows from different
+    // builds COEXIST in the table (PK includes buildId) and gate
+    // visibility through the summary artifact's `buildId` pointer —
+    // the page proc filters `WHERE scopeId=? AND buildId=summary_buildId`
+    // and rows from in-flight / failed builds are simply invisible
+    // until that build completes its summary write.
     pk: primaryKey({
-      columns: [table.scopeId, table.key],
+      columns: [table.scopeId, table.buildId, table.key],
       name: "solar_rec_dashboard_performance_ratio_facts_pk",
     }),
-    // Build sweep covers the orphan-deletion query
-    // (WHERE scopeId=? AND buildId != currentBuildId).
-    scopeBuildIdx: index(
-      "solar_rec_dashboard_performance_ratio_facts_scope_build_idx"
-    ).on(table.scopeId, table.buildId),
-    // Match-type filter — PerformanceRatioTab's primary filter axis.
-    // Index covers `WHERE scopeId=? AND matchType=? ORDER BY key
-    // LIMIT N` which is PR-G-3's read pattern.
-    scopeMatchTypeIdx: index(
-      "solar_rec_dashboard_performance_ratio_facts_scope_match_type_idx"
-    ).on(table.scopeId, table.matchType),
-    // Monitoring filter — PerformanceRatioTab's secondary filter
-    // axis (per-portal slice).
-    scopeMonitoringIdx: index(
-      "solar_rec_dashboard_performance_ratio_facts_scope_monitoring_idx"
-    ).on(table.scopeId, table.monitoring),
+    // Match-type + monitoring filters — covering indexes that
+    // include `key` so the page proc's
+    // `ORDER BY key LIMIT N OFFSET M` can use the index without a
+    // filesort. The PK above already covers (scopeId, buildId, key)
+    // for unfiltered + sorted-by-key reads.
+    //
+    // Identifier-length note: all four sort/filter indexes use
+    // the abbreviated `solar_rec_dashboard_perf_ratio_facts`
+    // prefix (36 chars) to stay under MySQL's 64-char identifier
+    // limit. The full `solar_rec_dashboard_performance_ratio_facts`
+    // prefix (43 chars) plus the `_scope_build_match_idx` /
+    // `_scope_build_monit_idx` suffixes (22 chars each) would
+    // produce 65-char names that error out at CREATE INDEX time.
+    scopeBuildMatchTypeIdx: index(
+      "solar_rec_dashboard_perf_ratio_facts_scope_build_match_idx"
+    ).on(table.scopeId, table.buildId, table.matchType, table.key),
+    scopeBuildMonitoringIdx: index(
+      "solar_rec_dashboard_perf_ratio_facts_scope_build_monit_idx"
+    ).on(table.scopeId, table.buildId, table.monitoring, table.key),
+    // Sort indexes for the most common server-driven sort columns.
+    // These cover `WHERE scopeId=? AND buildId=? ORDER BY <col>,
+    // key ASC|DESC` without falling back to a filesort. The `key`
+    // suffix is the stable tie-breaker the page proc applies for
+    // pagination determinism — including it in the index lets the
+    // engine satisfy ORDER BY entirely from the index even when
+    // many rows share the same sort_col value.
+    //
+    // Skipped sort columns (`lifetimeReadWh`, `productionDeltaWh`,
+    // `expectedProductionWh`, `contractValue`, `systemName`)
+    // accept a filesort cost. `systemName` specifically can NOT
+    // be indexed without a prefix length because the column is
+    // declared `text`; MySQL/TiDB reject `CREATE INDEX ... (text)`
+    // without `(text(N))`, and Drizzle's index API doesn't
+    // currently support prefix lengths in the schema DSL. The
+    // page proc's `LIMIT` keeps the filesort bounded; if a slow-
+    // query surfaces, ship a hand-rolled migration with a
+    // prefix-length index AND the matching change in this schema.
+    scopeBuildReadDateIdx: index(
+      "solar_rec_dashboard_perf_ratio_facts_scope_build_readdate_idx"
+    ).on(table.scopeId, table.buildId, table.readDate, table.key),
+    scopeBuildPerfPercentIdx: index(
+      "solar_rec_dashboard_perf_ratio_facts_scope_build_perf_pct_idx"
+    ).on(
+      table.scopeId,
+      table.buildId,
+      table.performanceRatioPercent,
+      table.key
+    ),
   })
 );
 
