@@ -1109,6 +1109,50 @@ expected post-upload state even with no chunked blob present.
    couldn't survive process restarts. Phase 6 PR-B retired the
    workaround AND the Map together.
 
+9. **Cache + job-row tables that get appended to indefinitely
+   must have a TTL prune wired BEFORE shipping.** "We'll add
+   cleanup later" is how `solarRecComputedArtifacts` accumulated
+   ≥20 × 5.7 MB foundation-v1 cache rows on prod (~114 MB) and
+   `datasetUploadJobs` accumulated terminal rows for months
+   (Phase H-1 audit, see `docs/h1-prod-baseline-attribution.md`).
+
+   The TTL strategy depends on the table's purpose:
+
+   - **Versioned caches** (`solarRecComputedArtifacts`,
+     `solarRecDashboardStorage` for snapshot keys) → keep
+     newest N per `(scopeId, artifactType)`; prune on every
+     write (the `pruneOldComputedArtifacts` pattern from
+     PR #500). N=3 is the canonical default; raise it only
+     when there's a structural reason to retain history.
+
+   - **Terminal-status job rows** (`datasetUploadJobs`,
+     `dashboardCsvExportJobs`, `solarRecDashboardBuilds`) →
+     TTL by age (`updatedAt < cutoff`); prune in the existing
+     stale-claim sweeper tick (the
+     `pruneOldTerminalDatasetUploadJobs` pattern from PR #503,
+     `pruneTerminalSolarRecDashboardBuilds` for build jobs).
+     Default 7 days for upload-history readability; 30 minutes
+     for ephemeral CSV exports; tunable per-table.
+
+   - **Time-series tables** (`monitoringApiRuns`,
+     `dailyJobClaims`, `sectionEngagement`) → nightly cron
+     prune of rows older than the longest reader window (365
+     days for monitoring runs; 90 days for engagement). Wired
+     into `nightlySnapshotScheduler.ts`.
+
+   - **User-authored runs** (`abpSettlement:run:*` storage
+     keys, snapshot logs) → product policy required. Default
+     to no auto-prune; require an opt-in `delete` proc instead.
+     See `docs/abp-settlement-run-retention-audit.md` for the
+     option matrix.
+
+   New PRs that introduce a table where rows accumulate per
+   user / per build / per run MUST land the prune in the same
+   PR (or in an immediate follow-up). Don't reserve
+   `deleteFooJob` "for the cleanup cron (Phase 7)" without
+   wiring an actual cron caller — that comment ages into
+   100 MB+ of orphan rows before anyone notices.
+
 ### `state.json` storage row — heartbeat-only since Phase 5e PR-D
 
 The `state` storage key on `solarRecDashboardStorage` was historically
@@ -1138,11 +1182,12 @@ EVERY concurrent allocation lands in the delta.
 
 The actual cascade was V8 mark-compact stalls (FATAL log: 2986 ms for
 one major GC) compounding under heap pressure. The 1.68 GB residual
-baseline that started the spiral has not yet been attributed; the
-suspected sources are the build runner's static-input maps,
-`getOrBuildSystemSnapshot`'s in-process payload, or
-`inFlightDashboardPayloadLoads` Map entries that didn't release.
-The H-1 diagnostic is the canonical surface for tracking this down.
+baseline that started the spiral was attributed in part to
+`solarRecComputedArtifacts` accumulating ≥20 × 5.7 MB `foundation-v1`
+rows (PR #500's TTL prune covers it); other suspected contributors
+(build runner static-input maps, `getOrBuildSystemSnapshot`'s
+in-process payload, leaked `inFlightDashboardPayloadLoads` Map
+entries) remain candidates pending live H-1 diagnostic capture.
 
 **Phase H circuit-breakers shipped (#489)**
 
