@@ -3689,10 +3689,28 @@ export const solarRecDashboardRouter = t.router({
    *     they match the summary's `buildId` (race-detection on
    *     rebuild).
    *
-   * Wire payload: 750 KB worst case (auto sources at cap) + 300
-   * KB worst case (best-per-system at cap) ≈ 1 MB total. Sits
-   * RIGHT at the 1 MB dashboard guardrail; if production reliably
-   * exceeds, split into two paginated procs.
+   * Wire payload (2026-05-09 — production exceeded the original
+   * 5 k best-per-system cap; PR #521 bumped to 30 k):
+   * ~750 KB worst case (auto sources at 25 k cap) + ~12 MB worst
+   * case (best-per-system at 30 k cap × ~400 B/row) ≈ ~13 MB total.
+   *
+   * This proc is on `DASHBOARD_OVERSIZE_ALLOWLIST` while the
+   * structural fix lands. The replacement plan (documented at the
+   * allowlist entry in `dashboardResponseGuard.ts`):
+   *   1. Move best-per-system rows from the artifact JSON to a
+   *      dedicated `solarRecDashboardPerformanceRatioCompliantBestFacts`
+   *      table populated by the build runner, served via
+   *      `useInfiniteQuery` against a paginated read proc.
+   *   2. Move auto-compliant sources to a sibling table or keep as
+   *      artifact (size still acceptable today).
+   *   3. Replace CSV export with the
+   *      `startDashboardCsvExport({ exportType:
+   *      "performanceRatioCompliantBestCsv" })` background-job
+   *      pattern so the full row dump never crosses tRPC.
+   *
+   * Until that lands, this proc IS the wire payload bottleneck —
+   * keep it in mind when triaging slow-tab reports on portfolios
+   * with > 10 k compliant systems.
    */
   getDashboardPerformanceRatioCompliantContext: dashboardProcedure(
     "solar-rec-dashboard",
