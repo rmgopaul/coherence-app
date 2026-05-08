@@ -51,6 +51,7 @@ import {
 } from "../../db/dashboardPerformanceRatioFacts";
 import type { InsertSolarRecDashboardPerformanceRatioFact } from "../../../drizzle/schema";
 import { upsertComputedArtifact } from "../../db/solarRecDatasets";
+import { startDashboardJobMetric } from "./dashboardJobMetrics";
 
 const STEP_NAME = "performanceRatioFacts";
 const METRIC_PREFIX = "[dashboard:fact-build:performanceRatio]";
@@ -281,131 +282,136 @@ async function runPerformanceRatioStep(args: {
   signal: AbortSignal;
 }): Promise<void> {
   const { scopeId, buildId, signal } = args;
-  const heapBefore = process.memoryUsage().heapUsed;
-  const startedAt = Date.now();
+  // 2026-05-08 (consolidation follow-up to PR #505) — switch the
+  // perf-ratio fact-builder onto `startDashboardJobMetric` to match
+  // the other 4 fact-builders converted in #505. The streaming-write
+  // structure is preserved (per-page `process.stdout.write` for
+  // operational tracing); only the terminal metric line goes through
+  // the shared API.
+  const metric = startDashboardJobMetric({
+    prefix: METRIC_PREFIX,
+    jobId: buildId,
+    context: { scopeId },
+  });
 
-  if (signal.aborted) throw new Error("aborted before batch resolution");
-  const batchIds = await resolvePerformanceRatioBatchIds(scopeId);
+  try {
+    if (signal.aborted) throw new Error("aborted before batch resolution");
+    const batchIds = await resolvePerformanceRatioBatchIds(scopeId);
 
-  // No convertedReads → empty result, write zero summary + return.
-  if (!batchIds.convertedReadsBatchId) {
-    if (signal.aborted) throw new Error("aborted before empty summary write");
-    await upsertPerformanceRatioFacts([]);
+    // No convertedReads → empty result, write zero summary + return.
+    if (!batchIds.convertedReadsBatchId) {
+      if (signal.aborted)
+        throw new Error("aborted before empty summary write");
+      await upsertPerformanceRatioFacts([]);
+      const orphanedDeleted = await deleteOrphanedPerformanceRatioFacts(
+        scopeId,
+        buildId
+      );
+      const summary = buildPerformanceRatioSummaryPayload({
+        buildId,
+        builtAt: new Date(),
+        aggregate: {
+          convertedReadCount: 0,
+          matchedConvertedReads: 0,
+          unmatchedConvertedReads: 0,
+          invalidConvertedReads: 0,
+        },
+        factRows: [],
+      });
+      await writePerformanceRatioSummary(scopeId, summary);
+      metric.finish({
+        skipped: true,
+        reason: "no convertedReads batch",
+        orphanedDeleted,
+      });
+      return;
+    }
+
+    if (signal.aborted)
+      throw new Error("aborted before static input load");
+    const staticInput = await loadPerformanceRatioStaticInput(
+      scopeId,
+      batchIds
+    );
+    if (signal.aborted)
+      throw new Error("aborted after static input load");
+
+    const accumulator = createPerformanceRatioAccumulator(staticInput);
+    const matchedSystemKeys = new Set<string>();
+    let totalFactsWritten = 0;
+    let pageCount = 0;
+
+    await forEachPerformanceRatioConvertedReadPage(
+      scopeId,
+      batchIds.convertedReadsBatchId,
+      async (pageRows, startIndex) => {
+        if (signal.aborted) throw new Error("aborted mid-stream");
+        accumulator.processRows(pageRows, startIndex);
+        const drained = accumulator.drainPendingRows();
+        pageCount += 1;
+        if (drained.length === 0) return;
+        const factRows = buildPerformanceRatioFactRows({
+          scopeId,
+          buildId,
+          rows: drained,
+        });
+        if (factRows.length === 0) return;
+        await upsertPerformanceRatioFacts(factRows);
+        totalFactsWritten += factRows.length;
+        for (const r of factRows) {
+          if (r.trackingSystemRefId) {
+            matchedSystemKeys.add(r.trackingSystemRefId);
+          }
+        }
+        // 2026-05-08 step-4 hardening — log heap on EVERY page (was
+        // every 10) so the next failed build's logs pinpoint the
+        // page at which heap pressure crossed the threshold. The
+        // cost of one process.stdout.write per page is negligible
+        // vs. the diagnostic value when a worker dies mid-stream.
+        const heapMb = Math.round(
+          process.memoryUsage().heapUsed / 1024 / 1024
+        );
+        process.stdout.write(
+          `[buildDashboardPerformanceRatioFacts] streamed page=${pageCount} ` +
+            `factsWrittenSoFar=${totalFactsWritten} ` +
+            `heapUsed=${heapMb}MB\n`
+        );
+        // 2026-05-08 step-4 hardening — yield to the event loop so
+        // the heartbeat setInterval can fire even if upserts are
+        // queueing microtasks back-to-back. await on a
+        // setImmediate gives the timer queue a definite chance to
+        // drain. Belt-and-braces: upsert's await on the DB driver
+        // already yields, but on a hot inner loop with cached
+        // connections the DB roundtrip can be fast enough that the
+        // timer task never gets a slot before the next upsert
+        // starts.
+        await new Promise<void>((resolve) => {
+          setImmediate(resolve);
+        });
+      }
+    );
+
+    if (signal.aborted) throw new Error("aborted before orphan sweep");
     const orphanedDeleted = await deleteOrphanedPerformanceRatioFacts(
       scopeId,
       buildId
     );
-    const summary = buildPerformanceRatioSummaryPayload({
+
+    if (signal.aborted) throw new Error("aborted before summary write");
+    const counters = accumulator.getCounters();
+    const summary: PerformanceRatioSummaryPayload = {
+      convertedReadCount: counters.convertedReadCount,
+      matchedConvertedReads: counters.matchedConvertedReads,
+      unmatchedConvertedReads: counters.unmatchedConvertedReads,
+      invalidConvertedReads: counters.invalidConvertedReads,
+      matchedSystemCount: matchedSystemKeys.size,
       buildId,
-      builtAt: new Date(),
-      aggregate: {
-        convertedReadCount: 0,
-        matchedConvertedReads: 0,
-        unmatchedConvertedReads: 0,
-        invalidConvertedReads: 0,
-      },
-      factRows: [],
-    });
+      aggregatorVersion: PERFORMANCE_RATIO_RUNNER_VERSION,
+      builtAt: new Date().toISOString(),
+    };
     await writePerformanceRatioSummary(scopeId, summary);
-    // eslint-disable-next-line no-console
-    console.log(
-      `${METRIC_PREFIX} metric ${JSON.stringify({
-        scopeId,
-        buildId,
-        skipped: true,
-        reason: "no convertedReads batch",
-        orphanedDeleted,
-        elapsedMs: Date.now() - startedAt,
-      })}`
-    );
-    return;
-  }
 
-  if (signal.aborted) throw new Error("aborted before static input load");
-  const staticInput = await loadPerformanceRatioStaticInput(scopeId, batchIds);
-  if (signal.aborted) throw new Error("aborted after static input load");
-
-  const accumulator = createPerformanceRatioAccumulator(staticInput);
-  const matchedSystemKeys = new Set<string>();
-  let totalFactsWritten = 0;
-  let pageCount = 0;
-
-  await forEachPerformanceRatioConvertedReadPage(
-    scopeId,
-    batchIds.convertedReadsBatchId,
-    async (pageRows, startIndex) => {
-      if (signal.aborted) throw new Error("aborted mid-stream");
-      accumulator.processRows(pageRows, startIndex);
-      const drained = accumulator.drainPendingRows();
-      pageCount += 1;
-      if (drained.length === 0) return;
-      const factRows = buildPerformanceRatioFactRows({
-        scopeId,
-        buildId,
-        rows: drained,
-      });
-      if (factRows.length === 0) return;
-      await upsertPerformanceRatioFacts(factRows);
-      totalFactsWritten += factRows.length;
-      for (const r of factRows) {
-        if (r.trackingSystemRefId) {
-          matchedSystemKeys.add(r.trackingSystemRefId);
-        }
-      }
-      // 2026-05-08 step-4 hardening — log heap on EVERY page (was
-      // every 10) so the next failed build's logs pinpoint the page
-      // at which heap pressure crossed the threshold. The cost of
-      // one process.stdout.write per page is negligible vs. the
-      // diagnostic value when a worker dies mid-stream.
-      const heapMb = Math.round(
-        process.memoryUsage().heapUsed / 1024 / 1024
-      );
-      process.stdout.write(
-        `[buildDashboardPerformanceRatioFacts] streamed page=${pageCount} ` +
-          `factsWrittenSoFar=${totalFactsWritten} ` +
-          `heapUsed=${heapMb}MB\n`
-      );
-      // 2026-05-08 step-4 hardening — yield to the event loop so the
-      // heartbeat setInterval can fire even if upserts are queueing
-      // microtasks back-to-back. await on a setImmediate gives the
-      // timer queue a definite chance to drain. Belt-and-braces:
-      // upsert's await on the DB driver already yields, but on a
-      // hot inner loop with cached connections the DB roundtrip can
-      // be fast enough that the timer task never gets a slot before
-      // the next upsert starts.
-      await new Promise<void>((resolve) => {
-        setImmediate(resolve);
-      });
-    }
-  );
-
-  if (signal.aborted) throw new Error("aborted before orphan sweep");
-  const orphanedDeleted = await deleteOrphanedPerformanceRatioFacts(
-    scopeId,
-    buildId
-  );
-
-  if (signal.aborted) throw new Error("aborted before summary write");
-  const counters = accumulator.getCounters();
-  const summary: PerformanceRatioSummaryPayload = {
-    convertedReadCount: counters.convertedReadCount,
-    matchedConvertedReads: counters.matchedConvertedReads,
-    unmatchedConvertedReads: counters.unmatchedConvertedReads,
-    invalidConvertedReads: counters.invalidConvertedReads,
-    matchedSystemCount: matchedSystemKeys.size,
-    buildId,
-    aggregatorVersion: PERFORMANCE_RATIO_RUNNER_VERSION,
-    builtAt: new Date().toISOString(),
-  };
-  await writePerformanceRatioSummary(scopeId, summary);
-
-  const heapAfter = process.memoryUsage().heapUsed;
-  const elapsedMs = Date.now() - startedAt;
-  // eslint-disable-next-line no-console
-  console.log(
-    `${METRIC_PREFIX} metric ${JSON.stringify({
-      scopeId,
-      buildId,
+    metric.finish({
       rowsWritten: totalFactsWritten,
       pageCount,
       orphanedDeleted,
@@ -415,10 +421,11 @@ async function runPerformanceRatioStep(args: {
       invalidConvertedReads: counters.invalidConvertedReads,
       matchedSystemCount: matchedSystemKeys.size,
       streaming: true,
-      elapsedMs,
-      heapDeltaBytes: heapAfter - heapBefore,
-    })}`
-  );
+    });
+  } catch (err) {
+    metric.fail(err);
+    throw err;
+  }
 }
 
 /**
