@@ -1069,6 +1069,29 @@ describe("Solar REC dashboard guardrail CI", () => {
     expect(script).toContain(
       "server/services/solar/dashboardTidbDiagnostics.test.ts"
     );
+    // 2026-05-09 — added the Phase 6 + Phase H wrap-up + Phase 8
+    // cleanup test files (now that PRs #492/#496/#500 merged). Each
+    // pins a CLAUDE.md hard rule:
+    //   - solarRecDashboardSemaphoreObservability.test.ts pins the
+    //     start-function shape + the regression rail forbidding
+    //     module-level setInterval (PR #510 lesson).
+    //   - solarRecDashboardStatePayloadCleanup.test.ts pins the
+    //     state.json heartbeat shape + the two-tier DB+S3 write
+    //     (PR #492 + #508 lessons).
+    //   - computedArtifactsTtlPrune.test.ts pins the keep-newest-N
+    //     pattern (PR #500 — the canonical versioned-cache TTL
+    //     pattern referenced by CLAUDE.md hard rule #9).
+    // A future PR that drops one of these files should re-evaluate
+    // the corresponding rule, not silently lose the CI signal.
+    expect(script).toContain(
+      "server/_core/solarRecDashboardSemaphoreObservability.test.ts"
+    );
+    expect(script).toContain(
+      "server/_core/solarRecDashboardStatePayloadCleanup.test.ts"
+    );
+    expect(script).toContain(
+      "server/db/computedArtifactsTtlPrune.test.ts"
+    );
     expect(ciWorkflow).toMatch(/solar-rec-dashboard-guardrails:/);
     expect(ciWorkflow).toContain("pnpm run test:solar-rec-dashboard-guardrails");
   });
