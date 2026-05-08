@@ -269,12 +269,110 @@ function toFiniteNumber(value: unknown): number | null {
 }
 
 // ────────────────────────────────────────────────────────────────────
+// Boot-time periodic sweeper
+// ────────────────────────────────────────────────────────────────────
+
+/**
+ * 2026-05-09 — post-merge audit follow-up. Pre-fix, `sweepStaleAndPrune`
+ * ran ONLY opportunistically on a `getDashboardBuildStatus` read.
+ * That works while the inserting client is still polling the buildId,
+ * but if the worker dies after claim AND the client moved on (page
+ * reload, tab close, started a new build), the orphaned `running`
+ * row sat forever — the docs claimed "periodic sweep" but no timer
+ * was wired to a boot path. Production evidence: `bld-312c41a266cf…`
+ * stayed `running` for ~24 h on prod after a deploy cutover before
+ * this fix.
+ *
+ * Mirror `startDatasetUploadStaleJobSweeper` shape: 5-minute interval
+ * (matches `STALE_CLAIM_MS`), boot-time tick on start, env-tunable
+ * via `DASHBOARD_BUILD_SWEEP_INTERVAL_MS`. `unref()` so the timer
+ * never holds Node alive in tests or graceful shutdown. Returns an
+ * idempotent stopper for tests.
+ */
+const DEFAULT_BUILD_SWEEP_INTERVAL_MS = 5 * 60 * 1000; // 5 min
+
+let buildSweepTimer: NodeJS.Timeout | null = null;
+let buildSweeping = false;
+
+function readEnvNumber(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) return fallback;
+  return parsed;
+}
+
+async function runBuildSweepTick(): Promise<void> {
+  // Re-entrancy guard: skip overlapping ticks if a slow DB makes
+  // the previous sweep still in flight.
+  if (buildSweeping) return;
+  buildSweeping = true;
+  try {
+    const { staleFailedCount, prunedCount } = await sweepStaleAndPrune();
+    if (staleFailedCount > 0) {
+      console.log(
+        `${METRIC_PREFIX} periodic sweep flipped ${staleFailedCount} ` +
+          `stale-claim build${staleFailedCount === 1 ? "" : "s"} to failed.`
+      );
+    }
+    if (prunedCount > 0) {
+      console.log(
+        `${METRIC_PREFIX} periodic sweep pruned ${prunedCount} terminal ` +
+          `build row${prunedCount === 1 ? "" : "s"}.`
+      );
+    }
+  } catch (err) {
+    console.warn(
+      `${METRIC_PREFIX} periodic sweep tick threw: ${
+        err instanceof Error ? err.message : String(err)
+      }`
+    );
+  } finally {
+    buildSweeping = false;
+  }
+}
+
+export function startDashboardBuildStaleJobSweeper(): () => void {
+  const intervalMs = readEnvNumber(
+    "DASHBOARD_BUILD_SWEEP_INTERVAL_MS",
+    DEFAULT_BUILD_SWEEP_INTERVAL_MS
+  );
+
+  // Boot-tick: fire-and-forget so server startup isn't blocked by
+  // a slow DB. Fresh process inherits stuck rows from the prior
+  // instance via this tick.
+  void runBuildSweepTick();
+
+  if (buildSweepTimer) {
+    clearInterval(buildSweepTimer);
+    buildSweepTimer = null;
+  }
+
+  if (intervalMs > 0) {
+    buildSweepTimer = setInterval(() => {
+      void runBuildSweepTick();
+    }, intervalMs);
+    if (typeof buildSweepTimer.unref === "function") {
+      buildSweepTimer.unref();
+    }
+  }
+
+  return () => {
+    if (buildSweepTimer) {
+      clearInterval(buildSweepTimer);
+      buildSweepTimer = null;
+    }
+  };
+}
+
+// ────────────────────────────────────────────────────────────────────
 // Test-only surface
 // ────────────────────────────────────────────────────────────────────
 
 export const __TEST_ONLY__ = {
   JOB_TTL_MS,
   STALE_CLAIM_MS,
+  DEFAULT_BUILD_SWEEP_INTERVAL_MS,
   newBuildId,
   buildSnapshot,
   parseProgress,

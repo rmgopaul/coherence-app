@@ -1092,6 +1092,17 @@ describe("Solar REC dashboard guardrail CI", () => {
     expect(script).toContain(
       "server/db/computedArtifactsTtlPrune.test.ts"
     );
+    // 2026-05-09 (post-merge audit follow-up) — pin the new
+    // boot-time stale-sweeper rail. The dashboardBuildJobs and
+    // dashboardCsvExportJobs modules previously fired their
+    // sweeps ONLY opportunistically on status reads; orphan
+    // `running` rows whose creating client moved on (page reload,
+    // tab close) sat forever (production: bld-312c41a266cf… stuck
+    // for ~24 h). The sweep boot fns + their wiring into
+    // _core/index.ts are pinned as a CI-visible regression rail.
+    expect(script).toContain(
+      "server/services/solar/dashboardJobStaleSweeperBoot.test.ts"
+    );
     expect(ciWorkflow).toMatch(/solar-rec-dashboard-guardrails:/);
     expect(ciWorkflow).toContain("pnpm run test:solar-rec-dashboard-guardrails");
   });

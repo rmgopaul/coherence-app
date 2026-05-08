@@ -1195,6 +1195,83 @@ async function sweepStaleAndPruned(): Promise<void> {
   }
 }
 
+// ────────────────────────────────────────────────────────────────────
+// Boot-time periodic sweeper
+// ────────────────────────────────────────────────────────────────────
+
+/**
+ * 2026-05-09 — post-merge audit follow-up. Pre-fix, `sweepStaleAndPruned`
+ * ran ONLY opportunistically inside `getCsvExportJobStatus`. That works
+ * while the CSV-export client is still polling the jobId, but if the
+ * worker dies after claim AND the client closed the tab / browser
+ * before it saw a terminal status, the orphan `running` row sat
+ * forever — the docs claimed "periodic sweep" but no timer was wired
+ * to a boot path. Same shape as the build-job sweeper added in this
+ * PR. 5-minute interval mirrors `STALE_CLAIM_MS`. `unref()` so the
+ * timer never holds Node alive in tests.
+ */
+const DEFAULT_CSV_EXPORT_SWEEP_INTERVAL_MS = 5 * 60 * 1000; // 5 min
+
+let csvExportSweepTimer: NodeJS.Timeout | null = null;
+let csvExportSweeping = false;
+
+function readCsvExportEnvNumber(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) return fallback;
+  return parsed;
+}
+
+async function runCsvExportSweepTick(): Promise<void> {
+  if (csvExportSweeping) return;
+  csvExportSweeping = true;
+  try {
+    await sweepStaleAndPruned();
+  } catch (err) {
+    console.warn(
+      `${METRIC_PREFIX} periodic sweep tick threw: ${
+        err instanceof Error ? err.message : String(err)
+      }`
+    );
+  } finally {
+    csvExportSweeping = false;
+  }
+}
+
+export function startDashboardCsvExportStaleJobSweeper(): () => void {
+  const intervalMs = readCsvExportEnvNumber(
+    "DASHBOARD_CSV_EXPORT_SWEEP_INTERVAL_MS",
+    DEFAULT_CSV_EXPORT_SWEEP_INTERVAL_MS
+  );
+
+  // Boot-tick: fire-and-forget so server startup isn't blocked by
+  // a slow DB. Fresh process inherits stuck rows from the prior
+  // instance via this tick.
+  void runCsvExportSweepTick();
+
+  if (csvExportSweepTimer) {
+    clearInterval(csvExportSweepTimer);
+    csvExportSweepTimer = null;
+  }
+
+  if (intervalMs > 0) {
+    csvExportSweepTimer = setInterval(() => {
+      void runCsvExportSweepTick();
+    }, intervalMs);
+    if (typeof csvExportSweepTimer.unref === "function") {
+      csvExportSweepTimer.unref();
+    }
+  }
+
+  return () => {
+    if (csvExportSweepTimer) {
+      clearInterval(csvExportSweepTimer);
+      csvExportSweepTimer = null;
+    }
+  };
+}
+
 /**
  * Test-only surface — exposed so unit tests can trigger sweeps
  * deterministically and inspect the configured constants. Never
@@ -1223,6 +1300,7 @@ export const __TEST_ONLY__ = {
   },
   JOB_TTL_MS,
   STALE_CLAIM_MS,
+  DEFAULT_CSV_EXPORT_SWEEP_INTERVAL_MS,
   HEARTBEAT_INTERVAL_MS,
   MAX_LOCAL_RUNNERS: DEFAULT_MAX_LOCAL_RUNNERS,
   EXPORT_RUNNER_TIMEOUT_MS,
