@@ -281,8 +281,20 @@ export function buildPerformanceRatioFactRows(args: {
   const { scopeId, buildId, rows } = args;
   const out: InsertSolarRecDashboardPerformanceRatioFact[] = [];
   for (const row of rows) {
-    const lifetimeReadWh = numberToDecimalString(row.lifetimeReadWh);
-    const contractValue = numberToDecimalString(row.contractValue);
+    // NOT NULL columns: skip the row entirely if non-finite or
+    // schema-overflow. The aggregator should never produce these,
+    // but the skip preserves the strict-mode contract for the
+    // bulk upsert.
+    const lifetimeReadWh = decimalForColumn(
+      row.lifetimeReadWh,
+      LIFETIME_READ_WH_DECIMAL,
+      { buildId, key: row.key, trackingSystemRefId: row.trackingSystemRefId, column: "lifetimeReadWh" }
+    );
+    const contractValue = decimalForColumn(
+      row.contractValue,
+      CONTRACT_VALUE_DECIMAL,
+      { buildId, key: row.key, trackingSystemRefId: row.trackingSystemRefId, column: "contractValue" }
+    );
     if (lifetimeReadWh === null || contractValue === null) continue;
     out.push({
       scopeId,
@@ -301,16 +313,52 @@ export function buildPerformanceRatioFactRows(args: {
       systemName: row.systemName,
       installerName: row.installerName,
       monitoringPlatform: row.monitoringPlatform,
-      portalAcSizeKw: numberToDecimalString(row.portalAcSizeKw),
-      abpAcSizeKw: numberToDecimalString(row.abpAcSizeKw),
+      // Nullable decimal columns: out-of-range gets null + warn.
+      // 2026-05-09 codex review fixup — pre-fix `numberToDecimalString`
+      // accepted any finite number, so a value that overflowed the
+      // column's `decimal(p, s)` range (e.g. a 1,146,203%
+      // performance ratio from a meter-rollover row dividing a
+      // huge negative delta by a small expected) returned a string
+      // that triggered `ER_WARN_DATA_OUT_OF_RANGE` under TiDB's
+      // STRICT_TRANS_TABLES mode. That single bad row aborted the
+      // entire 200-row upsert batch, the runner's catch handler
+      // tried to write the giant SQL+params blob into
+      // `solarRecDashboardBuilds.errorMessage` (TEXT, 65,535-byte
+      // limit), the secondary update either errored or silently
+      // truncated, the worker died without a clean status, and
+      // the stale-claim sweeper marked it failed 5 minutes later.
+      portalAcSizeKw: decimalForColumn(
+        row.portalAcSizeKw,
+        AC_SIZE_KW_DECIMAL,
+        { buildId, key: row.key, trackingSystemRefId: row.trackingSystemRefId, column: "portalAcSizeKw" }
+      ),
+      abpAcSizeKw: decimalForColumn(
+        row.abpAcSizeKw,
+        AC_SIZE_KW_DECIMAL,
+        { buildId, key: row.key, trackingSystemRefId: row.trackingSystemRefId, column: "abpAcSizeKw" }
+      ),
       part2VerificationDate: row.part2VerificationDate,
-      baselineReadWh: numberToDecimalString(row.baselineReadWh),
+      baselineReadWh: decimalForColumn(
+        row.baselineReadWh,
+        WH_DECIMAL,
+        { buildId, key: row.key, trackingSystemRefId: row.trackingSystemRefId, column: "baselineReadWh" }
+      ),
       baselineDate: row.baselineDate,
       baselineSource: row.baselineSource,
-      productionDeltaWh: numberToDecimalString(row.productionDeltaWh),
-      expectedProductionWh: numberToDecimalString(row.expectedProductionWh),
-      performanceRatioPercent: numberToDecimalString(
-        row.performanceRatioPercent
+      productionDeltaWh: decimalForColumn(
+        row.productionDeltaWh,
+        WH_DECIMAL,
+        { buildId, key: row.key, trackingSystemRefId: row.trackingSystemRefId, column: "productionDeltaWh" }
+      ),
+      expectedProductionWh: decimalForColumn(
+        row.expectedProductionWh,
+        WH_DECIMAL,
+        { buildId, key: row.key, trackingSystemRefId: row.trackingSystemRefId, column: "expectedProductionWh" }
+      ),
+      performanceRatioPercent: decimalForColumn(
+        row.performanceRatioPercent,
+        PERFORMANCE_RATIO_PERCENT_DECIMAL,
+        { buildId, key: row.key, trackingSystemRefId: row.trackingSystemRefId, column: "performanceRatioPercent" }
       ),
       contractValue,
       buildId,
@@ -319,9 +367,77 @@ export function buildPerformanceRatioFactRows(args: {
   return out;
 }
 
-function numberToDecimalString(value: number | null): string | null {
+// ---------------------------------------------------------------------------
+// 2026-05-09 codex review fixup — range-aware decimal conversion.
+//
+// `decimal(p, s)` columns can store values in
+// `[-(10^(p-s) - 10^-s), 10^(p-s) - 10^-s]`. Under TiDB's
+// STRICT_TRANS_TABLES (which is the default), an out-of-range
+// INSERT errors with `ER_WARN_DATA_OUT_OF_RANGE` and aborts the
+// entire bulk upsert batch (~200 rows). The pre-fix
+// `numberToDecimalString` only filtered NaN/Infinity; one degenerate
+// `performanceRatioPercent` value (e.g. -1,146,203%) was enough to
+// kill a 200-row chunk and cascade into the runner's stale-claim
+// death.
+//
+// Fix: clamp/null at the application boundary AND emit a structured
+// warning so the source of the bad data is traceable.
+// ---------------------------------------------------------------------------
+
+interface DecimalShape {
+  precision: number;
+  scale: number;
+  /** Pre-computed `10^(p-s) - 10^-s` so we don't recompute per row. */
+  maxAbs: number;
+}
+
+function shape(precision: number, scale: number): DecimalShape {
+  return {
+    precision,
+    scale,
+    maxAbs: Math.pow(10, precision - scale) - Math.pow(10, -scale),
+  };
+}
+
+const PERFORMANCE_RATIO_PERCENT_DECIMAL = shape(10, 4); // ±999,999.9999
+const WH_DECIMAL = shape(20, 4);                         // ±9.99e15
+const AC_SIZE_KW_DECIMAL = shape(18, 4);                 // ±9.99e13
+const LIFETIME_READ_WH_DECIMAL = shape(20, 4);
+const CONTRACT_VALUE_DECIMAL = shape(18, 4);
+
+interface DecimalLogContext {
+  buildId: string;
+  key: string;
+  trackingSystemRefId: string;
+  column: string;
+}
+
+/**
+ * Convert a `number | null` to the column's wire format, returning
+ * `null` and emitting a structured warning when the value is
+ * non-finite OR exceeds the column's `decimal(p, s)` range.
+ *
+ * Caller decides what to do with the null (NOT NULL columns
+ * skip the row; nullable columns just pass null through).
+ */
+function decimalForColumn(
+  value: number | null,
+  shape: DecimalShape,
+  ctx: DecimalLogContext
+): string | null {
   if (value === null || value === undefined) return null;
-  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    console.warn(
+      `${METRIC_PREFIX} non-finite decimal nulled — buildId=${ctx.buildId} key=${ctx.key} trackingSystemRefId=${ctx.trackingSystemRefId} column=${ctx.column} value=${value}`
+    );
+    return null;
+  }
+  if (Math.abs(value) > shape.maxAbs) {
+    console.warn(
+      `${METRIC_PREFIX} out-of-range decimal nulled — buildId=${ctx.buildId} key=${ctx.key} trackingSystemRefId=${ctx.trackingSystemRefId} column=${ctx.column} value=${value} columnRange=±${shape.maxAbs}`
+    );
+    return null;
+  }
   return String(value);
 }
 

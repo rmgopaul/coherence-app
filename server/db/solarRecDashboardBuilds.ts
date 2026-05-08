@@ -230,8 +230,44 @@ export async function completeSolarRecDashboardBuildSuccess(
 }
 
 /**
+ * Truncate ceiling for the `errorMessage` column. Well below the
+ * MySQL TEXT max (65,535 bytes) — large enough to capture the
+ * useful prefix of any DB error / stack trace, small enough that
+ * a runaway error string can never poison the failure-write path.
+ *
+ * 2026-05-09 codex review fixup — pre-fix the runner's catch
+ * handler passed `err.message` straight through. mysql2 errors
+ * include the full SQL statement + parameter list, which for a
+ * 200-row bulk upsert is easily 100+ KB. The UPDATE either
+ * errored on the column-size check or the secondary failure
+ * path itself crashed, leaving the build row in `running` until
+ * the stale-claim sweeper picked it up 5 min later.
+ */
+export const SOLAR_REC_DASHBOARD_BUILD_ERROR_MESSAGE_MAX_CHARS = 4000;
+
+/**
+ * Cap the error message at a safe ceiling. JS string `.length` is
+ * UTF-16 code units; even with all-4-byte runes the ceiling stays
+ * comfortably under TEXT's 65,535-byte limit (4000 × 4 = 16,000
+ * bytes max). Returns the input unchanged if already short.
+ */
+export function truncateBuildErrorMessage(raw: string | null | undefined): string {
+  if (raw === null || raw === undefined) return "";
+  const max = SOLAR_REC_DASHBOARD_BUILD_ERROR_MESSAGE_MAX_CHARS;
+  if (raw.length <= max) return raw;
+  const suffix = " …[truncated]";
+  return raw.slice(0, max - suffix.length) + suffix;
+}
+
+/**
  * Mark a running build as `failed`. Same cross-process safety as
  * `completeSolarRecDashboardBuildSuccess`.
+ *
+ * Long error messages (e.g. mysql2 errors that include the full
+ * failing SQL + parameters) are truncated to
+ * `SOLAR_REC_DASHBOARD_BUILD_ERROR_MESSAGE_MAX_CHARS` characters.
+ * Callers that need the full error text should `console.error` it
+ * BEFORE calling this helper.
  */
 export async function completeSolarRecDashboardBuildFailure(
   scopeId: string,
@@ -242,6 +278,7 @@ export async function completeSolarRecDashboardBuildFailure(
   const db = await getDb();
   if (!db) return false;
   const now = new Date();
+  const safeErrorMessage = truncateBuildErrorMessage(errorMessage);
   const result = await withDbRetry(
     "complete solar rec dashboard build (failure)",
     async () =>
@@ -250,7 +287,7 @@ export async function completeSolarRecDashboardBuildFailure(
         .set({
           status: "failed",
           completedAt: now,
-          errorMessage,
+          errorMessage: safeErrorMessage,
           updatedAt: now,
         })
         .where(
