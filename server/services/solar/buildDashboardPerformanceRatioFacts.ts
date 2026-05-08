@@ -338,6 +338,23 @@ async function runPerformanceRatioStep(args: {
       accumulator.processRows(pageRows, startIndex);
       const drained = accumulator.drainPendingRows();
       pageCount += 1;
+      // 2026-05-08 step-4 hardening — log heap on EVERY page (was
+      // every 10 in PR #488; this PR ensures EMPTY-drain pages also
+      // emit the log line). The next failed build's logs need to
+      // pinpoint the page at which heap pressure crossed the
+      // threshold even on the back half of a stream where matches
+      // taper off; the previous early-return-before-log skipped
+      // exactly those pages. Cost: one process.stdout.write per
+      // page (~80 chars) — negligible vs. the diagnostic value.
+      const heapMb = Math.round(
+        process.memoryUsage().heapUsed / 1024 / 1024
+      );
+      process.stdout.write(
+        `[buildDashboardPerformanceRatioFacts] streamed page=${pageCount} ` +
+          `factsWrittenSoFar=${totalFactsWritten} ` +
+          `drainSize=${drained.length} ` +
+          `heapUsed=${heapMb}MB\n`
+      );
       if (drained.length === 0) return;
       const factRows = buildPerformanceRatioFactRows({
         scopeId,
@@ -352,19 +369,6 @@ async function runPerformanceRatioStep(args: {
           matchedSystemKeys.add(r.trackingSystemRefId);
         }
       }
-      // 2026-05-08 step-4 hardening — log heap on EVERY page (was
-      // every 10) so the next failed build's logs pinpoint the page
-      // at which heap pressure crossed the threshold. The cost of
-      // one process.stdout.write per page is negligible vs. the
-      // diagnostic value when a worker dies mid-stream.
-      const heapMb = Math.round(
-        process.memoryUsage().heapUsed / 1024 / 1024
-      );
-      process.stdout.write(
-        `[buildDashboardPerformanceRatioFacts] streamed page=${pageCount} ` +
-          `factsWrittenSoFar=${totalFactsWritten} ` +
-          `heapUsed=${heapMb}MB\n`
-      );
       // 2026-05-08 step-4 hardening — yield to the event loop so the
       // heartbeat setInterval can fire even if upserts are queueing
       // microtasks back-to-back. await on a setImmediate gives the
