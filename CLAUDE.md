@@ -1109,6 +1109,74 @@ expected post-upload state even with no chunked blob present.
    couldn't survive process restarts. Phase 6 PR-B retired the
    workaround AND the Map together.
 
+### `state.json` storage row — heartbeat-only since Phase 5e PR-D
+
+The `state` storage key on `solarRecDashboardStorage` was historically
+a god-blob holding the dashboard's UI state, including a per-dataset
+`datasetManifest` map. Phase 5e PR-D removed the `localDatasetManifest`
+and `mergedRemoteDatasetManifest` memos in `SolarRecDashboard.tsx`
+(see ~line 4274 / ~line 4332 for the cleanup notes); since then the
+client writes a fixed 12-byte heartbeat: `{"logs":[]}`.
+
+The heartbeat exists as a cloud-reachability ping (auto-save runs on
+state changes; if the call fails, the user sees a "cloud sync failed"
+chip). It is NOT a place for new UI state to land.
+
+**What 2026-05-08 found**
+
+The 2026-05-08 OOM cascade (FATAL exit 134 on a 4 GB Render Pro box)
+was originally hypothesized to be `state.json` blob bloat, since
+`solarRecDashboard.getState` showed +1.5 GB heap deltas. The
+diagnostic landed in PR #490 (`debugProcessMemorySnapshot` admin
+proc + `[dashboard:state-payload-size]` log line on every getState
+read) and the prod data was definitive: state.json is 42 KB total
+on scope-user-1, with 17 vestigial `datasetManifest` entries (~5–14 KB
+each) carried over from before PR-D. **The 1.54 GB heap delta was
+misattribution** — `dashboardResponseGuardMiddleware` measures heap
+growth *during* the request, and during a 60-second slow response
+EVERY concurrent allocation lands in the delta.
+
+The actual cascade was V8 mark-compact stalls (FATAL log: 2986 ms for
+one major GC) compounding under heap pressure. The 1.68 GB residual
+baseline that started the spiral has not yet been attributed; the
+suspected sources are the build runner's static-input maps,
+`getOrBuildSystemSnapshot`'s in-process payload, or
+`inFlightDashboardPayloadLoads` Map entries that didn't release.
+The H-1 diagnostic is the canonical surface for tracking this down.
+
+**Phase H circuit-breakers shipped (#489)**
+
+- `DASHBOARD_HEAP_PRESSURE_REJECT_BYTES_DEFAULT = 2 GB` — every
+  dashboard procedure throws `TOO_MANY_REQUESTS` if heap is above
+  threshold *before* the resolver runs. Tunable via the env var of
+  the same name; set to `"0"` as an incident kill switch.
+- `HEAP_SOFT_LIMIT_BYTES`: 3.0 GB → 2.0 GB in the single-flight
+  loader.
+- `DASHBOARD_LOAD_CONCURRENCY`: 8 → 4.
+- `[dashboard:heap-pressure-reject]` log line on every reject.
+
+**Phase H wrap-up shipped (#492)**
+
+- `saveState.payload.max(50_000_000)` → `.max(64_000)`. Heartbeat is
+  12 bytes; 64 KB locks the wire shape down hard while leaving
+  headroom for a future small typed-slice payload.
+- `saveState.payload.superRefine(...)` rejects any payload carrying
+  a top-level `datasetManifest` key. Catches a rogue/older client
+  that re-introduces the pre-PR-D shape.
+- New admin proc `solarRecDashboard.cleanupLegacyStatePayload` —
+  idempotently rewrites a legacy `state.json` blob with the
+  heartbeat. Returns one of four reason codes
+  (`no-existing-payload`, `non-json-existing`, `already-clean`,
+  `rewrote-legacy-manifest`). Logs every rewrite via
+  `[dashboard:state-payload-cleanup]`.
+
+**Hard rule:** `state.json` is heartbeat-only. Adding new fields to
+this blob is a regression — they belong in their own typed slice
+table (or `solarRecComputedArtifacts` for derived data). The
+`saveState.superRefine` check enforces this for the legacy
+`datasetManifest` shape; future regressions of similar pattern
+should add their own `superRefine` predicates.
+
 ### Snapshot Log — transitional state (NOT canonical)
 
 The Snapshot Log feature is **not yet on the target data plane**.
