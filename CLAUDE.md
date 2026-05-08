@@ -1082,6 +1082,34 @@ expected post-upload state even with no chunked blob present.
    makes log filtering by `[dashboard:...]` prefix uniform across
    job types and feeds the Phase 1 observability surface.
 
+   **Per-builder metric shape** (post-#505 + #506 consolidation,
+   audited 2026-05-09 follow-up to the post-merge review):
+
+   | Builder / Job | `prefix` | `context` extras | `finish()` extras |
+   |---|---|---|---|
+   | `buildDashboardOwnershipFacts` | `[dashboard:fact-build:ownership]` | `scopeId` | `rowsWritten`, `orphanedDeleted`, `fromCache` |
+   | `buildDashboardChangeOwnershipFacts` | `[dashboard:fact-build:changeOwnership]` | `scopeId` | `rowsWritten`, `orphanedDeleted`, `fromCache` |
+   | `buildDashboardSystemFacts` | `[dashboard:fact-build:system]` | `scopeId` | `rowsWritten`, `part2EligibleCount`, `orphanedDeleted`, `fromCache` |
+   | `buildDashboardMonitoringDetailsFacts` | `[dashboard:fact-build:monitoringDetails]` | `scopeId` | `rowsWritten`, `orphanedDeleted`, `fromCache` |
+   | `buildDashboardPerformanceRatioFacts` (success) | `[dashboard:fact-build:performanceRatio]` | `scopeId` | `rowsWritten`, `pageCount`, `orphanedDeleted`, `convertedReadCount`, `matchedConvertedReads`, `unmatchedConvertedReads`, `invalidConvertedReads`, `matchedSystemCount`, `streaming` |
+   | `buildDashboardPerformanceRatioFacts` (skipped — no convertedReads) | `[dashboard:fact-build:performanceRatio]` | `scopeId` | `skipped`, `reason`, `orphanedDeleted` |
+   | `dashboardBuildJobRunner` | `[dashboard:build-jobs]` | `stepCount` | `stepsRun` |
+   | `dashboardCsvExportJobs` (success) | `[dashboard:csv-export-jobs]` | `exportType`, `datasetKey?` | `rowCount`, `csvBytes`, `storageWrite` |
+
+   The per-builder extras are intentional, not drift: each builder
+   surfaces the metric an operator needs to attribute that
+   builder's specific runtime cost. The 4 fact-builders share the
+   `rowsWritten` / `orphanedDeleted` / `fromCache` baseline;
+   `system-facts` adds `part2EligibleCount` because the offline-
+   monitoring eligibility join is the slow path and the count is
+   the load-bearing signal that the join produced anything;
+   `performance-ratio` carries the streaming-aggregator counters
+   because it's the only builder that streams. Adding a new
+   per-builder extra is fine — it goes through caller-supplied
+   `finish()` extras, the metric API does not constrain the keys.
+   When you do, update this table in the same PR so the
+   observability surface stays self-documenting.
+
 8. **Dashboard background-job registries must be DB-backed.** Do
    NOT introduce new in-memory `Map`-based job registries. The
    reference pattern is `dashboardCsvExportJobs` (Phase 6 PR-B):
