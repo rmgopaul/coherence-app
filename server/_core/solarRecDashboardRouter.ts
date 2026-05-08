@@ -837,12 +837,48 @@ export const solarRecDashboardRouter = t.router({
       dbStorageKey,
       heartbeat
     );
+
+    // 2026-05-09 (post-merge self-review of #492) — also overwrite
+    // the S3 blob so the legacy datasetManifest can never resurface
+    // via the storage-fallback path.
+    //
+    // Why: `loadDashboardPayload` reads DB first, falls back to S3
+    // on null/throw. The DB row is now the heartbeat, but if the DB
+    // row is ever pruned (cleanup cron, manual delete, schema
+    // migration accident, etc.) the next `getState` call would
+    // resurrect the original 42 KB datasetManifest blob from S3.
+    // The `saveState.superRefine` validator added in #492 only runs
+    // on the WRITE path, so it can't catch a stale READ.
+    //
+    // Mirror saveState's two-tier write: DB first, then S3. Any S3
+    // failure is logged but doesn't fail the cleanup — the DB row
+    // is the canonical surface; the S3 write is defense in depth
+    // for the same-bytes blob.
+    const { key } = await buildDashboardStorageKeys(
+      ctx.userId,
+      "state.json"
+    );
+    let storageSynced = false;
+    try {
+      await storagePut(key, heartbeat, "application/json");
+      storageSynced = true;
+    } catch (storageError) {
+      console.warn(
+        `[dashboard:state-payload-cleanup] storagePut failed for ` +
+          `userId=${ctx.userId} key=${key}: ` +
+          (storageError instanceof Error
+            ? storageError.message
+            : String(storageError))
+      );
+    }
+
     console.log(
       `[dashboard:state-payload-cleanup] ${JSON.stringify({
         userId: ctx.userId,
         priorBytes: existing.length,
         nextBytes: heartbeat.length,
         persisted,
+        storageSynced,
       })}`
     );
     return {
@@ -851,6 +887,7 @@ export const solarRecDashboardRouter = t.router({
       priorBytes: existing.length,
       nextBytes: heartbeat.length,
       persisted,
+      storageSynced,
     };
   }),
 
