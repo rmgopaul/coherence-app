@@ -3,11 +3,13 @@ import { resolve } from "node:path";
 import { initTRPC } from "@trpc/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  DASHBOARD_HEAP_PRESSURE_REJECT_BYTES_DEFAULT,
   DASHBOARD_REQUEST_HEAP_AFTER_WARN_BYTES_DEFAULT,
   DASHBOARD_REQUEST_HEAP_DELTA_WARN_BYTES_DEFAULT,
   DASHBOARD_OVERSIZE_ALLOWLIST,
   DASHBOARD_RESPONSE_LIMIT_BYTES_DEFAULT,
   checkDashboardResponseSize,
+  getDashboardHeapPressureRejectBytes,
   getDashboardRequestHeapAfterWarnBytes,
   getDashboardRequestHeapDeltaWarnBytes,
   getDashboardRequestHeapLogAll,
@@ -21,6 +23,7 @@ const ENV_KEYS = [
   "DASHBOARD_REQUEST_HEAP_DELTA_WARN_BYTES",
   "DASHBOARD_REQUEST_HEAP_AFTER_WARN_BYTES",
   "DASHBOARD_REQUEST_HEAP_LOG_ALL",
+  "DASHBOARD_HEAP_PRESSURE_REJECT_BYTES",
   "DASHBOARD_TIDB_DIAGNOSTICS",
   "DASHBOARD_TIDB_DIAGNOSTICS_MIN_ELAPSED_MS",
   "DASHBOARD_TIDB_DIAGNOSTICS_MIN_INTERVAL_MS",
@@ -177,6 +180,41 @@ describe("dashboard request heap env helpers", () => {
       process.env.DASHBOARD_REQUEST_HEAP_LOG_ALL = raw;
       expect(getDashboardRequestHeapLogAll()).toBe(false);
     }
+  });
+
+  // -------------------------------------------------------------------------
+  // 2026-05-08 (Phase H-0 interim guard) — pre-flight heap-pressure threshold.
+  // -------------------------------------------------------------------------
+
+  it("uses the documented default heap-pressure reject threshold (2 GB)", () => {
+    delete process.env.DASHBOARD_HEAP_PRESSURE_REJECT_BYTES;
+    expect(getDashboardHeapPressureRejectBytes()).toBe(
+      DASHBOARD_HEAP_PRESSURE_REJECT_BYTES_DEFAULT
+    );
+    expect(DASHBOARD_HEAP_PRESSURE_REJECT_BYTES_DEFAULT).toBe(
+      2 * 1024 * 1024 * 1024
+    );
+  });
+
+  it("respects positive heap-pressure overrides", () => {
+    process.env.DASHBOARD_HEAP_PRESSURE_REJECT_BYTES = "1500000000";
+    expect(getDashboardHeapPressureRejectBytes()).toBe(1500000000);
+  });
+
+  it("returns 0 when env is explicitly '0' (incident kill switch — disables the gate)", () => {
+    process.env.DASHBOARD_HEAP_PRESSURE_REJECT_BYTES = "0";
+    expect(getDashboardHeapPressureRejectBytes()).toBe(0);
+  });
+
+  it("falls back to default for non-numeric / negative values", () => {
+    process.env.DASHBOARD_HEAP_PRESSURE_REJECT_BYTES = "nope";
+    expect(getDashboardHeapPressureRejectBytes()).toBe(
+      DASHBOARD_HEAP_PRESSURE_REJECT_BYTES_DEFAULT
+    );
+    process.env.DASHBOARD_HEAP_PRESSURE_REJECT_BYTES = "-100";
+    expect(getDashboardHeapPressureRejectBytes()).toBe(
+      DASHBOARD_HEAP_PRESSURE_REJECT_BYTES_DEFAULT
+    );
   });
 });
 
@@ -626,6 +664,77 @@ describe("dashboardResponseGuardMiddleware", () => {
       }).someExperimentalProc()
     ).resolves.toBeTruthy();
     expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  // -------------------------------------------------------------------------
+  // 2026-05-08 (Phase H-0 interim guard) — pre-flight heap-pressure reject.
+  // -------------------------------------------------------------------------
+
+  it("pre-flight heap-pressure reject: throws TOO_MANY_REQUESTS when heap > threshold and never invokes the resolver", async () => {
+    process.env.DASHBOARD_HEAP_PRESSURE_REJECT_BYTES = String(
+      1 * 1024 * 1024 * 1024 // 1 GB threshold
+    );
+    mockHeapSequence(2 * 1024 * 1024 * 1024); // 2 GB > 1 GB threshold
+
+    const resolver = vi.fn(() => ({ ok: true }));
+    const caller = await buildHarness(
+      "someExperimentalProc",
+      undefined,
+      resolver
+    );
+    await expect(
+      (caller.solarRecDashboard as {
+        someExperimentalProc: () => Promise<unknown>;
+      }).someExperimentalProc()
+    ).rejects.toThrow(/heap pressure/i);
+    // The resolver must never have been invoked — that's the whole
+    // point of the pre-flight reject. If it ran, the circuit-breaker
+    // is broken.
+    expect(resolver).not.toHaveBeenCalled();
+
+    const log = parseWarnLogByPrefix("[dashboard:heap-pressure-reject]");
+    expect(log.path).toBe("solarRecDashboard.someExperimentalProc");
+    expect(log.heapBeforeBytes).toBe(2 * 1024 * 1024 * 1024);
+    expect(log.rejectBytes).toBe(1 * 1024 * 1024 * 1024);
+  });
+
+  it("pre-flight heap-pressure reject: lets requests through when heap is below threshold", async () => {
+    process.env.DASHBOARD_HEAP_PRESSURE_REJECT_BYTES = String(
+      2 * 1024 * 1024 * 1024 // 2 GB threshold
+    );
+    mockHeapSequence(500 * 1024 * 1024); // 500 MB < 2 GB
+
+    const resolver = vi.fn(() => ({ ok: true }));
+    const caller = await buildHarness(
+      "someExperimentalProc",
+      undefined,
+      resolver
+    );
+    await expect(
+      (caller.solarRecDashboard as {
+        someExperimentalProc: () => Promise<unknown>;
+      }).someExperimentalProc()
+    ).resolves.toEqual({ ok: true });
+    expect(resolver).toHaveBeenCalledOnce();
+  });
+
+  it("pre-flight heap-pressure reject: disabled when env is set to 0 (incident kill switch)", async () => {
+    process.env.DASHBOARD_HEAP_PRESSURE_REJECT_BYTES = "0";
+    // Heap deliberately huge — would normally trip the gate.
+    mockHeapSequence(10 * 1024 * 1024 * 1024); // 10 GB
+
+    const resolver = vi.fn(() => ({ ok: true }));
+    const caller = await buildHarness(
+      "someExperimentalProc",
+      undefined,
+      resolver
+    );
+    await expect(
+      (caller.solarRecDashboard as {
+        someExperimentalProc: () => Promise<unknown>;
+      }).someExperimentalProc()
+    ).resolves.toEqual({ ok: true });
+    expect(resolver).toHaveBeenCalledOnce();
   });
 });
 

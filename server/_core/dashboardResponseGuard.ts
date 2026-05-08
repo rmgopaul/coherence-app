@@ -49,6 +49,44 @@ export const DASHBOARD_REQUEST_HEAP_AFTER_WARN_BYTES_DEFAULT =
   700 * 1024 * 1024;
 
 /**
+ * 2026-05-08 (Phase H-0 interim guard) — pre-flight heap-pressure
+ * threshold. When `process.memoryUsage().heapUsed` is above this
+ * value at the start of a dashboard procedure, the middleware
+ * rejects the request with `TOO_MANY_REQUESTS` *before* doing
+ * any work.
+ *
+ * Why we need it: the prod 502 cascade on 2026-05-08 00:09 UTC was
+ * NOT a single oversized response (state.json on prod is 42 KB) —
+ * it was a death spiral. A 1.68 GB residual baseline pushed V8
+ * into mark-compact territory, where each major GC took 2-3 s.
+ * Concurrent slow requests piled up in single-flight queues, each
+ * one allocating more, each one extending the GC pause. Eventually
+ * heap crossed the 3.5 GB --max-old-space-size ceiling and the
+ * process aborted with exit 134.
+ *
+ * The existing `HEAP_SOFT_LIMIT_BYTES` (3.0 GB) in
+ * `solarRecDashboardRouter.ts` only fires *inside*
+ * `loadDashboardPayloadSingleFlight` — so it protects the legacy
+ * blob-load path (`getState`/`getDataset`) but lets every other
+ * dashboard proc (`listDatasetUploadJobs`, `getDatasetSummariesAll`,
+ * fact-page reads, etc.) sail through under heap pressure. This
+ * middleware-level pre-flight closes that gap: every
+ * `dashboardProcedure(...)` call gets the same 429 reject when
+ * heap is high.
+ *
+ * 2.0 GB threshold = 1.5 GB headroom under the V8 ceiling, which
+ * is roughly two single-flight payload reads worth of allocation
+ * margin. Conservative; tunable via env if prod-shape baselines
+ * shift.
+ *
+ * This is a circuit-breaker, not a fix. The Phase H sequence
+ * (state.json decomposition, leak attribution, etc.) is the
+ * structural fix; this just buys headroom while those land.
+ */
+export const DASHBOARD_HEAP_PRESSURE_REJECT_BYTES_DEFAULT =
+  2 * 1024 * 1024 * 1024;
+
+/**
  * Procedures known to exceed the response budget on production-shaped
  * data. Each entry is the fully-qualified tRPC path (router key dot
  * procedure name). Add an entry only with a pointer to the migration
@@ -165,6 +203,22 @@ export function getDashboardRequestHeapLogAll(): boolean {
   const raw =
     process.env.DASHBOARD_REQUEST_HEAP_LOG_ALL?.trim().toLowerCase();
   return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+}
+
+/**
+ * 2026-05-08 (Phase H-0) — pre-flight heap-pressure reject
+ * threshold. Tunable via `DASHBOARD_HEAP_PRESSURE_REJECT_BYTES`
+ * env var; falls back to `DASHBOARD_HEAP_PRESSURE_REJECT_BYTES_DEFAULT`
+ * (2 GB). Set to 0 to disable the pre-flight reject entirely
+ * (incident kill switch — the response-size middleware still runs).
+ */
+export function getDashboardHeapPressureRejectBytes(): number {
+  const raw = process.env.DASHBOARD_HEAP_PRESSURE_REJECT_BYTES?.trim();
+  if (raw === "0") return 0;
+  return getPositiveIntegerEnv(
+    "DASHBOARD_HEAP_PRESSURE_REJECT_BYTES",
+    DASHBOARD_HEAP_PRESSURE_REJECT_BYTES_DEFAULT
+  );
 }
 
 export type DashboardResponseSizeCheck =
@@ -295,6 +349,34 @@ const dashboardResponseGuardMiddleware = t.middleware(
     const heapBeforeBytes = process.memoryUsage().heapUsed;
     const startedAt = Date.now();
     const allowlisted = DASHBOARD_OVERSIZE_ALLOWLIST.has(path);
+
+    // 2026-05-08 (Phase H-0 interim guard) — pre-flight heap-pressure
+    // reject. If heap is already near the V8 ceiling, refuse the
+    // request immediately with 429 instead of doing any work. The
+    // client (React Query) retries on 429 once pressure drops; the
+    // alternative is letting the work proceed, allocate hundreds of
+    // MB during a slow GC-stalled response, and push the process
+    // past --max-old-space-size into a fatal abort.
+    //
+    // This runs BEFORE `await next()`, so the rejected procedure
+    // never executes and never allocates. Logged so prod telemetry
+    // shows when this circuit-breaker fires; if it fires often,
+    // that's the signal to drop everything and find the leak.
+    const rejectBytes = getDashboardHeapPressureRejectBytes();
+    if (rejectBytes > 0 && heapBeforeBytes > rejectBytes) {
+      console.warn(
+        `[dashboard:heap-pressure-reject] ${JSON.stringify({
+          path,
+          heapBeforeBytes,
+          rejectBytes,
+        })}`
+      );
+      throw new TRPCError({
+        code: "TOO_MANY_REQUESTS",
+        message: "Server heap pressure — retry in a moment",
+      });
+    }
+
     let result: Awaited<ReturnType<typeof next>>;
     try {
       result = await next();

@@ -198,20 +198,32 @@ async function loadDashboardPayload(
  * them); the semaphore caps the heap blast radius even when the cache
  * is cold.
  *
- * 8 is conservative for a Render 4 GB box — each slot can buffer a
- * ~250 KB chunk (Node UTF-16 overhead included) without approaching
- * the 3.5 GB max-old-space ceiling set in package.json.
+ * 2026-05-08 (Phase H-0 interim guard) — was 8. Halved to 4 because
+ * the prod 502 cascade on 2026-05-08 00:09 UTC showed multiple slow
+ * dashboard requests overlapping for 60+ seconds each, with
+ * cumulative heap growth pushing the worker past V8's 3.5 GB ceiling.
+ * Halving concurrency halves the worst-case overlap without
+ * meaningfully impacting healthy-baseline throughput (a 4 GB box
+ * comfortably handles 4 concurrent ~250 KB chunk loads).
  */
-const DASHBOARD_LOAD_CONCURRENCY = 8;
+const DASHBOARD_LOAD_CONCURRENCY = 4;
 
 /**
  * Soft heap ceiling at which we reject new dataset-load work with
  * 429 (TOO_MANY_REQUESTS) instead of queueing more callers. Queued
  * callers also take memory, so we need a circuit breaker below V8's
- * --max-old-space-size limit of 3584 MB. 3.0 GB leaves ~500 MB for
- * V8 to GC into before fatal OOM.
+ * --max-old-space-size limit of 3584 MB.
+ *
+ * 2026-05-08 (Phase H-0 interim guard) — was 3.0 GB. Lowered to
+ * 2.0 GB to align with the new pre-flight heap-pressure reject in
+ * `dashboardResponseGuardMiddleware` (see
+ * `DASHBOARD_HEAP_PRESSURE_REJECT_BYTES_DEFAULT`). The previous
+ * 3.0 GB threshold left only 500 MB of headroom — too tight when
+ * a single procedure can allocate 250+ MB and concurrent requests
+ * compound. 2.0 GB gives 1.5 GB headroom for the in-flight allocation
+ * peak before V8's mark-compact stalls cascade into a death spiral.
  */
-const HEAP_SOFT_LIMIT_BYTES = 3.0 * 1024 * 1024 * 1024;
+const HEAP_SOFT_LIMIT_BYTES = 2.0 * 1024 * 1024 * 1024;
 
 const dashboardLoadSemaphore = new Semaphore(DASHBOARD_LOAD_CONCURRENCY);
 
@@ -606,7 +618,15 @@ export const solarRecDashboardRouter = t.router({
   saveState: dashboardProcedure("solar-rec-dashboard", "edit")
     .input(
       z.object({
-        payload: z.string(),
+        // 2026-05-08 (Phase H-0 interim guard) — defensive cap on the
+        // user-authored state blob. Today's prod state.json is ~42 KB
+        // for the active scope (well under the cap), so this rejects
+        // future bloat regressions, not legitimate writes. Phase H's
+        // structural fix decomposes state.json into typed slice
+        // tables; H-5 will tighten this cap to 1 MB once the
+        // migration completes. Until then, 50 MB is a safety net,
+        // not a target.
+        payload: z.string().max(50_000_000),
       })
     )
     .mutation(async ({ ctx, input }) => {
