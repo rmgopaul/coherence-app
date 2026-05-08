@@ -334,6 +334,71 @@ export async function loadDatasetRowsPage(
   return { rows, rowIds, nextCursor };
 }
 
+/**
+ * 2026-05-08 (consolidation) — shared streaming helper that walks an
+ * `srDs*` table page-by-page and feeds each page to a caller-supplied
+ * accumulator. Replaces the two near-identical local copies in
+ * `loadPerformanceRatioInput.ts` and `buildOfflineMonitoringAggregates.ts`
+ * (the latter's CLAUDE.md note explicitly called out this consolidation
+ * as the right next step "if a third aggregator wants the same
+ * primitive").
+ *
+ * Cursor-paginated via `loadDatasetRowsPage` (already proven on
+ * convertedReads). Default page size is 2,500 rows — matches the
+ * post-#488 per-page allocation budget and stays uniform across the
+ * build step.
+ *
+ * Logs progress every page-1, page % 10, and the terminal page; the
+ * caller passes `logPrefix` (e.g. `[loadPerformanceRatioInput]`) and
+ * an optional `label` (e.g. `"abpReport"`) which renders as
+ * `[<prefix>] streamed [<label> ]page=N totalRows=K heapUsed=...MB`.
+ *
+ * Returns the total number of rows that were emitted to the
+ * accumulator (sum of every page's `rows.length`).
+ */
+const SHARED_STREAM_PAGE_SIZE_DEFAULT = 2_500;
+
+export async function streamDatasetRowsPage(
+  scopeId: string,
+  batchId: string,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- drizzle table types are complex unions
+  table: any,
+  onPage: (rows: CsvRow[]) => void | Promise<void>,
+  options: {
+    pageSize?: number;
+    logPrefix?: string;
+    label?: string;
+  } = {}
+): Promise<number> {
+  const pageSize = options.pageSize ?? SHARED_STREAM_PAGE_SIZE_DEFAULT;
+  const logPrefix = options.logPrefix ?? "[dataset-stream]";
+  const labelSegment = options.label ? `${options.label} ` : "";
+  let cursor: string | null = null;
+  let totalRows = 0;
+  let pageCount = 0;
+  for (;;) {
+    const page = await loadDatasetRowsPage(scopeId, batchId, table, {
+      cursor,
+      limit: pageSize,
+    });
+    if (page.rows.length > 0) {
+      await onPage(page.rows);
+    }
+    totalRows += page.rows.length;
+    pageCount += 1;
+    if (pageCount === 1 || pageCount % 10 === 0 || !page.nextCursor) {
+      process.stdout.write(
+        `${logPrefix} streamed ${labelSegment}page=${pageCount} ` +
+          `totalRows=${totalRows} ` +
+          `heapUsed=${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB\n`
+      );
+    }
+    if (!page.nextCursor) break;
+    cursor = page.nextCursor;
+  }
+  return totalRows;
+}
+
 // ---------------------------------------------------------------------------
 // Build snapshot
 // ---------------------------------------------------------------------------

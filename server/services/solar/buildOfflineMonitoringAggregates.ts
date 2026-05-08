@@ -37,22 +37,25 @@ import {
   computeFoundationHash,
   loadInputVersions,
 } from "./buildFoundationArtifact";
-import { loadDatasetRows, loadDatasetRowsPage } from "./buildSystemSnapshot";
+import {
+  loadDatasetRows,
+  streamDatasetRowsPage,
+} from "./buildSystemSnapshot";
 import { getOrBuildFoundation } from "./foundationRunner";
 import { jsonSerde, withArtifactCache } from "./withArtifactCache";
 
 // ---------------------------------------------------------------------------
-// 2026-05-08 streaming helper — mirrors `streamSrDsRowsPage` in
-// `loadPerformanceRatioInput.ts`. Kept local to avoid a circular
-// import; if a third aggregator wants the same primitive, lift this
-// to `buildSystemSnapshot.ts` alongside `loadDatasetRowsPage`.
+// 2026-05-08 (consolidation) — uses the shared `streamDatasetRowsPage`
+// from `buildSystemSnapshot.ts`. The local copy was extracted into a
+// shared helper alongside the (near-identical) one from
+// `loadPerformanceRatioInput.ts`; both callers now go through the
+// single definition. Page size 2_500 matches the perf-ratio cut from
+// PR #488 — the offline-monitoring aggregator streams the same two
+// source tables (abpReport + solarApplications) via
+// `createOfflineMonitoringAccumulator`, so the per-page allocation
+// footprint should stay uniform.
 // ---------------------------------------------------------------------------
 
-// 2026-05-08 step-4 hardening — was 5_000. Mirrors the cut in
-// `loadPerformanceRatioInput.ts`. The offline-monitoring aggregator
-// streams the same two source tables (abpReport + solarApplications)
-// via `createOfflineMonitoringAccumulator`; halving the page bounds
-// the transient page-allocation footprint identically.
 const STREAM_PAGE_SIZE_DEFAULT = 2_500;
 
 async function streamSrDsRowsPage(
@@ -64,31 +67,11 @@ async function streamSrDsRowsPage(
   label: string,
   options: { pageSize?: number } = {}
 ): Promise<number> {
-  const pageSize = options.pageSize ?? STREAM_PAGE_SIZE_DEFAULT;
-  let cursor: string | null = null;
-  let totalRows = 0;
-  let pageCount = 0;
-  for (;;) {
-    const page = await loadDatasetRowsPage(scopeId, batchId, table, {
-      cursor,
-      limit: pageSize,
-    });
-    if (page.rows.length > 0) {
-      await onPage(page.rows);
-    }
-    totalRows += page.rows.length;
-    pageCount += 1;
-    if (pageCount === 1 || pageCount % 10 === 0 || !page.nextCursor) {
-      process.stdout.write(
-        `[buildOfflineMonitoringAggregates] streamed ${label} page=${pageCount} ` +
-          `totalRows=${totalRows} ` +
-          `heapUsed=${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB\n`
-      );
-    }
-    if (!page.nextCursor) break;
-    cursor = page.nextCursor;
-  }
-  return totalRows;
+  return streamDatasetRowsPage(scopeId, batchId, table, onPage, {
+    pageSize: options.pageSize ?? STREAM_PAGE_SIZE_DEFAULT,
+    logPrefix: "[buildOfflineMonitoringAggregates]",
+    label,
+  });
 }
 
 // ---------------------------------------------------------------------------
