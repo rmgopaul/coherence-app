@@ -341,14 +341,36 @@ async function runPerformanceRatioStep(args: {
       accumulator.processRows(pageRows, startIndex);
       const drained = accumulator.drainPendingRows();
       pageCount += 1;
+      // 2026-05-08 step-4 hardening — yield to the event loop so the
+      // heartbeat setInterval can fire even if upserts are queueing
+      // microtasks back-to-back. await on a setImmediate gives the
+      // timer queue a definite chance to drain.
+      //
+      // 2026-05-08 self-review (#488 follow-up, #494 heap-log
+      // companion) — yield BEFORE the early-returns + the heap
+      // log. Tail-of-stream pages where matches taper off
+      // otherwise stayed synchronously hot, starving the
+      // heartbeat. With this move every page (including pure
+      // no-match pages) goes through the event loop at least
+      // once, AND the heap reading captured below reflects
+      // post-GC state — the yield gives V8 a chance to compact
+      // before we sample.
+      //
+      // Cost: one `setImmediate` tick per page (microseconds × N
+      // pages). Negligible vs. the diagnostic value when the
+      // heartbeat must fire reliably under heap pressure.
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
+      });
       // 2026-05-08 step-4 hardening — log heap on EVERY page (was
-      // every 10 in PR #488; this PR ensures EMPTY-drain pages also
-      // emit the log line). The next failed build's logs need to
-      // pinpoint the page at which heap pressure crossed the
-      // threshold even on the back half of a stream where matches
-      // taper off; the previous early-return-before-log skipped
-      // exactly those pages. Cost: one process.stdout.write per
-      // page (~80 chars) — negligible vs. the diagnostic value.
+      // every 10 in PR #488; PR #494 ensures EMPTY-drain pages
+      // also emit the log line). The next failed build's logs
+      // need to pinpoint the page at which heap pressure crossed
+      // the threshold even on the back half of a stream where
+      // matches taper off; the previous early-return-before-log
+      // skipped exactly those pages. Cost: one
+      // process.stdout.write per page (~80 chars) — negligible
+      // vs. the diagnostic value.
       const heapMb = Math.round(
         process.memoryUsage().heapUsed / 1024 / 1024
       );
@@ -372,17 +394,6 @@ async function runPerformanceRatioStep(args: {
           matchedSystemKeys.add(r.trackingSystemRefId);
         }
       }
-      // 2026-05-08 step-4 hardening — yield to the event loop so the
-      // heartbeat setInterval can fire even if upserts are queueing
-      // microtasks back-to-back. await on a setImmediate gives the
-      // timer queue a definite chance to drain. Belt-and-braces:
-      // upsert's await on the DB driver already yields, but on a
-      // hot inner loop with cached connections the DB roundtrip can
-      // be fast enough that the timer task never gets a slot before
-      // the next upsert starts.
-      await new Promise<void>((resolve) => {
-        setImmediate(resolve);
-      });
     }
   );
 
