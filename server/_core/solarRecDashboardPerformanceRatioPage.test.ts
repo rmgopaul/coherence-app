@@ -273,7 +273,7 @@ describe("getDashboardPerformanceRatioFilteredAggregates (new in Option C)", () 
   });
 });
 
-describe("getDashboardPerformanceRatioCompliantContext (new in Option C)", () => {
+describe("getDashboardPerformanceRatioCompliantContext (post PR-CB-6)", () => {
   const proc = sliceProcedure(
     "getDashboardPerformanceRatioCompliantContext"
   );
@@ -282,31 +282,31 @@ describe("getDashboardPerformanceRatioCompliantContext (new in Option C)", () =>
     expect(proc).not.toBeNull();
   });
 
-  it("reads BOTH side-cache artifact types (auto-compliant + best-per-system) AND the summary artifact (visibility gate)", () => {
-    // Codex review fixup: pre-fix this proc returned the
-    // latest side-cache rows whether or not the summary's
-    // visibility flip had completed, so a build that failed
-    // AFTER side-cache writes but BEFORE the summary write
-    // would surface its (now-superseded) compliant rows
-    // alongside the OLD main table — inconsistent UI. The
-    // proc now reads the summary artifact too and gates on
-    // a 3-way buildId match (summary === auto === best).
+  it("reads ONLY the auto-compliant + summary artifacts (best-per-system retired in PR-CB-6)", () => {
+    // PR-CB-6: best-per-system artifact write retired; the
+    // compliant report now reads from the paginated proc backed
+    // by the dedicated facts table. This proc serves only the
+    // auto-sources Map (still artifact-backed), gated on the
+    // summary artifact's buildId for visibility.
     expect(proc!).toMatch(/PERFORMANCE_RATIO_SUMMARY_ARTIFACT_TYPE/);
     expect(proc!).toMatch(/PERFORMANCE_RATIO_AUTO_COMPLIANT_ARTIFACT_TYPE/);
-    expect(proc!).toMatch(/PERFORMANCE_RATIO_BEST_PER_SYSTEM_ARTIFACT_TYPE/);
+    expect(proc!).not.toMatch(/PERFORMANCE_RATIO_BEST_PER_SYSTEM_ARTIFACT_TYPE/);
     expect(proc!).toMatch(/extractPerformanceRatioVisibleBuildId/);
     expect(proc!).toMatch(
       /autoPayload\.buildId\s*!==\s*visibleBuildId/
     );
-    expect(proc!).toMatch(
-      /bestPayload\.buildId\s*!==\s*visibleBuildId/
-    );
   });
 
-  it("returns autoSources + bestPerSystem + buildId on the warm path", () => {
+  it("returns autoSources + buildId on the warm path (NOT bestPerSystem — retired in PR-CB-6)", () => {
     expect(proc!).toMatch(/autoSources/);
-    expect(proc!).toMatch(/bestPerSystem/);
     expect(proc!).toMatch(/buildId/);
+    // Defensive: ensure the response shape doesn't accidentally
+    // re-introduce the retired field. The compliant report client
+    // now reads
+    // `getDashboardPerformanceRatioCompliantBestPage` instead.
+    expect(proc!).not.toMatch(/bestPerSystem:\s*bestPayload\.rows/);
+    expect(proc!).not.toMatch(/bestPerSystemTruncated/);
+    expect(proc!).not.toMatch(/bestPerSystemTotalEntries/);
   });
 
   it("returns `available: false` when either artifact is missing", () => {
@@ -317,9 +317,9 @@ describe("getDashboardPerformanceRatioCompliantContext (new in Option C)", () =>
     expect(proc!).toMatch(/ctx\.scopeId/);
   });
 
-  it("ships a `_runnerVersion` marker", () => {
+  it("ships an updated `_runnerVersion` marker reflecting the CB-6 cutover", () => {
     expect(proc!).toMatch(
-      /_runnerVersion[\s\S]*?phase-2-pr-g-option-c-compliant/
+      /_runnerVersion[\s\S]*?phase-2-pr-cb-6-compliant-auto/
     );
   });
 });

@@ -205,18 +205,15 @@ export interface PerformanceRatioPageRow {
 /**
  * Wire shape for one row of the paginated
  * `getDashboardPerformanceRatioCompliantBestPage` response (PR-CB-3).
+ * Sole compliant-row wire contract after PR-CB-6 retired the
+ * legacy artifact-JSON `bestPerSystem` field.
  *
- * Identical to `PerformanceRatioCompliantBestRowWire` (the legacy
- * artifact-JSON wire shape) except that decimal columns are
- * stringified by Drizzle's MySQL driver (TiDB's `decimal()` columns
- * preserve precision via `string`) and the row carries an
- * additional `systemKey` field — the PK of the new fact table,
- * load-bearing for client-side `useInfiniteQuery` deduplication
- * and future drill-in queries.
- *
- * Once PR-CB-6 retires the artifact JSON path, the older
- * `PerformanceRatioCompliantBestRowWire` shape is removed and
- * this type becomes the sole compliant-row contract.
+ * `systemKey` is the PK of the
+ * `solarRecDashboardPerformanceRatioCompliantFacts` table —
+ * load-bearing for client-side dedup + future drill-in queries.
+ * Decimal columns serialize as strings (Drizzle's MySQL driver
+ * preserves precision via `string`); the client revives via
+ * `parsePerfRatioDecimal` per column at render time.
  */
 export interface PerformanceRatioCompliantPageRow {
   systemKey: string;
@@ -231,9 +228,6 @@ export interface PerformanceRatioCompliantPageRow {
   monitoringPlatform: string;
   matchType: string;
   installerName: string;
-  // Drizzle's MySQL `decimal()` columns serialize as strings (the
-  // mysql2 driver preserves precision); the client revives via
-  // `parsePerfRatioDecimal` per column at render time.
   portalAcSizeKw: string | null;
   abpAcSizeKw: string | null;
   part2VerificationDate: string | null;
@@ -250,42 +244,12 @@ export interface PerformanceRatioCompliantPageRow {
   compliantSource: string | null;
 }
 
-/**
- * Wire shape for the `bestPerSystem` array in the
- * `getDashboardPerformanceRatioCompliantContext` response. Numeric
- * decimals stay as `number | null` (already coerced server-side
- * during streaming aggregation) — only date columns ship as ISO
- * strings. `compliantSource` is the auto-resolved source from the
- * build runner's `autoCompliantSources` Map; manual sources from
- * localStorage overlay client-side at render time.
- */
-export interface PerformanceRatioCompliantBestRowWire {
-  key: string;
-  systemId: string | null;
-  stateApplicationRefId: string | null;
-  trackingSystemRefId: string;
-  systemName: string;
-  monitoring: string;
-  monitoringSystemId: string;
-  monitoringSystemName: string;
-  monitoringPlatform: string;
-  matchType: string;
-  installerName: string;
-  portalAcSizeKw: number | null;
-  abpAcSizeKw: number | null;
-  part2VerificationDate: string | null;
-  readDate: string | null;
-  readDateRaw: string;
-  performanceRatioPercent: number | null;
-  productionDeltaWh: number | null;
-  expectedProductionWh: number | null;
-  contractValue: number;
-  baselineReadWh: number | null;
-  baselineDate: string | null;
-  baselineSource: string | null;
-  lifetimeReadWh: number;
-  compliantSource: string | null;
-}
+// 2026-05-09 — PR-CB-6 — `PerformanceRatioCompliantBestRowWire`
+// retired. The legacy artifact-JSON wire shape that this
+// interface described is gone; the consolidated
+// `getDashboardPerformanceRatioCompliantContext` proc no longer
+// returns a `bestPerSystem` field. All compliant-row reads now
+// flow through `PerformanceRatioCompliantPageRow` above.
 
 // ---------------------------------------------------------------------------
 // Date / number parsing

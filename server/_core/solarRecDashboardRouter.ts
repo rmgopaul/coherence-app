@@ -3924,73 +3924,54 @@ export const solarRecDashboardRouter = t.router({
   }),
 
   /**
-   * 2026-05-09 — Option C — auto-compliant + best-per-system
-   * context for the bottom-of-tab "Compliant Sources" section.
-   * Pre-cutover the client iterated every fact row to derive
-   * these maps; now they're pre-aggregated by the build runner
-   * and cached as separate artifacts.
+   * 2026-05-09 — Option C / PR-CB-6 — auto-compliant sources
+   * context for the upper "Compliant Sources" classification
+   * table. Pre-cutover the client iterated every fact row to
+   * derive this map; now it's pre-aggregated by the build runner
+   * and cached in the `performanceRatioAutoCompliantSources`
+   * artifact.
+   *
+   * **PR-CB-6 retired the `bestPerSystem` field.** The compliant
+   * report table now reads from
+   * `getDashboardPerformanceRatioCompliantBestPage` (paginated
+   * fact-table reads from
+   * `solarRecDashboardPerformanceRatioCompliantFacts`); the full
+   * 21k+ row dump never crosses tRPC.
    *
    * Returns:
    *   - `autoSources`: `Record<systemId, source>` for the auto-
    *     compliant resolver. Capped at 25k entries; `truncated`
    *     surfaces when production exceeds the cap.
-   *   - `bestPerSystem`: `Array<PerformanceRatioCompliantBestRow>`
-   *     pre-reduced (most-recent month → highest ratio →
-   *     most-recent readDate); each row has `compliantSource`
-   *     pre-attached from the auto map.
-   *   - `buildId` from each artifact for the client to verify
-   *     they match the summary's `buildId` (race-detection on
-   *     rebuild).
+   *   - `buildId` for the client to verify against the summary's
+   *     `buildId` (race-detection on rebuild).
    *
-   * Wire payload (2026-05-09 — production exceeded the original
-   * 5 k best-per-system cap; PR #521 bumped to 30 k):
-   * ~750 KB worst case (auto sources at 25 k cap) + ~12 MB worst
-   * case (best-per-system at 30 k cap × ~400 B/row) ≈ ~13 MB total.
-   *
-   * This proc is on `DASHBOARD_OVERSIZE_ALLOWLIST` while the
-   * structural fix lands. The replacement plan (documented at the
-   * allowlist entry in `dashboardResponseGuard.ts`):
-   *   1. Move best-per-system rows from the artifact JSON to a
-   *      dedicated `solarRecDashboardPerformanceRatioCompliantBestFacts`
-   *      table populated by the build runner, served via
-   *      `useInfiniteQuery` against a paginated read proc.
-   *   2. Move auto-compliant sources to a sibling table or keep as
-   *      artifact (size still acceptable today).
-   *   3. Replace CSV export with the
-   *      `startDashboardCsvExport({ exportType:
-   *      "performanceRatioCompliantBestCsv" })` background-job
-   *      pattern so the full row dump never crosses tRPC.
-   *
-   * Until that lands, this proc IS the wire payload bottleneck —
-   * keep it in mind when triaging slow-tab reports on portfolios
-   * with > 10 k compliant systems.
+   * Wire payload (post-CB-6): ~750 KB worst case (auto sources
+   * at 25 k cap × ~30 B/entry). Just under the 1 MB guardrail; if
+   * a future portfolio overflows, the same fact-table migration
+   * pattern (PR-CB-1 → PR-CB-6) applies. Allowlist entry retired
+   * in this PR.
    */
   getDashboardPerformanceRatioCompliantContext: dashboardProcedure(
     "solar-rec-dashboard",
     "read"
   ).query(async ({ ctx }) => {
     const _runnerVersion =
-      "phase-2-pr-g-option-c-compliant@1" as const;
+      "phase-2-pr-cb-6-compliant-auto@1" as const;
     const { getComputedArtifact } = await import("../db/solarRecDatasets");
     const {
       PERFORMANCE_RATIO_SUMMARY_ARTIFACT_TYPE,
       PERFORMANCE_RATIO_SUMMARY_VERSION_KEY,
       PERFORMANCE_RATIO_AUTO_COMPLIANT_ARTIFACT_TYPE,
       PERFORMANCE_RATIO_AUTO_COMPLIANT_VERSION_KEY,
-      PERFORMANCE_RATIO_BEST_PER_SYSTEM_ARTIFACT_TYPE,
-      PERFORMANCE_RATIO_BEST_PER_SYSTEM_VERSION_KEY,
       extractPerformanceRatioVisibleBuildId,
     } = await import(
       "../services/solar/buildDashboardPerformanceRatioFacts"
     );
-    // 2026-05-09 codex review fixup — gate compliant-context
-    // visibility on the SUMMARY's buildId. Pre-fix this proc
-    // returned the latest side-cache rows whether or not the
-    // summary visibility flip had completed, so a build that
-    // failed AFTER side-cache writes but BEFORE the summary
-    // write would surface its (now-superseded) compliant rows
-    // alongside the OLD main table — inconsistent UI.
-    const [summaryRow, autoRow, bestRow] = await Promise.all([
+    // Visibility gating: the summary artifact's `buildId` is the
+    // canonical pointer. The auto-compliant payload's own buildId
+    // must match — otherwise the side-cache is from a different
+    // (in-flight or failed) build and we surface `available: false`.
+    const [summaryRow, autoRow] = await Promise.all([
       getComputedArtifact(
         ctx.scopeId,
         PERFORMANCE_RATIO_SUMMARY_ARTIFACT_TYPE,
@@ -4001,16 +3982,11 @@ export const solarRecDashboardRouter = t.router({
         PERFORMANCE_RATIO_AUTO_COMPLIANT_ARTIFACT_TYPE,
         PERFORMANCE_RATIO_AUTO_COMPLIANT_VERSION_KEY
       ),
-      getComputedArtifact(
-        ctx.scopeId,
-        PERFORMANCE_RATIO_BEST_PER_SYSTEM_ARTIFACT_TYPE,
-        PERFORMANCE_RATIO_BEST_PER_SYSTEM_VERSION_KEY
-      ),
     ]);
     const visibleBuildId = extractPerformanceRatioVisibleBuildId(
       summaryRow?.payload ?? null
     );
-    if (!visibleBuildId || !autoRow?.payload || !bestRow?.payload) {
+    if (!visibleBuildId || !autoRow?.payload) {
       return { available: false as const, _runnerVersion };
     }
     try {
@@ -4021,21 +3997,7 @@ export const solarRecDashboardRouter = t.router({
         truncated: boolean;
         totalEntries: number;
       };
-      const bestPayload = JSON.parse(bestRow.payload) as {
-        buildId: string;
-        builtAt: string;
-        rows: Array<Record<string, unknown>>;
-        truncated: boolean;
-        totalEntries: number;
-      };
-      // Three-way buildId match: summary === auto === best. Any
-      // mismatch means the side caches are from a different (in-
-      // flight or failed) build than what the summary points at;
-      // refuse to surface them as the visible compliant context.
-      if (
-        autoPayload.buildId !== visibleBuildId ||
-        bestPayload.buildId !== visibleBuildId
-      ) {
+      if (autoPayload.buildId !== visibleBuildId) {
         return { available: false as const, _runnerVersion };
       }
       return {
@@ -4044,11 +4006,8 @@ export const solarRecDashboardRouter = t.router({
         autoSources: autoPayload.sources,
         autoSourcesTruncated: autoPayload.truncated,
         autoSourcesTotalEntries: autoPayload.totalEntries,
-        bestPerSystem: bestPayload.rows,
-        bestPerSystemTruncated: bestPayload.truncated,
-        bestPerSystemTotalEntries: bestPayload.totalEntries,
         buildId: visibleBuildId,
-        builtAt: bestPayload.builtAt,
+        builtAt: autoPayload.builtAt,
       };
     } catch {
       return { available: false as const, _runnerVersion };
