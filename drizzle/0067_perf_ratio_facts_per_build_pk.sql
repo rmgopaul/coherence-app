@@ -8,13 +8,24 @@
 -- from different builds COEXIST, and gate UI visibility through the
 -- summary artifact's `buildId` pointer.
 --
--- Truncate the table first because (a) the existing rows would all
--- collapse into the new PK fine but the build-runner is being changed
--- in the same PR to write summary AFTER rows, and (b) the next
--- successful dashboard build re-populates the table from the
+-- Truncate the facts table first because (a) the existing rows would
+-- all collapse into the new PK fine but the build-runner is being
+-- changed in the same PR to write summary AFTER rows, and (b) the
+-- next successful dashboard build re-populates the table from the
 -- aggregator's source data — these are derived facts.
+--
+-- Also clear stale Option-C summary + side-cache artifact rows so the
+-- next dashboard read after deploy doesn't try to deserialize a pre-
+-- Option-C summary payload (which lacks `allocationCount`,
+-- `monitoringOptions`, etc.) into the new typed shape. The reader
+-- ALSO validates required fields defensively — see
+-- `parsePerformanceRatioSummaryPayload` in
+-- `server/services/solar/buildDashboardPerformanceRatioFacts.ts` —
+-- but deleting the rows in the migration removes the corrupt-payload
+-- path entirely. The next successful build re-populates them.
 
 TRUNCATE TABLE `solarRecDashboardPerformanceRatioFacts`;--> statement-breakpoint
+DELETE FROM `solarRecComputedArtifacts` WHERE `artifactType` IN ('performanceRatioSummary', 'performanceRatioAutoCompliantSources', 'performanceRatioCompliantBestPerSystem');--> statement-breakpoint
 ALTER TABLE `solarRecDashboardPerformanceRatioFacts` DROP PRIMARY KEY;--> statement-breakpoint
 ALTER TABLE `solarRecDashboardPerformanceRatioFacts` ADD CONSTRAINT `solar_rec_dashboard_performance_ratio_facts_pk` PRIMARY KEY (`scopeId`,`buildId`,`key`);--> statement-breakpoint
 
@@ -39,8 +50,13 @@ CREATE INDEX `solar_rec_dashboard_performance_ratio_facts_scope_build_monit_idx`
 -- for pagination stability — without `key` in the index, MySQL
 -- would need a filesort to apply the secondary sort.
 -- Skipped sort columns (`lifetimeReadWh`, `productionDeltaWh`,
--- `expectedProductionWh`, `contractValue`) accept a filesort
--- cost; can promote if a tab read surfaces a slow query.
+-- `expectedProductionWh`, `contractValue`, `systemName`) accept
+-- a filesort cost. `systemName` specifically can NOT be indexed
+-- without a prefix length because the column is declared `text`
+-- (MySQL rejects `CREATE INDEX ... (text_col)` without
+-- `(text_col(N))`). Page reads with `sortBy=systemName` filesort
+-- the per-build subset; the `LIMIT` keeps the cost bounded. If a
+-- slow query surfaces, add a hand-rolled prefix-length index
+-- here AND mirror in the schema.
 CREATE INDEX `solar_rec_dashboard_perf_ratio_facts_scope_build_readdate_idx` ON `solarRecDashboardPerformanceRatioFacts` (`scopeId`,`buildId`,`readDate`,`key`);--> statement-breakpoint
-CREATE INDEX `solar_rec_dashboard_perf_ratio_facts_scope_build_perf_pct_idx` ON `solarRecDashboardPerformanceRatioFacts` (`scopeId`,`buildId`,`performanceRatioPercent`,`key`);--> statement-breakpoint
-CREATE INDEX `solar_rec_dashboard_perf_ratio_facts_scope_build_sysname_idx` ON `solarRecDashboardPerformanceRatioFacts` (`scopeId`,`buildId`,`systemName`,`key`);
+CREATE INDEX `solar_rec_dashboard_perf_ratio_facts_scope_build_perf_pct_idx` ON `solarRecDashboardPerformanceRatioFacts` (`scopeId`,`buildId`,`performanceRatioPercent`,`key`);

@@ -3557,6 +3557,7 @@ export const solarRecDashboardRouter = t.router({
     const {
       PERFORMANCE_RATIO_SUMMARY_ARTIFACT_TYPE,
       PERFORMANCE_RATIO_SUMMARY_VERSION_KEY,
+      parsePerformanceRatioSummaryPayload,
     } = await import(
       "../services/solar/buildDashboardPerformanceRatioFacts"
     );
@@ -3566,39 +3567,22 @@ export const solarRecDashboardRouter = t.router({
       PERFORMANCE_RATIO_SUMMARY_VERSION_KEY
     );
     const _runnerVersion = "phase-2-pr-g-option-c-summary@1" as const;
-    if (!cached?.payload) {
+    // 2026-05-09 codex review fixup — validate every required
+    // Option-C field via the shared parser. Pre-fix the proc
+    // type-cast the JSON unchecked, which would have surfaced
+    // NaN tile values + an empty monitoring-options dropdown if
+    // a pre-Option-C summary payload survived the migration.
+    const summary = parsePerformanceRatioSummaryPayload(
+      cached?.payload ?? null
+    );
+    if (!summary) {
       return { available: false as const, _runnerVersion };
     }
-    try {
-      const summary = JSON.parse(cached.payload) as {
-        convertedReadCount: number;
-        matchedConvertedReads: number;
-        unmatchedConvertedReads: number;
-        invalidConvertedReads: number;
-        matchedSystemCount: number;
-        allocationCount: number;
-        withBaseline: number;
-        withExpected: number;
-        withRatio: number;
-        totalDeltaWh: number;
-        totalExpectedWh: number;
-        portfolioRatioPercent: number | null;
-        totalContractValue: number;
-        monitoringOptions: string[];
-        buildId: string;
-        aggregatorVersion: string;
-        builtAt: string;
-      };
-      return {
-        available: true as const,
-        ...summary,
-        _runnerVersion,
-      };
-    } catch {
-      // Corrupt payload — surface as not-available so the client
-      // doesn't render garbage. The next build will overwrite.
-      return { available: false as const, _runnerVersion };
-    }
+    return {
+      available: true as const,
+      ...summary,
+      _runnerVersion,
+    };
   }),
 
   /**
@@ -3718,14 +3702,29 @@ export const solarRecDashboardRouter = t.router({
       "phase-2-pr-g-option-c-compliant@1" as const;
     const { getComputedArtifact } = await import("../db/solarRecDatasets");
     const {
+      PERFORMANCE_RATIO_SUMMARY_ARTIFACT_TYPE,
+      PERFORMANCE_RATIO_SUMMARY_VERSION_KEY,
       PERFORMANCE_RATIO_AUTO_COMPLIANT_ARTIFACT_TYPE,
       PERFORMANCE_RATIO_AUTO_COMPLIANT_VERSION_KEY,
       PERFORMANCE_RATIO_BEST_PER_SYSTEM_ARTIFACT_TYPE,
       PERFORMANCE_RATIO_BEST_PER_SYSTEM_VERSION_KEY,
+      extractPerformanceRatioVisibleBuildId,
     } = await import(
       "../services/solar/buildDashboardPerformanceRatioFacts"
     );
-    const [autoRow, bestRow] = await Promise.all([
+    // 2026-05-09 codex review fixup — gate compliant-context
+    // visibility on the SUMMARY's buildId. Pre-fix this proc
+    // returned the latest side-cache rows whether or not the
+    // summary visibility flip had completed, so a build that
+    // failed AFTER side-cache writes but BEFORE the summary
+    // write would surface its (now-superseded) compliant rows
+    // alongside the OLD main table — inconsistent UI.
+    const [summaryRow, autoRow, bestRow] = await Promise.all([
+      getComputedArtifact(
+        ctx.scopeId,
+        PERFORMANCE_RATIO_SUMMARY_ARTIFACT_TYPE,
+        PERFORMANCE_RATIO_SUMMARY_VERSION_KEY
+      ),
       getComputedArtifact(
         ctx.scopeId,
         PERFORMANCE_RATIO_AUTO_COMPLIANT_ARTIFACT_TYPE,
@@ -3737,7 +3736,10 @@ export const solarRecDashboardRouter = t.router({
         PERFORMANCE_RATIO_BEST_PER_SYSTEM_VERSION_KEY
       ),
     ]);
-    if (!autoRow?.payload || !bestRow?.payload) {
+    const visibleBuildId = extractPerformanceRatioVisibleBuildId(
+      summaryRow?.payload ?? null
+    );
+    if (!visibleBuildId || !autoRow?.payload || !bestRow?.payload) {
       return { available: false as const, _runnerVersion };
     }
     try {
@@ -3755,6 +3757,16 @@ export const solarRecDashboardRouter = t.router({
         truncated: boolean;
         totalEntries: number;
       };
+      // Three-way buildId match: summary === auto === best. Any
+      // mismatch means the side caches are from a different (in-
+      // flight or failed) build than what the summary points at;
+      // refuse to surface them as the visible compliant context.
+      if (
+        autoPayload.buildId !== visibleBuildId ||
+        bestPayload.buildId !== visibleBuildId
+      ) {
+        return { available: false as const, _runnerVersion };
+      }
       return {
         available: true as const,
         _runnerVersion,
@@ -3764,7 +3776,7 @@ export const solarRecDashboardRouter = t.router({
         bestPerSystem: bestPayload.rows,
         bestPerSystemTruncated: bestPayload.truncated,
         bestPerSystemTotalEntries: bestPayload.totalEntries,
-        buildId: bestPayload.buildId,
+        buildId: visibleBuildId,
         builtAt: bestPayload.builtAt,
       };
     } catch {

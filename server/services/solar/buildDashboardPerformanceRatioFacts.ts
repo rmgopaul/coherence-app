@@ -702,24 +702,60 @@ async function writePerformanceRatioSummary(
  * Single source of truth for parsing a `performanceRatioSummary`
  * artifact's `payload` field (a JSON-stringified
  * `PerformanceRatioSummaryPayload`). Returns `null` on malformed
- * JSON or missing required fields. Both the router's read procs
- * and the CSV-export builder go through this helper so a future
- * schema change has a single audit point.
+ * JSON OR on a missing required field. Both the router's read
+ * procs and the CSV-export builder go through this helper so a
+ * future schema change has a single audit point.
+ *
+ * Validates EVERY Option-C-required field (codex review fixup
+ * 2026-05-09) so a pre-Option-C summary payload that survived
+ * the migration's `DELETE FROM solarRecComputedArtifacts`
+ * doesn't get type-cast and produce NaN tile values + an empty
+ * monitoring-options dropdown. The migration is the primary
+ * cleanup; this validation is the durable safety belt.
  */
 export function parsePerformanceRatioSummaryPayload(
   rawPayload: string | null
 ): PerformanceRatioSummaryPayload | null {
   if (!rawPayload) return null;
+  let parsed: Partial<PerformanceRatioSummaryPayload>;
   try {
-    const parsed = JSON.parse(rawPayload) as Partial<PerformanceRatioSummaryPayload>;
-    if (typeof parsed.buildId !== "string" || parsed.buildId.length === 0) {
-      return null;
-    }
-    if (typeof parsed.builtAt !== "string") return null;
-    return parsed as PerformanceRatioSummaryPayload;
+    parsed = JSON.parse(rawPayload) as Partial<PerformanceRatioSummaryPayload>;
   } catch {
     return null;
   }
+  // Visibility pointer + observability fields.
+  if (typeof parsed.buildId !== "string" || parsed.buildId.length === 0) {
+    return null;
+  }
+  if (typeof parsed.builtAt !== "string") return null;
+  if (typeof parsed.aggregatorVersion !== "string") return null;
+  // Aggregator counters (pre-existing on the payload shape).
+  if (typeof parsed.convertedReadCount !== "number") return null;
+  if (typeof parsed.matchedConvertedReads !== "number") return null;
+  if (typeof parsed.unmatchedConvertedReads !== "number") return null;
+  if (typeof parsed.invalidConvertedReads !== "number") return null;
+  if (typeof parsed.matchedSystemCount !== "number") return null;
+  // Option-C aggregate fields. A missing one means a pre-Option-C
+  // payload survived; treat as not-yet-built so the client renders
+  // the empty state and triggers a rebuild prompt rather than NaN
+  // tile values.
+  if (typeof parsed.allocationCount !== "number") return null;
+  if (typeof parsed.withBaseline !== "number") return null;
+  if (typeof parsed.withExpected !== "number") return null;
+  if (typeof parsed.withRatio !== "number") return null;
+  if (typeof parsed.totalDeltaWh !== "number") return null;
+  if (typeof parsed.totalExpectedWh !== "number") return null;
+  // `portfolioRatioPercent` is `number | null` — both valid.
+  if (
+    parsed.portfolioRatioPercent !== null &&
+    typeof parsed.portfolioRatioPercent !== "number"
+  ) {
+    return null;
+  }
+  if (typeof parsed.totalContractValue !== "number") return null;
+  if (!Array.isArray(parsed.monitoringOptions)) return null;
+  // All required fields validated; widen back to the full type.
+  return parsed as PerformanceRatioSummaryPayload;
 }
 
 /**

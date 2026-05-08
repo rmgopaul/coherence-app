@@ -191,20 +191,15 @@ describe("getDashboardPerformanceRatioSummary (Option C source rail)", () => {
     expect(proc!).toMatch(/available:\s*false/);
   });
 
-  it("returns `available: true` + Option C aggregate fields on warm cache", () => {
+  it("returns `available: true` + spreads the validated summary on warm cache", () => {
     expect(proc!).toMatch(/available:\s*true/);
-    // Spot-check that the new aggregate fields are typed in the
-    // JSON.parse cast — they MUST appear on the wire.
-    expect(proc!).toMatch(/allocationCount:\s*number/);
-    expect(proc!).toMatch(/withBaseline:\s*number/);
-    expect(proc!).toMatch(/withExpected:\s*number/);
-    expect(proc!).toMatch(/withRatio:\s*number/);
-    expect(proc!).toMatch(/totalDeltaWh:\s*number/);
-    expect(proc!).toMatch(/totalExpectedWh:\s*number/);
-    expect(proc!).toMatch(/portfolioRatioPercent:\s*number\s*\|\s*null/);
-    expect(proc!).toMatch(/totalContractValue:\s*number/);
-    expect(proc!).toMatch(/monitoringOptions:\s*string\[\]/);
-    expect(proc!).toMatch(/JSON\.parse/);
+    // Codex review fixup: the proc no longer inlines a typed
+    // JSON.parse cast — it delegates to
+    // `parsePerformanceRatioSummaryPayload` which validates
+    // every required Option-C field. The spread `...summary`
+    // ships every field from the parser's return.
+    expect(proc!).toMatch(/parsePerformanceRatioSummaryPayload/);
+    expect(proc!).toMatch(/\.\.\.summary/);
   });
 
   it("ships a `_runnerVersion` marker on both cold and warm paths", () => {
@@ -217,8 +212,15 @@ describe("getDashboardPerformanceRatioSummary (Option C source rail)", () => {
     expect(proc!).toMatch(/ctx\.scopeId/);
   });
 
-  it("falls back to `available: false` on JSON.parse failure (self-heal)", () => {
-    expect(proc!).toMatch(/try\s*\{[\s\S]*?\}\s*catch/);
+  it("returns `available: false` when `parsePerformanceRatioSummaryPayload` rejects (self-heal)", () => {
+    // Pre-Codex-review the proc had an inline try/catch around
+    // JSON.parse + a raw type cast. The cast didn't validate
+    // missing fields — a pre-Option-C summary payload (lacking
+    // allocationCount / monitoringOptions / etc.) would surface
+    // with NaN tile values + an empty dropdown. The shared
+    // parser now validates every required field; the proc just
+    // checks for a null return.
+    expect(proc!).toMatch(/if\s*\(\s*!summary\s*\)/);
   });
 });
 
@@ -280,9 +282,25 @@ describe("getDashboardPerformanceRatioCompliantContext (new in Option C)", () =>
     expect(proc).not.toBeNull();
   });
 
-  it("reads BOTH side-cache artifact types (auto-compliant + best-per-system)", () => {
+  it("reads BOTH side-cache artifact types (auto-compliant + best-per-system) AND the summary artifact (visibility gate)", () => {
+    // Codex review fixup: pre-fix this proc returned the
+    // latest side-cache rows whether or not the summary's
+    // visibility flip had completed, so a build that failed
+    // AFTER side-cache writes but BEFORE the summary write
+    // would surface its (now-superseded) compliant rows
+    // alongside the OLD main table — inconsistent UI. The
+    // proc now reads the summary artifact too and gates on
+    // a 3-way buildId match (summary === auto === best).
+    expect(proc!).toMatch(/PERFORMANCE_RATIO_SUMMARY_ARTIFACT_TYPE/);
     expect(proc!).toMatch(/PERFORMANCE_RATIO_AUTO_COMPLIANT_ARTIFACT_TYPE/);
     expect(proc!).toMatch(/PERFORMANCE_RATIO_BEST_PER_SYSTEM_ARTIFACT_TYPE/);
+    expect(proc!).toMatch(/extractPerformanceRatioVisibleBuildId/);
+    expect(proc!).toMatch(
+      /autoPayload\.buildId\s*!==\s*visibleBuildId/
+    );
+    expect(proc!).toMatch(
+      /bestPayload\.buildId\s*!==\s*visibleBuildId/
+    );
   });
 
   it("returns autoSources + bestPerSystem + buildId on the warm path", () => {

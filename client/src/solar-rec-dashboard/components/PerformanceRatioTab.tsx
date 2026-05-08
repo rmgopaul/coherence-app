@@ -750,6 +750,35 @@ export default memo(function PerformanceRatioTab(props: PerformanceRatioTabProps
     return mapping;
   }, [performanceRatioCompliantContextQuery.data]);
 
+  // 2026-05-09 codex review fixup — surface server-side
+  // truncation flags. The build runner caps the auto-compliant
+  // sources Map at 25k entries and the best-per-system rows at
+  // 5k entries; either cap means the client is rendering an
+  // incomplete dataset and the CSV download (built client-side
+  // from the same array) would ship an incomplete file. Pre-fix
+  // these flags were on the wire but never read.
+  const performanceRatioCompliantTruncation = useMemo(() => {
+    const data = performanceRatioCompliantContextQuery.data;
+    if (!data || data.available === false) {
+      return {
+        autoSourcesTruncated: false,
+        autoSourcesTotalEntries: 0,
+        bestPerSystemTruncated: false,
+        bestPerSystemTotalEntries: 0,
+        anyTruncated: false,
+      };
+    }
+    const anyTruncated =
+      data.autoSourcesTruncated || data.bestPerSystemTruncated;
+    return {
+      autoSourcesTruncated: data.autoSourcesTruncated,
+      autoSourcesTotalEntries: data.autoSourcesTotalEntries,
+      bestPerSystemTruncated: data.bestPerSystemTruncated,
+      bestPerSystemTotalEntries: data.bestPerSystemTotalEntries,
+      anyTruncated,
+    };
+  }, [performanceRatioCompliantContextQuery.data]);
+
   const compliantSourcesTableRows = useMemo<CompliantSourceTableRow[]>(() => {
     const mapping = new Map<string, CompliantSourceTableRow>();
 
@@ -1236,6 +1265,21 @@ export default memo(function PerformanceRatioTab(props: PerformanceRatioTabProps
   ]);
 
   const downloadCompliantPerformanceRatioCsv = useCallback(() => {
+    // 2026-05-09 codex review fixup — surface truncation when
+    // downloading the compliant CSV. The CSV builds from the
+    // visible (already-bounded) array; if the server-side cache
+    // truncated at 5k rows, the user would otherwise download an
+    // incomplete file silently.
+    if (performanceRatioCompliantTruncation.bestPerSystemTruncated) {
+      toast.warning(
+        `Compliant report shows ${formatNumber(
+          performanceRatioCompliantTruncation.bestPerSystemTotalEntries,
+        )} systems on the server but only the first ${formatNumber(
+          compliantPerformanceRatioRows.length,
+        )} fit the cache cap. CSV export below is also capped.`,
+        { duration: 8000 },
+      );
+    }
     const headers = [
       "system_name",
       "nonid",
@@ -1314,7 +1358,11 @@ export default memo(function PerformanceRatioTab(props: PerformanceRatioTabProps
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
-  }, [compliantPerformanceRatioRows]);
+  }, [
+    compliantPerformanceRatioRows,
+    performanceRatioCompliantTruncation.bestPerSystemTruncated,
+    performanceRatioCompliantTruncation.bestPerSystemTotalEntries,
+  ]);
 
   // -------------------------------------------------------------------------
   // Render
@@ -2012,6 +2060,42 @@ export default memo(function PerformanceRatioTab(props: PerformanceRatioTabProps
               </div>
             </CardHeader>
             <CardContent className="space-y-3">
+              {performanceRatioCompliantTruncation.anyTruncated && (
+                <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+                  <p className="font-medium">
+                    Compliant context truncated by the build runner.
+                  </p>
+                  <p className="mt-1 text-xs">
+                    {performanceRatioCompliantTruncation.bestPerSystemTruncated && (
+                      <>
+                        Best-per-system rows:{" "}
+                        {formatNumber(
+                          performanceRatioCompliantTruncation.bestPerSystemTotalEntries,
+                        )}{" "}
+                        observed,{" "}
+                        {formatNumber(compliantPerformanceRatioRows.length)}{" "}
+                        in cache (5,000 cap).{" "}
+                      </>
+                    )}
+                    {performanceRatioCompliantTruncation.autoSourcesTruncated && (
+                      <>
+                        Auto-compliant sources:{" "}
+                        {formatNumber(
+                          performanceRatioCompliantTruncation.autoSourcesTotalEntries,
+                        )}{" "}
+                        observed,{" "}
+                        {formatNumber(autoCompliantSourceByPortalId.size)} in
+                        cache (25,000 cap).{" "}
+                      </>
+                    )}
+                    Tables + CSV export below show only the cached subset.
+                    Promote the relevant cap in
+                    `buildDashboardPerformanceRatioFacts.ts` (or paginate the
+                    proc) before relying on this report on a portfolio that
+                    exceeds the cap.
+                  </p>
+                </div>
+              )}
               <div className="grid gap-3 md:grid-cols-3">
                 <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
                   <p className="text-xs text-slate-500">

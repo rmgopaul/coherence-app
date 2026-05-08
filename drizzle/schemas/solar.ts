@@ -2687,9 +2687,18 @@ export const solarRecDashboardPerformanceRatioFacts = mysqlTable(
     // suffix is the stable tie-breaker the page proc applies for
     // pagination determinism — including it in the index lets the
     // engine satisfy ORDER BY entirely from the index even when
-    // many rows share the same sort_col value. Skipped sort
-    // columns (e.g. `lifetimeReadWh`) accept a filesort cost; can
-    // promote if a tab read surfaces a slow query.
+    // many rows share the same sort_col value.
+    //
+    // Skipped sort columns (`lifetimeReadWh`, `productionDeltaWh`,
+    // `expectedProductionWh`, `contractValue`, `systemName`)
+    // accept a filesort cost. `systemName` specifically can NOT
+    // be indexed without a prefix length because the column is
+    // declared `text`; MySQL/TiDB reject `CREATE INDEX ... (text)`
+    // without `(text(N))`, and Drizzle's index API doesn't
+    // currently support prefix lengths in the schema DSL. The
+    // page proc's `LIMIT` keeps the filesort bounded; if a slow-
+    // query surfaces, ship a hand-rolled migration with a
+    // prefix-length index AND the matching change in this schema.
     scopeBuildReadDateIdx: index(
       "solar_rec_dashboard_perf_ratio_facts_scope_build_readdate_idx"
     ).on(table.scopeId, table.buildId, table.readDate, table.key),
@@ -2701,9 +2710,6 @@ export const solarRecDashboardPerformanceRatioFacts = mysqlTable(
       table.performanceRatioPercent,
       table.key
     ),
-    scopeBuildSystemNameIdx: index(
-      "solar_rec_dashboard_perf_ratio_facts_scope_build_sysname_idx"
-    ).on(table.scopeId, table.buildId, table.systemName, table.key),
   })
 );
 

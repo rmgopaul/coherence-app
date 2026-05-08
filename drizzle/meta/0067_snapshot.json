@@ -7415,16 +7415,6 @@
             "key"
           ],
           "isUnique": false
-        },
-        "solar_rec_dashboard_perf_ratio_facts_scope_build_sysname_idx": {
-          "name": "solar_rec_dashboard_perf_ratio_facts_scope_build_sysname_idx",
-          "columns": [
-            "scopeId",
-            "buildId",
-            "systemName",
-            "key"
-          ],
-          "isUnique": false
         }
       },
       "foreignKeys": {},

@@ -541,6 +541,87 @@ function makeConvertedReadRow(overrides: Partial<{
   };
 }
 
+describe("parsePerformanceRatioSummaryPayload (codex review fixup — strict field validation)", () => {
+  /**
+   * Pre-fix the summary read proc inlined a typed JSON.parse
+   * cast that happily returned `available: true` even when the
+   * payload was a pre-Option-C schema (missing aggregate fields).
+   * The shared parser now validates every required field — a
+   * payload missing one returns null, which the proc translates
+   * to `available: false` so the client renders the empty-state
+   * rather than NaN tile values.
+   */
+  // We re-import the helper here so we don't pollute the
+  // mocked-module scope above.
+  let parser:
+    | ((p: string | null) => unknown)
+    | null = null;
+  beforeEach(async () => {
+    const mod = await import("./buildDashboardPerformanceRatioFacts");
+    parser = mod.parsePerformanceRatioSummaryPayload;
+  });
+
+  function makeValidPayload() {
+    return {
+      buildId: "bld-X",
+      builtAt: "2026-05-09T12:00:00.000Z",
+      aggregatorVersion: "v1",
+      convertedReadCount: 1,
+      matchedConvertedReads: 1,
+      unmatchedConvertedReads: 0,
+      invalidConvertedReads: 0,
+      matchedSystemCount: 1,
+      allocationCount: 1,
+      withBaseline: 1,
+      withExpected: 1,
+      withRatio: 1,
+      totalDeltaWh: 100,
+      totalExpectedWh: 200,
+      portfolioRatioPercent: 50,
+      totalContractValue: 1000,
+      monitoringOptions: ["Enphase"],
+    };
+  }
+
+  it("accepts a fully-formed Option-C payload", () => {
+    expect(parser!(JSON.stringify(makeValidPayload()))).not.toBeNull();
+  });
+
+  it("rejects null / empty / non-JSON inputs", () => {
+    expect(parser!(null)).toBeNull();
+    expect(parser!("")).toBeNull();
+    expect(parser!("not-json")).toBeNull();
+  });
+
+  it("rejects a pre-Option-C payload missing allocationCount", () => {
+    const stale = makeValidPayload() as Partial<
+      ReturnType<typeof makeValidPayload>
+    >;
+    delete (stale as Record<string, unknown>).allocationCount;
+    expect(parser!(JSON.stringify(stale))).toBeNull();
+  });
+
+  it("rejects a payload missing monitoringOptions", () => {
+    const stale = makeValidPayload() as Partial<
+      ReturnType<typeof makeValidPayload>
+    >;
+    delete (stale as Record<string, unknown>).monitoringOptions;
+    expect(parser!(JSON.stringify(stale))).toBeNull();
+  });
+
+  it("accepts portfolioRatioPercent === null (legitimate when totalExpectedWh <= 0)", () => {
+    const payload = makeValidPayload();
+    (payload as Record<string, unknown>).portfolioRatioPercent = null;
+    expect(parser!(JSON.stringify(payload))).not.toBeNull();
+  });
+
+  it("rejects payloads where buildId is empty string", () => {
+    const payload = makeValidPayload();
+    payload.buildId = "";
+    expect(parser!(JSON.stringify(payload))).toBeNull();
+  });
+});
+
 describe("performanceRatioBuildStep — orchestration (Option C visibility flip)", () => {
   /**
    * Helper to count `upsertComputedArtifact` calls by artifactType
