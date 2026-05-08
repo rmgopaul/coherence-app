@@ -28,6 +28,11 @@ type SnapshotResult = {
   status: "Found" | "Not Found" | "Error";
   lifetimeKwh: number | null;
   errorMessage?: string;
+  // 2026-05-08 — alternate identifier (e.g. Tesla STE ID) that the
+  // bridge uses to emit a second converted-reads row. Adapters that
+  // don't surface an alternate leave this unset; the bridge falls
+  // back to single-row emission for those providers.
+  siteExternalId?: string | null;
 };
 
 type ProviderAdapter = {
@@ -286,6 +291,12 @@ export async function executeProviderRun(
             lifetimeKwh: row.lifetimeKwh ?? null,
             dateKey,
             status: row.status,
+            // 2026-05-08 — Tesla-only alternate identifier. The
+            // adapter populates it; the bridge uses it to emit a
+            // second converted-reads row keyed by STE_ID. Providers
+            // that don't surface an alternate produce undefined here
+            // and the bridge falls back to single-row emission.
+            siteExternalId: result?.siteExternalId ?? null,
           },
         });
 

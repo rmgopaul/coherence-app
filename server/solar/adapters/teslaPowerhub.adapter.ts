@@ -304,11 +304,19 @@ const adapter = {
       const hasReading =
         typeof site.lifetimeKwh === "number" &&
         Number.isFinite(site.lifetimeKwh);
+      // 2026-05-08 — surface siteExternalId (STE ID) in the snapshot
+      // result so the monitoring service can plumb it into the
+      // MonitoringRunRow → convertedReads bridge for dual-ID emission.
+      // The bridge emits a second converted-reads row keyed by this
+      // STE ID when present (see DUAL_ID_PROVIDER_KEYS in
+      // convertedReadsBridge.ts). Other providers leave this field
+      // unset and the bridge falls back to single-row emission.
       return {
         siteId,
         siteName: site.siteName ?? site.siteExternalId ?? null,
         status: hasReading ? ("Found" as const) : ("Not Found" as const),
         lifetimeKwh: hasReading ? site.lifetimeKwh : null,
+        siteExternalId: site.siteExternalId ?? null,
       };
     });
   },

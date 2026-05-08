@@ -34,7 +34,14 @@ export const MONITORING_CANONICAL_NAMES = {
   solarLog: "Solar-Log",
   growatt: "Growatt",
   egauge: "eGauge",
-  teslaPowerhub: "Tesla Powerhub",
+  // 2026-05-08 — was "Tesla Powerhub". The system DB normalizes any
+  // monitoring string containing "tesla" to "Tesla" via
+  // `normalizeMonitoringPlatform` (client/src/solar-rec-dashboard/lib/
+  // helpers/monitoring.ts). Emitting "Tesla Powerhub" in the converted
+  // reads bridge meant Tesla rows never matched Tesla systems on the
+  // Performance Ratio tab. Aligning the canonical with the
+  // normalization output closes that gap.
+  teslaPowerhub: "Tesla",
   ennexos: "ennexOS",
   ekm: "EKM Encompass.io",
 } as const;
