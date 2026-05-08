@@ -85,18 +85,41 @@ describe("cleanupLegacyStatePayload — Phase H wrap-up cleanup contract", () =>
     expect(proc!).toMatch(/rewrote-legacy-manifest/);
   });
 
-  it("writes the canonical heartbeat payload", () => {
+  it("writes the canonical heartbeat payload to BOTH DB and S3", () => {
     const proc = sliceProcedure("cleanupLegacyStatePayload");
     expect(proc).not.toBeNull();
     expect(proc!).toContain('const heartbeat = \'{"logs":[]}\'');
+    // DB write — the canonical surface that getState reads first.
     expect(proc!).toContain("saveSolarRecDashboardPayload(");
+    // S3 write — defense in depth so a future DB-row prune cannot
+    // resurrect the legacy datasetManifest via the
+    // storage-fallback path (`loadDashboardPayload` reads DB, falls
+    // back to S3). Pin the storagePut call so a future refactor
+    // that drops the second-tier write breaks loud.
+    expect(proc!).toContain('storagePut(key, heartbeat, "application/json")');
   });
 
-  it("logs every rewrite via [dashboard:state-payload-cleanup]", () => {
+  it("does NOT fail the cleanup when the S3 write throws", () => {
+    const proc = sliceProcedure("cleanupLegacyStatePayload");
+    expect(proc).not.toBeNull();
+    // The S3 write is best-effort; the DB row is canonical. A
+    // failed storagePut should log + return storageSynced:false,
+    // not throw — otherwise an S3 outage breaks the only mitigation
+    // for the legacy blob. Pin the try/catch around the storagePut
+    // so this property holds across future edits.
+    expect(proc!).toMatch(/try\s*\{[\s\S]*?await storagePut\(/);
+    expect(proc!).toMatch(/catch \(storageError\)/);
+    expect(proc!).toContain("storageSynced");
+  });
+
+  it("logs every rewrite via [dashboard:state-payload-cleanup] including storageSynced", () => {
     const proc = sliceProcedure("cleanupLegacyStatePayload");
     expect(proc).not.toBeNull();
     expect(proc!).toContain("[dashboard:state-payload-cleanup]");
     expect(proc!).toMatch(/priorBytes:\s*existing\.length/);
     expect(proc!).toMatch(/nextBytes:\s*heartbeat\.length/);
+    // The S3 sync flag is part of the audit trail for the
+    // post-cleanup state.
+    expect(proc!).toMatch(/storageSynced/);
   });
 });
