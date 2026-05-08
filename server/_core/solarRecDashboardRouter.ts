@@ -633,17 +633,54 @@ export const solarRecDashboardRouter = t.router({
   }),
   saveState: dashboardProcedure("solar-rec-dashboard", "edit")
     .input(
-      z.object({
-        // 2026-05-08 (Phase H-0 interim guard) — defensive cap on the
-        // user-authored state blob. Today's prod state.json is ~42 KB
-        // for the active scope (well under the cap), so this rejects
-        // future bloat regressions, not legitimate writes. Phase H's
-        // structural fix decomposes state.json into typed slice
-        // tables; H-5 will tighten this cap to 1 MB once the
-        // migration completes. Until then, 50 MB is a safety net,
-        // not a target.
-        payload: z.string().max(50_000_000),
-      })
+      z
+        .object({
+          // 2026-05-08 (Phase H wrap-up) — tightened from 50 MB to
+          // 64 KB after the H-1 diagnostic confirmed Phase 5e PR-D
+          // already collapsed the client write to a 12-byte
+          // heartbeat (`{"logs":[]}`). The 42 KB blob still on prod
+          // for scope-user-1 is vestigial datasetManifest data
+          // nothing reads (see SolarRecDashboard.tsx ~line 4274 and
+          // ~line 4332 for the cleanup notes). 64 KB leaves ample
+          // headroom for the heartbeat + a hypothetical small typed-
+          // slice payload without giving any future bloat regression
+          // room to compound.
+          payload: z.string().max(64_000),
+        })
+        .superRefine((value, ctx) => {
+          // 2026-05-08 (Phase H wrap-up) — refuse any payload that
+          // re-introduces the legacy datasetManifest shape. Catches
+          // a rogue client (older bundle, replay attack, etc.) that
+          // still writes the pre-Phase-5e payload (~42 KB on prod
+          // for the 18-dataset manifest). The heartbeat path writes
+          // `{"logs":[]}` exactly; a future typed-slice payload
+          // writes a small JSON object without `datasetManifest`.
+          // Either way, the legacy key has no remaining caller.
+          if (!value.payload) return;
+          let parsed: unknown;
+          try {
+            parsed = JSON.parse(value.payload);
+          } catch {
+            // Non-JSON payloads are nominally allowed (the storage
+            // layer is opaque); the structural check below only
+            // fires when JSON parses successfully. A non-JSON write
+            // is suspicious but not actionable here.
+            return;
+          }
+          if (
+            parsed !== null &&
+            typeof parsed === "object" &&
+            "datasetManifest" in (parsed as Record<string, unknown>)
+          ) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message:
+                "saveState payload includes legacy datasetManifest key. " +
+                "Phase 5e PR-D removed the manifest writer; rebuild " +
+                "your client and retry.",
+            });
+          }
+        })
     )
     .mutation(async ({ ctx, input }) => {
       const { key } = await buildDashboardStorageKeys(
@@ -669,6 +706,83 @@ export const solarRecDashboardRouter = t.router({
         throw storageError;
       }
     }),
+
+  /**
+   * 2026-05-08 (Phase H wrap-up) — admin-only one-shot cleanup that
+   * overwrites a legacy `state.json` blob with the canonical
+   * heartbeat payload. Production scope-user-1 still carries a 42 KB
+   * blob with the pre-Phase-5e `datasetManifest` shape; nothing
+   * reads it (the client memoization for that field was deleted in
+   * PR-D). This proc lets an operator rewrite that row to the
+   * heartbeat shape so future getState reads stay tiny by default
+   * and the `[dashboard:state-payload-size]` log line reports
+   * stable ~12-byte payloads instead of 42 KB legacy ghosts.
+   *
+   * Idempotent: rewrites only when the existing payload contains
+   * the `datasetManifest` key. Returns `{ rewritten: false, ...}`
+   * if the blob is already the heartbeat or absent. Logs every
+   * rewrite via `[dashboard:state-payload-cleanup]` for audit.
+   *
+   * Admin-only because this overwrites user-scoped storage. The
+   * blast radius is bounded — the ONLY field rewrites is the
+   * vestigial datasetManifest blob — but the procedure shouldn't
+   * be exposed to the dashboard's read-permission tier.
+   */
+  cleanupLegacyStatePayload: dashboardProcedure(
+    "solar-rec-dashboard",
+    "admin"
+  ).mutation(async ({ ctx }) => {
+    const dbStorageKey = "state";
+    const existing = await getSolarRecDashboardPayload(
+      ctx.userId,
+      dbStorageKey
+    );
+    if (!existing) {
+      return { rewritten: false, reason: "no-existing-payload" as const };
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(existing);
+    } catch {
+      return {
+        rewritten: false,
+        reason: "non-json-existing" as const,
+        existingBytes: existing.length,
+      };
+    }
+    const hasLegacyManifest =
+      parsed !== null &&
+      typeof parsed === "object" &&
+      "datasetManifest" in (parsed as Record<string, unknown>);
+    if (!hasLegacyManifest) {
+      return {
+        rewritten: false,
+        reason: "already-clean" as const,
+        existingBytes: existing.length,
+      };
+    }
+    const heartbeat = '{"logs":[]}';
+    const persisted = await saveSolarRecDashboardPayload(
+      ctx.userId,
+      dbStorageKey,
+      heartbeat
+    );
+    console.log(
+      `[dashboard:state-payload-cleanup] ${JSON.stringify({
+        userId: ctx.userId,
+        priorBytes: existing.length,
+        nextBytes: heartbeat.length,
+        persisted,
+      })}`
+    );
+    return {
+      rewritten: true,
+      reason: "rewrote-legacy-manifest" as const,
+      priorBytes: existing.length,
+      nextBytes: heartbeat.length,
+      persisted,
+    };
+  }),
 
   /**
    * 2026-05-08 (Phase H-1 diagnostic) — process-level memory snapshot.
