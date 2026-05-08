@@ -529,10 +529,24 @@ export default memo(function PerformanceRatioTab(props: PerformanceRatioTabProps
       {
         offset: compliantBestPageOffset,
         limit: COMPLIANT_REPORT_PAGE_SIZE,
-        // No filter / sort UI yet — passing defaults (newest first
-        // by readDate) preserves the ordering the historical
-        // artifact-backed list used. A future PR can add filter
-        // dropdowns + sort headers; the proc already accepts them.
+        // No filter / sort UI yet — passing defaults
+        // (`readDate DESC`, tie-break on PK `systemKey ASC`).
+        //
+        // 2026-05-09 self-review fixup: this is NOT identical to
+        // the historical artifact-backed ordering, which was
+        // `(read-window-month DESC, ratio DESC, systemName ASC)`
+        // — a compound sort that bucketed reads by month, then
+        // ranked by ratio within each bucket. The new default is
+        // simpler (per-row readDate, no month-bucketing) and the
+        // tie-break differs (systemKey vs systemName + ratio).
+        // Acceptable trade for the migration: same first-page rows
+        // for typical usage (one read per system per month means
+        // readDate and read-window-month coincide), but on
+        // multi-read months the row order can shift visibly. A
+        // future PR can extend the proc + add a `displayOrder`
+        // sort enum that emits the legacy compound ordering;
+        // skipped here to keep CB-5 scoped to the read-path
+        // cutover.
         compliantSource: null,
         monitoring: null,
         search: null,
@@ -1323,7 +1337,25 @@ export default memo(function PerformanceRatioTab(props: PerformanceRatioTabProps
   // resolved sources from the build runner); users who need
   // manual overrides in the export can apply them after import
   // in their downstream tooling.
+  //
+  // Self-review fixup: when manual entries exist, surface a
+  // one-shot warning toast BEFORE dispatching so the user knows
+  // their localStorage-only overrides won't be in the file.
+  // Pre-fix the loss was silent.
+  const manualOverrideCount = useMemo(
+    () =>
+      compliantSourceEntries.filter(
+        (entry) => !!entry.compliantSource || entry.evidence.length > 0,
+      ).length,
+    [compliantSourceEntries],
+  );
   const downloadCompliantPerformanceRatioCsv = useCallback(async () => {
+    if (manualOverrideCount > 0) {
+      toast.warning(
+        `CSV will reflect server-resolved compliant sources only. ${formatNumber(manualOverrideCount)} ${manualOverrideCount === 1 ? "system has" : "systems have"} manual overrides or evidence in localStorage that won't appear in the file.`,
+        { duration: 6000 },
+      );
+    }
     const toastId = toast.loading("Preparing compliant report CSV…");
     let jobId: string;
     try {
@@ -1419,7 +1451,11 @@ export default memo(function PerformanceRatioTab(props: PerformanceRatioTabProps
       );
     }
     toast.error("Compliant report CSV export timed out.", { id: toastId });
-  }, [startDashboardCsvExport, solarRecTrpcUtils]);
+  }, [
+    startDashboardCsvExport,
+    solarRecTrpcUtils,
+    manualOverrideCount,
+  ]);
 
   // -------------------------------------------------------------------------
   // Render
