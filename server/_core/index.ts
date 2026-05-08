@@ -12,6 +12,7 @@ import { serveStatic, setupVite } from "./vite";
 import { startNightlySnapshotScheduler } from "./nightlySnapshotScheduler";
 import { startMonitoringScheduler } from "../solar/monitoringScheduler";
 import { startDatasetUploadStaleJobSweeper } from "../services/core/datasetUploadStaleJobSweeper";
+import { startDashboardLoadSemaphoreObservability } from "./solarRecDashboardRouter";
 import { registerMonitoringDetailsBuildStep } from "../services/solar/buildDashboardMonitoringDetailsFacts";
 import { registerChangeOwnershipBuildStep } from "../services/solar/buildDashboardChangeOwnershipFacts";
 import { registerOwnershipBuildStep } from "../services/solar/buildDashboardOwnershipFacts";
@@ -193,6 +194,11 @@ async function startServer() {
     startNightlySnapshotScheduler();
     startMonitoringScheduler();
     startDatasetUploadStaleJobSweeper();
+    // 2026-05-09 (post-merge review of #496) — wrapped in a start
+    // function so test imports of the dashboard router don't
+    // trigger a 30s setInterval. Production boot calls it under
+    // the same prod-state gate as the other schedulers.
+    startDashboardLoadSemaphoreObservability();
 
     // Mark any MonitoringBatchRun rows left in "running" state by the
     // prior Node process (killed by deploy, crash, OOM) as "failed"

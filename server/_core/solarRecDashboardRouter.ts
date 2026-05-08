@@ -245,8 +245,14 @@ const dashboardLoadSemaphore = new Semaphore(DASHBOARD_LOAD_CONCURRENCY);
  * + emits a single `console.log` if the queue is non-trivial. Idle
  * processes never log. Sub-millisecond overhead.
  *
- * `unref()` so the timer doesn't keep the event loop alive in tests
- * or graceful-shutdown paths.
+ * 2026-05-09 (post-merge review of #496) — wrapped in an explicit
+ * `startDashboardLoadSemaphoreObservability()` function called from
+ * server boot in `_core/index.ts`. The original module-level
+ * `setInterval` fired on every test that imported this router file;
+ * `unref()` kept Node from hanging but the timer still produced
+ * stray log lines in long test runs and risked timer-pollution in
+ * future tests. Mirrors the start-function pattern from
+ * `startDatasetUploadStaleJobSweeper`.
  */
 const SEMAPHORE_LOG_INTERVAL_MS = 30_000;
 
@@ -276,12 +282,38 @@ function logSemaphoreState(): void {
   }
 }
 
-const dashboardLoadSemaphoreLogTimer = setInterval(
-  logSemaphoreState,
-  SEMAPHORE_LOG_INTERVAL_MS
-);
-if (typeof dashboardLoadSemaphoreLogTimer.unref === "function") {
-  dashboardLoadSemaphoreLogTimer.unref();
+let dashboardLoadSemaphoreLogTimer: NodeJS.Timeout | null = null;
+
+/**
+ * Start the periodic semaphore queue-depth logger. Idempotent: a
+ * second call resets the existing timer rather than stacking two.
+ * Returns a stop function (idempotent) so tests + graceful-shutdown
+ * paths can clean up explicitly.
+ *
+ * Called from `server/_core/index.ts` at server boot, alongside
+ * `startDatasetUploadStaleJobSweeper`. Tests that import the
+ * dashboard router for source-text or middleware-mock harnesses do
+ * NOT trigger the timer — keeps the test-run log signal clean and
+ * avoids leaked timers in test runners that don't fully exit.
+ */
+export function startDashboardLoadSemaphoreObservability(): () => void {
+  if (dashboardLoadSemaphoreLogTimer) {
+    clearInterval(dashboardLoadSemaphoreLogTimer);
+    dashboardLoadSemaphoreLogTimer = null;
+  }
+  dashboardLoadSemaphoreLogTimer = setInterval(
+    logSemaphoreState,
+    SEMAPHORE_LOG_INTERVAL_MS
+  );
+  if (typeof dashboardLoadSemaphoreLogTimer.unref === "function") {
+    dashboardLoadSemaphoreLogTimer.unref();
+  }
+  return () => {
+    if (dashboardLoadSemaphoreLogTimer) {
+      clearInterval(dashboardLoadSemaphoreLogTimer);
+      dashboardLoadSemaphoreLogTimer = null;
+    }
+  };
 }
 
 function isHeapOverSoftLimit(): boolean {

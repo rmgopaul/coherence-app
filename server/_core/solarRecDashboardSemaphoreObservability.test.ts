@@ -22,14 +22,59 @@ describe("dashboardLoadSemaphore periodic logger", () => {
     expect(source).toMatch(/SEMAPHORE_LOG_INTERVAL_MS\s*=\s*30_000/);
   });
 
-  it("registers the timer with setInterval and unrefs it", () => {
+  it("exposes startDashboardLoadSemaphoreObservability and registers the timer there (NOT module-level)", () => {
+    // 2026-05-09 — post-merge review of #496 caught that the
+    // original setInterval was module-level, firing on every test
+    // import. Pin the start-function shape so a future refactor
+    // doesn't accidentally re-introduce a module-level timer.
+    expect(source).toMatch(
+      /export function startDashboardLoadSemaphoreObservability\(\)/
+    );
     expect(source).toMatch(
       /setInterval\(\s*logSemaphoreState,\s*SEMAPHORE_LOG_INTERVAL_MS\s*\)/
     );
+    // The function must return a stop callback (idempotent cleanup)
+    // matching the pattern of `startDatasetUploadStaleJobSweeper`.
+    expect(source).toMatch(/return \(\) => \{[\s\S]*?clearInterval/);
     // unref() ensures the timer doesn't keep Node alive in tests or
     // graceful-shutdown paths. Pin it so a future refactor doesn't
     // forget the call and leak the timer on every test run.
     expect(source).toMatch(/dashboardLoadSemaphoreLogTimer\.unref/);
+  });
+
+  it("does NOT call setInterval at module level", () => {
+    // Source-text guard: the only `setInterval(logSemaphoreState,
+    // ...)` call must live INSIDE the start function. A
+    // module-level call would mean importing the router file in a
+    // test starts a real timer (the original #496 bug); enforcing
+    // it here keeps the regression locked out.
+    const startFnIdx = source.indexOf(
+      "export function startDashboardLoadSemaphoreObservability"
+    );
+    expect(startFnIdx).toBeGreaterThan(-1);
+    const beforeStartFn = source.slice(0, startFnIdx);
+    expect(beforeStartFn).not.toMatch(/setInterval\(\s*logSemaphoreState/);
+  });
+
+  it("is wired into the server boot path (production-only, gated by shouldMutateProdState)", () => {
+    // The start function must actually be CALLED somewhere or it's
+    // dead code. _core/index.ts is the canonical boot file; the
+    // call site must live inside the prod-state gate so test runs
+    // (NODE_ENV=test) skip it.
+    const indexFile = readFileSync(
+      resolve(__dirname, "index.ts"),
+      "utf8"
+    );
+    expect(indexFile).toContain("startDashboardLoadSemaphoreObservability");
+    expect(indexFile).toContain("shouldMutateProdState()");
+    // Pin call-ordering: shouldMutateProdState() must precede the
+    // start call — otherwise a test import would fire the timer.
+    const gateIdx = indexFile.indexOf("shouldMutateProdState()");
+    const callIdx = indexFile.indexOf(
+      "startDashboardLoadSemaphoreObservability("
+    );
+    expect(gateIdx).toBeGreaterThan(-1);
+    expect(callIdx).toBeGreaterThan(gateIdx);
   });
 
   it("suppresses logs when the semaphore + single-flight are both idle", () => {
