@@ -2675,11 +2675,19 @@ export const solarRecDashboardPerformanceRatioFacts = mysqlTable(
     // `ORDER BY key LIMIT N OFFSET M` can use the index without a
     // filesort. The PK above already covers (scopeId, buildId, key)
     // for unfiltered + sorted-by-key reads.
+    //
+    // Identifier-length note: all four sort/filter indexes use
+    // the abbreviated `solar_rec_dashboard_perf_ratio_facts`
+    // prefix (36 chars) to stay under MySQL's 64-char identifier
+    // limit. The full `solar_rec_dashboard_performance_ratio_facts`
+    // prefix (43 chars) plus the `_scope_build_match_idx` /
+    // `_scope_build_monit_idx` suffixes (22 chars each) would
+    // produce 65-char names that error out at CREATE INDEX time.
     scopeBuildMatchTypeIdx: index(
-      "solar_rec_dashboard_performance_ratio_facts_scope_build_match_idx"
+      "solar_rec_dashboard_perf_ratio_facts_scope_build_match_idx"
     ).on(table.scopeId, table.buildId, table.matchType, table.key),
     scopeBuildMonitoringIdx: index(
-      "solar_rec_dashboard_performance_ratio_facts_scope_build_monit_idx"
+      "solar_rec_dashboard_perf_ratio_facts_scope_build_monit_idx"
     ).on(table.scopeId, table.buildId, table.monitoring, table.key),
     // Sort indexes for the most common server-driven sort columns.
     // These cover `WHERE scopeId=? AND buildId=? ORDER BY <col>,

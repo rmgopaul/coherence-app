@@ -7376,26 +7376,6 @@
         }
       },
       "indexes": {
-        "solar_rec_dashboard_performance_ratio_facts_scope_build_match_idx": {
-          "name": "solar_rec_dashboard_performance_ratio_facts_scope_build_match_idx",
-          "columns": [
-            "scopeId",
-            "buildId",
-            "matchType",
-            "key"
-          ],
-          "isUnique": false
-        },
-        "solar_rec_dashboard_performance_ratio_facts_scope_build_monit_idx": {
-          "name": "solar_rec_dashboard_performance_ratio_facts_scope_build_monit_idx",
-          "columns": [
-            "scopeId",
-            "buildId",
-            "monitoring",
-            "key"
-          ],
-          "isUnique": false
-        },
         "solar_rec_dashboard_perf_ratio_facts_scope_build_readdate_idx": {
           "name": "solar_rec_dashboard_perf_ratio_facts_scope_build_readdate_idx",
           "columns": [
@@ -7412,6 +7392,26 @@
             "scopeId",
             "buildId",
             "performanceRatioPercent",
+            "key"
+          ],
+          "isUnique": false
+        },
+        "solar_rec_dashboard_perf_ratio_facts_scope_build_match_idx": {
+          "name": "solar_rec_dashboard_perf_ratio_facts_scope_build_match_idx",
+          "columns": [
+            "scopeId",
+            "buildId",
+            "matchType",
+            "key"
+          ],
+          "isUnique": false
+        },
+        "solar_rec_dashboard_perf_ratio_facts_scope_build_monit_idx": {
+          "name": "solar_rec_dashboard_perf_ratio_facts_scope_build_monit_idx",
+          "columns": [
+            "scopeId",
+            "buildId",
+            "monitoring",
             "key"
           ],
           "isUnique": false
