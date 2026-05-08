@@ -28,18 +28,14 @@ export const UTILITY_PATTERNS = ["comed", "ameren", "midamerican"] as const;
 
 export const COO_TARGET_STATUS = "Change of Ownership - Not Transferred and Not Reporting";
 export const NO_COO_STATUS = "No COO Status";
-export const TEN_KW_COMPLIANT_SOURCE = "10kW AC or Less";
 
-export const AUTO_MONITORING_PLATFORM_COMPLIANT_SOURCE_BY_KEY: Record<string, string> = {
-  enphase: "Enphase",
-  alsoenergy: "AlsoEnergy",
-  "solar log": "Solar-Log",
-  "sdsi arraymeter": "SDSI Arraymeter",
-  "locus energy": "Locus Energy",
-  "vision metering": "Vision Metering",
-  sensergm: "SenseRGM",
-  "ekm encompass io": "EKM Encompass.io",
-};
+// 2026-05-09 — Option C — moved to `@shared/solarRecPerformanceRatio`
+// so server procs can use the same lookup. Re-exported here so
+// existing call sites (constants barrel) still resolve.
+export {
+  TEN_KW_COMPLIANT_SOURCE,
+  AUTO_MONITORING_PLATFORM_COMPLIANT_SOURCE_BY_KEY,
+} from "@shared/solarRecPerformanceRatio";
 
 // ---------------------------------------------------------------------------
 // Storage keys

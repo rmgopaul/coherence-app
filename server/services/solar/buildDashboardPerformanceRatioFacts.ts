@@ -44,10 +44,14 @@ import {
   loadPerformanceRatioStaticInput,
   resolvePerformanceRatioBatchIds,
 } from "./loadPerformanceRatioInput";
-import type { PerformanceRatioRow } from "@shared/solarRecPerformanceRatio";
+import {
+  type PerformanceRatioRow,
+  resolveAutoCompliantSourceForRow,
+  getAutoCompliantSourcePriority,
+} from "@shared/solarRecPerformanceRatio";
 import {
   upsertPerformanceRatioFacts,
-  deleteOrphanedPerformanceRatioFacts,
+  pruneSupersededPerformanceRatioFacts,
 } from "../../db/dashboardPerformanceRatioFacts";
 import type { InsertSolarRecDashboardPerformanceRatioFact } from "../../../drizzle/schema";
 import { upsertComputedArtifact } from "../../db/solarRecDatasets";
@@ -57,32 +61,178 @@ const STEP_NAME = "performanceRatioFacts";
 const METRIC_PREFIX = "[dashboard:fact-build:performanceRatio]";
 
 /**
- * Slim summary side-cache contract. PR-G-3's summary proc reads
- * this row and returns it ~as-is to the client.
+ * Slim summary side-cache contract. The summary proc reads this row
+ * and returns it ~as-is to the client.
+ *
+ * 2026-05-09 — Option C — the summary's `buildId` is also the
+ * VISIBILITY POINTER for the per-build PK fact table. Page reads
+ * filter `WHERE scopeId=? AND buildId=summary_buildId`, so
+ * pre-cutover writes (or rows from a failed in-flight build) are
+ * never visible until the summary is updated. The summary is
+ * therefore always written AFTER all fact rows are written; a
+ * mid-stream failure leaves the OLD summary in place and the
+ * partial new build's rows are invisible.
  *
  * Keyed by a fixed `inputVersionHash` of `"current"` — successive
  * builds overwrite the same row, the freshest build always wins.
+ *
  * The aggregator's own `withArtifactCache` row (under
  * PERFORMANCE_RATIO_RUNNER_VERSION) is unaffected; that one is
- * keyed by the 7-batch-ID input hash and is the row PR-G-5 will
- * eventually retire.
+ * keyed by the 7-batch-ID input hash and is unused by the tab's
+ * read path now.
  */
 export const PERFORMANCE_RATIO_SUMMARY_ARTIFACT_TYPE =
   "performanceRatioSummary";
 export const PERFORMANCE_RATIO_SUMMARY_VERSION_KEY = "current";
 
+/**
+ * 2026-05-09 — Option C side-caches. The PerformanceRatioTab's
+ * "Compliant Sources" + best-per-system tables read these
+ * pre-aggregated rows instead of scanning the full per-build fact
+ * set client-side. Each is keyed `(scopeId, "current")` and
+ * overwritten on every successful build, mirroring the summary
+ * cache. Both side-caches carry their own `buildId` stamp; the
+ * client cross-checks against the summary's `buildId` so a stale
+ * cache (older than the visible build) can be detected.
+ */
+export const PERFORMANCE_RATIO_AUTO_COMPLIANT_ARTIFACT_TYPE =
+  "performanceRatioAutoCompliantSources";
+export const PERFORMANCE_RATIO_AUTO_COMPLIANT_VERSION_KEY = "current";
+
+export const PERFORMANCE_RATIO_BEST_PER_SYSTEM_ARTIFACT_TYPE =
+  "performanceRatioCompliantBestPerSystem";
+export const PERFORMANCE_RATIO_BEST_PER_SYSTEM_VERSION_KEY = "current";
+
+/**
+ * Cap on auto-compliant-sources entries cached in a single
+ * artifact row. Production today has < 5 k unique systemIds; the
+ * 25 k cap leaves substantial headroom while keeping the JSON
+ * payload comfortably under the 1 MB dashboard guardrail
+ * (25 k × ~30 B ≈ 750 KB).
+ */
+const AUTO_COMPLIANT_ENTRIES_HARD_CAP = 25_000;
+
+/**
+ * Cap on best-per-system entries. Production today has at most
+ * one entry per unique system × eligible-month combo; ~few
+ * thousand on the largest portfolio. The 5 k cap keeps the
+ * artifact payload bounded.
+ */
+const BEST_PER_SYSTEM_HARD_CAP = 5_000;
+
 export type PerformanceRatioSummaryPayload = {
+  // Aggregator counters (pre-existing).
   convertedReadCount: number;
   matchedConvertedReads: number;
   unmatchedConvertedReads: number;
   invalidConvertedReads: number;
   matchedSystemCount: number;
+
+  // 2026-05-09 — Option C — server-side aggregates that the
+  // headline tile values read directly. Mirror the client's
+  // pre-cutover `performanceRatioSummary` memo. Computed during
+  // streaming so no post-write re-scan is needed.
+  allocationCount: number;
+  withBaseline: number;
+  withExpected: number;
+  withRatio: number;
+  totalDeltaWh: number;
+  totalExpectedWh: number;
+  /**
+   * `totalDeltaWh / totalExpectedWh × 100`, rounded to one
+   * decimal place; `null` when `totalExpectedWh <= 0`. Mirrors
+   * the client's old `toPercentValue(totalDeltaWh,
+   * totalExpectedWh)` helper.
+   */
+  portfolioRatioPercent: number | null;
+  totalContractValue: number;
+
+  // Distinct monitoring values seen in the matched rows. Powers
+  // the monitoring-filter dropdown without an extra round-trip.
+  monitoringOptions: string[];
+
+  // Visibility pointer + observability.
   buildId: string;
-  // Stamps the aggregator runner version that produced these
-  // counts so a future schema/aggregator change can be detected
-  // by clients reading a stale summary.
   aggregatorVersion: string;
   builtAt: string;
+};
+
+/**
+ * Auto-compliant-sources side-cache. Per-systemId classification
+ * pre-computed during streaming using
+ * `resolveAutoCompliantSourceForRow` from shared. Priority ties
+ * resolve via `getAutoCompliantSourcePriority` (10kW = 1, explicit
+ * platform = 2; higher wins).
+ */
+export type PerformanceRatioAutoCompliantSourcesPayload = {
+  buildId: string;
+  builtAt: string;
+  /**
+   * `Record<systemId, source>`. Truncated to
+   * `AUTO_COMPLIANT_ENTRIES_HARD_CAP` entries deterministically
+   * (sorted alphabetically by systemId) when production exceeds
+   * the cap; `truncated` flag tells the client to surface a
+   * "showing first N" notice and request pagination if/when the
+   * paginated read shipped in a follow-up PR.
+   */
+  sources: Record<string, string>;
+  truncated: boolean;
+  /**
+   * Total number of entries observed (pre-truncation). Lets the
+   * client display "X of Y systems classified" even when the
+   * cache truncates.
+   */
+  totalEntries: number;
+};
+
+/**
+ * Best-per-system side-cache. Filter: `part2VerificationDate IS
+ * NOT NULL AND performanceRatioPercent BETWEEN 30 AND 150`.
+ * Reduce: keep the row with most-recent read-window month, then
+ * highest ratio, then most-recent readDate. Mirrors the client
+ * memo `compliantPerformanceRatioRows` exactly. Each row carries
+ * the auto-compliant-source as a pre-attached field so the client
+ * doesn't need a second lookup; manual sources from localStorage
+ * still overlay client-side at render time.
+ */
+export type PerformanceRatioCompliantBestRow = {
+  // Subset of fact-row fields the client renders in the
+  // best-per-system table. `compliantSource` is the auto-source
+  // resolved by the build; `evidenceCount` always 0 here (manual
+  // entries' evidence count overlays at render time).
+  key: string;
+  systemId: string | null;
+  stateApplicationRefId: string | null;
+  trackingSystemRefId: string;
+  systemName: string;
+  monitoring: string;
+  monitoringSystemId: string;
+  monitoringSystemName: string;
+  monitoringPlatform: string;
+  matchType: string;
+  installerName: string;
+  portalAcSizeKw: number | null;
+  abpAcSizeKw: number | null;
+  part2VerificationDate: string | null;
+  readDate: string | null;
+  readDateRaw: string;
+  performanceRatioPercent: number | null;
+  productionDeltaWh: number | null;
+  expectedProductionWh: number | null;
+  contractValue: number;
+  baselineReadWh: number | null;
+  baselineDate: string | null;
+  baselineSource: string | null;
+  lifetimeReadWh: number;
+  compliantSource: string | null;
+};
+
+export type PerformanceRatioBestPerSystemPayload = {
+  buildId: string;
+  builtAt: string;
+  rows: PerformanceRatioCompliantBestRow[];
+  truncated: boolean;
+  totalEntries: number;
 };
 
 /**
@@ -173,10 +323,220 @@ function numberToDecimalString(value: number | null): string | null {
   return String(value);
 }
 
+// ---------------------------------------------------------------------------
+// Streaming accumulators
+// ---------------------------------------------------------------------------
+
 /**
- * Compute the slim summary payload from the aggregator's
- * counters + the reshaped fact rows. Pure function to keep the
- * runner step thin.
+ * Running tallies updated per page during streaming. The runner
+ * step folds each page's freshly-written fact rows into this
+ * structure so the final summary write is a constant-time read of
+ * the accumulators rather than a re-scan of the table.
+ */
+export interface PerformanceRatioStreamingAccumulators {
+  matchedSystemKeys: Set<string>;
+  monitoringValues: Set<string>;
+  allocationCount: number;
+  withBaseline: number;
+  withExpected: number;
+  withRatio: number;
+  totalDeltaWh: number;
+  totalExpectedWh: number;
+  totalContractValue: number;
+  /**
+   * `Map<systemId, {source, priority}>`. Per-systemId auto-
+   * compliant source with priority resolved during streaming;
+   * higher priority wins on collision per
+   * `getAutoCompliantSourcePriority`.
+   */
+  autoCompliantSources: Map<string, { source: string; priority: number }>;
+  /**
+   * `Map<systemKey, candidate>` for best-per-system selection.
+   * `systemKey = stateApplicationRefId || systemId ||
+   * trackingSystemRefId || systemName.toLowerCase()` mirrors the
+   * pre-cutover client memo. Tie-break: most-recent read-window
+   * month, then highest ratio, then most-recent readDate.
+   */
+  bestPerSystem: Map<string, PerformanceRatioCompliantBestRow>;
+}
+
+export function createPerformanceRatioStreamingAccumulators():
+  PerformanceRatioStreamingAccumulators {
+  return {
+    matchedSystemKeys: new Set<string>(),
+    monitoringValues: new Set<string>(),
+    allocationCount: 0,
+    withBaseline: 0,
+    withExpected: 0,
+    withRatio: 0,
+    totalDeltaWh: 0,
+    totalExpectedWh: 0,
+    totalContractValue: 0,
+    autoCompliantSources: new Map(),
+    bestPerSystem: new Map(),
+  };
+}
+
+/**
+ * Fold a page of freshly-written fact rows into the accumulators.
+ * Called after each `upsertPerformanceRatioFacts` so peak heap is
+ * still bounded by ONE page (the rows array is consumed and
+ * dropped before the next iteration).
+ *
+ * `rawRows` is the input to the aggregator (PerformanceRatioRow
+ * shape, with native `number | null` decimals); `factRows` is the
+ * already-validated insert shape (decimals as strings). We accept
+ * both because the auto-compliant + best-per-system structures
+ * need raw numbers for comparisons; the count/sum aggregates can
+ * use either.
+ */
+export function accumulatePerformanceRatioPage(
+  acc: PerformanceRatioStreamingAccumulators,
+  rawRows: readonly PerformanceRatioRow[]
+): void {
+  for (const row of rawRows) {
+    // Aggregates / monitoring options.
+    acc.allocationCount += 1;
+    if (row.trackingSystemRefId) {
+      acc.matchedSystemKeys.add(row.trackingSystemRefId);
+    }
+    if (row.monitoring) {
+      acc.monitoringValues.add(row.monitoring);
+    }
+    if (row.baselineReadWh !== null) acc.withBaseline += 1;
+    if (
+      row.expectedProductionWh !== null &&
+      row.expectedProductionWh > 0
+    ) {
+      acc.withExpected += 1;
+    }
+    if (row.performanceRatioPercent !== null) acc.withRatio += 1;
+    if (typeof row.productionDeltaWh === "number") {
+      acc.totalDeltaWh += row.productionDeltaWh;
+    }
+    if (typeof row.expectedProductionWh === "number") {
+      acc.totalExpectedWh += row.expectedProductionWh;
+    }
+    if (typeof row.contractValue === "number") {
+      acc.totalContractValue += row.contractValue;
+    }
+
+    // Auto-compliant sources — priority-resolved per systemId.
+    if (row.systemId) {
+      const candidate = resolveAutoCompliantSourceForRow({
+        monitoringPlatform: row.monitoringPlatform,
+        portalAcSizeKw: row.portalAcSizeKw,
+        abpAcSizeKw: row.abpAcSizeKw,
+      });
+      if (candidate) {
+        const candidatePriority =
+          getAutoCompliantSourcePriority(candidate);
+        const existing = acc.autoCompliantSources.get(row.systemId);
+        if (!existing || candidatePriority > existing.priority) {
+          acc.autoCompliantSources.set(row.systemId, {
+            source: candidate,
+            priority: candidatePriority,
+          });
+        }
+      }
+    }
+
+    // Best-per-system — eligible: part2 + ratio in [30, 150].
+    if (
+      row.part2VerificationDate &&
+      row.performanceRatioPercent !== null &&
+      row.performanceRatioPercent >= 30 &&
+      row.performanceRatioPercent <= 150
+    ) {
+      const systemKey =
+        row.stateApplicationRefId ||
+        row.systemId ||
+        row.trackingSystemRefId ||
+        row.systemName.toLowerCase();
+      const candidate: PerformanceRatioCompliantBestRow = {
+        key: row.key,
+        systemId: row.systemId,
+        stateApplicationRefId: row.stateApplicationRefId,
+        trackingSystemRefId: row.trackingSystemRefId,
+        systemName: row.systemName,
+        monitoring: row.monitoring,
+        monitoringSystemId: row.monitoringSystemId,
+        monitoringSystemName: row.monitoringSystemName,
+        monitoringPlatform: row.monitoringPlatform,
+        matchType: row.matchType,
+        installerName: row.installerName,
+        portalAcSizeKw: row.portalAcSizeKw,
+        abpAcSizeKw: row.abpAcSizeKw,
+        part2VerificationDate: row.part2VerificationDate
+          ? row.part2VerificationDate.toISOString()
+          : null,
+        readDate: row.readDate ? row.readDate.toISOString() : null,
+        readDateRaw: row.readDateRaw,
+        performanceRatioPercent: row.performanceRatioPercent,
+        productionDeltaWh: row.productionDeltaWh,
+        expectedProductionWh: row.expectedProductionWh,
+        contractValue: row.contractValue,
+        baselineReadWh: row.baselineReadWh,
+        baselineDate: row.baselineDate
+          ? row.baselineDate.toISOString()
+          : null,
+        baselineSource: row.baselineSource,
+        lifetimeReadWh: row.lifetimeReadWh,
+        compliantSource: row.systemId
+          ? acc.autoCompliantSources.get(row.systemId)?.source ?? null
+          : null,
+      };
+      const existing = acc.bestPerSystem.get(systemKey);
+      if (!existing || compareCompliantRowsForBestPerSystem(candidate, existing) > 0) {
+        acc.bestPerSystem.set(systemKey, candidate);
+      }
+    }
+  }
+}
+
+/**
+ * Compare two `PerformanceRatioCompliantBestRow` candidates for
+ * best-per-system tie-breaking. Returns positive if `a` is better
+ * than `b`, negative if worse, zero if equal.
+ *
+ * Mirrors the client memo's tie-breaker: most-recent read-window
+ * month, then highest ratio, then most-recent readDate.
+ */
+function compareCompliantRowsForBestPerSystem(
+  a: PerformanceRatioCompliantBestRow,
+  b: PerformanceRatioCompliantBestRow
+): number {
+  const aWindow = readWindowMs(a.readDate);
+  const bWindow = readWindowMs(b.readDate);
+  if (aWindow !== bWindow) return aWindow - bWindow;
+  const aRatio = a.performanceRatioPercent ?? Number.NEGATIVE_INFINITY;
+  const bRatio = b.performanceRatioPercent ?? Number.NEGATIVE_INFINITY;
+  if (aRatio !== bRatio) return aRatio - bRatio;
+  const aRead = readDateMs(a.readDate);
+  const bRead = readDateMs(b.readDate);
+  return aRead - bRead;
+}
+
+function readWindowMs(iso: string | null): number {
+  if (!iso) return Number.NEGATIVE_INFINITY;
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return Number.NEGATIVE_INFINITY;
+  // Snap to first-of-month — matches the client's
+  // `toReadWindowMonthStart`.
+  return new Date(date.getFullYear(), date.getMonth(), 1).getTime();
+}
+
+function readDateMs(iso: string | null): number {
+  if (!iso) return Number.NEGATIVE_INFINITY;
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime())
+    ? Number.NEGATIVE_INFINITY
+    : date.getTime();
+}
+
+/**
+ * Compute the final summary payload from streaming accumulators
+ * + the aggregator's converted-read counters. Pure: no I/O.
  */
 export function buildPerformanceRatioSummaryPayload(args: {
   buildId: string;
@@ -187,30 +547,137 @@ export function buildPerformanceRatioSummaryPayload(args: {
     unmatchedConvertedReads: number;
     invalidConvertedReads: number;
   };
-  factRows: readonly InsertSolarRecDashboardPerformanceRatioFact[];
+  accumulators: PerformanceRatioStreamingAccumulators;
 }): PerformanceRatioSummaryPayload {
-  const { buildId, builtAt, aggregate, factRows } = args;
-  // matchedSystemCount = unique systems represented across the
-  // matched rows. The aggregator emits ONE row per match (system
-  // × converted-read), so the same system can appear N times.
-  const systemKeys = new Set<string>();
-  for (const row of factRows) {
-    // Row's `key` is `${convertedReadKey}-${systemKey}`. The
-    // candidate's stable identifier is the suffix after the
-    // first `${convertedReadKey}-`. trackingSystemRefId is also
-    // available and equally suitable; using it avoids re-parsing
-    // the composite key.
-    if (row.trackingSystemRefId) systemKeys.add(row.trackingSystemRefId);
-  }
+  const { buildId, builtAt, aggregate, accumulators } = args;
+  const portfolioRatioPercent = computePortfolioRatioPercent(
+    accumulators.totalDeltaWh,
+    accumulators.totalExpectedWh
+  );
+  const monitoringOptions = Array.from(
+    accumulators.monitoringValues
+  ).sort((a, b) =>
+    a.localeCompare(b, undefined, { sensitivity: "base", numeric: true })
+  );
   return {
     convertedReadCount: aggregate.convertedReadCount,
     matchedConvertedReads: aggregate.matchedConvertedReads,
     unmatchedConvertedReads: aggregate.unmatchedConvertedReads,
     invalidConvertedReads: aggregate.invalidConvertedReads,
-    matchedSystemCount: systemKeys.size,
+    matchedSystemCount: accumulators.matchedSystemKeys.size,
+    allocationCount: accumulators.allocationCount,
+    withBaseline: accumulators.withBaseline,
+    withExpected: accumulators.withExpected,
+    withRatio: accumulators.withRatio,
+    totalDeltaWh: accumulators.totalDeltaWh,
+    totalExpectedWh: accumulators.totalExpectedWh,
+    portfolioRatioPercent,
+    totalContractValue: accumulators.totalContractValue,
+    monitoringOptions,
     buildId,
     aggregatorVersion: PERFORMANCE_RATIO_RUNNER_VERSION,
     builtAt: builtAt.toISOString(),
+  };
+}
+
+/**
+ * Mirror of the client's `toPercentValue(totalDeltaWh,
+ * totalExpectedWh)` pre-cutover helper.
+ */
+export function computePortfolioRatioPercent(
+  totalDeltaWh: number,
+  totalExpectedWh: number
+): number | null {
+  if (!Number.isFinite(totalExpectedWh) || totalExpectedWh <= 0) {
+    return null;
+  }
+  if (!Number.isFinite(totalDeltaWh)) return null;
+  const ratio = (totalDeltaWh / totalExpectedWh) * 100;
+  return Math.round(ratio * 10) / 10;
+}
+
+/**
+ * Build the auto-compliant-sources side-cache payload from the
+ * streaming accumulator.
+ */
+export function buildAutoCompliantSourcesPayload(args: {
+  buildId: string;
+  builtAt: Date;
+  accumulators: PerformanceRatioStreamingAccumulators;
+}): PerformanceRatioAutoCompliantSourcesPayload {
+  const { buildId, builtAt, accumulators } = args;
+  const totalEntries = accumulators.autoCompliantSources.size;
+  const entries = Array.from(accumulators.autoCompliantSources).sort(
+    ([a], [b]) =>
+      a.localeCompare(b, undefined, { sensitivity: "base", numeric: true })
+  );
+  const truncated = entries.length > AUTO_COMPLIANT_ENTRIES_HARD_CAP;
+  const kept = truncated
+    ? entries.slice(0, AUTO_COMPLIANT_ENTRIES_HARD_CAP)
+    : entries;
+  const sources: Record<string, string> = {};
+  for (const [systemId, value] of kept) {
+    sources[systemId] = value.source;
+  }
+  return {
+    buildId,
+    builtAt: builtAt.toISOString(),
+    sources,
+    truncated,
+    totalEntries,
+  };
+}
+
+/**
+ * Build the best-per-system side-cache payload from the
+ * streaming accumulator. `compliantSource` on each row is set
+ * AFTER the auto-compliant Map is finalized so late-stream
+ * priority resolution is reflected.
+ */
+export function buildBestPerSystemPayload(args: {
+  buildId: string;
+  builtAt: Date;
+  accumulators: PerformanceRatioStreamingAccumulators;
+}): PerformanceRatioBestPerSystemPayload {
+  const { buildId, builtAt, accumulators } = args;
+  // Re-attach `compliantSource` per row using the FINAL
+  // auto-compliant Map (per-page accumulation may have set this
+  // to null when a system's first eligible row was processed
+  // before its compliant-source-priority candidate appeared).
+  const rows: PerformanceRatioCompliantBestRow[] = [];
+  for (const candidate of Array.from(accumulators.bestPerSystem.values())) {
+    rows.push({
+      ...candidate,
+      compliantSource: candidate.systemId
+        ? accumulators.autoCompliantSources.get(candidate.systemId)?.source ??
+          null
+        : null,
+    });
+  }
+  // Stable display order: most-recent read-window first, then
+  // highest ratio, then systemName ascending. Mirrors the client
+  // memo's final sort.
+  rows.sort((a, b) => {
+    const aWindow = readWindowMs(a.readDate);
+    const bWindow = readWindowMs(b.readDate);
+    if (aWindow !== bWindow) return bWindow - aWindow;
+    const aRatio = a.performanceRatioPercent ?? Number.NEGATIVE_INFINITY;
+    const bRatio = b.performanceRatioPercent ?? Number.NEGATIVE_INFINITY;
+    if (aRatio !== bRatio) return bRatio - aRatio;
+    return a.systemName.localeCompare(b.systemName, undefined, {
+      sensitivity: "base",
+      numeric: true,
+    });
+  });
+  const totalEntries = rows.length;
+  const truncated = rows.length > BEST_PER_SYSTEM_HARD_CAP;
+  const kept = truncated ? rows.slice(0, BEST_PER_SYSTEM_HARD_CAP) : rows;
+  return {
+    buildId,
+    builtAt: builtAt.toISOString(),
+    rows: kept,
+    truncated,
+    totalEntries,
   };
 }
 
@@ -224,6 +691,32 @@ async function writePerformanceRatioSummary(
     inputVersionHash: PERFORMANCE_RATIO_SUMMARY_VERSION_KEY,
     payload: JSON.stringify(payload),
     rowCount: payload.matchedSystemCount,
+  });
+}
+
+async function writeAutoCompliantSourcesArtifact(
+  scopeId: string,
+  payload: PerformanceRatioAutoCompliantSourcesPayload
+): Promise<void> {
+  await upsertComputedArtifact({
+    scopeId,
+    artifactType: PERFORMANCE_RATIO_AUTO_COMPLIANT_ARTIFACT_TYPE,
+    inputVersionHash: PERFORMANCE_RATIO_AUTO_COMPLIANT_VERSION_KEY,
+    payload: JSON.stringify(payload),
+    rowCount: Object.keys(payload.sources).length,
+  });
+}
+
+async function writeBestPerSystemArtifact(
+  scopeId: string,
+  payload: PerformanceRatioBestPerSystemPayload
+): Promise<void> {
+  await upsertComputedArtifact({
+    scopeId,
+    artifactType: PERFORMANCE_RATIO_BEST_PER_SYSTEM_ARTIFACT_TYPE,
+    inputVersionHash: PERFORMANCE_RATIO_BEST_PER_SYSTEM_VERSION_KEY,
+    payload: JSON.stringify(payload),
+    rowCount: payload.rows.length,
   });
 }
 
@@ -297,35 +790,74 @@ async function runPerformanceRatioStep(args: {
     context: { scopeId },
   });
 
+  // 2026-05-09 — Option C build-isolation refactor. The fact-row
+  // PK now includes `buildId`, so this build's writes coexist with
+  // any prior build's rows in the table; visibility flips on the
+  // summary write. Strict ordering:
+  //   1. Stream pages → UPSERT rows tagged with THIS buildId
+  //      (rows are NOT visible — page reader filters by the
+  //      summary's buildId, which is still the PRIOR build's).
+  //   2. Once streaming + accumulators are complete: write
+  //      auto-compliant + best-per-system side caches under the
+  //      new buildId.
+  //   3. Write the summary artifact with the new `buildId` —
+  //      THIS is the visibility flip; tab reads now see the new
+  //      build's rows.
+  //   4. Best-effort prune of superseded rows (older `buildId`s).
+  //
+  // If the runner throws between (1) and (3), the OLD summary
+  // remains the visible build pointer; partially-written new
+  // rows sit invisible until the next successful build's prune
+  // sweep reclaims them.
   try {
     if (signal.aborted) throw new Error("aborted before batch resolution");
     const batchIds = await resolvePerformanceRatioBatchIds(scopeId);
 
-    // No convertedReads → empty result, write zero summary + return.
+    // No convertedReads → write empty side caches + empty
+    // summary, then prune. `allocationCount = 0` and
+    // `monitoringOptions = []` reach the client.
     if (!batchIds.convertedReadsBatchId) {
       if (signal.aborted)
         throw new Error("aborted before empty summary write");
-      await upsertPerformanceRatioFacts([]);
-      const orphanedDeleted = await deleteOrphanedPerformanceRatioFacts(
+      const builtAt = new Date();
+      const accumulators = createPerformanceRatioStreamingAccumulators();
+      // Write side caches BEFORE summary (visibility-flip ordering).
+      await writeAutoCompliantSourcesArtifact(
         scopeId,
-        buildId
+        buildAutoCompliantSourcesPayload({
+          buildId,
+          builtAt,
+          accumulators,
+        })
+      );
+      await writeBestPerSystemArtifact(
+        scopeId,
+        buildBestPerSystemPayload({
+          buildId,
+          builtAt,
+          accumulators,
+        })
       );
       const summary = buildPerformanceRatioSummaryPayload({
         buildId,
-        builtAt: new Date(),
+        builtAt,
         aggregate: {
           convertedReadCount: 0,
           matchedConvertedReads: 0,
           unmatchedConvertedReads: 0,
           invalidConvertedReads: 0,
         },
-        factRows: [],
+        accumulators,
       });
       await writePerformanceRatioSummary(scopeId, summary);
+      const prunedCount = await pruneSupersededPerformanceRatioFacts(
+        scopeId,
+        [buildId]
+      );
       metric.finish({
         skipped: true,
         reason: "no convertedReads batch",
-        orphanedDeleted,
+        orphanedDeleted: prunedCount,
       });
       return;
     }
@@ -338,7 +870,7 @@ async function runPerformanceRatioStep(args: {
     if (signal.aborted) throw new Error("aborted after static input load");
 
     const accumulator = createPerformanceRatioAccumulator(staticInput);
-    const matchedSystemKeys = new Set<string>();
+    const accumulators = createPerformanceRatioStreamingAccumulators();
     let totalFactsWritten = 0;
     let pageCount = 0;
 
@@ -373,13 +905,7 @@ async function runPerformanceRatioStep(args: {
         });
         // 2026-05-08 step-4 hardening — log heap on EVERY page (was
         // every 10 in PR #488; PR #494 ensures EMPTY-drain pages
-        // also emit the log line). The next failed build's logs
-        // need to pinpoint the page at which heap pressure crossed
-        // the threshold even on the back half of a stream where
-        // matches taper off; the previous early-return-before-log
-        // skipped exactly those pages. Cost: one
-        // process.stdout.write per page (~80 chars) — negligible
-        // vs. the diagnostic value.
+        // also emit the log line).
         const heapMb = Math.round(
           process.memoryUsage().heapUsed / 1024 / 1024
         );
@@ -398,33 +924,64 @@ async function runPerformanceRatioStep(args: {
         if (factRows.length === 0) return;
         await upsertPerformanceRatioFacts(factRows);
         totalFactsWritten += factRows.length;
-        for (const r of factRows) {
-          if (r.trackingSystemRefId) {
-            matchedSystemKeys.add(r.trackingSystemRefId);
-          }
-        }
+        // 2026-05-09 — Option C — fold the page's raw rows into
+        // the streaming accumulators. Server-side aggregates +
+        // compliant context are derived here so the final
+        // summary write is constant-time.
+        accumulatePerformanceRatioPage(accumulators, drained);
       }
     );
 
-    if (signal.aborted) throw new Error("aborted before orphan sweep");
-    const orphanedDeleted = await deleteOrphanedPerformanceRatioFacts(
+    // ----- Visibility flip ordering -----
+    if (signal.aborted) throw new Error("aborted before side-cache writes");
+    const counters = accumulator.getCounters();
+    const builtAt = new Date();
+
+    // Side caches BEFORE summary so a client that hits the new
+    // summary (visibility flip) and immediately follows with a
+    // compliant-context fetch never reads a stale side-cache row.
+    await writeAutoCompliantSourcesArtifact(
       scopeId,
-      buildId
+      buildAutoCompliantSourcesPayload({ buildId, builtAt, accumulators })
+    );
+    await writeBestPerSystemArtifact(
+      scopeId,
+      buildBestPerSystemPayload({ buildId, builtAt, accumulators })
     );
 
     if (signal.aborted) throw new Error("aborted before summary write");
-    const counters = accumulator.getCounters();
-    const summary: PerformanceRatioSummaryPayload = {
-      convertedReadCount: counters.convertedReadCount,
-      matchedConvertedReads: counters.matchedConvertedReads,
-      unmatchedConvertedReads: counters.unmatchedConvertedReads,
-      invalidConvertedReads: counters.invalidConvertedReads,
-      matchedSystemCount: matchedSystemKeys.size,
+    const summary = buildPerformanceRatioSummaryPayload({
       buildId,
-      aggregatorVersion: PERFORMANCE_RATIO_RUNNER_VERSION,
-      builtAt: new Date().toISOString(),
-    };
+      builtAt,
+      aggregate: {
+        convertedReadCount: counters.convertedReadCount,
+        matchedConvertedReads: counters.matchedConvertedReads,
+        unmatchedConvertedReads: counters.unmatchedConvertedReads,
+        invalidConvertedReads: counters.invalidConvertedReads,
+      },
+      accumulators,
+    });
+    // ⚠️ This call is the visibility flip. Until it returns
+    // success, page reads continue to see the prior build's
+    // rows (or nothing, if no prior build).
     await writePerformanceRatioSummary(scopeId, summary);
+
+    // Best-effort: prune rows from superseded builds. Failure
+    // here doesn't roll back the visibility flip; stale rows
+    // simply persist invisible until the next prune.
+    let orphanedDeleted = 0;
+    try {
+      orphanedDeleted = await pruneSupersededPerformanceRatioFacts(
+        scopeId,
+        [buildId]
+      );
+    } catch (pruneErr) {
+      console.warn(
+        `${METRIC_PREFIX} prune of superseded rows failed (visibility flip already succeeded): ${
+          pruneErr instanceof Error ? pruneErr.message : String(pruneErr)
+        }`
+      );
+    }
 
     metric.finish({
       rowsWritten: totalFactsWritten,
@@ -434,7 +991,10 @@ async function runPerformanceRatioStep(args: {
       matchedConvertedReads: counters.matchedConvertedReads,
       unmatchedConvertedReads: counters.unmatchedConvertedReads,
       invalidConvertedReads: counters.invalidConvertedReads,
-      matchedSystemCount: matchedSystemKeys.size,
+      matchedSystemCount: accumulators.matchedSystemKeys.size,
+      allocationCount: accumulators.allocationCount,
+      autoCompliantSystems: accumulators.autoCompliantSources.size,
+      compliantBestPerSystem: accumulators.bestPerSystem.size,
       streaming: true,
     });
   } catch (err) {

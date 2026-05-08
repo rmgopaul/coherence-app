@@ -1,67 +1,127 @@
 /**
- * Solar REC dashboard performance-ratio facts — DB helpers
- * (Phase 2 PR-G-1, the fifth derived fact table).
+ * Solar REC dashboard performance-ratio facts — DB helpers.
  *
- * Backs the `solarRecDashboardPerformanceRatioFacts` table that
- * PR-G-2 will populate via the build runner. PR-G-3 will add the
- * paginated read proc that the PerformanceRatioTab migrates onto,
- * retiring the per-row `PerformanceRatioRow[]` payload from
- * `getDashboardPerformanceRatio`'s response (the legacy aggregator
- * still computes the rows on the user's request hot path, holding
- * the snapshot + 6 srDs* tables in memory; PR-G-2 moves that
- * compute into the build runner so a tab read becomes a paginated
- * query against pre-built rows).
+ * Backs `solarRecDashboardPerformanceRatioFacts`. The 2026-05-09
+ * Option C refactor changed the PK from `(scopeId, key)` to
+ * `(scopeId, buildId, key)` so multiple builds can coexist in the
+ * table — a failed or in-flight build's rows are simply invisible
+ * until that build completes its summary write. The summary
+ * artifact's `buildId` is the canonical "visible build pointer"; the
+ * page reader filters `WHERE scopeId=? AND buildId=summary_buildId`.
  *
- * PR-G-1 is helpers ONLY — no caller in production wires these in
- * yet. The table is empty until PR-G-2 ships.
- *
- * Architectural shape mirrors `dashboardChangeOwnershipFacts.ts`
- * 1:1:
- *   1. **Bulk write** (`upsertPerformanceRatioFacts`) — PR-G-2's
- *      builder calls this once per build with the N rows it derived
- *      from the existing `getOrBuildPerformanceRatio` aggregator.
- *   2. **Orphan sweep** (`deleteOrphanedPerformanceRatioFacts`) —
- *      after the bulk write, removes rows from PRIOR builds.
+ * Architectural shape:
+ *   1. **Bulk write** (`upsertPerformanceRatioFacts`) — runner
+ *      step calls per page during streaming. Per-build PK means
+ *      writes never collide with another build's rows.
+ *   2. **Build sweep** (`pruneSupersededPerformanceRatioFacts`) —
+ *      after a build's summary write succeeds, deletes rows whose
+ *      `buildId` is not the latest visible build. Best-effort:
+ *      stale rows persist until the next sweep; they're invisible
+ *      via the summary-pointer filter so they cause no harm.
  *   3. **Filter + paginated read** (`getPerformanceRatioFactsPage`)
- *      — PR-G-3's proc returns one page at a time, optionally
- *      filtered by `matchType` or `monitoring`. Cursor by `key`.
- *   4. **Total counts** (`getPerformanceRatioFactsCount`) — for
- *      the slim summary's `convertedReadCount`-style headline tile.
+ *      — accepts `(matchType, monitoring, search, sortBy, sortDir,
+ *      offset, limit)`. The proc layer always passes
+ *      `summary_buildId` as the visibility pointer; rows from
+ *      other builds are never returned.
+ *   4. **Counts + aggregates** (`getPerformanceRatioFactsCount`,
+ *      `getPerformanceRatioFactsAggregates`) — same filter args.
+ *      The aggregates are accumulated during streaming AND can be
+ *      re-derived from the table for diagnostic purposes.
  *
- * Filter axes mirror the PerformanceRatioTab's two primary
- * controls (`matchType` and `monitoring`), each backed by a
- * covering index from PR-G-1's schema. Combining both filters
- * falls back to one of the two indexes plus an in-memory filter
- * on the other column — same pattern PR-D-3 / PR-E-3 use.
+ * Sortable columns: `performanceRatioPercent`, `productionDeltaWh`,
+ * `expectedProductionWh`, `systemName`, `readDate`. The covering
+ * indexes added in migration 0067 keep `WHERE scopeId=? AND
+ * buildId=? ORDER BY <col>` off a filesort for the most-common
+ * columns; less-common columns accept a per-build-set filesort.
+ *
+ * Searchable columns: `systemName`, `systemId`, `trackingSystemRefId`,
+ * `monitoring`, `monitoringSystemId`, `monitoringSystemName`,
+ * `installerName`. Implementation is per-row LOWER(...) LIKE %term%.
+ * Per-build subset is small enough to scan; if/when this becomes a
+ * bottleneck, promote to a covering FTS index.
  */
 
 import { and, eq, getDb, sql, withDbRetry } from "./_core";
-import { gt, inArray, ne } from "drizzle-orm";
+import {
+  inArray,
+  asc,
+  desc,
+  isNotNull,
+  gt,
+  ne,
+  or,
+  like,
+} from "drizzle-orm";
 import {
   solarRecDashboardPerformanceRatioFacts,
   type SolarRecDashboardPerformanceRatioFact,
   type InsertSolarRecDashboardPerformanceRatioFact,
 } from "../../drizzle/schema";
 
+// ---------------------------------------------------------------------------
+// Public types
+// ---------------------------------------------------------------------------
+
 /**
- * Bulk UPSERT N fact rows. Each row's PK is `(scopeId, key)`; on
- * conflict the existing row's mutable columns are overwritten and
- * `updatedAt` bumps.
+ * Sortable columns for `getPerformanceRatioFactsPage`. The set is
+ * limited to columns the PerformanceRatioTab UI exposes as a sort
+ * control — other columns aren't reachable through the proc input
+ * type-narrowing.
+ */
+export type PerformanceRatioSortBy =
+  | "performanceRatioPercent"
+  | "productionDeltaWh"
+  | "expectedProductionWh"
+  | "systemName"
+  | "readDate";
+
+export type PerformanceRatioSortDir = "asc" | "desc";
+
+/**
+ * Common filter shape used by every read helper. The `buildId` is
+ * REQUIRED — callers must look it up via the summary artifact's
+ * `buildId` first. A missing `buildId` (no completed build for the
+ * scope) means there's no visible data and the helpers return
+ * empty.
+ *
+ * `search` is normalized server-side (trimmed, lowercased) before
+ * the LIKE comparison; pass the raw user input.
+ */
+export interface PerformanceRatioFiltersInput {
+  scopeId: string;
+  buildId: string;
+  matchType?: string | null;
+  monitoring?: string | null;
+  search?: string | null;
+}
+
+export interface PerformanceRatioFactsAggregates {
+  allocationCount: number;
+  withBaseline: number;
+  withExpected: number;
+  withRatio: number;
+  totalDeltaWh: number;
+  totalExpectedWh: number;
+  totalContractValue: number;
+}
+
+// ---------------------------------------------------------------------------
+// Bulk writes (called by the build runner step)
+// ---------------------------------------------------------------------------
+
+/**
+ * Bulk UPSERT N fact rows. Each row's PK is
+ * `(scopeId, buildId, key)`; on conflict the existing row's mutable
+ * columns are overwritten and `updatedAt` bumps. Rows from a
+ * different build never collide on this PK, so a concurrent build
+ * cannot corrupt our writes mid-flight.
  *
  * **Throws** if the DB is unavailable. Same rationale as the
  * sibling fact-table helpers — the runner marking a build
  * `succeeded` while no rows were written would silently corrupt
  * the data plane.
  *
- * Chunked at 200 rows / INSERT for TiDB parameter-limit headroom
- * (performance-ratio rows have ~28 columns; 200 × 28 = 5.6k params,
- * well under the ~65k cap). Lower than the 500-row chunk the
- * change-ownership builder uses because each row carries 6 extra
- * decimal columns AND because step-4's hot path runs under tight
- * heap pressure on prod (build `bld-18271f3b…` died at pr=178,821
- * mid-stream). 200 was 400; halving the chunk halves the prepared-
- * statement parameter peak per upsert call, which is the largest
- * synchronous JS allocation inside the streaming loop.
+ * Chunked at 200 rows / INSERT for TiDB parameter-limit headroom.
  */
 export async function upsertPerformanceRatioFacts(
   rows: InsertSolarRecDashboardPerformanceRatioFact[]
@@ -69,20 +129,17 @@ export async function upsertPerformanceRatioFacts(
   if (rows.length === 0) return;
   const db = await getDb();
   if (!db) {
-    throw new Error(
-      "dashboardPerformanceRatioFacts: database unavailable — cannot upsert facts"
-    );
+    throw new Error("upsertPerformanceRatioFacts: DB unavailable");
   }
-
-  const CHUNK = 200;
-  for (let i = 0; i < rows.length; i += CHUNK) {
-    const chunk = rows.slice(i, i + CHUNK);
+  const CHUNK_SIZE = 200;
+  for (let i = 0; i < rows.length; i += CHUNK_SIZE) {
+    const slice = rows.slice(i, i + CHUNK_SIZE);
     await withDbRetry(
-      "upsert dashboard performance-ratio facts",
-      async () => {
-        await db
+      "upsert dashboard performance-ratio facts (chunk)",
+      async () =>
+        db
           .insert(solarRecDashboardPerformanceRatioFacts)
-          .values(chunk)
+          .values(slice)
           .onDuplicateKeyUpdate({
             set: {
               convertedReadKey: sql`VALUES(\`convertedReadKey\`)`,
@@ -109,81 +166,84 @@ export async function upsertPerformanceRatioFacts(
               expectedProductionWh: sql`VALUES(\`expectedProductionWh\`)`,
               performanceRatioPercent: sql`VALUES(\`performanceRatioPercent\`)`,
               contractValue: sql`VALUES(\`contractValue\`)`,
-              buildId: sql`VALUES(\`buildId\`)`,
-              // updatedAt auto-bumps via the schema's onUpdateNow.
+              updatedAt: sql`CURRENT_TIMESTAMP`,
             },
-          });
-      }
+          })
     );
   }
 }
 
 /**
- * Delete fact rows for a scope whose `buildId` doesn't match the
- * current build — orphan sweep. Returns affected-row count for
- * observability.
+ * Delete fact rows whose `buildId` is not in `keepBuildIds`. Used
+ * after a successful summary write to reclaim stale rows from
+ * superseded / failed builds without affecting the now-visible
+ * build.
+ *
+ * Best-effort: if deletion fails, stale rows persist; they remain
+ * invisible because the page reader filters by the summary's
+ * `buildId`. The next successful build's prune sweep will reclaim
+ * them.
+ *
+ * `keepBuildIds` MUST include the now-visible build's `buildId`.
+ * Pass an empty array only for full-table cleanup (e.g. test
+ * teardown).
  */
-export async function deleteOrphanedPerformanceRatioFacts(
+export async function pruneSupersededPerformanceRatioFacts(
   scopeId: string,
-  currentBuildId: string
+  keepBuildIds: readonly string[]
 ): Promise<number> {
   const db = await getDb();
   if (!db) return 0;
   const result = await withDbRetry(
-    "delete orphaned dashboard performance-ratio facts",
-    async () =>
-      db
+    "prune superseded dashboard performance-ratio facts",
+    async () => {
+      if (keepBuildIds.length === 0) {
+        return db
+          .delete(solarRecDashboardPerformanceRatioFacts)
+          .where(
+            eq(solarRecDashboardPerformanceRatioFacts.scopeId, scopeId)
+          );
+      }
+      return db
         .delete(solarRecDashboardPerformanceRatioFacts)
         .where(
           and(
             eq(solarRecDashboardPerformanceRatioFacts.scopeId, scopeId),
-            ne(
-              solarRecDashboardPerformanceRatioFacts.buildId,
-              currentBuildId
-            )
+            sql`${solarRecDashboardPerformanceRatioFacts.buildId} NOT IN (${sql.join(
+              keepBuildIds.map((id) => sql`${id}`),
+              sql`, `
+            )})`
           )
-        )
+        );
+    }
   );
   return getAffectedRows(result);
 }
 
-/**
- * Fetch a paginated page of fact rows for a scope, optionally
- * filtered by `matchType` and/or `monitoring`. Cursor is `key`;
- * rows are sorted by `key ASC` so the page boundary is stable
- * across requests.
- *
- * `matchType` and `monitoring` are the two primary filter axes
- * the PerformanceRatioTab uses. Each is backed by a covering
- * index added in PR-G-1's schema; combining both falls back to
- * one of the two indexes plus an in-memory filter on the other
- * column.
- *
- * `limit` is bounded server-side (1..1000). PR-G-3's proc layer
- * will additionally clamp at the wire-payload contract.
- */
-export async function getPerformanceRatioFactsPage(
-  scopeId: string,
-  options: {
-    cursorAfter?: string | null;
-    limit: number;
-    matchType?: string | null;
-    monitoring?: string | null;
-  }
-): Promise<SolarRecDashboardPerformanceRatioFact[]> {
-  const db = await getDb();
-  if (!db) return [];
-  const { cursorAfter, limit, matchType, monitoring } = options;
-  const safeLimit = Math.max(1, Math.min(1000, Math.floor(limit)));
+// ---------------------------------------------------------------------------
+// Filter helpers
+// ---------------------------------------------------------------------------
 
-  const conditions = [
+/**
+ * Build the WHERE conditions common to every read helper. Caller
+ * passes the resolved `(scopeId, buildId)` plus the user-supplied
+ * filter args.
+ *
+ * `search` is matched LIKE %term% across these columns:
+ *   `systemName`, `systemId`, `trackingSystemRefId`, `monitoring`,
+ *   `monitoringSystemId`, `monitoringSystemName`, `installerName`.
+ * Mirror of the client-side `haystack` array in PerformanceRatioTab
+ * (Option C cutover) — keeping these in sync prevents the page
+ * search from drifting from a hypothetical future client memo.
+ */
+function buildPerformanceRatioFilterConditions(
+  filters: PerformanceRatioFiltersInput
+): unknown[] {
+  const { scopeId, buildId, matchType, monitoring, search } = filters;
+  const conditions: unknown[] = [
     eq(solarRecDashboardPerformanceRatioFacts.scopeId, scopeId),
+    eq(solarRecDashboardPerformanceRatioFacts.buildId, buildId),
   ];
-  if (cursorAfter) {
-    conditions.push(
-      gt(solarRecDashboardPerformanceRatioFacts.key, cursorAfter)
-    );
-  }
   if (matchType) {
     conditions.push(
       eq(solarRecDashboardPerformanceRatioFacts.matchType, matchType)
@@ -194,6 +254,76 @@ export async function getPerformanceRatioFactsPage(
       eq(solarRecDashboardPerformanceRatioFacts.monitoring, monitoring)
     );
   }
+  const trimmed = (search ?? "").trim().toLowerCase();
+  if (trimmed.length > 0) {
+    const pattern = `%${trimmed}%`;
+    conditions.push(
+      or(
+        like(
+          sql`LOWER(${solarRecDashboardPerformanceRatioFacts.systemName})`,
+          pattern
+        ),
+        like(
+          sql`LOWER(${solarRecDashboardPerformanceRatioFacts.systemId})`,
+          pattern
+        ),
+        like(
+          sql`LOWER(${solarRecDashboardPerformanceRatioFacts.trackingSystemRefId})`,
+          pattern
+        ),
+        like(
+          sql`LOWER(${solarRecDashboardPerformanceRatioFacts.monitoring})`,
+          pattern
+        ),
+        like(
+          sql`LOWER(${solarRecDashboardPerformanceRatioFacts.monitoringSystemId})`,
+          pattern
+        ),
+        like(
+          sql`LOWER(${solarRecDashboardPerformanceRatioFacts.monitoringSystemName})`,
+          pattern
+        ),
+        like(
+          sql`LOWER(${solarRecDashboardPerformanceRatioFacts.installerName})`,
+          pattern
+        )
+      )
+    );
+  }
+  return conditions;
+}
+
+// ---------------------------------------------------------------------------
+// Read helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Fetch a paginated page of fact rows under the given filters,
+ * ordered by `(sortBy, sortDir)` with `key` as a tie-breaker for
+ * stable pagination. Returns rows from EXACTLY one build (the
+ * caller-supplied `buildId`); other builds' rows are never visible
+ * through this path.
+ *
+ * `limit` clamps to 1..1000 server-side. Wire payload at
+ * `limit=100` is ~50–80 KB depending on column nullability — well
+ * under the 1 MB dashboard guardrail.
+ */
+export async function getPerformanceRatioFactsPage(
+  filters: PerformanceRatioFiltersInput,
+  pagination: {
+    limit: number;
+    offset: number;
+    sortBy: PerformanceRatioSortBy;
+    sortDir: PerformanceRatioSortDir;
+  }
+): Promise<SolarRecDashboardPerformanceRatioFact[]> {
+  const db = await getDb();
+  if (!db) return [];
+  const safeLimit = Math.max(1, Math.min(1000, Math.floor(pagination.limit)));
+  const safeOffset = Math.max(0, Math.floor(pagination.offset));
+  const conditions = buildPerformanceRatioFilterConditions(filters);
+  const sortCol = resolveSortColumn(pagination.sortBy);
+  const sortFn = pagination.sortDir === "asc" ? asc : desc;
 
   return withDbRetry(
     "get dashboard performance-ratio facts page",
@@ -201,29 +331,186 @@ export async function getPerformanceRatioFactsPage(
       db
         .select()
         .from(solarRecDashboardPerformanceRatioFacts)
-        .where(and(...conditions))
-        .orderBy(solarRecDashboardPerformanceRatioFacts.key)
+        .where(and(...(conditions as Parameters<typeof and>)))
+        .orderBy(
+          sortFn(sortCol),
+          // `key` is the stable tie-breaker — same value on the
+          // sort column otherwise produces non-deterministic
+          // pagination across page boundaries.
+          asc(solarRecDashboardPerformanceRatioFacts.key)
+        )
         .limit(safeLimit)
+        .offset(safeOffset)
   );
 }
 
+function resolveSortColumn(sortBy: PerformanceRatioSortBy) {
+  switch (sortBy) {
+    case "performanceRatioPercent":
+      return solarRecDashboardPerformanceRatioFacts.performanceRatioPercent;
+    case "productionDeltaWh":
+      return solarRecDashboardPerformanceRatioFacts.productionDeltaWh;
+    case "expectedProductionWh":
+      return solarRecDashboardPerformanceRatioFacts.expectedProductionWh;
+    case "systemName":
+      return solarRecDashboardPerformanceRatioFacts.systemName;
+    case "readDate":
+      return solarRecDashboardPerformanceRatioFacts.readDate;
+  }
+}
+
 /**
- * Fetch fact rows for a specific set of `key` values (per-row
- * primary keys, not system keys). Used by drill-in flows that
- * already hold a filtered subset of row keys and need their full
- * fact rows without paginating the whole scope.
+ * Count fact rows under the given filters. Used by the page proc
+ * to return `totalCount` so the client can render `Page X of Y`
+ * without fetching every page.
+ */
+export async function getPerformanceRatioFactsCount(
+  filters: PerformanceRatioFiltersInput
+): Promise<number> {
+  const db = await getDb();
+  if (!db) return 0;
+  const conditions = buildPerformanceRatioFilterConditions(filters);
+  const rows = await withDbRetry(
+    "count dashboard performance-ratio facts",
+    async () =>
+      db
+        .select({ n: sql<number>`COUNT(*)`.as("n") })
+        .from(solarRecDashboardPerformanceRatioFacts)
+        .where(and(...(conditions as Parameters<typeof and>)))
+  );
+  const first = rows[0];
+  if (!first) return 0;
+  return coerceCount(first.n);
+}
+
+/**
+ * Aggregate counts + sums under the given filters. Mirrors the
+ * client's `performanceRatioSummary` memo (pre-Option-C) so the
+ * headline tile values can re-render under filter changes without
+ * the client having to load every row.
  *
- * `keys` is bounded by the caller; this helper just dispatches the
- * IN-list. PR-G-3's proc layer will cap at e.g. 1000 keys.
- *
- * Returns an empty array on `keys.length === 0` to avoid an empty
- * IN-list query (TiDB rejects `WHERE x IN ()`).
+ * Single round-trip; one `SELECT … COUNT(...) … SUM(...) …` query.
+ * The per-build covering indexes mean the WHERE filters use the
+ * index but the SUMs still scan the matching rows — for the worst-
+ * case unfiltered query that's ~225k rows on prod, a few hundred
+ * milliseconds. Aggregates ARE pre-computed in the build runner
+ * and stored on the summary artifact, so this helper is the
+ * fallback path: only invoked when filters differ from "everything".
+ */
+export async function getPerformanceRatioFactsAggregates(
+  filters: PerformanceRatioFiltersInput
+): Promise<PerformanceRatioFactsAggregates> {
+  const db = await getDb();
+  if (!db) return emptyAggregates();
+  const conditions = buildPerformanceRatioFilterConditions(filters);
+  const rows = await withDbRetry(
+    "aggregate dashboard performance-ratio facts",
+    async () =>
+      db
+        .select({
+          allocationCount: sql<number>`COUNT(*)`.as("allocationCount"),
+          withBaseline:
+            sql<number>`SUM(CASE WHEN ${solarRecDashboardPerformanceRatioFacts.baselineReadWh} IS NOT NULL THEN 1 ELSE 0 END)`.as(
+              "withBaseline"
+            ),
+          withExpected:
+            sql<number>`SUM(CASE WHEN ${solarRecDashboardPerformanceRatioFacts.expectedProductionWh} IS NOT NULL AND ${solarRecDashboardPerformanceRatioFacts.expectedProductionWh} > 0 THEN 1 ELSE 0 END)`.as(
+              "withExpected"
+            ),
+          withRatio:
+            sql<number>`SUM(CASE WHEN ${solarRecDashboardPerformanceRatioFacts.performanceRatioPercent} IS NOT NULL THEN 1 ELSE 0 END)`.as(
+              "withRatio"
+            ),
+          totalDeltaWh:
+            sql<string>`COALESCE(SUM(${solarRecDashboardPerformanceRatioFacts.productionDeltaWh}), 0)`.as(
+              "totalDeltaWh"
+            ),
+          totalExpectedWh:
+            sql<string>`COALESCE(SUM(${solarRecDashboardPerformanceRatioFacts.expectedProductionWh}), 0)`.as(
+              "totalExpectedWh"
+            ),
+          totalContractValue:
+            sql<string>`COALESCE(SUM(${solarRecDashboardPerformanceRatioFacts.contractValue}), 0)`.as(
+              "totalContractValue"
+            ),
+        })
+        .from(solarRecDashboardPerformanceRatioFacts)
+        .where(and(...(conditions as Parameters<typeof and>)))
+  );
+  const first = rows[0];
+  if (!first) return emptyAggregates();
+  return {
+    allocationCount: coerceCount(first.allocationCount),
+    withBaseline: coerceCount(first.withBaseline),
+    withExpected: coerceCount(first.withExpected),
+    withRatio: coerceCount(first.withRatio),
+    totalDeltaWh: coerceDecimalSum(first.totalDeltaWh),
+    totalExpectedWh: coerceDecimalSum(first.totalExpectedWh),
+    totalContractValue: coerceDecimalSum(first.totalContractValue),
+  };
+}
+
+function emptyAggregates(): PerformanceRatioFactsAggregates {
+  return {
+    allocationCount: 0,
+    withBaseline: 0,
+    withExpected: 0,
+    withRatio: 0,
+    totalDeltaWh: 0,
+    totalExpectedWh: 0,
+    totalContractValue: 0,
+  };
+}
+
+/**
+ * Distinct `monitoring` values for the visible build. Powers the
+ * monitoring-filter dropdown.
+ */
+export async function getPerformanceRatioMonitoringOptions(args: {
+  scopeId: string;
+  buildId: string;
+}): Promise<string[]> {
+  const db = await getDb();
+  if (!db) return [];
+  const rows = await withDbRetry(
+    "list dashboard performance-ratio monitoring options",
+    async () =>
+      db
+        .selectDistinct({
+          monitoring: solarRecDashboardPerformanceRatioFacts.monitoring,
+        })
+        .from(solarRecDashboardPerformanceRatioFacts)
+        .where(
+          and(
+            eq(solarRecDashboardPerformanceRatioFacts.scopeId, args.scopeId),
+            eq(solarRecDashboardPerformanceRatioFacts.buildId, args.buildId)
+          )
+        )
+  );
+  const values: string[] = [];
+  for (const row of rows) {
+    if (typeof row.monitoring === "string" && row.monitoring.length > 0) {
+      values.push(row.monitoring);
+    }
+  }
+  values.sort((a, b) =>
+    a.localeCompare(b, undefined, { sensitivity: "base", numeric: true })
+  );
+  return values;
+}
+
+/**
+ * Fetch fact rows for a specific set of `key` values. Caller
+ * supplies the visible `buildId` so cross-build keys never leak.
  */
 export async function getPerformanceRatioFactsByKeys(
-  scopeId: string,
-  keys: string[]
+  args: {
+    scopeId: string;
+    buildId: string;
+    keys: string[];
+  }
 ): Promise<SolarRecDashboardPerformanceRatioFact[]> {
-  if (keys.length === 0) return [];
+  if (args.keys.length === 0) return [];
   const db = await getDb();
   if (!db) return [];
   return withDbRetry(
@@ -234,58 +521,40 @@ export async function getPerformanceRatioFactsByKeys(
         .from(solarRecDashboardPerformanceRatioFacts)
         .where(
           and(
-            eq(solarRecDashboardPerformanceRatioFacts.scopeId, scopeId),
-            inArray(solarRecDashboardPerformanceRatioFacts.key, keys)
+            eq(solarRecDashboardPerformanceRatioFacts.scopeId, args.scopeId),
+            eq(solarRecDashboardPerformanceRatioFacts.buildId, args.buildId),
+            inArray(
+              solarRecDashboardPerformanceRatioFacts.key,
+              args.keys
+            )
           )
         )
   );
 }
 
+// ---------------------------------------------------------------------------
+// Coercion helpers
+// ---------------------------------------------------------------------------
+
+function coerceCount(value: unknown): number {
+  if (typeof value === "number") return Number.isFinite(value) ? value : 0;
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  return 0;
+}
+
 /**
- * Count fact rows for a scope, optionally narrowed by `matchType`
- * or `monitoring`. Useful for:
- *   - PR-G-2's orchestrator logging "wrote N facts in this build."
- *   - PR-G-3's slim summary returning per-filter totals so the
- *     client can render `N rows in match-type X` without paginating
- *     to the end.
- *   - The Phase 1 dashboard guardrails / observability surface.
+ * MySQL DECIMAL aggregates come back as strings (driver preserves
+ * precision). The dashboard tiles operate in JS doubles; coerce
+ * here. The values are sums of `decimal(20, 4)` columns — well
+ * within JS double's mantissa for any realistic dashboard scope.
  */
-export async function getPerformanceRatioFactsCount(
-  scopeId: string,
-  options?: { matchType?: string | null; monitoring?: string | null }
-): Promise<number> {
-  const db = await getDb();
-  if (!db) return 0;
-  const conditions = [
-    eq(solarRecDashboardPerformanceRatioFacts.scopeId, scopeId),
-  ];
-  if (options?.matchType) {
-    conditions.push(
-      eq(solarRecDashboardPerformanceRatioFacts.matchType, options.matchType)
-    );
-  }
-  if (options?.monitoring) {
-    conditions.push(
-      eq(
-        solarRecDashboardPerformanceRatioFacts.monitoring,
-        options.monitoring
-      )
-    );
-  }
-  const rows = await withDbRetry(
-    "count dashboard performance-ratio facts",
-    async () =>
-      db
-        .select({ n: sql<number>`COUNT(*)`.as("n") })
-        .from(solarRecDashboardPerformanceRatioFacts)
-        .where(and(...conditions))
-  );
-  const first = rows[0];
-  if (!first) return 0;
-  const n = first.n;
-  if (typeof n === "number") return n;
-  if (typeof n === "string") {
-    const parsed = Number(n);
+function coerceDecimalSum(value: unknown): number {
+  if (typeof value === "number") return Number.isFinite(value) ? value : 0;
+  if (typeof value === "string") {
+    const parsed = Number(value);
     return Number.isFinite(parsed) ? parsed : 0;
   }
   return 0;
@@ -307,3 +576,32 @@ function getAffectedRows(result: unknown): number {
   }
   return 0;
 }
+
+// ---------------------------------------------------------------------------
+// Legacy export kept for migration period — see imports
+// ---------------------------------------------------------------------------
+
+/**
+ * @deprecated 2026-05-09 — replaced by the per-build PK +
+ * `pruneSupersededPerformanceRatioFacts(scopeId, keepBuildIds)`.
+ * Kept temporarily so consumers that still call this resolve to a
+ * no-op; the runner step has been migrated to the new helper.
+ *
+ * Removed in a follow-up once the codebase is re-grepped.
+ */
+export async function deleteOrphanedPerformanceRatioFacts(
+  scopeId: string,
+  currentBuildId: string
+): Promise<number> {
+  // Implemented via the new helper for back-compat: keep only the
+  // current build's rows. The build runner no longer calls this on
+  // the row-write path; only stragglers (e.g. test fixtures) reach
+  // here.
+  return pruneSupersededPerformanceRatioFacts(scopeId, [currentBuildId]);
+}
+// Avoid unused-import lints when `gt` / `ne` / `isNotNull` aren't
+// touched by the helpers above; they remain available for
+// follow-on aggregations the build-runner step uses internally.
+void gt;
+void ne;
+void isNotNull;

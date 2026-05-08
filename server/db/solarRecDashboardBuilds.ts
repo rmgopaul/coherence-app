@@ -392,6 +392,94 @@ export async function failStaleSolarRecDashboardBuilds(
 }
 
 /**
+ * 2026-05-09 — Option C — return the OLDEST `queued`/`running`
+ * build for a scope, or `null` if none exists. Used by
+ * `startDashboardBuild` to dedupe same-scope concurrent builds:
+ * if a build is already queued or running, the second caller
+ * gets the existing `buildId` rather than starting a new build
+ * that would race with the first through the orphan sweep + fact
+ * writes.
+ *
+ * Stale-claim safety: a `running` row whose `claimedAt` is older
+ * than `staleClaimBefore` is treated as NOT active — the runner
+ * sweeper would have flipped it to `failed` on its next tick, and
+ * the new caller should be allowed to start a fresh build rather
+ * than wait. Mirrors the predicate `claimBuild` uses on the same
+ * column.
+ */
+export async function getActiveDashboardBuildForScope(
+  scopeId: string,
+  staleClaimBefore: Date
+): Promise<SolarRecDashboardBuild | null> {
+  const db = await getDb();
+  if (!db) return null;
+  const rows = await withDbRetry(
+    "get active solar rec dashboard build for scope",
+    async () =>
+      db
+        .select()
+        .from(solarRecDashboardBuilds)
+        .where(
+          and(
+            eq(solarRecDashboardBuilds.scopeId, scopeId),
+            or(
+              eq(solarRecDashboardBuilds.status, "queued"),
+              and(
+                eq(solarRecDashboardBuilds.status, "running"),
+                or(
+                  // null `claimedAt` should never co-exist with
+                  // status='running' but handle defensively.
+                  sql`${solarRecDashboardBuilds.claimedAt} IS NULL`,
+                  sql`${solarRecDashboardBuilds.claimedAt} >= ${staleClaimBefore}`
+                )
+              )
+            )
+          )
+        )
+        .orderBy(solarRecDashboardBuilds.createdAt)
+        .limit(1)
+  );
+  return rows[0] ?? null;
+}
+
+/**
+ * 2026-05-09 — Option C — used to mark a same-scope build as
+ * superseded if the dedup race ended up inserting a duplicate
+ * queued row. Predicates on `id` AND `claimedBy IS NULL` so it
+ * cannot trample a row that's already been claimed (defensive —
+ * dedup runs immediately after insert, before any runner could
+ * have claimed).
+ */
+export async function markSolarRecDashboardBuildSuperseded(
+  buildId: string,
+  supersededByBuildId: string
+): Promise<boolean> {
+  const db = await getDb();
+  if (!db) return false;
+  const now = new Date();
+  const result = await withDbRetry(
+    "mark solar rec dashboard build superseded",
+    async () =>
+      db
+        .update(solarRecDashboardBuilds)
+        .set({
+          status: "failed",
+          completedAt: now,
+          errorMessage: `superseded by buildId=${supersededByBuildId}`,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(solarRecDashboardBuilds.id, buildId),
+            eq(solarRecDashboardBuilds.status, "queued"),
+            sql`${solarRecDashboardBuilds.claimedBy} IS NULL`
+          )
+        )
+  );
+  return getAffectedRows(result) === 1;
+}
+
+/**
  * Drizzle's MySQL UPDATE returns an array whose first element is
  * an OkPacket-shaped object containing `affectedRows`. The shape
  * isn't exposed in `@drizzle-orm`'s types as a discriminated

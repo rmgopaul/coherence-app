@@ -1118,62 +1118,98 @@ describe("Solar REC dashboard mount: high-cardinality fields stay off mount path
     );
   });
 
-  it("Performance Ratio auto-compliant sources derive from its server rows, not parent Part-II system props", () => {
+  it("Performance Ratio auto-compliant sources derive from server-pre-computed compliant context, not parent system props (Option C)", () => {
+    // 2026-05-09 — Option C — auto-compliant Map is now built by
+    // the build runner during streaming and shipped via
+    // `getDashboardPerformanceRatioCompliantContext`. The tab
+    // reads `data.autoSources` directly. Pre-cutover this memo
+    // iterated every fact row client-side; that path is gone.
     const performanceRatioSource = readFileSync(
-      resolve(
-        __dirname,
-        "..",
-        "components",
-        "PerformanceRatioTab.tsx"
-      ),
+      resolve(__dirname, "..", "components", "PerformanceRatioTab.tsx"),
       "utf8"
     );
     expect(performanceRatioSource).toMatch(
-      /performanceRatioResult\.rows\.forEach/
+      /performanceRatioCompliantContextQuery\.data/
     );
+    expect(performanceRatioSource).toMatch(/data\.autoSources/);
+    // Forbidden references that would re-introduce the row-walk:
     expect(performanceRatioSource).not.toMatch(
       /part2EligibleSystemsForSizeReporting/
     );
     expect(performanceRatioSource).not.toMatch(/abpAcSizeKwBySystemKey/);
+    // The pre-cutover full-row-walk pattern is gone:
+    expect(performanceRatioSource).not.toMatch(
+      /performanceRatioResult\.rows\.forEach/
+    );
   });
 
-  it("PerformanceRatioTab reads from the fact-table procs, NOT the legacy aggregator (Phase 2 PR-G-4)", () => {
-    // PR-G-4 retired the user's request hot path off the legacy
-    // `getDashboardPerformanceRatio` proc (which loaded the
-    // system snapshot + 6 srDs* tables on every cache miss).
-    // The tab now reads:
-    //   - getDashboardPerformanceRatioSummary (slim cache-only,
-    //     ~150 B response — never triggers a row materialization)
-    //   - getDashboardPerformanceRatioPage (paginated walk over
-    //     pre-built fact rows, bounded under 1 MB per page)
-    // A regression that re-introduces `getDashboardPerformanceRatio
-    // .useQuery` would re-introduce the 14-min hangs on cold cache.
+  it("PerformanceRatioTab reads from the Option-C lazy-load procs, NOT the auto-walk pattern (2026-05-09)", () => {
+    // 2026-05-09 — Option C — the auto-walk that materialized
+    // every fact row on the user's request hot path is GONE. The
+    // tab now lazy-loads:
+    //   - getDashboardPerformanceRatioSummary (global tiles +
+    //     monitoringOptions)
+    //   - getDashboardPerformanceRatioPage as a single-page
+    //     useQuery on filter/sort/page state
+    //   - getDashboardPerformanceRatioFilteredAggregates for
+    //     tile values under filters
+    //   - getDashboardPerformanceRatioCompliantContext for the
+    //     compliant section
+    // A regression that re-introduces `useInfiniteQuery` or the
+    // `fetchNextPage` auto-walk loop would put the 450-page-walk
+    // pain back on prod.
     const performanceRatioSource = readFileSync(
-      resolve(
-        __dirname,
-        "..",
-        "components",
-        "PerformanceRatioTab.tsx"
-      ),
+      resolve(__dirname, "..", "components", "PerformanceRatioTab.tsx"),
       "utf8"
     );
     expect(performanceRatioSource).toMatch(
       /getDashboardPerformanceRatioSummary\.useQuery/
     );
     expect(performanceRatioSource).toMatch(
+      /getDashboardPerformanceRatioPage\.useQuery/
+    );
+    expect(performanceRatioSource).toMatch(
+      /getDashboardPerformanceRatioFilteredAggregates\.useQuery/
+    );
+    expect(performanceRatioSource).toMatch(
+      /getDashboardPerformanceRatioCompliantContext\.useQuery/
+    );
+    // Forbidden patterns under Option C:
+    expect(performanceRatioSource).not.toMatch(
       /getDashboardPerformanceRatioPage\.useInfiniteQuery/
     );
     expect(performanceRatioSource).not.toMatch(
       /getDashboardPerformanceRatio\.useQuery/
     );
-    // Belt-and-braces: the auto-walk hook + completion gate.
-    // Without these, the tab would only see page 1 and the
-    // filter/sort/CSV-export memos would silently truncate.
-    expect(performanceRatioSource).toMatch(
+    // No auto-walk fetchNextPage + completion-gate hook.
+    expect(performanceRatioSource).not.toMatch(
       /performanceRatioPagesQuery\.fetchNextPage/
     );
-    expect(performanceRatioSource).toMatch(
+    expect(performanceRatioSource).not.toMatch(
       /isPerformanceRatioPagesComplete/
+    );
+  });
+
+  it("PerformanceRatioTab CSV export goes through the server-side background job (Option C)", () => {
+    // 2026-05-09 — Option C — the browser no longer holds the
+    // full filtered row set. The "Download Performance Ratio
+    // CSV" button kicks off a `performanceRatioCsv` background
+    // job and polls for completion. A regression that re-
+    // introduces a client-side `Blob`-based CSV builder over
+    // `filteredPerformanceRatioRows.map(...)` would crash the
+    // browser on a large filter.
+    const performanceRatioSource = readFileSync(
+      resolve(__dirname, "..", "components", "PerformanceRatioTab.tsx"),
+      "utf8"
+    );
+    expect(performanceRatioSource).toMatch(
+      /exportType:\s*"performanceRatioCsv"/
+    );
+    expect(performanceRatioSource).toMatch(
+      /startDashboardCsvExport\.mutateAsync/
+    );
+    expect(performanceRatioSource).toMatch(
+      /getDashboardCsvExportJobStatus\.fetch/
     );
   });
 

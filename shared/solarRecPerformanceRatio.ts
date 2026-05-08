@@ -66,6 +66,96 @@ export function normalizeSystemNameMatch(
 }
 
 // ---------------------------------------------------------------------------
+// Compliant-source classification
+//
+// 2026-05-09 (Option C — server-side filter/sort/paginate) — the
+// PerformanceRatioTab classifies each fact row's auto-compliant source
+// for the bottom-of-tab "Compliant Sources" table. Pre-fix the
+// classification ran client-side over the full ~225k row set; under
+// Option C the server pre-aggregates `Map<systemId, source>` while
+// streaming rows during the build, caches the result alongside the
+// summary, and the client receives only the small per-systemId map.
+// Hoisting these constants + helpers to shared keeps client + server
+// in lockstep — divergence in the lookup table or priority scheme
+// would silently produce wrong "Compliant Source" cell values without
+// surfacing a test failure.
+// ---------------------------------------------------------------------------
+
+export const TEN_KW_COMPLIANT_SOURCE = "10kW AC or Less";
+
+export const AUTO_MONITORING_PLATFORM_COMPLIANT_SOURCE_BY_KEY: Record<
+  string,
+  string
+> = {
+  enphase: "Enphase",
+  alsoenergy: "AlsoEnergy",
+  "solar log": "Solar-Log",
+  "sdsi arraymeter": "SDSI Arraymeter",
+  "locus energy": "Locus Energy",
+  "vision metering": "Vision Metering",
+  sensergm: "SenseRGM",
+  "ekm encompass io": "EKM Encompass.io",
+};
+
+export function resolveMonitoringPlatformCompliantSource(
+  value: string | null | undefined
+): string | null {
+  const normalized = normalizeMonitoringMatch(value);
+  if (!normalized) return null;
+  return AUTO_MONITORING_PLATFORM_COMPLIANT_SOURCE_BY_KEY[normalized] ?? null;
+}
+
+/**
+ * Priority ordering for auto-compliant-source resolution. When a
+ * single systemId resolves to multiple candidate sources across its
+ * fact rows, the highest-priority value wins.
+ * `TEN_KW_COMPLIANT_SOURCE` is priority 1 (lowest); explicit-platform
+ * sources are priority 2.
+ */
+export function getAutoCompliantSourcePriority(value: string): number {
+  return value === TEN_KW_COMPLIANT_SOURCE ? 1 : 2;
+}
+
+/**
+ * `true` iff the system is ≤ 10 kW AC. Considered compliant under
+ * the small-system rule when no explicit-platform compliant source
+ * applies. Returns `false` when both portal AC size and ABP AC size
+ * are unknown (no signal either way).
+ */
+export function isTenKwAcOrLess(
+  portalAcSizeKw: number | null,
+  abpAcSizeKw: number | null
+): boolean {
+  const hasAnySize = portalAcSizeKw !== null || abpAcSizeKw !== null;
+  if (!hasAnySize) return false;
+  const portalOk = portalAcSizeKw === null || portalAcSizeKw <= 10;
+  const abpOk = abpAcSizeKw === null || abpAcSizeKw <= 10;
+  return portalOk && abpOk;
+}
+
+/**
+ * Resolve a row's auto-compliant source by combining the platform-
+ * lookup with the 10kW-or-less rule. Platform-match wins. Returns
+ * `null` if neither rule applies. Used by the server-side aggregator
+ * during build streaming AND by the client memo for the visible
+ * page rows (kept in lockstep via this shared helper).
+ */
+export function resolveAutoCompliantSourceForRow(args: {
+  monitoringPlatform: string | null;
+  portalAcSizeKw: number | null;
+  abpAcSizeKw: number | null;
+}): string | null {
+  const platformSource = resolveMonitoringPlatformCompliantSource(
+    args.monitoringPlatform
+  );
+  if (platformSource) return platformSource;
+  if (isTenKwAcOrLess(args.portalAcSizeKw, args.abpAcSizeKw)) {
+    return TEN_KW_COMPLIANT_SOURCE;
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // Date / number parsing
 // ---------------------------------------------------------------------------
 

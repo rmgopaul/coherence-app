@@ -187,7 +187,24 @@ export type DashboardCsvExportInput =
   | { exportType: "changeOwnershipTile"; status: ChangeOwnershipStatus }
   | { exportType: "datasetCsv"; datasetKey: DashboardDatasetCsvExportKey }
   | { exportType: "deliveryTrackerDetailCsv" }
-  | { exportType: "deliveryTrackerUnmatchedTransfersCsv" };
+  | { exportType: "deliveryTrackerUnmatchedTransfersCsv" }
+  | {
+      // 2026-05-09 — Option C — full export of the
+      // PerformanceRatioTab's currently-filtered/sorted view.
+      // Mirrors the page proc's filter args so the file the user
+      // gets matches what they see on screen.
+      exportType: "performanceRatioCsv";
+      matchType: string | null;
+      monitoring: string | null;
+      search: string | null;
+      sortBy:
+        | "performanceRatioPercent"
+        | "productionDeltaWh"
+        | "expectedProductionWh"
+        | "systemName"
+        | "readDate";
+      sortDir: "asc" | "desc";
+    };
 
 export type DashboardCsvExportStatus =
   | "queued"
@@ -993,6 +1010,32 @@ function parseInputJson(rawInput: unknown): DashboardCsvExportInput | null {
   if (candidate.exportType === "deliveryTrackerUnmatchedTransfersCsv") {
     return { exportType: "deliveryTrackerUnmatchedTransfersCsv" };
   }
+  if (candidate.exportType === "performanceRatioCsv") {
+    const sortBy = candidate.sortBy;
+    const sortDir = candidate.sortDir;
+    if (
+      sortBy !== "performanceRatioPercent" &&
+      sortBy !== "productionDeltaWh" &&
+      sortBy !== "expectedProductionWh" &&
+      sortBy !== "systemName" &&
+      sortBy !== "readDate"
+    ) {
+      return null;
+    }
+    if (sortDir !== "asc" && sortDir !== "desc") return null;
+    return {
+      exportType: "performanceRatioCsv",
+      matchType:
+        typeof candidate.matchType === "string" ? candidate.matchType : null,
+      monitoring:
+        typeof candidate.monitoring === "string"
+          ? candidate.monitoring
+          : null,
+      search: typeof candidate.search === "string" ? candidate.search : null,
+      sortBy,
+      sortDir,
+    };
+  }
   return null;
 }
 
@@ -1032,6 +1075,9 @@ async function buildExport(
   if (input.exportType === "deliveryTrackerUnmatchedTransfersCsv") {
     return buildDeliveryTrackerUnmatchedTransfersCsvExport(scopeId);
   }
+  if (input.exportType === "performanceRatioCsv") {
+    return buildPerformanceRatioCsvExport(scopeId, input);
+  }
   const factArtifact = await buildChangeOwnershipTileCsvFromFacts(
     scopeId,
     input.status
@@ -1044,6 +1090,192 @@ async function buildExport(
   // can be retired with `getOrBuildChangeOwnership`.
   const { result } = await getOrBuildChangeOwnership(scopeId);
   return buildChangeOwnershipTileCsvFile(result.rows, input.status);
+}
+
+/**
+ * 2026-05-09 — Option C — full export of the PerformanceRatioTab's
+ * currently-filtered/sorted view. Mirrors the page proc's filter
+ * args exactly, so the CSV the user downloads matches what they
+ * see on screen.
+ *
+ * Streams the per-build subset in 500-row pages, appending to a
+ * temp file. Memory peak is bounded by ONE page worth of fact
+ * rows (~250 KB) — never materializes the full filtered set.
+ *
+ * Visibility: reads the summary's `buildId` first; never returns
+ * rows from in-flight or superseded builds. If no successful
+ * build exists for the scope, returns an empty artifact (the
+ * client gets "0 rows" and a clear empty-state).
+ */
+async function buildPerformanceRatioCsvExport(
+  scopeId: string,
+  input: Extract<DashboardCsvExportInput, { exportType: "performanceRatioCsv" }>
+): Promise<BuiltCsvArtifact> {
+  const { mkdtemp, rm, stat, writeFile, appendFile } = await import(
+    "node:fs/promises"
+  );
+  const path = await import("node:path");
+  const { tmpdir } = await import("node:os");
+  const { getComputedArtifact } = await import(
+    "../../db/solarRecDatasets"
+  );
+  const {
+    PERFORMANCE_RATIO_SUMMARY_ARTIFACT_TYPE,
+    PERFORMANCE_RATIO_SUMMARY_VERSION_KEY,
+  } = await import("./buildDashboardPerformanceRatioFacts");
+  const { getPerformanceRatioFactsPage } = await import(
+    "../../db/dashboardPerformanceRatioFacts"
+  );
+
+  const generatedAtIso = new Date().toISOString();
+  const fileName = `performance-ratio-${timestampForCsvFileName(generatedAtIso)}.csv`;
+
+  // Resolve visible build via summary pointer.
+  const summaryRow = await getComputedArtifact(
+    scopeId,
+    PERFORMANCE_RATIO_SUMMARY_ARTIFACT_TYPE,
+    PERFORMANCE_RATIO_SUMMARY_VERSION_KEY
+  );
+  const buildId = summaryBuildIdFromPayload(summaryRow?.payload ?? null);
+  if (!buildId) {
+    return { csv: "", fileName, rowCount: 0, csvBytes: 0 };
+  }
+
+  const filters = {
+    scopeId,
+    buildId,
+    matchType: input.matchType,
+    monitoring: input.monitoring,
+    search: input.search,
+  };
+  const sortBy = input.sortBy;
+  const sortDir = input.sortDir;
+  const PAGE_SIZE = 500;
+
+  const headers = [
+    "key",
+    "matchType",
+    "monitoring",
+    "monitoringSystemId",
+    "monitoringSystemName",
+    "readDate",
+    "readDateRaw",
+    "lifetimeReadWh",
+    "trackingSystemRefId",
+    "systemId",
+    "stateApplicationRefId",
+    "systemName",
+    "installerName",
+    "monitoringPlatform",
+    "portalAcSizeKw",
+    "abpAcSizeKw",
+    "part2VerificationDate",
+    "baselineReadWh",
+    "baselineDate",
+    "baselineSource",
+    "productionDeltaWh",
+    "expectedProductionWh",
+    "performanceRatioPercent",
+    "contractValue",
+  ] as const;
+
+  let tempDir: string | null = null;
+  let totalRows = 0;
+  let offset = 0;
+
+  try {
+    tempDir = await mkdtemp(path.join(tmpdir(), "solar-rec-perf-ratio-csv-"));
+    const filePath = path.join(tempDir, fileName);
+    await writeFile(filePath, headers.join(",") + "\n", "utf8");
+
+    while (true) {
+      const page = await getPerformanceRatioFactsPage(filters, {
+        limit: PAGE_SIZE,
+        offset,
+        sortBy,
+        sortDir,
+      });
+      if (page.length === 0) break;
+      const lines: string[] = [];
+      for (const row of page) {
+        lines.push(
+          headers
+            .map((header) => {
+              const v = (row as unknown as Record<string, unknown>)[header];
+              return csvEscape(serializeCsvValue(v));
+            })
+            .join(",")
+        );
+      }
+      await appendFile(filePath, lines.join("\n") + "\n", "utf8");
+      totalRows += page.length;
+      offset += page.length;
+      if (page.length < PAGE_SIZE) break;
+    }
+
+    const csvBytes = (await stat(filePath)).size;
+    const cleanup = async () => {
+      if (!tempDir) return;
+      await rm(tempDir, { recursive: true, force: true });
+      tempDir = null;
+    };
+
+    return {
+      filePath,
+      fileName,
+      rowCount: totalRows,
+      csvBytes,
+      cleanup,
+    };
+  } catch (err) {
+    if (tempDir) {
+      await rm(tempDir, { recursive: true, force: true }).catch(
+        () => undefined
+      );
+    }
+    throw err;
+  }
+}
+
+function summaryBuildIdFromPayload(payload: string | null): string | null {
+  if (!payload) return null;
+  try {
+    const parsed = JSON.parse(payload) as { buildId?: unknown };
+    return typeof parsed.buildId === "string" && parsed.buildId.length > 0
+      ? parsed.buildId
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function serializeCsvValue(value: unknown): string {
+  if (value === null || value === undefined) return "";
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? "" : value.toISOString();
+  }
+  return String(value);
+}
+
+function csvEscape(value: string): string {
+  if (
+    value.includes(",") ||
+    value.includes("\n") ||
+    value.includes("\r") ||
+    value.includes('"')
+  ) {
+    return `"${value.replace(/"/g, '""')}"`;
+  }
+  return value;
+}
+
+function timestampForCsvFileName(iso: string): string {
+  // 2026-05-09T13:42:00.000Z → 20260509-134200
+  return iso
+    .replace(/[-T:]/g, "")
+    .replace(/\.\d+Z$/, "")
+    .replace(/Z$/, "")
+    .replace(/(\d{8})(\d{6}).*/, "$1-$2");
 }
 
 async function buildOwnershipTileCsvFromFacts(

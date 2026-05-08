@@ -61,6 +61,7 @@ import {
 // `AnnualProductionProfile`, `GenerationBaseline`,
 // `parseEnergyToWh`, `parseDate`) are dropped along with it.
 import { solarRecTrpc } from "@/solar-rec/solarRecTrpc";
+import { toast } from "sonner";
 import {
   createLogId,
   formatDate,
@@ -214,12 +215,12 @@ function parsePerfRatioDecimal(
 }
 
 /**
- * Phase 2 PR-G-4 (2026-05-07) — wire shape from
- * `getDashboardPerformanceRatioPage`, matching
- * `solarRecDashboardPerformanceRatioFacts` 1:1.
+ * 2026-05-09 — Option C — wire shape from the new
+ * `getDashboardPerformanceRatioPage` proc. `scopeId` and `buildId`
+ * are STRIPPED at the wire boundary (not consumed by the client).
+ * `createdAt` / `updatedAt` likewise omitted.
  */
 type PerformanceRatioFactWireRow = {
-  scopeId: string;
   key: string;
   convertedReadKey: string;
   matchType: string;
@@ -245,7 +246,6 @@ type PerformanceRatioFactWireRow = {
   expectedProductionWh: string | number | null;
   performanceRatioPercent: string | number | null;
   contractValue: string | number | null;
-  buildId: string;
 };
 
 /**
@@ -293,28 +293,12 @@ function factRowToPerformanceRatioRow(
   };
 }
 
-/**
- * Re-sort flattened pages by readDate DESC then performanceRatio
- * DESC then systemName ASC — matches the existing aggregator's
- * final sort. The fact-table read returns rows ordered by `key`
- * (the cursor column).
- */
-function sortPerformanceRatioRowsForDisplay(
-  rows: PerformanceRatioRow[]
-): PerformanceRatioRow[] {
-  return rows.slice().sort((a, b) => {
-    const aTime = a.readDate?.getTime() ?? Number.NEGATIVE_INFINITY;
-    const bTime = b.readDate?.getTime() ?? Number.NEGATIVE_INFINITY;
-    if (aTime !== bTime) return bTime - aTime;
-    const aRatio = a.performanceRatioPercent ?? Number.NEGATIVE_INFINITY;
-    const bRatio = b.performanceRatioPercent ?? Number.NEGATIVE_INFINITY;
-    if (aRatio !== bRatio) return bRatio - aRatio;
-    return a.systemName.localeCompare(b.systemName, undefined, {
-      sensitivity: "base",
-      numeric: true,
-    });
-  });
-}
+// 2026-05-09 — Option C — `sortPerformanceRatioRowsForDisplay`
+// removed. Sorting now happens server-side via the page proc's
+// `sortBy` / `sortDir` args; the visible page rows arrive
+// pre-sorted from the server. The pre-cutover function flattened
+// every walked page and re-sorted client-side, which only made
+// sense when the auto-walk loaded the full row set.
 
 // ---------------------------------------------------------------------------
 // Component
@@ -401,108 +385,154 @@ export default memo(function PerformanceRatioTab(props: PerformanceRatioTabProps
 
 
   // -------------------------------------------------------------------------
-  // Phase 5d PR 1 (2026-04-29) — canonical performance-ratio source.
+  // 2026-05-09 — Option C — server-side filter / sort / paginate.
   //
-  // Pulls from `getDashboardPerformanceRatio` (server-side aggregator
-  // with `withArtifactCache` memoization). On a cache hit the wire
-  // payload is ~10–200 KB depending on scope size; on cache miss the
-  // server runs the same compute the client used to do, then caches
-  // by the 7 input batch IDs.
+  // The auto-walk pattern that materialized every fact row on the
+  // user's request hot path is GONE. The tab now reads:
+  //   - `getDashboardPerformanceRatioSummary` — global summary
+  //     with monitoringOptions + portfolio aggregates. Used for
+  //     headline tiles when filters are at default; falls back to
+  //     `getDashboardPerformanceRatioFilteredAggregates` when any
+  //     filter / search is set.
+  //   - `getDashboardPerformanceRatioPage` — single-page lazy
+  //     read under the current filter / sort / page state.
+  //     Only ~50–100 rows ship over the wire per page change.
+  //   - `getDashboardPerformanceRatioCompliantContext` — pre-
+  //     aggregated auto-compliant Map + best-per-system rows for
+  //     the bottom-of-tab compliant section. Built once during
+  //     the build runner step; reads are O(1).
   //
-  // Salvage PR B (2026-04-29) — the client fallback memo
-  // (`_clientFallbackPerformanceRatioResult`) is gone. During the
-  // initial cache miss the tab renders empty for the few hundred ms
-  // the query takes to land — matches every other server-aggregator-
-  // backed tab on the dashboard. The 7 dataset props the fallback
-  // depended on (`convertedReads`, `annualProductionEstimates`,
-  // `generatorDetails`, `monitoringDetailsBySystemKey`,
-  // `annualProductionByTrackingId`,
-  // `generationBaselineByTrackingId`) are dropped along with it.
-  // The dataset-existence empty-state check below (`!convertedReads
-  // || !annualProductionEstimates`) keeps using `convertedReads` /
-  // `annualProductionEstimates` /  `convertedReadsLabel` /
-  // `annualProductionEstimatesLabel` to surface a clear "upload
-  // these CSVs first" message — those 4 props stay.
+  // Visibility is gated on the summary's `buildId`. A failed or
+  // in-flight build does NOT corrupt the tab — the prior visible
+  // build's rows continue to render until the new build's
+  // summary write succeeds (= visibility flip).
   // -------------------------------------------------------------------------
-  // Phase 2 PR-G-4 (2026-05-07) — migrated off the legacy
-  // `getDashboardPerformanceRatio` proc that materialized the full
-  // `PerformanceRatioRow[]` payload on the user's request hot path
-  // (loaded the system snapshot + 6 srDs* tables into memory, then
-  // streamed convertedReads through the aggregator on every cache
-  // miss; could hang for 14+ min on production-shape data). The
-  // tab now reads:
-  //   - `getDashboardPerformanceRatioSummary` — slim cache-only
-  //     summary (~150 B). Returns `available: false` when no build
-  //     has run for this scope; the tab renders a "Build the
-  //     dashboard to populate" empty-state in that case rather
-  //     than blocking on aggregator compute.
-  //   - `getDashboardPerformanceRatioPage` — paginated read off
-  //     `solarRecDashboardPerformanceRatioFacts` (the table PR-G-2's
-  //     build runner populates). Auto-walks every page until end-
-  //     of-stream, same pattern as ChangeOwnership / Ownership /
-  //     SystemFacts / MonitoringDetails. Each page is bounded
-  //     under 250 KB so first paint never crosses the 1 MB
-  //     dashboard wire-payload budget.
-  // The compute stays in the build runner where it has timeouts,
-  // structured metric logging, and DB-backed claim semantics —
-  // the user's request hot path is now O(N pages × cursor read).
+  const performanceRatioPageSize = PERFORMANCE_RATIO_PAGE_SIZE;
+
+  // tRPC utils — used by the rebuild-invalidation useEffect below
+  // and by the CSV-export download callback further down.
+  const solarRecTrpcUtils = solarRecTrpc.useUtils();
+
+  // 2026-05-09 — Option C — staleTime tightened from 60s to 15s
+  // and `refetchOnWindowFocus` enabled so a rebuild triggered from
+  // a sibling tab / dashboard header is picked up within ~15s of
+  // the summary's visibility flip. The tab also explicitly
+  // invalidates the page + filtered-aggregates + compliant-context
+  // queries when the summary's `buildId` changes (see
+  // `useEffect` below).
   const performanceRatioSummaryQuery =
     solarRecTrpc.solarRecDashboard.getDashboardPerformanceRatioSummary.useQuery(
       undefined,
-      { staleTime: 60_000 },
+      { staleTime: 15_000, refetchOnWindowFocus: true },
     );
-  const performanceRatioPagesQuery =
-    solarRecTrpc.solarRecDashboard.getDashboardPerformanceRatioPage.useInfiniteQuery(
-      { limit: 500 },
+
+  // Filter args used by both the page query and the filtered-
+  // aggregates query — share the same shape so query keys stay in
+  // lockstep and an aggregate refetch matches what's on screen.
+  const trimmedSearch = deferredPerformanceRatioSearch.trim();
+  const performanceRatioFilterArgs = useMemo(
+    () => ({
+      matchType:
+        performanceRatioMatchFilter === "All"
+          ? null
+          : performanceRatioMatchFilter,
+      monitoring:
+        performanceRatioMonitoringFilter === "All"
+          ? null
+          : performanceRatioMonitoringFilter,
+      search: trimmedSearch.length > 0 ? trimmedSearch : null,
+    }),
+    [
+      performanceRatioMatchFilter,
+      performanceRatioMonitoringFilter,
+      trimmedSearch,
+    ],
+  );
+
+  const performanceRatioOffset =
+    Math.max(0, performanceRatioPage - 1) * performanceRatioPageSize;
+
+  const performanceRatioPageQuery =
+    solarRecTrpc.solarRecDashboard.getDashboardPerformanceRatioPage.useQuery(
+      {
+        offset: performanceRatioOffset,
+        limit: performanceRatioPageSize,
+        matchType: performanceRatioFilterArgs.matchType,
+        monitoring: performanceRatioFilterArgs.monitoring,
+        search: performanceRatioFilterArgs.search,
+        sortBy: performanceRatioSortBy,
+        sortDir: performanceRatioSortDir,
+      },
       {
         staleTime: 60_000,
-        getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
-        initialCursor: null,
+        // Keep the previous page's rows on screen while the new
+        // page is in flight — avoids a flash of empty content
+        // when the user clicks Next. Mirror tRPC v11's
+        // `placeholderData: keepPreviousData` pattern.
+        placeholderData: (prev) => prev,
       },
     );
 
-  // Auto-walk: same pattern as `changeOwnershipPagesQuery` /
-  // `monitoringDetailsPagesQuery` / `getDashboardSystemsPage`. The
-  // tab API expects the FULL row set (filter/sort/paginate are
-  // client-side), so we drive the walk to completion before
-  // declaring the read "ready."
+  // Filtered aggregates: only fired when the user has applied a
+  // filter / search that differs from the global summary's
+  // baseline. When at default, the summary's totals already
+  // reflect "everything" and we save the round-trip.
+  const performanceRatioFiltersAreDefault =
+    performanceRatioFilterArgs.matchType === null &&
+    performanceRatioFilterArgs.monitoring === null &&
+    performanceRatioFilterArgs.search === null;
+  const performanceRatioFilteredAggregatesQuery =
+    solarRecTrpc.solarRecDashboard.getDashboardPerformanceRatioFilteredAggregates.useQuery(
+      performanceRatioFilterArgs,
+      {
+        staleTime: 60_000,
+        enabled: !performanceRatioFiltersAreDefault,
+      },
+    );
+
+  // Compliant context — fired only when the Snapshot Log /
+  // compliant section is in view. (The tab renders all sections
+  // at once today; the query fires unconditionally. A future
+  // optimization could gate by section-in-viewport.)
+  const performanceRatioCompliantContextQuery =
+    solarRecTrpc.solarRecDashboard.getDashboardPerformanceRatioCompliantContext.useQuery(
+      undefined,
+      { staleTime: 60_000 },
+    );
+
+  // Reset to first page on any filter / sort / search change.
+  // Pre-fix the rows array was filtered client-side and the page
+  // counter clamped via the totalPages effect; under Option C
+  // the filter args are part of the page query's key, so a
+  // filter change refetches page 1 without touching local state.
+  // We still reset `performanceRatioPage` to 1 because the user
+  // may have navigated to page 5 of the prior filter.
   useEffect(() => {
-    if (
-      performanceRatioPagesQuery.hasNextPage &&
-      !performanceRatioPagesQuery.isFetchingNextPage
-    ) {
-      void performanceRatioPagesQuery.fetchNextPage();
-    }
+    setPerformanceRatioPage(1);
   }, [
-    performanceRatioPagesQuery.hasNextPage,
-    performanceRatioPagesQuery.isFetchingNextPage,
-    performanceRatioPagesQuery.fetchNextPage,
+    performanceRatioMonitoringFilter,
+    performanceRatioMatchFilter,
+    performanceRatioSortBy,
+    performanceRatioSortDir,
+    performanceRatioSearch,
   ]);
 
-  const isPerformanceRatioPagesComplete =
-    performanceRatioPagesQuery.status === "success" &&
-    !performanceRatioPagesQuery.hasNextPage;
-
-  // Pending only while the FIRST page is loading. The paginated
-  // walk's subsequent pages stream in incrementally; once the
-  // summary tile values + page 1 are visible the user has a
-  // working tab even if later pages are still en route.
+  // Pending = the FIRST visible state hasn't landed yet (summary +
+  // page 1). Subsequent paginations don't gate the tab.
   const performanceRatioFirstPagePending =
-    performanceRatioPagesQuery.status === "pending";
+    performanceRatioPageQuery.status === "pending";
   const performanceRatioIsBuilding =
-    performanceRatioSummaryQuery.data &&
-    performanceRatioSummaryQuery.data.available === false;
+    performanceRatioSummaryQuery.data?.available === false ||
+    performanceRatioPageQuery.data?.available === false;
   const performanceRatioQueryIsPending =
     performanceRatioFirstPagePending ||
     performanceRatioSummaryQuery.isPending;
   const performanceRatioQueryError =
-    performanceRatioSummaryQuery.error ?? performanceRatioPagesQuery.error;
+    performanceRatioSummaryQuery.error ?? performanceRatioPageQuery.error;
 
   // Cache-miss elapsed-time tracker. Surfaces only while the
   // first page is loading or the summary hasn't landed yet — once
-  // either is available the tile grid renders real values and the
-  // counter is no longer informative. Subsequent page fetches are
-  // background work; we don't gate the tab on them.
+  // either is available the tile grid renders real values.
   const performanceRatioStartedAtRef = useRef<number | null>(null);
   const [performanceRatioElapsedSec, setPerformanceRatioElapsedSec] =
     useState(0);
@@ -526,243 +556,156 @@ export default memo(function PerformanceRatioTab(props: PerformanceRatioTabProps
     return () => window.clearInterval(interval);
   }, [performanceRatioQueryIsPending]);
 
-  type PerformanceRatioResult = {
-    rows: PerformanceRatioRow[];
-    convertedReadCount: number;
-    matchedConvertedReads: number;
-    unmatchedConvertedReads: number;
-    invalidConvertedReads: number;
-  };
-  const performanceRatioResult = useMemo<PerformanceRatioResult>(() => {
+  // 2026-05-09 — Option C — query invalidation on rebuild. When
+  // the summary's `buildId` changes (a new build's visibility
+  // flip), invalidate the dependent queries so the page +
+  // filtered-aggregates + compliant-context refetch under the new
+  // build immediately rather than waiting for staleTime.
+  const lastObservedBuildIdRef = useRef<string | null>(null);
+  useEffect(() => {
     const summary = performanceRatioSummaryQuery.data;
-    const pages = performanceRatioPagesQuery.data?.pages ?? [];
-    const rawRows: PerformanceRatioFactWireRow[] = [];
-    for (const page of pages) {
-      // Page row shape mirrors `solarRecDashboardPerformanceRatioFacts`
-      // 1:1; the type assertion is safe because the proc returns
-      // exactly the row shape (decimal-as-string, Date round-tripped
-      // by superjson).
-      rawRows.push(...(page.rows as unknown as PerformanceRatioFactWireRow[]));
+    if (!summary || summary.available === false) return;
+    const newBuildId = summary.buildId;
+    if (lastObservedBuildIdRef.current === newBuildId) return;
+    const previous = lastObservedBuildIdRef.current;
+    lastObservedBuildIdRef.current = newBuildId;
+    if (previous !== null) {
+      // First-paint case (previous === null): no need to
+      // invalidate — the queries haven't fetched yet.
+      void Promise.all([
+        solarRecTrpcUtils.solarRecDashboard.getDashboardPerformanceRatioPage.invalidate(),
+        solarRecTrpcUtils.solarRecDashboard.getDashboardPerformanceRatioFilteredAggregates.invalidate(),
+        solarRecTrpcUtils.solarRecDashboard.getDashboardPerformanceRatioCompliantContext.invalidate(),
+      ]);
     }
-    const rows = sortPerformanceRatioRowsForDisplay(
-      rawRows.map(factRowToPerformanceRatioRow),
-    );
-    if (!summary || summary.available === false) {
-      return {
-        rows,
-        convertedReadCount: 0,
-        matchedConvertedReads: 0,
-        unmatchedConvertedReads: 0,
-        invalidConvertedReads: 0,
-      };
-    }
-    return {
-      rows,
-      convertedReadCount: summary.convertedReadCount,
-      matchedConvertedReads: summary.matchedConvertedReads,
-      unmatchedConvertedReads: summary.unmatchedConvertedReads,
-      invalidConvertedReads: summary.invalidConvertedReads,
-    };
-  }, [performanceRatioSummaryQuery.data, performanceRatioPagesQuery.data]);
+  }, [performanceRatioSummaryQuery.data, solarRecTrpcUtils]);
+
+  // Convert the visible page's wire rows into the shape the rest
+  // of the tab consumes (revived dates + numeric decimals).
+  const visiblePerformanceRatioRows = useMemo<PerformanceRatioRow[]>(() => {
+    const data = performanceRatioPageQuery.data;
+    if (!data || data.available === false) return [];
+    const wireRows = data.rows as unknown as PerformanceRatioFactWireRow[];
+    return wireRows.map(factRowToPerformanceRatioRow);
+  }, [performanceRatioPageQuery.data]);
+
+  // Total filtered count — drives the page navigation footer.
+  const performanceRatioFilteredCount = useMemo(() => {
+    const data = performanceRatioPageQuery.data;
+    if (!data || data.available === false) return 0;
+    return data.totalCount;
+  }, [performanceRatioPageQuery.data]);
 
   // Compatibility shim: the rest of the tab reads
-  // `performanceRatioQuery.{isPending, isError, error}` to render
-  // the loading + error UX. Mapping the new query pair onto that
-  // shape keeps the JSX render path unchanged.
+  // `performanceRatioQuery.{isPending, isError, error,
+  // isLoadingMore, isBuilding}` to render the loading + error
+  // UX. Map the new queries onto that shape so the JSX render
+  // path stays unchanged.
   const performanceRatioQuery = useMemo(
     () => ({
       isPending: performanceRatioQueryIsPending,
       isError: Boolean(performanceRatioQueryError),
       error: performanceRatioQueryError,
-      isLoadingMore:
-        performanceRatioPagesQuery.isFetchingNextPage ||
-        !isPerformanceRatioPagesComplete,
+      isLoadingMore: performanceRatioPageQuery.isFetching,
       isBuilding: Boolean(performanceRatioIsBuilding),
     }),
     [
       performanceRatioQueryIsPending,
       performanceRatioQueryError,
-      performanceRatioPagesQuery.isFetchingNextPage,
-      isPerformanceRatioPagesComplete,
+      performanceRatioPageQuery.isFetching,
       performanceRatioIsBuilding,
     ],
   );
 
   // -------------------------------------------------------------------------
-  // Filters / sort / summary / pagination
+  // 2026-05-09 — Option C — filter dropdown options + headline tile values.
+  //
+  // `performanceRatioMonitoringOptions` reads from the summary's
+  // `monitoringOptions` array (built once during the build runner step).
+  // `performanceRatioSummary` reads from the summary when filters are
+  // at default (cheaper, no extra round-trip), and from the filtered-
+  // aggregates query when filters are set.
   // -------------------------------------------------------------------------
-  const performanceRatioMonitoringOptions = useMemo(
-    () =>
-      Array.from(
-        new Set(performanceRatioResult.rows.map((row) => row.monitoring)),
-      )
-        .filter(Boolean)
-        .sort((a, b) =>
-          a.localeCompare(b, undefined, { sensitivity: "base", numeric: true }),
-        ),
-    [performanceRatioResult.rows],
-  );
-
-  const filteredPerformanceRatioRows = useMemo(() => {
-    const search = deferredPerformanceRatioSearch.trim().toLowerCase();
-
-    const rows = performanceRatioResult.rows.filter((row) => {
-      if (
-        performanceRatioMonitoringFilter !== "All" &&
-        row.monitoring !== performanceRatioMonitoringFilter
-      )
-        return false;
-      if (
-        performanceRatioMatchFilter !== "All" &&
-        row.matchType !== performanceRatioMatchFilter
-      )
-        return false;
-      if (!search) return true;
-      const haystack = [
-        row.systemName,
-        row.systemId ?? "",
-        row.trackingSystemRefId,
-        row.monitoring,
-        row.monitoringSystemId,
-        row.monitoringSystemName,
-        row.installerName,
-      ]
-        .join(" ")
-        .toLowerCase();
-      return haystack.includes(search);
-    });
-
-    rows.sort((a, b) => {
-      const direction = performanceRatioSortDir === "asc" ? 1 : -1;
-      if (performanceRatioSortBy === "systemName") {
-        return (
-          a.systemName.localeCompare(b.systemName, undefined, {
-            sensitivity: "base",
-            numeric: true,
-          }) * direction
-        );
-      }
-      if (performanceRatioSortBy === "readDate") {
-        const aValue = a.readDate?.getTime() ?? Number.NEGATIVE_INFINITY;
-        const bValue = b.readDate?.getTime() ?? Number.NEGATIVE_INFINITY;
-        if (aValue === bValue) {
-          return (
-            a.systemName.localeCompare(b.systemName, undefined, {
-              sensitivity: "base",
-              numeric: true,
-            }) * direction
-          );
-        }
-        return (aValue - bValue) * direction;
-      }
-
-      const aValue =
-        a[performanceRatioSortBy] ?? Number.NEGATIVE_INFINITY;
-      const bValue =
-        b[performanceRatioSortBy] ?? Number.NEGATIVE_INFINITY;
-      if (aValue === bValue) {
-        return (
-          a.systemName.localeCompare(b.systemName, undefined, {
-            sensitivity: "base",
-            numeric: true,
-          }) * direction
-        );
-      }
-      return ((aValue as number) - (bValue as number)) * direction;
-    });
-
-    return rows;
-  }, [
-    deferredPerformanceRatioSearch,
-    performanceRatioResult.rows,
-    performanceRatioMonitoringFilter,
-    performanceRatioMatchFilter,
-    performanceRatioSortBy,
-    performanceRatioSortDir,
-  ]);
+  const performanceRatioMonitoringOptions = useMemo(() => {
+    const summary = performanceRatioSummaryQuery.data;
+    if (!summary || summary.available === false) return [];
+    return summary.monitoringOptions ?? [];
+  }, [performanceRatioSummaryQuery.data]);
 
   const performanceRatioTotalPages = Math.max(
     1,
-    Math.ceil(
-      filteredPerformanceRatioRows.length / PERFORMANCE_RATIO_PAGE_SIZE,
-    ),
+    Math.ceil(performanceRatioFilteredCount / performanceRatioPageSize),
   );
   const performanceRatioCurrentPage = Math.min(
     performanceRatioPage,
     performanceRatioTotalPages,
   );
-  const performanceRatioPageStartIndex =
-    (performanceRatioCurrentPage - 1) * PERFORMANCE_RATIO_PAGE_SIZE;
-  const performanceRatioPageEndIndex =
-    performanceRatioPageStartIndex + PERFORMANCE_RATIO_PAGE_SIZE;
-  const visiblePerformanceRatioRows = useMemo(
-    () =>
-      filteredPerformanceRatioRows.slice(
-        performanceRatioPageStartIndex,
-        performanceRatioPageEndIndex,
-      ),
-    [
-      filteredPerformanceRatioRows,
-      performanceRatioPageEndIndex,
-      performanceRatioPageStartIndex,
-    ],
-  );
 
-  useEffect(() => {
-    setPerformanceRatioPage(1);
-  }, [
-    performanceRatioMonitoringFilter,
-    performanceRatioMatchFilter,
-    performanceRatioSortBy,
-    performanceRatioSortDir,
-    performanceRatioSearch,
-  ]);
-
+  // Clamp page state if the user shrank the result set so the new
+  // total pages is below the current page.
   useEffect(() => {
     if (performanceRatioPage <= performanceRatioTotalPages) return;
     setPerformanceRatioPage(performanceRatioTotalPages);
   }, [performanceRatioPage, performanceRatioTotalPages]);
 
   const performanceRatioSummary = useMemo(() => {
-    const rows = performanceRatioResult.rows;
-    const withBaseline = rows.filter(
-      (row) => row.baselineReadWh !== null,
-    ).length;
-    const withExpected = rows.filter(
-      (row) =>
-        row.expectedProductionWh !== null && row.expectedProductionWh > 0,
-    ).length;
-    const withRatio = rows.filter(
-      (row) => row.performanceRatioPercent !== null,
-    ).length;
-    const totalDeltaWh = rows.reduce(
-      (sum, row) => sum + (row.productionDeltaWh ?? 0),
-      0,
-    );
-    const totalExpectedWh = rows.reduce(
-      (sum, row) => sum + (row.expectedProductionWh ?? 0),
-      0,
-    );
-    const totalContractValue = rows.reduce(
-      (sum, row) => sum + row.contractValue,
-      0,
-    );
+    const summary = performanceRatioSummaryQuery.data;
+    const filtered = performanceRatioFilteredAggregatesQuery.data;
 
+    // Converted-read counts always come from the global summary.
+    const convertedReadCount =
+      summary?.available === true ? summary.convertedReadCount : 0;
+    const matchedConvertedReads =
+      summary?.available === true ? summary.matchedConvertedReads : 0;
+    const unmatchedConvertedReads =
+      summary?.available === true ? summary.unmatchedConvertedReads : 0;
+    const invalidConvertedReads =
+      summary?.available === true ? summary.invalidConvertedReads : 0;
+
+    // Aggregates: filtered when filters set, global summary otherwise.
+    const sourceAggregates =
+      !performanceRatioFiltersAreDefault &&
+      filtered?.available === true
+        ? filtered
+        : summary?.available === true
+          ? summary
+          : null;
+
+    if (!sourceAggregates) {
+      return {
+        convertedReadCount,
+        matchedConvertedReads,
+        unmatchedConvertedReads,
+        invalidConvertedReads,
+        allocationCount: 0,
+        withBaseline: 0,
+        withExpected: 0,
+        withRatio: 0,
+        totalDeltaWh: 0,
+        totalExpectedWh: 0,
+        portfolioRatioPercent: null as number | null,
+        totalContractValue: 0,
+      };
+    }
     return {
-      convertedReadCount: performanceRatioResult.convertedReadCount,
-      matchedConvertedReads: performanceRatioResult.matchedConvertedReads,
-      unmatchedConvertedReads: performanceRatioResult.unmatchedConvertedReads,
-      invalidConvertedReads: performanceRatioResult.invalidConvertedReads,
-      allocationCount: rows.length,
-      withBaseline,
-      withExpected,
-      withRatio,
-      totalDeltaWh,
-      totalExpectedWh,
-      portfolioRatioPercent: toPercentValue(totalDeltaWh, totalExpectedWh),
-      totalContractValue,
+      convertedReadCount,
+      matchedConvertedReads,
+      unmatchedConvertedReads,
+      invalidConvertedReads,
+      allocationCount: sourceAggregates.allocationCount,
+      withBaseline: sourceAggregates.withBaseline,
+      withExpected: sourceAggregates.withExpected,
+      withRatio: sourceAggregates.withRatio,
+      totalDeltaWh: sourceAggregates.totalDeltaWh,
+      totalExpectedWh: sourceAggregates.totalExpectedWh,
+      portfolioRatioPercent: sourceAggregates.portfolioRatioPercent,
+      totalContractValue: sourceAggregates.totalContractValue,
     };
-  }, [performanceRatioResult]);
+  }, [
+    performanceRatioSummaryQuery.data,
+    performanceRatioFilteredAggregatesQuery.data,
+    performanceRatioFiltersAreDefault,
+  ]);
 
   // -------------------------------------------------------------------------
   // Compliant sources section
@@ -776,32 +719,21 @@ export default memo(function PerformanceRatioTab(props: PerformanceRatioTabProps
     return mapping;
   }, [compliantSourceEntries]);
 
+  // 2026-05-09 — Option C — read pre-aggregated auto-compliant
+  // map from the build runner's side cache. Pre-cutover this
+  // memo iterated every fact row client-side to derive the same
+  // map; under Option C the client never sees the full row set.
   const autoCompliantSourceByPortalId = useMemo(() => {
+    const data = performanceRatioCompliantContextQuery.data;
+    if (!data || data.available === false) {
+      return new Map<string, string>();
+    }
     const mapping = new Map<string, string>();
-    performanceRatioResult.rows.forEach((row) => {
-      if (!row.systemId) return;
-      const monitoringPlatformCompliantSource =
-        resolveMonitoringPlatformCompliantSource(row.monitoringPlatform);
-      const isTenKwCompliant = isTenKwAcOrLess(
-        row.portalAcSizeKw,
-        row.abpAcSizeKw,
-      );
-      const candidateSource =
-        monitoringPlatformCompliantSource ??
-        (isTenKwCompliant ? TEN_KW_COMPLIANT_SOURCE : null);
-      if (!candidateSource) return;
-
-      const existingSource = mapping.get(row.systemId);
-      if (
-        !existingSource ||
-        getAutoCompliantSourcePriority(candidateSource) >
-          getAutoCompliantSourcePriority(existingSource)
-      ) {
-        mapping.set(row.systemId, candidateSource);
-      }
-    });
+    for (const [systemId, source] of Object.entries(data.autoSources)) {
+      mapping.set(systemId, source);
+    }
     return mapping;
-  }, [performanceRatioResult.rows]);
+  }, [performanceRatioCompliantContextQuery.data]);
 
   const compliantSourcesTableRows = useMemo<CompliantSourceTableRow[]>(() => {
     const mapping = new Map<string, CompliantSourceTableRow>();
@@ -870,109 +802,123 @@ export default memo(function PerformanceRatioTab(props: PerformanceRatioTabProps
     setCompliantSourcePage(compliantSourceTotalPages);
   }, [compliantSourcePage, compliantSourceTotalPages]);
 
+  // 2026-05-09 — Option C — read pre-reduced best-per-system rows
+  // from the build runner's side cache. Pre-cutover this memo
+  // iterated every fact row, filtered to eligible (part2 + ratio
+  // in [30, 150]), grouped by systemKey, reduced to "best per
+  // system" via tie-breaker. All of that now happens server-side
+  // during the build streaming pass; the client just overlays
+  // manual sources from localStorage on top of the pre-attached
+  // auto-source. Sort order preserved from the server (most-recent
+  // read window, then highest ratio, then systemName).
   const compliantPerformanceRatioRows = useMemo<
     CompliantPerformanceRatioRow[]
   >(() => {
-    const eligibleRows = performanceRatioResult.rows.filter((row) => {
-      if (!row.part2VerificationDate) return false;
-      if (row.performanceRatioPercent === null) return false;
-      return (
-        row.performanceRatioPercent >= 30 &&
-        row.performanceRatioPercent <= 150
+    const data = performanceRatioCompliantContextQuery.data;
+    if (!data || data.available === false) return [];
+    return data.bestPerSystem.map((rawRow) => {
+      const row = rawRow as Record<string, unknown>;
+      const systemId =
+        typeof row.systemId === "string" ? row.systemId : null;
+      const stateApplicationRefId =
+        typeof row.stateApplicationRefId === "string"
+          ? row.stateApplicationRefId
+          : null;
+      const trackingSystemRefId =
+        typeof row.trackingSystemRefId === "string"
+          ? row.trackingSystemRefId
+          : "";
+      const systemName =
+        typeof row.systemName === "string" ? row.systemName : "";
+      const readDate = reviveNullableDate(
+        typeof row.readDate === "string" ? row.readDate : null,
       );
-    });
-
-    const bestBySystem = new Map<string, CompliantPerformanceRatioRow>();
-
-    eligibleRows.forEach((row) => {
-      const systemKey =
-        row.stateApplicationRefId ||
-        row.systemId ||
-        row.trackingSystemRefId ||
-        row.systemName.toLowerCase();
-      const compliantEntry = row.systemId
-        ? compliantSourceByPortalId.get(row.systemId)
+      const baselineDate = reviveNullableDate(
+        typeof row.baselineDate === "string" ? row.baselineDate : null,
+      );
+      const part2VerificationDate = reviveNullableDate(
+        typeof row.part2VerificationDate === "string"
+          ? row.part2VerificationDate
+          : null,
+      );
+      const compliantEntry = systemId
+        ? compliantSourceByPortalId.get(systemId)
         : undefined;
-      const rowAutoCompliantSource =
-        resolveMonitoringPlatformCompliantSource(row.monitoringPlatform) ??
-        (isTenKwAcOrLess(row.portalAcSizeKw, row.abpAcSizeKw)
-          ? TEN_KW_COMPLIANT_SOURCE
-          : null);
-      const autoCompliantSource =
-        rowAutoCompliantSource ??
-        (row.systemId
-          ? autoCompliantSourceByPortalId.get(row.systemId)
-          : undefined);
-      const readWindowMonthYear = row.readDate
-        ? formatMonthYear(toReadWindowMonthStart(row.readDate))
-        : "N/A";
+      const autoFromCache =
+        typeof row.compliantSource === "string"
+          ? row.compliantSource
+          : null;
       const candidate: CompliantPerformanceRatioRow = {
-        ...row,
+        key: typeof row.key === "string" ? row.key : "",
+        convertedReadKey: "",
+        matchType:
+          typeof row.matchType === "string"
+            ? (row.matchType as PerformanceRatioMatchType)
+            : ("Monitoring + System ID" as PerformanceRatioMatchType),
+        monitoring:
+          typeof row.monitoring === "string" ? row.monitoring : "",
+        monitoringSystemId:
+          typeof row.monitoringSystemId === "string"
+            ? row.monitoringSystemId
+            : "",
+        monitoringSystemName:
+          typeof row.monitoringSystemName === "string"
+            ? row.monitoringSystemName
+            : "",
+        monitoringPlatform:
+          typeof row.monitoringPlatform === "string"
+            ? row.monitoringPlatform
+            : "",
+        installerName:
+          typeof row.installerName === "string" ? row.installerName : "",
+        readDate,
+        readDateRaw:
+          typeof row.readDateRaw === "string" ? row.readDateRaw : "",
+        lifetimeReadWh:
+          typeof row.lifetimeReadWh === "number" ? row.lifetimeReadWh : 0,
+        trackingSystemRefId,
+        systemId,
+        stateApplicationRefId,
+        systemName,
+        portalAcSizeKw:
+          typeof row.portalAcSizeKw === "number" ? row.portalAcSizeKw : null,
+        abpAcSizeKw:
+          typeof row.abpAcSizeKw === "number" ? row.abpAcSizeKw : null,
+        part2VerificationDate,
+        baselineReadWh:
+          typeof row.baselineReadWh === "number"
+            ? row.baselineReadWh
+            : null,
+        baselineDate,
+        baselineSource:
+          typeof row.baselineSource === "string" ? row.baselineSource : null,
+        productionDeltaWh:
+          typeof row.productionDeltaWh === "number"
+            ? row.productionDeltaWh
+            : null,
+        expectedProductionWh:
+          typeof row.expectedProductionWh === "number"
+            ? row.expectedProductionWh
+            : null,
+        performanceRatioPercent:
+          typeof row.performanceRatioPercent === "number"
+            ? row.performanceRatioPercent
+            : null,
+        contractValue:
+          typeof row.contractValue === "number" ? row.contractValue : 0,
         compliantSource:
-          compliantEntry?.compliantSource ?? autoCompliantSource ?? null,
+          compliantEntry?.compliantSource ?? autoFromCache ?? null,
         evidenceCount: compliantEntry?.evidence.length ?? 0,
-        meterReadMonthYear: formatMonthYear(row.readDate),
-        readWindowMonthYear,
+        meterReadMonthYear: formatMonthYear(readDate),
+        readWindowMonthYear: readDate
+          ? formatMonthYear(toReadWindowMonthStart(readDate))
+          : "N/A",
       };
-
-      const existing = bestBySystem.get(systemKey);
-      if (!existing) {
-        bestBySystem.set(systemKey, candidate);
-        return;
-      }
-      const candidateWindowTime = candidate.readDate
-        ? toReadWindowMonthStart(candidate.readDate).getTime()
-        : Number.NEGATIVE_INFINITY;
-      const existingWindowTime = existing.readDate
-        ? toReadWindowMonthStart(existing.readDate).getTime()
-        : Number.NEGATIVE_INFINITY;
-      if (candidateWindowTime > existingWindowTime) {
-        bestBySystem.set(systemKey, candidate);
-        return;
-      }
-      if (candidateWindowTime === existingWindowTime) {
-        const candidateRatio =
-          candidate.performanceRatioPercent ?? Number.NEGATIVE_INFINITY;
-        const existingRatio =
-          existing.performanceRatioPercent ?? Number.NEGATIVE_INFINITY;
-        if (candidateRatio > existingRatio) {
-          bestBySystem.set(systemKey, candidate);
-          return;
-        }
-        if (candidateRatio === existingRatio) {
-          const candidateReadTime =
-            candidate.readDate?.getTime() ?? Number.NEGATIVE_INFINITY;
-          const existingReadTime =
-            existing.readDate?.getTime() ?? Number.NEGATIVE_INFINITY;
-          if (candidateReadTime > existingReadTime) {
-            bestBySystem.set(systemKey, candidate);
-          }
-        }
-      }
-    });
-
-    return Array.from(bestBySystem.values()).sort((a, b) => {
-      const readWindowTimeDiff =
-        (b.readDate
-          ? toReadWindowMonthStart(b.readDate).getTime()
-          : Number.NEGATIVE_INFINITY) -
-        (a.readDate
-          ? toReadWindowMonthStart(a.readDate).getTime()
-          : Number.NEGATIVE_INFINITY);
-      if (readWindowTimeDiff !== 0) return readWindowTimeDiff;
-      const ratioDiff =
-        (b.performanceRatioPercent ?? Number.NEGATIVE_INFINITY) -
-        (a.performanceRatioPercent ?? Number.NEGATIVE_INFINITY);
-      if (ratioDiff !== 0) return ratioDiff;
-      return a.systemName.localeCompare(b.systemName, undefined, {
-        sensitivity: "base",
-        numeric: true,
-      });
+      return candidate;
     });
   }, [
-    autoCompliantSourceByPortalId,
+    performanceRatioCompliantContextQuery.data,
     compliantSourceByPortalId,
-    performanceRatioResult.rows,
   ]);
 
   const compliantPerformanceRatioSummary = useMemo(() => {
@@ -1204,84 +1150,114 @@ export default memo(function PerformanceRatioTab(props: PerformanceRatioTabProps
   // -------------------------------------------------------------------------
   // CSV download callbacks
   // -------------------------------------------------------------------------
-  const downloadPerformanceRatioCsv = useCallback(() => {
-    const headers = [
-      "system_name",
-      "nonid",
-      "portal_id",
-      "state_certification_number",
-      "csg_portal_ac_size_kw",
-      "abp_report_ac_size_kw",
-      "abp_part_2_verification_date",
-      "installer_name",
-      "monitoring_platform",
-      "monitoring",
-      "monitoring_system_id",
-      "monitoring_system_name",
-      "match_type",
-      "read_date",
-      "meter_read_month_year",
-      "read_window_month_year",
-      "baseline_date",
-      "baseline_source",
-      "lifetime_read_wh",
-      "baseline_read_wh",
-      "production_delta_wh",
-      "expected_production_wh",
-      "performance_ratio_percent",
-      "contract_value",
-    ];
+  // 2026-05-09 — Option C — server-side export of the
+  // currently-filtered/sorted view. The browser no longer holds
+  // the full row set, so the export runs as a background job
+  // (`performanceRatioCsv` exportType, accepts the same filter +
+  // sort args as the page proc). Polls the job status until
+  // terminal, then triggers the artifact download.
+  const startDashboardCsvExport =
+    solarRecTrpc.solarRecDashboard.startDashboardCsvExport.useMutation();
 
-    const rows = filteredPerformanceRatioRows.map((row) => ({
-      system_name: row.systemName,
-      nonid: row.trackingSystemRefId,
-      portal_id: row.systemId ?? "",
-      state_certification_number: row.stateApplicationRefId ?? "",
-      csg_portal_ac_size_kw: row.portalAcSizeKw ?? "",
-      abp_report_ac_size_kw: row.abpAcSizeKw ?? "",
-      abp_part_2_verification_date: row.part2VerificationDate
-        ? row.part2VerificationDate.toISOString().slice(0, 10)
-        : "",
-      installer_name: row.installerName,
-      monitoring_platform: row.monitoringPlatform,
-      monitoring: row.monitoring,
-      monitoring_system_id: row.monitoringSystemId,
-      monitoring_system_name: row.monitoringSystemName,
-      match_type: row.matchType,
-      read_date: row.readDate
-        ? row.readDate.toISOString().slice(0, 10)
-        : row.readDateRaw,
-      meter_read_month_year: formatMonthYear(row.readDate),
-      read_window_month_year: row.readDate
-        ? formatMonthYear(toReadWindowMonthStart(row.readDate))
-        : "N/A",
-      baseline_date: row.baselineDate
-        ? row.baselineDate.toISOString().slice(0, 10)
-        : "",
-      baseline_source: row.baselineSource ?? "",
-      lifetime_read_wh: row.lifetimeReadWh ?? "",
-      baseline_read_wh: row.baselineReadWh ?? "",
-      production_delta_wh: row.productionDeltaWh ?? "",
-      expected_production_wh: row.expectedProductionWh ?? "",
-      performance_ratio_percent: row.performanceRatioPercent ?? "",
-      contract_value: row.contractValue,
-    }));
+  const downloadPerformanceRatioCsv = useCallback(async () => {
+    const toastId = toast.loading("Preparing performance-ratio CSV…");
+    let jobId: string;
+    try {
+      const startResult = await startDashboardCsvExport.mutateAsync({
+        exportType: "performanceRatioCsv",
+        matchType: performanceRatioFilterArgs.matchType,
+        monitoring: performanceRatioFilterArgs.monitoring,
+        search: performanceRatioFilterArgs.search,
+        sortBy: performanceRatioSortBy,
+        sortDir: performanceRatioSortDir,
+      });
+      jobId = startResult.jobId;
+    } catch (error) {
+      console.error("[performance-ratio-csv] start failed:", error);
+      toast.error("Could not start performance-ratio CSV export.", {
+        id: toastId,
+      });
+      return;
+    }
 
-    const csv = buildCsv(headers, rows);
-    const fileName = `performance-ratio-${new Date()
-      .toISOString()
-      .slice(0, 19)
-      .replace(/[:T]/g, "-")}.csv`;
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = fileName;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
-  }, [filteredPerformanceRatioRows]);
+    // Aligned with the server's `JOB_TTL_MS` (30 min). Per-tick
+    // delay grows from 1.5s → 5s → 15s as elapsed time passes.
+    const POLL_MAX_MS = 30 * 60 * 1000;
+    const startedAt = Date.now();
+    function nextPollDelayMs(elapsedMs: number): number {
+      if (elapsedMs < 30_000) return 1500;
+      if (elapsedMs < 5 * 60_000) return 5000;
+      return 15_000;
+    }
+
+    let hintShown = false;
+    while (Date.now() - startedAt < POLL_MAX_MS) {
+      let status: Awaited<
+        ReturnType<
+          typeof solarRecTrpcUtils.solarRecDashboard.getDashboardCsvExportJobStatus.fetch
+        >
+      >;
+      try {
+        status =
+          await solarRecTrpcUtils.solarRecDashboard.getDashboardCsvExportJobStatus.fetch(
+            { jobId },
+          );
+      } catch (pollError) {
+        console.warn(
+          "[performance-ratio-csv] status poll failed (will retry):",
+          pollError,
+        );
+        await new Promise((r) =>
+          setTimeout(r, nextPollDelayMs(Date.now() - startedAt)),
+        );
+        continue;
+      }
+      if (status.status === "succeeded" && status.url) {
+        toast.success(
+          `Performance-ratio CSV ready (${formatNumber(
+            status.rowCount ?? 0,
+          )} rows).`,
+          { id: toastId },
+        );
+        const link = document.createElement("a");
+        link.href = status.url;
+        link.download = status.fileName ?? "performance-ratio.csv";
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        return;
+      }
+      if (status.status === "failed") {
+        toast.error(
+          status.error ?? "Performance-ratio CSV export failed.",
+          { id: toastId },
+        );
+        return;
+      }
+      if (status.status === "notFound") {
+        toast.error("Performance-ratio CSV job expired.", { id: toastId });
+        return;
+      }
+      if (!hintShown && Date.now() - startedAt >= 30_000) {
+        toast.loading("Still preparing performance-ratio CSV…", {
+          id: toastId,
+        });
+        hintShown = true;
+      }
+      await new Promise((r) =>
+        setTimeout(r, nextPollDelayMs(Date.now() - startedAt)),
+      );
+    }
+    toast.error("Performance-ratio CSV export timed out.", { id: toastId });
+  }, [
+    performanceRatioFilterArgs.matchType,
+    performanceRatioFilterArgs.monitoring,
+    performanceRatioFilterArgs.search,
+    performanceRatioSortBy,
+    performanceRatioSortDir,
+    startDashboardCsvExport,
+    solarRecTrpcUtils,
+  ]);
 
   const downloadCompliantPerformanceRatioCsv = useCallback(() => {
     const headers = [
@@ -1674,17 +1650,18 @@ export default memo(function PerformanceRatioTab(props: PerformanceRatioTabProps
                   <CardDescription>
                     Each row is one converted read allocated to one matching
                     portal project. Showing rows{" "}
-                    {filteredPerformanceRatioRows.length === 0
+                    {performanceRatioFilteredCount === 0
                       ? "0"
-                      : formatNumber(performanceRatioPageStartIndex + 1)}
+                      : formatNumber(performanceRatioOffset + 1)}
                     -
                     {formatNumber(
                       Math.min(
-                        performanceRatioPageEndIndex,
-                        filteredPerformanceRatioRows.length,
+                        performanceRatioOffset +
+                          visiblePerformanceRatioRows.length,
+                        performanceRatioFilteredCount,
                       ),
                     )}{" "}
-                    of {formatNumber(filteredPerformanceRatioRows.length)}.
+                    of {formatNumber(performanceRatioFilteredCount)}.
                   </CardDescription>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">

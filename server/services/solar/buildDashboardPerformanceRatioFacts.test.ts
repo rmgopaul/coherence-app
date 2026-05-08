@@ -18,7 +18,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   upsertPerformanceRatioFacts: vi.fn(),
-  deleteOrphanedPerformanceRatioFacts: vi.fn(),
+  pruneSupersededPerformanceRatioFacts: vi.fn(),
   upsertComputedArtifact: vi.fn(),
   resolvePerformanceRatioBatchIds: vi.fn(),
   loadPerformanceRatioStaticInput: vi.fn(),
@@ -27,12 +27,17 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("../../db/dashboardPerformanceRatioFacts", () => ({
   upsertPerformanceRatioFacts: mocks.upsertPerformanceRatioFacts,
-  deleteOrphanedPerformanceRatioFacts:
-    mocks.deleteOrphanedPerformanceRatioFacts,
+  pruneSupersededPerformanceRatioFacts:
+    mocks.pruneSupersededPerformanceRatioFacts,
+  // Compat shim — kept exported for back-compat callers that the
+  // 2026-05-09 Option C refactor didn't migrate yet.
+  deleteOrphanedPerformanceRatioFacts: vi.fn(),
   // Other exports unused by the builder; provide stubs.
   getPerformanceRatioFactsPage: vi.fn(),
   getPerformanceRatioFactsByKeys: vi.fn(),
   getPerformanceRatioFactsCount: vi.fn(),
+  getPerformanceRatioFactsAggregates: vi.fn(),
+  getPerformanceRatioMonitoringOptions: vi.fn(),
 }));
 
 vi.mock("./loadPerformanceRatioInput", async () => {
@@ -62,8 +67,12 @@ import {
   __resetPerformanceRatioBuildStepRegistrationForTests,
   buildPerformanceRatioFactRows,
   buildPerformanceRatioSummaryPayload,
+  createPerformanceRatioStreamingAccumulators,
+  accumulatePerformanceRatioPage,
   PERFORMANCE_RATIO_SUMMARY_ARTIFACT_TYPE,
   PERFORMANCE_RATIO_SUMMARY_VERSION_KEY,
+  PERFORMANCE_RATIO_AUTO_COMPLIANT_ARTIFACT_TYPE,
+  PERFORMANCE_RATIO_BEST_PER_SYSTEM_ARTIFACT_TYPE,
   performanceRatioBuildStep,
   registerPerformanceRatioBuildStep,
 } from "./buildDashboardPerformanceRatioFacts";
@@ -78,7 +87,7 @@ beforeEach(() => {
     mocks[key].mockReset();
   }
   mocks.upsertPerformanceRatioFacts.mockResolvedValue(undefined);
-  mocks.deleteOrphanedPerformanceRatioFacts.mockResolvedValue(0);
+  mocks.pruneSupersededPerformanceRatioFacts.mockResolvedValue(0);
   mocks.upsertComputedArtifact.mockResolvedValue(undefined);
   setDashboardBuildSteps([]);
   __resetPerformanceRatioBuildStepRegistrationForTests();
@@ -318,8 +327,12 @@ describe("buildPerformanceRatioFactRows (pure transformation)", () => {
 // Slim summary payload builder tests
 // ────────────────────────────────────────────────────────────────────
 
-describe("buildPerformanceRatioSummaryPayload", () => {
+describe("buildPerformanceRatioSummaryPayload (Option C)", () => {
   const builtAt = new Date("2026-05-07T17:00:00Z");
+
+  function makeEmptyAccumulators() {
+    return createPerformanceRatioStreamingAccumulators();
+  }
 
   it("forwards aggregate counters verbatim", () => {
     const payload = buildPerformanceRatioSummaryPayload({
@@ -331,7 +344,7 @@ describe("buildPerformanceRatioSummaryPayload", () => {
         unmatchedConvertedReads: 800_000,
         invalidConvertedReads: 178_500,
       },
-      factRows: [],
+      accumulators: makeEmptyAccumulators(),
     });
     expect(payload.convertedReadCount).toBe(991_000);
     expect(payload.matchedConvertedReads).toBe(12_500);
@@ -339,25 +352,22 @@ describe("buildPerformanceRatioSummaryPayload", () => {
     expect(payload.invalidConvertedReads).toBe(178_500);
   });
 
-  it("derives matchedSystemCount from the unique trackingSystemRefId set in fact rows", () => {
-    const factRows = buildPerformanceRatioFactRows({
-      scopeId: "s",
-      buildId: "b",
-      rows: [
-        makeRow({
-          key: "converted-1-sys-a",
-          trackingSystemRefId: "tr-a",
-        }),
-        makeRow({
-          key: "converted-1-sys-b",
-          trackingSystemRefId: "tr-b",
-        }),
-        makeRow({
-          key: "converted-2-sys-a",
-          trackingSystemRefId: "tr-a",
-        }),
-      ],
-    });
+  it("derives matchedSystemCount from the streaming accumulator's unique trackingSystemRefId set", () => {
+    const accumulators = makeEmptyAccumulators();
+    accumulatePerformanceRatioPage(accumulators, [
+      makeRow({
+        key: "converted-1-sys-a",
+        trackingSystemRefId: "tr-a",
+      }),
+      makeRow({
+        key: "converted-1-sys-b",
+        trackingSystemRefId: "tr-b",
+      }),
+      makeRow({
+        key: "converted-2-sys-a",
+        trackingSystemRefId: "tr-a",
+      }),
+    ]);
     const payload = buildPerformanceRatioSummaryPayload({
       buildId: "b",
       builtAt,
@@ -367,12 +377,13 @@ describe("buildPerformanceRatioSummaryPayload", () => {
         unmatchedConvertedReads: 0,
         invalidConvertedReads: 0,
       },
-      factRows,
+      accumulators,
     });
     expect(payload.matchedSystemCount).toBe(2);
+    expect(payload.allocationCount).toBe(3);
   });
 
-  it("matchedSystemCount=0 when no fact rows", () => {
+  it("matchedSystemCount=0 + monitoringOptions=[] when no rows", () => {
     const payload = buildPerformanceRatioSummaryPayload({
       buildId: "b",
       builtAt,
@@ -382,9 +393,12 @@ describe("buildPerformanceRatioSummaryPayload", () => {
         unmatchedConvertedReads: 0,
         invalidConvertedReads: 0,
       },
-      factRows: [],
+      accumulators: makeEmptyAccumulators(),
     });
     expect(payload.matchedSystemCount).toBe(0);
+    expect(payload.allocationCount).toBe(0);
+    expect(payload.monitoringOptions).toEqual([]);
+    expect(payload.portfolioRatioPercent).toBeNull();
   });
 
   it("stamps buildId, aggregatorVersion, and builtAt as ISO string", () => {
@@ -397,11 +411,59 @@ describe("buildPerformanceRatioSummaryPayload", () => {
         unmatchedConvertedReads: 0,
         invalidConvertedReads: 0,
       },
-      factRows: [],
+      accumulators: makeEmptyAccumulators(),
     });
     expect(payload.buildId).toBe("bld-Z");
     expect(payload.aggregatorVersion).toMatch(/performance-ratio/);
     expect(payload.builtAt).toBe("2026-05-07T17:00:00.000Z");
+  });
+
+  it("populates the new server-aggregate fields + monitoringOptions from streaming", () => {
+    const accumulators = makeEmptyAccumulators();
+    accumulatePerformanceRatioPage(accumulators, [
+      makeRow({
+        key: "k1",
+        trackingSystemRefId: "tr-1",
+        monitoring: "Enphase",
+        baselineReadWh: 1000,
+        expectedProductionWh: 5000,
+        productionDeltaWh: 4000,
+        performanceRatioPercent: 80,
+        contractValue: 100,
+      }),
+      makeRow({
+        key: "k2",
+        trackingSystemRefId: "tr-2",
+        monitoring: "SolarEdge",
+        baselineReadWh: null,
+        expectedProductionWh: 0,
+        productionDeltaWh: 0,
+        performanceRatioPercent: null,
+        contractValue: 200,
+      }),
+    ]);
+    const payload = buildPerformanceRatioSummaryPayload({
+      buildId: "b",
+      builtAt,
+      aggregate: {
+        convertedReadCount: 2,
+        matchedConvertedReads: 2,
+        unmatchedConvertedReads: 0,
+        invalidConvertedReads: 0,
+      },
+      accumulators,
+    });
+    expect(payload.allocationCount).toBe(2);
+    expect(payload.withBaseline).toBe(1);
+    // expected > 0 only on the first row.
+    expect(payload.withExpected).toBe(1);
+    expect(payload.withRatio).toBe(1);
+    expect(payload.totalDeltaWh).toBe(4000);
+    expect(payload.totalExpectedWh).toBe(5000);
+    expect(payload.totalContractValue).toBe(300);
+    // 4000 / 5000 × 100 = 80.0
+    expect(payload.portfolioRatioPercent).toBe(80);
+    expect(payload.monitoringOptions).toEqual(["Enphase", "SolarEdge"]);
   });
 });
 
@@ -482,11 +544,22 @@ function makeConvertedReadRow(overrides: Partial<{
   };
 }
 
-describe("performanceRatioBuildStep — orchestration (streaming-write)", () => {
-  it("static input → stream pages → upsert per page → orphan-sweep → summary, in that order", async () => {
+describe("performanceRatioBuildStep — orchestration (Option C visibility flip)", () => {
+  /**
+   * Helper to count `upsertComputedArtifact` calls by artifactType
+   * since one build now writes 3 artifacts (summary + auto-compliant
+   * + best-per-system).
+   */
+  function getArtifactCallByType(artifactType: string) {
+    return mocks.upsertComputedArtifact.mock.calls.find(
+      ([args]) => args.artifactType === artifactType
+    );
+  }
+
+  it("static input → stream pages → upsert per page → side-cache writes → SUMMARY (visibility flip) → prune, in that order", async () => {
     mocks.resolvePerformanceRatioBatchIds.mockResolvedValue(makeBatchIds());
     mocks.loadPerformanceRatioStaticInput.mockResolvedValue(makeStaticInput());
-    mocks.deleteOrphanedPerformanceRatioFacts.mockResolvedValue(3);
+    mocks.pruneSupersededPerformanceRatioFacts.mockResolvedValue(3);
     // Mock streaming source: 2 pages of 1 row each.
     mocks.forEachPerformanceRatioConvertedReadPage.mockImplementation(
       async (_scopeId: string, _batchId: string, onPage: any) => {
@@ -503,13 +576,8 @@ describe("performanceRatioBuildStep — orchestration (streaming-write)", () => 
     });
 
     expect(mocks.resolvePerformanceRatioBatchIds).toHaveBeenCalledWith("scope-A");
-    expect(mocks.loadPerformanceRatioStaticInput).toHaveBeenCalledWith(
-      "scope-A",
-      expect.objectContaining({ convertedReadsBatchId: "cr-batch-1" })
-    );
 
-    // Streaming-write contract: upsert called once PER PAGE that
-    // produced fact rows (not once at end).
+    // Streaming-write contract: upsert called once PER PAGE.
     expect(mocks.upsertPerformanceRatioFacts).toHaveBeenCalledTimes(2);
     for (const [pageRows] of mocks.upsertPerformanceRatioFacts.mock.calls) {
       expect(pageRows.length).toBeGreaterThan(0);
@@ -517,44 +585,44 @@ describe("performanceRatioBuildStep — orchestration (streaming-write)", () => 
       expect(pageRows[0].scopeId).toBe("scope-A");
     }
 
-    expect(mocks.deleteOrphanedPerformanceRatioFacts).toHaveBeenCalledWith(
-      "scope-A",
-      "bld-1"
-    );
-
-    expect(mocks.upsertComputedArtifact).toHaveBeenCalledTimes(1);
-    const [summaryArgs] = mocks.upsertComputedArtifact.mock.calls[0];
-    expect(summaryArgs.scopeId).toBe("scope-A");
-    expect(summaryArgs.artifactType).toBe(
+    // Three artifact writes: summary + auto-compliant + best-per-system.
+    expect(mocks.upsertComputedArtifact).toHaveBeenCalledTimes(3);
+    const summaryCall = getArtifactCallByType(
       PERFORMANCE_RATIO_SUMMARY_ARTIFACT_TYPE
     );
-    expect(summaryArgs.inputVersionHash).toBe(
-      PERFORMANCE_RATIO_SUMMARY_VERSION_KEY
-    );
-    const summary = JSON.parse(summaryArgs.payload);
-    expect(summary.convertedReadCount).toBe(2);
-    expect(summary.matchedConvertedReads).toBe(2);
-    expect(summary.matchedSystemCount).toBe(1);
+    expect(summaryCall).toBeDefined();
+    const summary = JSON.parse(summaryCall![0].payload);
     expect(summary.buildId).toBe("bld-1");
+    expect(summary.convertedReadCount).toBe(2);
+    expect(summary.allocationCount).toBe(2);
 
-    // Order check: every upsert BEFORE orphan-sweep BEFORE summary.
-    const lastUpsert =
+    // Visibility flip ordering: prune is called AFTER summary
+    // write. A failure between row writes and summary leaves the
+    // OLD summary visible.
+    const lastUpsertOrder =
       mocks.upsertPerformanceRatioFacts.mock.invocationCallOrder[1];
-    const sweepOrder =
-      mocks.deleteOrphanedPerformanceRatioFacts.mock.invocationCallOrder[0];
     const summaryOrder =
-      mocks.upsertComputedArtifact.mock.invocationCallOrder[0];
-    expect(lastUpsert).toBeLessThan(sweepOrder);
-    expect(sweepOrder).toBeLessThan(summaryOrder);
+      mocks.upsertComputedArtifact.mock.invocationCallOrder.find(
+        (_o, idx) =>
+          mocks.upsertComputedArtifact.mock.calls[idx][0].artifactType ===
+          PERFORMANCE_RATIO_SUMMARY_ARTIFACT_TYPE
+      );
+    const pruneOrder =
+      mocks.pruneSupersededPerformanceRatioFacts.mock.invocationCallOrder[0];
+    expect(summaryOrder).toBeDefined();
+    expect(lastUpsertOrder).toBeLessThan(summaryOrder!);
+    expect(summaryOrder!).toBeLessThan(pruneOrder);
+
+    // Prune keeps ONLY the current build's rows.
+    expect(mocks.pruneSupersededPerformanceRatioFacts).toHaveBeenCalledWith(
+      "scope-A",
+      ["bld-1"]
+    );
   });
 
   it("memory-bounded: drains accumulator per page so no UPSERT carries the full row set", async () => {
     mocks.resolvePerformanceRatioBatchIds.mockResolvedValue(makeBatchIds());
     mocks.loadPerformanceRatioStaticInput.mockResolvedValue(makeStaticInput());
-    // 3 pages, 1 row each. Streaming-write means each page's
-    // upsert sees ONLY that page's matches — never the cumulative
-    // set. A regression that batched the writes together would
-    // make the last upsert carry all 3 rows.
     mocks.forEachPerformanceRatioConvertedReadPage.mockImplementation(
       async (_s: string, _b: string, onPage: any) => {
         for (let i = 0; i < 3; i += 1) {
@@ -571,18 +639,12 @@ describe("performanceRatioBuildStep — orchestration (streaming-write)", () => 
     });
 
     expect(mocks.upsertPerformanceRatioFacts).toHaveBeenCalledTimes(3);
-    // Each page's upsert receives at most 1 fact row (one match per
-    // synthetic page).
     for (const [pageRows] of mocks.upsertPerformanceRatioFacts.mock.calls) {
       expect(pageRows.length).toBe(1);
     }
   });
 
-  it("skips the streaming phase when no convertedReads batch is active (zero-summary write)", async () => {
-    // Cold-cache / not-yet-uploaded scenario. The step writes a
-    // zero-counter summary so the client tab renders 0 rather
-    // than `available: false`. Mirrors `runSystemStep`'s cold
-    // handling in PR-F-2.
+  it("skips the streaming phase when no convertedReads batch is active (zero-aggregate summary write)", async () => {
     mocks.resolvePerformanceRatioBatchIds.mockResolvedValue({
       ...makeBatchIds(),
       convertedReadsBatchId: null,
@@ -591,21 +653,26 @@ describe("performanceRatioBuildStep — orchestration (streaming-write)", () => 
     await performanceRatioBuildStep.run({
       scopeId: "scope-B",
       buildId: "bld-cold",
-      signal: new AbortController().signal
+      signal: new AbortController().signal,
     });
 
-    expect(mocks.upsertPerformanceRatioFacts).toHaveBeenCalledTimes(1);
-    expect(mocks.upsertPerformanceRatioFacts.mock.calls[0][0]).toEqual([]);
-    expect(mocks.upsertComputedArtifact).toHaveBeenCalledTimes(1);
-    const summary = JSON.parse(
-      mocks.upsertComputedArtifact.mock.calls[0][0].payload
+    // No fact-row writes when there's no source dataset.
+    expect(mocks.upsertPerformanceRatioFacts).not.toHaveBeenCalled();
+    // Three artifact writes still: summary + auto-compliant + best-per-system.
+    expect(mocks.upsertComputedArtifact).toHaveBeenCalledTimes(3);
+    const summaryCall = getArtifactCallByType(
+      PERFORMANCE_RATIO_SUMMARY_ARTIFACT_TYPE
     );
+    expect(summaryCall).toBeDefined();
+    const summary = JSON.parse(summaryCall![0].payload);
     expect(summary.convertedReadCount).toBe(0);
     expect(summary.matchedConvertedReads).toBe(0);
     expect(summary.matchedSystemCount).toBe(0);
+    expect(summary.allocationCount).toBe(0);
+    expect(summary.monitoringOptions).toEqual([]);
   });
 
-  it("propagates upsert failures (runner converts to errorMessage)", async () => {
+  it("propagates upsert failures (runner converts to errorMessage); side caches + summary NOT written", async () => {
     mocks.resolvePerformanceRatioBatchIds.mockResolvedValue(makeBatchIds());
     mocks.loadPerformanceRatioStaticInput.mockResolvedValue(makeStaticInput());
     mocks.forEachPerformanceRatioConvertedReadPage.mockImplementation(
@@ -624,30 +691,46 @@ describe("performanceRatioBuildStep — orchestration (streaming-write)", () => 
         signal: new AbortController().signal,
       })
     ).rejects.toThrow(/upsert blew up/);
-    expect(
-      mocks.deleteOrphanedPerformanceRatioFacts
-    ).not.toHaveBeenCalled();
+    expect(mocks.pruneSupersededPerformanceRatioFacts).not.toHaveBeenCalled();
     expect(mocks.upsertComputedArtifact).not.toHaveBeenCalled();
   });
 
-  it("propagates orphan-sweep failures (does NOT swallow into summary write)", async () => {
+  it("BEST-EFFORT prune sweep: failures DO NOT roll back the visibility flip", async () => {
+    // 2026-05-09 — Option C — under the new ordering the summary
+    // write IS the visibility flip. Prune happens AFTER the flip
+    // and is best-effort: a sweep failure leaves stale rows in
+    // the table (invisible via the summary's buildId filter) but
+    // does NOT throw out of the runner step. The build is still
+    // reported `succeeded` — the new build's rows are visible.
     mocks.resolvePerformanceRatioBatchIds.mockResolvedValue(makeBatchIds());
     mocks.loadPerformanceRatioStaticInput.mockResolvedValue(makeStaticInput());
     mocks.forEachPerformanceRatioConvertedReadPage.mockImplementation(
       async () => 0
     );
-    mocks.deleteOrphanedPerformanceRatioFacts.mockRejectedValue(
+    mocks.pruneSupersededPerformanceRatioFacts.mockRejectedValue(
       new Error("sweep failed")
     );
 
+    // Should NOT throw — sweep failure is logged + swallowed.
     await expect(
       performanceRatioBuildStep.run({
         scopeId: "scope-A",
         buildId: "bld-1",
         signal: new AbortController().signal,
       })
-    ).rejects.toThrow(/sweep failed/);
-    expect(mocks.upsertComputedArtifact).not.toHaveBeenCalled();
+    ).resolves.toBeUndefined();
+    // Summary + side caches WERE written before the sweep
+    // attempted (visibility flip succeeded).
+    expect(mocks.upsertComputedArtifact).toHaveBeenCalledTimes(3);
+    expect(
+      getArtifactCallByType(PERFORMANCE_RATIO_SUMMARY_ARTIFACT_TYPE)
+    ).toBeDefined();
+    expect(
+      getArtifactCallByType(PERFORMANCE_RATIO_AUTO_COMPLIANT_ARTIFACT_TYPE)
+    ).toBeDefined();
+    expect(
+      getArtifactCallByType(PERFORMANCE_RATIO_BEST_PER_SYSTEM_ARTIFACT_TYPE)
+    ).toBeDefined();
   });
 
   it("aborts before batch resolution when signal is already aborted", async () => {
