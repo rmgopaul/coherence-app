@@ -1230,44 +1230,79 @@ Today's behavior:
 - Browser localStorage (`solarRecDashboardLogsV1`) is the working
   copy the UI reads first.
 - Cloud `solarRecDashboardStorage` rows under
-  `storageKey = "snapshot_logs_v1"` were the historical persist
-  target. The cloud-fallback hydration path was deleted during a
-  Phase 5 cleanup; the UI was reading ONLY localStorage as a
-  result.
-- Production state on 2026-05-04: the main cloud row holds a
-  single-entry JSON array (a one-shot save by the only currently-
-  active dashboard). **Orphaned chunk rows** under
-  `storageKey LIKE "snapshot_logs_v1_chunk_%"` still exist and
-  contain ~21 unique historical entries from a prior chunked
-  write that got partially overwritten.
+  `storageKey = "dataset:snapshot_logs_v1"` are the cloud
+  persist target. The `dataset:` prefix comes from `saveDataset`
+  prepending it to the caller-supplied key (the read-side fix in
+  the recovery proc landed in Task 5.15 PR-B; PR #353's
+  unprefixed key was the bug that left the proc no-op-ing for a
+  while). Chunked writes spill into
+  `dataset:snapshot_logs_v1_chunk_NNNN` rows.
+- Historical production wedge (pre-Task 5.15): the main row
+  held a single-entry array while ~21 unique historical entries
+  were pinned in orphaned chunk rows from a prior chunked write
+  that got partially overwritten. The recovery surface +
+  one-shot restore mutation collapsed those into the main key
+  on 2026-05-05; verify-with `debugSnapshotLogPersistenceRaw`
+  if you suspect a regression.
 
-**What's wired today:**
+**What's wired today** (Task 5.15 PR-A + PR-B + PR-D, all
+shipped):
 
-- `solarRecDashboard.getSnapshotLogs` is a **read-only** tRPC
-  procedure that loads the main key, lists orphaned chunk rows,
-  and returns a recovery candidate (deduped by id, sorted
-  newest-first, paginated). Pure helpers in
-  `server/services/solar/snapshotLogRecovery.ts`.
-- `SolarRecDashboard.tsx` calls the proc when the Snapshot Log
-  tab is active and merges results into the localStorage state
-  via `mergeServerSnapshotLogsIntoLocal` (server entries WIN on
-  id conflict; never let a one-entry local copy overwrite a
-  larger server result).
-- **No write-back / restore.** The proc never mutates storage.
-  Production restore (collapsing the orphan chunks back into
-  the main key) is a separate, explicitly-approved follow-up
-  that should ship only after the read-only recovery surface is
-  deployed and verified.
+- `solarRecDashboard.getSnapshotLogs` — **read-only** tRPC proc
+  that loads the main key + lists orphaned chunk rows +
+  returns a deduped recovery candidate (sorted newest-first,
+  paginated). Pure helpers in
+  `server/services/solar/snapshotLogRecovery.ts`. The
+  `totalUniqueCount` field on the response is the load-bearing
+  signal the write-side guard reads.
+- `solarRecDashboard.restoreSnapshotLogsFromOrphanChunks` —
+  **idempotent** restore mutation (`solar-rec-dashboard:edit`).
+  Verify-then-delete: writes the consolidated main payload(s),
+  reads them back, asserts the id set matches, only then
+  deletes the orphaned `dataset:snapshot_logs_v1_chunk_NNNN`
+  rows. A second call after a successful restore observes
+  `source === "main"` and returns
+  `alreadyConsolidated: true` with zero side effects.
+- `solarRecDashboard.pruneSnapshotLogChunksOutsideSet` —
+  belt-and-braces orphan-prune mutation (Task 5.15 PR-D). The
+  client's `previousChunkKeys` ref starts `[]` on every fresh
+  page load, so chunk rows that survived a prior session's
+  write would be invisible to the local-diff prune path. This
+  proc accepts the new write's chunk-key set, lists the
+  on-disk chunk rows, and deletes the diff. Wired into the
+  cloud-sync `useEffect` after every successful write.
+- `solarRecDashboard.debugSnapshotLogPersistenceRaw` —
+  read-only diagnostic (main row size + per-key chunk size +
+  recovery verdict). Surfaces in the Snapshot Log tab via a
+  "show debug" button.
+- **Write-side shrink guard** (`shouldSkipSnapshotLogSyncFor
+  UnsafeShrink`, Task 5.15 PR-A). The cloud-sync `useEffect`
+  fetches `getSnapshotLogs.totalUniqueCount` before every
+  write; if local has strictly fewer entries than cloud, the
+  sync is paused and the user sees a notice
+  ("Local snapshot log has fewer entries than cloud — sync
+  paused. Open the Snapshot Log tab to recover.") instead of
+  clobbering the cloud history.
+- `SolarRecDashboard.tsx` calls `getSnapshotLogs` when the
+  Snapshot Log tab is active and merges the server result into
+  the localStorage state via `mergeServerSnapshotLogsIntoLocal`
+  (server entries WIN on id conflict).
 
-**Target state (Phase 2+):** server-owned snapshot-log rows /
-pagination, or a durable snapshot-log artifact written by a
+**Target state (Phase 2+):** server-owned snapshot-log rows
+keyed on `(scopeId, id)` in a `solarRecSnapshotLogs` row
+table, or a durable snapshot-log artifact written by a
 background builder. The localStorage path becomes a working
 draft buffer for an in-progress user edit, never the
-canonical history.
+canonical history. Out of scope for Task 5.15 (which closed
+only the orphan-chunk wedge); will arrive with the broader
+row-table migration.
 
 **Hard rule:** localStorage is NOT canonical. A one-entry
 localStorage copy must never overwrite a larger server/cloud
-history. Code paths that write to `REMOTE_SNAPSHOT_LOGS_KEY`
-must protect against this — currently enforced by the merge
-helper in the read direction only; write-side protections come
-with the restore PR.
+history. Enforced today by **both** the read-side merge helper
+(`mergeServerSnapshotLogsIntoLocal`) AND the write-side guard
+(`shouldSkipSnapshotLogSyncForUnsafeShrink` consulting
+`getSnapshotLogs.totalUniqueCount`). Adding a third write path
+to `dataset:snapshot_logs_v1*` storage keys must consult one
+of these — direct upserts would re-introduce the 2026-04
+shrink-overwrite bug.
