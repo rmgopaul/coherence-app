@@ -40,6 +40,7 @@ import {
 import {
   loadDatasetRows,
   loadDatasetRowsPage,
+  streamDatasetRowsPage,
   getOrBuildSystemSnapshot,
 } from "./buildSystemSnapshot";
 import {
@@ -98,18 +99,15 @@ export type ServerAnnualProductionProfile = AnnualProductionProfile;
 export type ServerGenerationBaseline = GenerationBaseline;
 
 /**
- * Streaming dataset-page walk. Mirrors
- * `forEachPerformanceRatioConvertedReadPage` (further down this
- * file) but parameterized over any `srDs*` table — used by the
- * 2026-05-08 OOM fix to incrementally fold heavy datasets
- * (`srDsAccountSolarGeneration`, 17M+ rows) into a result Map
- * page-by-page instead of materializing the full row set in
- * memory.
+ * 2026-05-08 (consolidation) — local wrapper around the shared
+ * `streamDatasetRowsPage` from `buildSystemSnapshot.ts`. Provides
+ * the per-call default for this module's log prefix and page size.
  *
- * Cursor-paginated via `loadDatasetRowsPage` (already proven on
- * convertedReads). Default page size matches
- * `PERFORMANCE_RATIO_CONVERTED_READS_PAGE_SIZE` so the per-page
- * memory budget is uniform across the build step.
+ * Pre-consolidation, this file held its own copy of the streaming
+ * helper. The CLAUDE.md note on the offline-monitoring sibling
+ * called the consolidation out as the right next step. After this
+ * PR, both callers share one definition; the `logPrefix` parameter
+ * keeps each call site's log lines distinct for grep-ability.
  */
 async function streamSrDsRowsPage(
   scopeId: string,
@@ -119,31 +117,10 @@ async function streamSrDsRowsPage(
   onPage: (rows: CsvRow[]) => void | Promise<void>,
   options: { pageSize?: number } = {}
 ): Promise<number> {
-  const pageSize = options.pageSize ?? STREAM_PAGE_SIZE_DEFAULT;
-  let cursor: string | null = null;
-  let totalRows = 0;
-  let pageCount = 0;
-  for (;;) {
-    const page = await loadDatasetRowsPage(scopeId, batchId, table, {
-      cursor,
-      limit: pageSize,
-    });
-    if (page.rows.length > 0) {
-      await onPage(page.rows);
-    }
-    totalRows += page.rows.length;
-    pageCount += 1;
-    if (pageCount === 1 || pageCount % 10 === 0 || !page.nextCursor) {
-      process.stdout.write(
-        `[loadPerformanceRatioInput] streamed page=${pageCount} ` +
-          `totalRows=${totalRows} ` +
-          `heapUsed=${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB\n`
-      );
-    }
-    if (!page.nextCursor) break;
-    cursor = page.nextCursor;
-  }
-  return totalRows;
+  return streamDatasetRowsPage(scopeId, batchId, table, onPage, {
+    pageSize: options.pageSize ?? STREAM_PAGE_SIZE_DEFAULT,
+    logPrefix: "[loadPerformanceRatioInput]",
+  });
 }
 
 // 2026-05-08 step-4 hardening — was 5_000. Cut to 2_500 because the
