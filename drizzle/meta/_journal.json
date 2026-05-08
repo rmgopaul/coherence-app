@@ -456,6 +456,13 @@
       "when": 1778279963455,
       "tag": "0068_artifact_payload_to_longtext",
       "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "5",
+      "when": 1778280471987,
+      "tag": "0069_perf_ratio_compliant_facts",
+      "breakpoints": true
     }
   ]
 }
