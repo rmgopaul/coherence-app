@@ -61,7 +61,10 @@ import type {
   InsertSolarRecDashboardPerformanceRatioFact,
   InsertSolarRecDashboardPerformanceRatioCompliantFact,
 } from "../../../drizzle/schema";
-import { upsertComputedArtifact } from "../../db/solarRecDatasets";
+import {
+  upsertComputedArtifact,
+  deleteComputedArtifactsByType,
+} from "../../db/solarRecDatasets";
 import { startDashboardJobMetric } from "./dashboardJobMetrics";
 
 const STEP_NAME = "performanceRatioFacts";
@@ -1141,20 +1144,25 @@ async function runPerformanceRatioStep(args: {
     context: { scopeId },
   });
 
-  // 2026-05-09 — Option C build-isolation refactor. The fact-row
-  // PK now includes `buildId`, so this build's writes coexist with
-  // any prior build's rows in the table; visibility flips on the
-  // summary write. Strict ordering:
-  //   1. Stream pages → UPSERT rows tagged with THIS buildId
-  //      (rows are NOT visible — page reader filters by the
-  //      summary's buildId, which is still the PRIOR build's).
-  //   2. Once streaming + accumulators are complete: write
-  //      auto-compliant + best-per-system side caches under the
-  //      new buildId.
+  // 2026-05-09 — Option C build-isolation refactor (post PR-CB-6).
+  // The fact-row PK now includes `buildId`, so this build's writes
+  // coexist with any prior build's rows in the table; visibility
+  // flips on the summary write. Strict ordering:
+  //   1. Stream convertedReads pages → UPSERT parent fact rows
+  //      tagged with THIS buildId (rows are NOT visible — page
+  //      reader filters by the summary's buildId, which is still
+  //      the PRIOR build's).
+  //   2. Once streaming + accumulators are complete: UPSERT the
+  //      compliant fact rows (PR-CB-2) → write the auto-compliant
+  //      side cache under the new buildId. (PR-CB-6 retired the
+  //      best-per-system side cache; the compliant fact table is
+  //      its replacement.)
   //   3. Write the summary artifact with the new `buildId` —
   //      THIS is the visibility flip; tab reads now see the new
   //      build's rows.
-  //   4. Best-effort prune of superseded rows (older `buildId`s).
+  //   4. Best-effort prune of superseded rows (older `buildId`s)
+  //      across BOTH fact tables, plus the one-shot cleanup of the
+  //      retired bestPerSystem artifact row (CB-6 closure).
   //
   // If the runner throws between (1) and (3), the OLD summary
   // remains the visible build pointer; partially-written new
@@ -1164,18 +1172,21 @@ async function runPerformanceRatioStep(args: {
     if (signal.aborted) throw new Error("aborted before batch resolution");
     const batchIds = await resolvePerformanceRatioBatchIds(scopeId);
 
-    // No convertedReads → write empty side caches + empty
-    // summary, then prune. `allocationCount = 0` and
-    // `monitoringOptions = []` reach the client.
+    // No convertedReads → write the empty auto-compliant side
+    // cache + empty summary, then prune. `allocationCount = 0`
+    // and `monitoringOptions = []` reach the client. (PR-CB-6:
+    // best-per-system side cache retired; compliant fact table
+    // gets pruned via `pruneSupersededPerformanceRatioCompliantFacts`
+    // below.)
     if (!batchIds.convertedReadsBatchId) {
       if (signal.aborted)
         throw new Error("aborted before empty summary write");
       const builtAt = new Date();
       const streamingTotals = createPerformanceRatioStreamingAccumulators();
-      // Write side caches BEFORE summary (visibility-flip ordering).
-      // 2026-05-09 — PR-CB-6 — bestPerSystem artifact write
-      // retired; the new fact table is the sole reader path. The
-      // autoCompliantSources artifact stays (still consumed by
+      // Write the auto-compliant side cache BEFORE summary
+      // (visibility-flip ordering). PR-CB-6 retired the
+      // best-per-system artifact write; the auto-compliant
+      // artifact stays (still consumed by
       // `getDashboardPerformanceRatioCompliantContext`).
       await writeAutoCompliantSourcesArtifact(
         scopeId,
@@ -1218,11 +1229,31 @@ async function runPerformanceRatioStep(args: {
           }`
         );
       }
+      // 2026-05-09 — PR-CB-6 — same one-shot cleanup as the
+      // streaming path. The retired bestPerSystem artifact row
+      // can exist on a scope that hasn't run a successful build
+      // since CB-6 deployed, even if convertedReads is now empty.
+      let retiredArtifactsDeletedEmpty = 0;
+      try {
+        retiredArtifactsDeletedEmpty = await deleteComputedArtifactsByType(
+          scopeId,
+          "performanceRatioCompliantBestPerSystem"
+        );
+      } catch (cleanupErr) {
+        console.warn(
+          `${METRIC_PREFIX} cleanup of retired bestPerSystem artifact rows failed (empty-batch path): ${
+            cleanupErr instanceof Error
+              ? cleanupErr.message
+              : String(cleanupErr)
+          }`
+        );
+      }
       metric.finish({
         skipped: true,
         reason: "no convertedReads batch",
         orphanedDeleted: prunedCount,
         orphanedCompliantDeleted: prunedCompliantCount,
+        retiredArtifactsDeleted: retiredArtifactsDeletedEmpty,
       });
       return;
     }
@@ -1331,15 +1362,16 @@ async function runPerformanceRatioStep(args: {
       await upsertPerformanceRatioCompliantFacts(compliantFactRows);
     }
 
-    // Side caches BEFORE summary so a client that hits the new
-    // summary (visibility flip) and immediately follows with a
-    // compliant-context fetch never reads a stale side-cache row.
-    // 2026-05-09 — PR-CB-6 — bestPerSystem artifact write retired.
-    // The new `solarRecDashboardPerformanceRatioCompliantFacts`
-    // fact-table write (above, BEFORE the side caches) is the
-    // sole storage path for compliant rows. The
-    // autoCompliantSources artifact stays — still consumed by
-    // the legacy `getDashboardPerformanceRatioCompliantContext`
+    // Auto-compliant side cache BEFORE summary so a client that
+    // hits the new summary (visibility flip) and immediately
+    // follows with a compliant-context fetch never reads a stale
+    // side-cache row. 2026-05-09 — PR-CB-6 — bestPerSystem artifact
+    // write retired. The new
+    // `solarRecDashboardPerformanceRatioCompliantFacts` fact-table
+    // write (above, BEFORE the auto-compliant cache) is the sole
+    // storage path for compliant rows. The autoCompliantSources
+    // artifact stays — still consumed by the legacy
+    // `getDashboardPerformanceRatioCompliantContext`
     // proc for the upper "Compliant Sources" classification table.
     await writeAutoCompliantSourcesArtifact(
       scopeId,
@@ -1399,6 +1431,34 @@ async function runPerformanceRatioStep(args: {
       );
     }
 
+    // 2026-05-09 — PR-CB-6 — one-shot cleanup of the legacy
+    // `performanceRatioCompliantBestPerSystem` artifact row(s)
+    // left behind by the now-retired writer. After CB-6 retires
+    // the writer, no `upsertComputedArtifact` for this artifactType
+    // ever fires for any scope, so the existing
+    // `pruneOldComputedArtifacts` keep-newest-3 sweep (triggered
+    // only on writes) NEVER reclaims the orphan row(s) — they sit
+    // forever taking 4+ MB of mediumtext per scope until something
+    // explicitly deletes them. This DELETE runs once per build and
+    // is idempotent: the second + every subsequent call returns 0
+    // affected rows in O(1) DB time. Best-effort: a failure does
+    // NOT roll back the visibility flip.
+    let retiredArtifactsDeleted = 0;
+    try {
+      retiredArtifactsDeleted = await deleteComputedArtifactsByType(
+        scopeId,
+        "performanceRatioCompliantBestPerSystem"
+      );
+    } catch (cleanupErr) {
+      console.warn(
+        `${METRIC_PREFIX} cleanup of retired bestPerSystem artifact rows failed (build still succeeded): ${
+          cleanupErr instanceof Error
+            ? cleanupErr.message
+            : String(cleanupErr)
+        }`
+      );
+    }
+
     metric.finish({
       rowsWritten: totalFactsWritten,
       pageCount,
@@ -1418,6 +1478,10 @@ async function runPerformanceRatioStep(args: {
       // validation in `buildPerformanceRatioCompliantFactRows`.
       compliantFactRowsWritten: compliantFactRows.length,
       orphanedCompliantDeleted,
+      // 2026-05-09 — PR-CB-6 — observability for the one-shot
+      // legacy artifact cleanup. Will read non-zero once per scope
+      // on the first build after CB-6 deploys, then 0 thereafter.
+      retiredArtifactsDeleted,
       streaming: true,
     });
   } catch (err) {
