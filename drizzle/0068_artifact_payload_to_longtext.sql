@@ -1,0 +1,31 @@
+-- 2026-05-09 — promote `solarRecComputedArtifacts.payload` from
+-- `mediumtext` (16 MB max) to `longtext` (4 GB max).
+--
+-- Background: PR #521 bumped the build runner's
+-- `BEST_PER_SYSTEM_HARD_CAP` from 5_000 → 30_000 to surface all
+-- 21,078 best-per-system rows on a production portfolio that had
+-- outgrown the original 5 k cap. The artifact JSON at full size
+-- (~17.5 MB at 833 B/row) overflowed `mediumtext` and the
+-- post-build artifact write errored out, leaving the prior
+-- 5 k-truncated artifact in place + the build job marked failed.
+--
+-- This is the interim unblock — `longtext` accommodates the new
+-- payload size with substantial headroom (4 GB vs 17.5 MB
+-- needed). Storage cost is negligible since TiDB stores the
+-- column out-of-row when large.
+--
+-- The structural fix (move best-per-system rows from artifact
+-- JSON into a dedicated fact table → paginated read proc + CSV
+-- background-job export) is the planned PR-CB-1 → PR-CB-6 series
+-- that follows this hotfix. Once that lands, the artifact JSON
+-- shrinks back below mediumtext's range, but the column type
+-- stays at `longtext` because (a) reverting would require
+-- another migration, (b) `longtext` columns store the same as
+-- `mediumtext` for sub-16 MB payloads, and (c) a future
+-- regression hitting this column again is more likely than not.
+--
+-- Migration is non-destructive — `mediumtext` → `longtext` is a
+-- strict superset, existing data is preserved unchanged.
+
+ALTER TABLE `solarRecComputedArtifacts`
+  MODIFY COLUMN `payload` LONGTEXT NOT NULL;
