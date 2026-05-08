@@ -219,7 +219,15 @@ describe("dashboard request heap env helpers", () => {
 });
 
 describe("DASHBOARD_OVERSIZE_ALLOWLIST", () => {
-  it("is empty after Phase 2 — every known oversized response has been retired", () => {
+  it("contains the documented live entries (PR #521 — getDashboardPerformanceRatioCompliantContext)", () => {
+    // 2026-05-09 — PR #521 re-added a single live entry after a
+    // production portfolio outgrew the 5 k best-per-system cap
+    // (21,078 entries observed). The fix bumps the build runner's
+    // cap to 30 k AND allowlists the read proc; structural fix
+    // (paginated read backed by a dedicated facts table + CSV
+    // background job) is documented at the allowlist entry's
+    // inline replacement plan in `dashboardResponseGuard.ts`.
+    //
     // Retirement history (most recent first):
     //   - `getDashboardOfflineMonitoring` — Phase 2 PR-F-4-i
     //     (2026-05-07): removed the parent client call, moved reads
@@ -239,7 +247,9 @@ describe("DASHBOARD_OVERSIZE_ALLOWLIST", () => {
     // The allowlist mechanism stays in the source for future
     // pressure-relief use; if a new regression genuinely needs an
     // entry, add it here with an inline replacement plan.
-    expect([...DASHBOARD_OVERSIZE_ALLOWLIST]).toEqual([]);
+    expect([...DASHBOARD_OVERSIZE_ALLOWLIST]).toEqual([
+      "solarRecDashboard.getDashboardPerformanceRatioCompliantContext",
+    ]);
   });
 
   it("uses fully-qualified router-prefixed paths (no bare procedure names)", () => {

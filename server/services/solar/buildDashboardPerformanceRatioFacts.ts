@@ -113,12 +113,37 @@ export const PERFORMANCE_RATIO_BEST_PER_SYSTEM_VERSION_KEY = "current";
 const AUTO_COMPLIANT_ENTRIES_HARD_CAP = 25_000;
 
 /**
- * Cap on best-per-system entries. Production today has at most
- * one entry per unique system × eligible-month combo; ~few
- * thousand on the largest portfolio. The 5 k cap keeps the
- * artifact payload bounded.
+ * Cap on best-per-system entries.
+ *
+ * 2026-05-09 — bumped from 5_000 → 30_000 after a production
+ * portfolio observed 21,078 best-per-system entries. The original
+ * 5 k estimate ("~few thousand on the largest portfolio") aged out
+ * as the portfolio grew. Truncation at 5 k surfaced as
+ * `bestPerSystemTruncated: true` + an in-tab notice; the user could
+ * see only ~24% of their compliant rows in the tab + CSV export.
+ *
+ * 30 k = ~50% headroom over current size. At ~400 bytes JSON per
+ * row (25 fields, mixed strings/numbers/nulls), worst-case payload
+ * is ~12 MB. That's an order of magnitude over the 1 MB dashboard
+ * wire-payload guardrail, so the read proc
+ * (`getDashboardPerformanceRatioCompliantContext`) is added to
+ * `DASHBOARD_OVERSIZE_ALLOWLIST` until the proper structural fix
+ * lands (move best-per-system out of the artifact JSON into a
+ * dedicated fact table → paginate via `useInfiniteQuery` → CSV
+ * export via `startDashboardCsvExport({ exportType:
+ * "performanceRatioCompliantBestCsv" })`). See the allowlist
+ * comment in `dashboardResponseGuard.ts` for the migration
+ * tracking pointer.
+ *
+ * The mediumtext storage column on `solarRecComputedArtifacts`
+ * accepts up to 16 MB so storage isn't the bottleneck — the wire
+ * payload is. In prod, `dashboardResponseGuardMiddleware` defaults
+ * to `warn` (not `throw`), so the oversize response goes through;
+ * the user gets all 30 k rows. In dev/test the middleware throws,
+ * so the allowlist entry is required to keep the test suite
+ * passing.
  */
-const BEST_PER_SYSTEM_HARD_CAP = 5_000;
+const BEST_PER_SYSTEM_HARD_CAP = 30_000;
 
 export type PerformanceRatioSummaryPayload = {
   // Aggregator counters (pre-existing).

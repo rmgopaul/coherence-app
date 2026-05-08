@@ -147,13 +147,37 @@ export const DASHBOARD_HEAP_PRESSURE_REJECT_BYTES_DEFAULT =
  *     aggregator (`getOrBuildPerformanceRatio`) remains in-
  *     process for the build runner step only.
  *
- * **The allowlist is now empty.** Phase 2 has retired every
- * known oversized response from the dashboard router. New procs
- * must stay under the 1 MB budget; if a future regression
- * genuinely needs the allowlist mechanism, add the entry here
- * with an inline replacement plan.
+ * **Active allowlist entries:**
+ *
+ *   - `solarRecDashboard.getDashboardPerformanceRatioCompliantContext`
+ *     (added 2026-05-09 in PR #521). The Option-C build runner
+ *     pre-aggregates best-per-system rows + auto-compliant sources
+ *     into two artifact JSONs read by this single proc. A
+ *     production portfolio outgrew the original 5 k best-per-system
+ *     cap (21,078 entries observed); bumping the cap to 30 k makes
+ *     all rows visible to the user but pushes the wire payload past
+ *     the 1 MB budget (~8 MB worst-case at the new cap, ~12 MB
+ *     at the cap ceiling). **Replacement plan:** split the proc into
+ *     (a) a paginated read backed by a dedicated
+ *     `solarRecDashboardPerformanceRatioCompliantBestFacts` table
+ *     populated by the build runner, served via `useInfiniteQuery`
+ *     just like `getDashboardPerformanceRatioPage`; (b) a
+ *     paginated read for the auto-compliant sources lookup
+ *     (currently capped at 25 k entries × ~30 B = ~750 KB,
+ *     borderline but not the immediate problem); (c) a CSV export
+ *     type `performanceRatioCompliantBestCsv` on the existing
+ *     `startDashboardCsvExport` background-job runner so the full
+ *     21 k+ row dump never crosses tRPC. Tracking issue:
+ *     follow-up to PR #521.
+ *
+ * New procs must stay under the 1 MB budget. If a future
+ * regression genuinely needs the allowlist mechanism, add the
+ * entry here with an inline replacement plan (and reference the
+ * follow-up PR/issue tracking the migration).
  */
-export const DASHBOARD_OVERSIZE_ALLOWLIST: ReadonlySet<string> = new Set([]);
+export const DASHBOARD_OVERSIZE_ALLOWLIST: ReadonlySet<string> = new Set([
+  "solarRecDashboard.getDashboardPerformanceRatioCompliantContext",
+]);
 
 export type DashboardResponseEnforcement = "warn" | "throw" | "off";
 
