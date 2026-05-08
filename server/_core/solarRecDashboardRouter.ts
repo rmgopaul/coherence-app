@@ -4371,6 +4371,29 @@ export const solarRecDashboardRouter = t.router({
           ]),
           sortDir: z.enum(["asc", "desc"]),
         }),
+        z.object({
+          // 2026-05-09 — PR-CB-4 — full export of the
+          // PerformanceRatioTab's compliant-best subset (the
+          // bottom-of-tab "Compliant Sources" table). Args mirror
+          // `getDashboardPerformanceRatioCompliantBestPage`'s
+          // filter surface so the CSV file matches what the user
+          // sees on the paginated tab. Replaces the in-tab CSV
+          // download from the artifact JSON; the new path streams
+          // directly from
+          // `solarRecDashboardPerformanceRatioCompliantFacts` so
+          // the full 21k+ row dump never crosses tRPC.
+          exportType: z.literal("performanceRatioCompliantBestCsv"),
+          compliantSource: z.string().nullable(),
+          monitoring: z.string().nullable(),
+          search: z.string().nullable(),
+          sortBy: z.enum([
+            "performanceRatioPercent",
+            "readDate",
+            "systemName",
+            "compliantSource",
+          ]),
+          sortDir: z.enum(["asc", "desc"]),
+        }),
       ])
     )
     .mutation(async ({ ctx, input }) => {
