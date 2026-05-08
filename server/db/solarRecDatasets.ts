@@ -5,7 +5,7 @@
  * active dataset versions, and compute runs.
  */
 
-import { eq, and, desc, asc, sql } from "drizzle-orm";
+import { eq, and, desc, asc, notInArray, sql } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import {
   solarRecScopes,
@@ -771,6 +771,115 @@ export async function upsertComputedArtifact(data: {
     }
     throw error;
   }
+
+  // 2026-05-08 (Phase 8 cleanup) — fire-and-forget TTL prune. Keeps
+  // the newest 3 cache rows per (scopeId, artifactType) tuple; older
+  // rows get DELETEd. Without this, every input-version-hash change
+  // appended a new ~5.7 MB foundation-v1 cache row that was never
+  // reclaimed (≥20 rows on prod for scope-user-1 as of the H-1 audit
+  // — see `docs/h1-prod-baseline-attribution.md`). The covering
+  // `sr_computed_artifacts_scope_type_updated_idx` index makes the
+  // prune O(log n + N) where N = retained rows; cheap.
+  //
+  // Fire-and-forget so a slow prune doesn't block the upsert. A
+  // failed prune is observability noise, not a correctness issue —
+  // the cache row was already written and reads will hit it.
+  void pruneOldComputedArtifacts(data.scopeId, data.artifactType).catch(
+    (err) => {
+      console.warn(
+        `[computedArtifacts] TTL prune failed for ` +
+          `scope=${data.scopeId} type=${data.artifactType}: ` +
+          (err instanceof Error ? err.message : String(err))
+      );
+    }
+  );
+}
+
+/**
+ * 2026-05-08 (Phase 8 cleanup) — TTL prune for
+ * `solarRecComputedArtifacts`. Keeps the newest `keep` rows per
+ * `(scopeId, artifactType)` tuple (default 3); deletes everything
+ * older. Returns the number of rows deleted.
+ *
+ * Default `keep=3` because:
+ *   - The currently-active hash always needs to be retained
+ *     (covers in-flight readers).
+ *   - The previous hash is useful as a hot-cache fallback during
+ *     an input rev (e.g. a build started against the old hash but
+ *     a new dataset upload lands mid-stream).
+ *   - One additional buffer slot in case we lose the race between
+ *     "newer hash written" and "older hash pruned."
+ *
+ * Three is conservative; `keep` can be raised by callers that have
+ * a structural reason to retain more history (none today).
+ */
+export async function pruneOldComputedArtifacts(
+  scopeId: string,
+  artifactType: string,
+  options: { keep?: number } = {}
+): Promise<number> {
+  const keep = Math.max(1, Math.floor(options.keep ?? 3));
+  const db = await getDb();
+  if (!db) return 0;
+
+  let keeperRows: Array<{ id: string }>;
+  try {
+    keeperRows = await withDbRetry(
+      "select computed artifacts to keep",
+      () =>
+        db
+          .select({ id: solarRecComputedArtifacts.id })
+          .from(solarRecComputedArtifacts)
+          .where(
+            and(
+              eq(solarRecComputedArtifacts.scopeId, scopeId),
+              eq(solarRecComputedArtifacts.artifactType, artifactType)
+            )
+          )
+          .orderBy(desc(solarRecComputedArtifacts.updatedAt))
+          .limit(keep)
+    );
+  } catch (error) {
+    if (isMissingTableError(error)) return 0;
+    throw error;
+  }
+
+  // Below the threshold — nothing to prune. Caller is on the
+  // happy path; no DELETE round-trip.
+  if (keeperRows.length < keep) return 0;
+
+  const keepIds = keeperRows.map((row) => row.id);
+
+  let result: unknown;
+  try {
+    result = await withDbRetry("prune old computed artifacts", () =>
+      db
+        .delete(solarRecComputedArtifacts)
+        .where(
+          and(
+            eq(solarRecComputedArtifacts.scopeId, scopeId),
+            eq(solarRecComputedArtifacts.artifactType, artifactType),
+            notInArray(solarRecComputedArtifacts.id, keepIds)
+          )
+        )
+    );
+  } catch (error) {
+    if (isMissingTableError(error)) return 0;
+    throw error;
+  }
+
+  // Drizzle's MySQL DELETE returns a 2-tuple [OkPacket, FieldPacket[]];
+  // the OkPacket carries `affectedRows`. Mirror the helper used in
+  // `dashboardChangeOwnershipFacts.ts`.
+  if (Array.isArray(result) && result.length > 0) {
+    const ok = result[0] as { affectedRows?: unknown };
+    if (typeof ok?.affectedRows === "number") return ok.affectedRows;
+  }
+  if (result && typeof result === "object" && "affectedRows" in result) {
+    const affected = (result as { affectedRows?: unknown }).affectedRows;
+    if (typeof affected === "number") return affected;
+  }
+  return 0;
 }
 
 // ---------------------------------------------------------------------------
