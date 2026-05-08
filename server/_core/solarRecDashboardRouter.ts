@@ -614,21 +614,34 @@ export const solarRecDashboardRouter = t.router({
       `state:${key}`,
       () => loadDashboardPayload(ctx.userId, dbStorageKey, key, legacyKey)
     );
-    // 2026-05-08 (Phase H-1 diagnostic) — log every getState read's
-    // payload size so we can detect blob-bloat regressions early.
-    // Today's prod state.json is ~42 KB; if a future client write
-    // pushes it past a few MB, this log line surfaces it before the
-    // wire-payload guard or heap-pressure circuit-breaker has to
-    // catch it. Cheap (one console.log per call, ~80 chars). Phase
-    // H's structural fix decomposes state.json into typed slices —
-    // this log retires with H-5.
-    console.log(
-      `[dashboard:state-payload-size] ${JSON.stringify({
-        userId: ctx.userId,
-        bytes: result?.payload.length ?? 0,
-        present: result !== null,
-      })}`
-    );
+    // 2026-05-08 (Phase H-1 diagnostic) — log getState payload size,
+    // but only when it crosses the bloat-detection threshold. The
+    // initial H-1 implementation logged on EVERY call (~80 chars per
+    // line × every dashboard load × every active user); after H wrap-
+    // up confirmed state.json is heartbeat-only (12 bytes for a
+    // cleaned-up scope, 42 KB for a legacy blob), per-call logging
+    // is mostly noise. The signal is ANY payload above heartbeat
+    // size — that's either a legacy blob or a regression that
+    // re-wrote the blob. Threshold of 1 KB is generous enough to
+    // never fire on the heartbeat AND aggressive enough to catch
+    // anything bigger than a small typed-slice future write.
+    //
+    // The cleanupLegacyStatePayload admin proc rewrites legacy
+    // blobs to the heartbeat shape; once invoked, this log line
+    // should go silent for that scope. If it stays loud after
+    // cleanup, that's the signal that a rogue client is still
+    // writing the legacy datasetManifest shape.
+    const STATE_PAYLOAD_LOG_THRESHOLD_BYTES = 1024;
+    const bytes = result?.payload.length ?? 0;
+    if (bytes > STATE_PAYLOAD_LOG_THRESHOLD_BYTES) {
+      console.log(
+        `[dashboard:state-payload-size] ${JSON.stringify({
+          userId: ctx.userId,
+          bytes,
+          present: result !== null,
+        })}`
+      );
+    }
     return result;
   }),
   saveState: dashboardProcedure("solar-rec-dashboard", "edit")
