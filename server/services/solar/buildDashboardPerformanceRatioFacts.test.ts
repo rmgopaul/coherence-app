@@ -321,6 +321,206 @@ describe("buildPerformanceRatioFactRows (pure transformation)", () => {
 });
 
 // ────────────────────────────────────────────────────────────────────
+// Range-aware decimal conversion (codex review fixup, 2026-05-09)
+// ────────────────────────────────────────────────────────────────────
+//
+// `performanceRatioPercent` is `decimal(10, 4)` on TiDB — it accepts
+// values in `[-999_999.9999, 999_999.9999]`. Production saw values
+// like -1_146_203 (a meter-rollover row dividing a huge negative
+// delta by a small expected) which triggered
+// `ER_WARN_DATA_OUT_OF_RANGE` under STRICT_TRANS_TABLES and aborted
+// the entire 200-row bulk upsert batch. Fix: null at the application
+// boundary + structured warn so the source of bad data is traceable.
+//
+// `lifetimeReadWh` / `contractValue` are NOT NULL columns; an
+// out-of-range value drops the entire row (null wouldn't satisfy
+// the schema).
+
+describe("buildPerformanceRatioFactRows — range-aware decimal handling", () => {
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    warnSpy = vi
+      .spyOn(console, "warn")
+      .mockImplementation(() => undefined);
+  });
+  afterEach(() => {
+    warnSpy.mockRestore();
+  });
+
+  it("preserves typical production performanceRatioPercent values that previously caused alarms", () => {
+    // Values from the user's production failure investigation.
+    // All are within decimal(10, 4) range (±999_999.9999), so they
+    // must pass through unchanged. Pre-fix these were assumed to
+    // be the cause; the actual cause was the 7-figure outliers.
+    const rows = buildPerformanceRatioFactRows({
+      scopeId: "s",
+      buildId: "b",
+      rows: [
+        makeRow({ key: "k-neg", performanceRatioPercent: -8109 }),
+        makeRow({ key: "k-mid", performanceRatioPercent: 515 }),
+        makeRow({ key: "k-pos", performanceRatioPercent: 8532 }),
+      ],
+    });
+    expect(rows.map(r => r.performanceRatioPercent)).toEqual([
+      "-8109",
+      "515",
+      "8532",
+    ]);
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it("nulls performanceRatioPercent when value exceeds decimal(10, 4) ceiling (positive)", () => {
+    const [row] = buildPerformanceRatioFactRows({
+      scopeId: "s",
+      buildId: "b",
+      rows: [makeRow({ performanceRatioPercent: 1_000_000 })],
+    });
+    expect(row.performanceRatioPercent).toBeNull();
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    const msg = String(warnSpy.mock.calls[0][0]);
+    expect(msg).toMatch(/out-of-range/);
+    expect(msg).toMatch(/performanceRatioPercent/);
+    expect(msg).toMatch(/value=1000000/);
+  });
+
+  it("nulls performanceRatioPercent when value exceeds decimal(10, 4) ceiling (negative — production failure value)", () => {
+    // -1_146_203% is the actual value that caused the prod failure.
+    const [row] = buildPerformanceRatioFactRows({
+      scopeId: "s",
+      buildId: "b",
+      rows: [makeRow({ performanceRatioPercent: -1_146_203 })],
+    });
+    expect(row.performanceRatioPercent).toBeNull();
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    const msg = String(warnSpy.mock.calls[0][0]);
+    expect(msg).toMatch(/out-of-range/);
+    expect(msg).toMatch(/performanceRatioPercent/);
+    expect(msg).toMatch(/value=-1146203/);
+  });
+
+  it("emits a structured warn line with buildId + key + trackingSystemRefId + column for traceability", () => {
+    buildPerformanceRatioFactRows({
+      scopeId: "s",
+      buildId: "build-XYZ",
+      rows: [
+        makeRow({
+          key: "converted-99-sys-Z",
+          trackingSystemRefId: "tr-Z",
+          performanceRatioPercent: 5_000_000,
+        }),
+      ],
+    });
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    const msg = String(warnSpy.mock.calls[0][0]);
+    expect(msg).toMatch(/buildId=build-XYZ/);
+    expect(msg).toMatch(/key=converted-99-sys-Z/);
+    expect(msg).toMatch(/trackingSystemRefId=tr-Z/);
+    expect(msg).toMatch(/column=performanceRatioPercent/);
+  });
+
+  it("preserves an in-range performanceRatioPercent even at the ceiling edge (just under 1M)", () => {
+    // decimal(10, 4) allows up to 999_999.9999. We pass 999_999
+    // (cleanly within) — must round-trip via `String()`.
+    const [row] = buildPerformanceRatioFactRows({
+      scopeId: "s",
+      buildId: "b",
+      rows: [makeRow({ performanceRatioPercent: 999_999 })],
+    });
+    expect(row.performanceRatioPercent).toBe("999999");
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it("DROPS the row when lifetimeReadWh exceeds decimal(20, 4) ceiling (NOT NULL column)", () => {
+    // decimal(20, 4) ceiling = 10^16 - 10^-4 ≈ 9.999...e15. A value
+    // ≥ 10^16 must drop the row (null isn't allowed in NOT NULL).
+    const rows = buildPerformanceRatioFactRows({
+      scopeId: "s",
+      buildId: "b",
+      rows: [
+        makeRow({ key: "good", lifetimeReadWh: 12_345_678 }),
+        makeRow({ key: "absurd", lifetimeReadWh: 1e17 }),
+      ],
+    });
+    expect(rows.map(r => r.key)).toEqual(["good"]);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(String(warnSpy.mock.calls[0][0])).toMatch(/lifetimeReadWh/);
+  });
+
+  it("DROPS the row when contractValue exceeds decimal(18, 4) ceiling (NOT NULL column)", () => {
+    // decimal(18, 4) ceiling ≈ 9.999...e13.
+    const rows = buildPerformanceRatioFactRows({
+      scopeId: "s",
+      buildId: "b",
+      rows: [
+        makeRow({ key: "good", contractValue: 25_000 }),
+        makeRow({ key: "absurd", contractValue: 1e15 }),
+      ],
+    });
+    expect(rows.map(r => r.key)).toEqual(["good"]);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(String(warnSpy.mock.calls[0][0])).toMatch(/contractValue/);
+  });
+
+  it("nulls out-of-range portalAcSizeKw / abpAcSizeKw without dropping the row (nullable columns)", () => {
+    const [row] = buildPerformanceRatioFactRows({
+      scopeId: "s",
+      buildId: "b",
+      rows: [
+        makeRow({
+          // decimal(18, 4) ceiling ≈ 9.999...e13.
+          portalAcSizeKw: 1e15,
+          abpAcSizeKw: -1e15,
+        }),
+      ],
+    });
+    expect(row.portalAcSizeKw).toBeNull();
+    expect(row.abpAcSizeKw).toBeNull();
+    expect(warnSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("nulls out-of-range baselineReadWh / productionDeltaWh / expectedProductionWh without dropping the row", () => {
+    const [row] = buildPerformanceRatioFactRows({
+      scopeId: "s",
+      buildId: "b",
+      rows: [
+        makeRow({
+          // decimal(20, 4) ceiling ≈ 9.999...e15.
+          baselineReadWh: 1e17,
+          productionDeltaWh: -1e17,
+          expectedProductionWh: 1e17,
+        }),
+      ],
+    });
+    expect(row.baselineReadWh).toBeNull();
+    expect(row.productionDeltaWh).toBeNull();
+    expect(row.expectedProductionWh).toBeNull();
+    expect(warnSpy).toHaveBeenCalledTimes(3);
+  });
+
+  it("does NOT warn when an out-of-range value appears in a different column for the same row", () => {
+    // Each column is checked independently — a bad
+    // performanceRatioPercent should not affect other decimals.
+    const [row] = buildPerformanceRatioFactRows({
+      scopeId: "s",
+      buildId: "b",
+      rows: [
+        makeRow({
+          performanceRatioPercent: 5_000_000, // out of range
+          baselineReadWh: 1000, // in range
+          productionDeltaWh: 500, // in range
+          portalAcSizeKw: 7.5, // in range
+        }),
+      ],
+    });
+    expect(row.performanceRatioPercent).toBeNull();
+    expect(row.baselineReadWh).toBe("1000");
+    expect(row.productionDeltaWh).toBe("500");
+    expect(row.portalAcSizeKw).toBe("7.5");
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────
 // Slim summary payload builder tests
 // ────────────────────────────────────────────────────────────────────
 

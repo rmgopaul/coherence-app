@@ -36,6 +36,8 @@ import {
   insertSolarRecDashboardBuild,
   pruneTerminalSolarRecDashboardBuilds,
   refreshSolarRecDashboardBuildClaim,
+  SOLAR_REC_DASHBOARD_BUILD_ERROR_MESSAGE_MAX_CHARS,
+  truncateBuildErrorMessage,
   updateSolarRecDashboardBuildProgress,
 } from "./solarRecDashboardBuilds";
 
@@ -372,6 +374,122 @@ describe("completeSolarRecDashboardBuildFailure", () => {
         "err"
       )
     ).toBe(false);
+  });
+
+  it("truncates a runaway error message before writing (mysql2 SQL+params blob would otherwise overflow TEXT column)", async () => {
+    // 2026-05-09 codex review fixup. mysql2 errors include the
+    // full failing SQL + parameter list. For a 200-row bulk
+    // upsert that's 100+ KB — far beyond TEXT's 65,535-byte
+    // limit. Pre-fix the secondary failure UPDATE crashed,
+    // leaving the build row in `running` until the stale-claim
+    // sweeper picked it up 5 min later. The truncate cap (4000
+    // chars) keeps the prefix that's actually useful.
+    const stub = makeDbStub({ updateAffected: 1 });
+    mocks.getDb.mockResolvedValue(stub);
+    const giant = "x".repeat(150_000); // 150 KB blob
+    await completeSolarRecDashboardBuildFailure(
+      "scope-1",
+      "build-1",
+      "claimer-1",
+      giant
+    );
+    const call = stub.calls.find(c => c.kind === "update");
+    const written = call?.setValue?.errorMessage;
+    expect(typeof written).toBe("string");
+    expect((written as string).length).toBeLessThanOrEqual(
+      SOLAR_REC_DASHBOARD_BUILD_ERROR_MESSAGE_MAX_CHARS
+    );
+    // The truncated message ends with the visible suffix so an
+    // operator can tell at a glance the message was cut.
+    expect(written).toMatch(/…\[truncated\]$/);
+    // The first chars of the original message are preserved.
+    expect((written as string).startsWith("xxxx")).toBe(true);
+  });
+
+  it("does NOT truncate a short error message", async () => {
+    const stub = makeDbStub({ updateAffected: 1 });
+    mocks.getDb.mockResolvedValue(stub);
+    await completeSolarRecDashboardBuildFailure(
+      "scope-1",
+      "build-1",
+      "claimer-1",
+      "short message"
+    );
+    const call = stub.calls.find(c => c.kind === "update");
+    expect(call?.setValue?.errorMessage).toBe("short message");
+  });
+
+  it("normalizes null/undefined errorMessage to empty string before writing", async () => {
+    const stub = makeDbStub({ updateAffected: 1 });
+    mocks.getDb.mockResolvedValue(stub);
+    await completeSolarRecDashboardBuildFailure(
+      "scope-1",
+      "build-1",
+      "claimer-1",
+      null as unknown as string
+    );
+    const call = stub.calls.find(c => c.kind === "update");
+    expect(call?.setValue?.errorMessage).toBe("");
+  });
+});
+
+describe("truncateBuildErrorMessage", () => {
+  it("returns empty string for null input", () => {
+    expect(truncateBuildErrorMessage(null)).toBe("");
+  });
+
+  it("returns empty string for undefined input", () => {
+    expect(truncateBuildErrorMessage(undefined)).toBe("");
+  });
+
+  it("returns empty string for empty input unchanged", () => {
+    expect(truncateBuildErrorMessage("")).toBe("");
+  });
+
+  it("returns short messages unchanged", () => {
+    const msg = "boom: out of memory at line 42";
+    expect(truncateBuildErrorMessage(msg)).toBe(msg);
+  });
+
+  it("returns a message exactly at the max cap unchanged", () => {
+    const msg = "a".repeat(SOLAR_REC_DASHBOARD_BUILD_ERROR_MESSAGE_MAX_CHARS);
+    expect(truncateBuildErrorMessage(msg)).toBe(msg);
+    expect(truncateBuildErrorMessage(msg).length).toBe(
+      SOLAR_REC_DASHBOARD_BUILD_ERROR_MESSAGE_MAX_CHARS
+    );
+  });
+
+  it("truncates a message that exceeds the cap by one char", () => {
+    const msg = "a".repeat(
+      SOLAR_REC_DASHBOARD_BUILD_ERROR_MESSAGE_MAX_CHARS + 1
+    );
+    const result = truncateBuildErrorMessage(msg);
+    expect(result.length).toBe(
+      SOLAR_REC_DASHBOARD_BUILD_ERROR_MESSAGE_MAX_CHARS
+    );
+    expect(result.endsWith(" …[truncated]")).toBe(true);
+  });
+
+  it("truncates a 150KB mysql2-style blob and adds the suffix", () => {
+    // Approximates what mysql2's `Error.message` looks like when
+    // a bulk INSERT with 200 rows fails: full SQL statement +
+    // parameter list serialized into the message.
+    const giant = "INSERT INTO foo VALUES " + "(?,?,?,?),".repeat(20_000);
+    const result = truncateBuildErrorMessage(giant);
+    expect(result.length).toBeLessThanOrEqual(
+      SOLAR_REC_DASHBOARD_BUILD_ERROR_MESSAGE_MAX_CHARS
+    );
+    expect(result.endsWith(" …[truncated]")).toBe(true);
+    // The useful prefix is preserved.
+    expect(result.startsWith("INSERT INTO foo VALUES ")).toBe(true);
+  });
+
+  it("guarantees the cap stays well under TEXT's 65535-byte limit even with all-4-byte runes", () => {
+    // 4000 UTF-16 code units × max 4 bytes per rune = 16_000
+    // bytes max. TEXT is 65_535. Plenty of headroom.
+    expect(SOLAR_REC_DASHBOARD_BUILD_ERROR_MESSAGE_MAX_CHARS * 4).toBeLessThan(
+      65_535
+    );
   });
 });
 
