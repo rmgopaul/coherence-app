@@ -110,7 +110,9 @@ describe("getDashboardPerformanceRatioPage (Option C source rail)", () => {
     // filter to the DB helper. Defends against a regression
     // that would expose rows from in-flight or failed builds.
     expect(proc!).toMatch(/PERFORMANCE_RATIO_SUMMARY_ARTIFACT_TYPE/);
-    expect(proc!).toMatch(/parseSummaryBuildId/);
+    // The page proc parses the summary once via the canonical
+    // shared helper to avoid double-parsing for buildId + builtAt.
+    expect(proc!).toMatch(/parsePerformanceRatioSummaryPayload/);
     expect(proc!).toMatch(/buildId,/);
   });
 
@@ -237,11 +239,21 @@ describe("getDashboardPerformanceRatioFilteredAggregates (new in Option C)", () 
 
   it("filters by the summary's buildId (visibility-pointer contract)", () => {
     expect(proc!).toMatch(/PERFORMANCE_RATIO_SUMMARY_ARTIFACT_TYPE/);
-    expect(proc!).toMatch(/parseSummaryBuildId/);
+    // Filtered-aggregates proc only needs the buildId, so it
+    // uses the slim `extractPerformanceRatioVisibleBuildId`
+    // helper rather than parsing the full payload.
+    expect(proc!).toMatch(/extractPerformanceRatioVisibleBuildId/);
   });
 
   it("delegates to getPerformanceRatioFactsAggregates", () => {
     expect(proc!).toMatch(/getPerformanceRatioFactsAggregates/);
+  });
+
+  it("uses the shared `computePortfolioRatioPercent` helper (single source of truth for the formula)", () => {
+    // Pre-fix the proc inlined a near-duplicate of the build
+    // runner's portfolio-ratio formula, missing the
+    // Number.isFinite guards.
+    expect(proc!).toMatch(/computePortfolioRatioPercent/);
   });
 
   it("computes portfolioRatioPercent in the response", () => {

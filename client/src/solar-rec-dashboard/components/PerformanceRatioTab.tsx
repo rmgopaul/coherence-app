@@ -94,6 +94,7 @@ import type {
   PerformanceRatioMatchType,
   PerformanceRatioRow,
 } from "@/solar-rec-dashboard/state/types";
+import type { PerformanceRatioCompliantBestRowWire } from "@shared/solarRecPerformanceRatio";
 
 // ---------------------------------------------------------------------------
 // Props
@@ -501,12 +502,18 @@ export default memo(function PerformanceRatioTab(props: PerformanceRatioTabProps
     );
 
   // Reset to first page on any filter / sort / search change.
-  // Pre-fix the rows array was filtered client-side and the page
-  // counter clamped via the totalPages effect; under Option C
-  // the filter args are part of the page query's key, so a
-  // filter change refetches page 1 without touching local state.
-  // We still reset `performanceRatioPage` to 1 because the user
-  // may have navigated to page 5 of the prior filter.
+  // Under Option C the filter args are part of the page query's
+  // key, so a filter change refetches page 1 without touching
+  // local state. We still reset `performanceRatioPage` to 1
+  // because the user may have navigated to page 5 of the prior
+  // filter.
+  //
+  // Depend on `deferredPerformanceRatioSearch` (NOT the immediate
+  // `performanceRatioSearch`) so the reset happens when the page
+  // query's actual filter args change — pre-fix this used the
+  // immediate value, which fired the reset on every keystroke
+  // even though the page query itself only refetched after the
+  // deferred value updated.
   useEffect(() => {
     setPerformanceRatioPage(1);
   }, [
@@ -514,7 +521,7 @@ export default memo(function PerformanceRatioTab(props: PerformanceRatioTabProps
     performanceRatioMatchFilter,
     performanceRatioSortBy,
     performanceRatioSortDir,
-    performanceRatioSearch,
+    deferredPerformanceRatioSearch,
   ]);
 
   // Pending = the FIRST visible state hasn't landed yet (summary +
@@ -576,7 +583,15 @@ export default memo(function PerformanceRatioTab(props: PerformanceRatioTabProps
         solarRecTrpcUtils.solarRecDashboard.getDashboardPerformanceRatioPage.invalidate(),
         solarRecTrpcUtils.solarRecDashboard.getDashboardPerformanceRatioFilteredAggregates.invalidate(),
         solarRecTrpcUtils.solarRecDashboard.getDashboardPerformanceRatioCompliantContext.invalidate(),
-      ]);
+      ]).catch((err) => {
+        // TanStack `invalidate` rejecting is rare (network blip
+        // mid-mutation, etc.). Log so the user-facing "data is
+        // stale post-rebuild" never goes silent.
+        console.warn(
+          "[performance-ratio-tab] post-rebuild query invalidation failed:",
+          err,
+        );
+      });
     }
   }, [performanceRatioSummaryQuery.data, solarRecTrpcUtils]);
 
@@ -803,118 +818,79 @@ export default memo(function PerformanceRatioTab(props: PerformanceRatioTabProps
   }, [compliantSourcePage, compliantSourceTotalPages]);
 
   // 2026-05-09 — Option C — read pre-reduced best-per-system rows
-  // from the build runner's side cache. Pre-cutover this memo
-  // iterated every fact row, filtered to eligible (part2 + ratio
-  // in [30, 150]), grouped by systemKey, reduced to "best per
-  // system" via tie-breaker. All of that now happens server-side
-  // during the build streaming pass; the client just overlays
-  // manual sources from localStorage on top of the pre-attached
-  // auto-source. Sort order preserved from the server (most-recent
-  // read window, then highest ratio, then systemName).
+  // from the build runner's side cache. The server has already
+  // filtered (part2 + ratio in [30, 150]), grouped by systemKey,
+  // and reduced to "best per system" via tie-breaker. The client
+  // just revives the date strings, overlays manual sources from
+  // localStorage on top of the pre-attached auto-source, and
+  // adds the formatted month-year fields the JSX renders.
+  //
+  // The wire row type `PerformanceRatioCompliantBestRowWire` is
+  // shared from `@shared/solarRecPerformanceRatio` so the
+  // exhaustive `typeof row.foo === "..."` runtime checking the
+  // pre-fix version did is gone — the type contract is enforced
+  // at compile time.
   const compliantPerformanceRatioRows = useMemo<
     CompliantPerformanceRatioRow[]
   >(() => {
     const data = performanceRatioCompliantContextQuery.data;
     if (!data || data.available === false) return [];
-    return data.bestPerSystem.map((rawRow) => {
-      const row = rawRow as Record<string, unknown>;
-      const systemId =
-        typeof row.systemId === "string" ? row.systemId : null;
-      const stateApplicationRefId =
-        typeof row.stateApplicationRefId === "string"
-          ? row.stateApplicationRefId
-          : null;
-      const trackingSystemRefId =
-        typeof row.trackingSystemRefId === "string"
-          ? row.trackingSystemRefId
-          : "";
-      const systemName =
-        typeof row.systemName === "string" ? row.systemName : "";
-      const readDate = reviveNullableDate(
-        typeof row.readDate === "string" ? row.readDate : null,
-      );
-      const baselineDate = reviveNullableDate(
-        typeof row.baselineDate === "string" ? row.baselineDate : null,
-      );
+    const wireRows =
+      data.bestPerSystem as unknown as PerformanceRatioCompliantBestRowWire[];
+    return wireRows.map((row) => {
+      const readDate = reviveNullableDate(row.readDate);
+      const baselineDate = reviveNullableDate(row.baselineDate);
       const part2VerificationDate = reviveNullableDate(
-        typeof row.part2VerificationDate === "string"
-          ? row.part2VerificationDate
-          : null,
+        row.part2VerificationDate,
       );
-      const compliantEntry = systemId
-        ? compliantSourceByPortalId.get(systemId)
+      const compliantEntry = row.systemId
+        ? compliantSourceByPortalId.get(row.systemId)
         : undefined;
-      const autoFromCache =
-        typeof row.compliantSource === "string"
-          ? row.compliantSource
-          : null;
-      const candidate: CompliantPerformanceRatioRow = {
-        key: typeof row.key === "string" ? row.key : "",
-        convertedReadKey: "",
-        matchType:
-          typeof row.matchType === "string"
-            ? (row.matchType as PerformanceRatioMatchType)
-            : ("Monitoring + System ID" as PerformanceRatioMatchType),
-        monitoring:
-          typeof row.monitoring === "string" ? row.monitoring : "",
-        monitoringSystemId:
-          typeof row.monitoringSystemId === "string"
-            ? row.monitoringSystemId
-            : "",
-        monitoringSystemName:
-          typeof row.monitoringSystemName === "string"
-            ? row.monitoringSystemName
-            : "",
-        monitoringPlatform:
-          typeof row.monitoringPlatform === "string"
-            ? row.monitoringPlatform
-            : "",
-        installerName:
-          typeof row.installerName === "string" ? row.installerName : "",
+      return {
+        key: row.key,
+        // The wire shape doesn't carry `convertedReadKey` — the
+        // best-per-system table never renders it. The
+        // `CompliantPerformanceRatioRow` parent type still
+        // declares it, so we pass through the row's `key`
+        // composite (`${convertedReadKey}-${systemKey}`); a
+        // future render that exposes it would split that
+        // composite, but no JSX consumer reads it today.
+        convertedReadKey: row.key,
+        // Cast is sound because the build runner only emits one
+        // of the 3 enum values; runtime mismatch would mean a
+        // schema drift the user can't introduce client-side.
+        matchType: row.matchType as PerformanceRatioMatchType,
+        monitoring: row.monitoring,
+        monitoringSystemId: row.monitoringSystemId,
+        monitoringSystemName: row.monitoringSystemName,
+        monitoringPlatform: row.monitoringPlatform,
+        installerName: row.installerName,
         readDate,
-        readDateRaw:
-          typeof row.readDateRaw === "string" ? row.readDateRaw : "",
-        lifetimeReadWh:
-          typeof row.lifetimeReadWh === "number" ? row.lifetimeReadWh : 0,
-        trackingSystemRefId,
-        systemId,
-        stateApplicationRefId,
-        systemName,
-        portalAcSizeKw:
-          typeof row.portalAcSizeKw === "number" ? row.portalAcSizeKw : null,
-        abpAcSizeKw:
-          typeof row.abpAcSizeKw === "number" ? row.abpAcSizeKw : null,
+        readDateRaw: row.readDateRaw,
+        lifetimeReadWh: row.lifetimeReadWh,
+        trackingSystemRefId: row.trackingSystemRefId,
+        systemId: row.systemId,
+        stateApplicationRefId: row.stateApplicationRefId,
+        systemName: row.systemName,
+        portalAcSizeKw: row.portalAcSizeKw,
+        abpAcSizeKw: row.abpAcSizeKw,
         part2VerificationDate,
-        baselineReadWh:
-          typeof row.baselineReadWh === "number"
-            ? row.baselineReadWh
-            : null,
+        baselineReadWh: row.baselineReadWh,
         baselineDate,
-        baselineSource:
-          typeof row.baselineSource === "string" ? row.baselineSource : null,
-        productionDeltaWh:
-          typeof row.productionDeltaWh === "number"
-            ? row.productionDeltaWh
-            : null,
-        expectedProductionWh:
-          typeof row.expectedProductionWh === "number"
-            ? row.expectedProductionWh
-            : null,
-        performanceRatioPercent:
-          typeof row.performanceRatioPercent === "number"
-            ? row.performanceRatioPercent
-            : null,
-        contractValue:
-          typeof row.contractValue === "number" ? row.contractValue : 0,
+        baselineSource: row.baselineSource,
+        productionDeltaWh: row.productionDeltaWh,
+        expectedProductionWh: row.expectedProductionWh,
+        performanceRatioPercent: row.performanceRatioPercent,
+        contractValue: row.contractValue,
+        // Manual overlay wins over the build runner's auto source.
         compliantSource:
-          compliantEntry?.compliantSource ?? autoFromCache ?? null,
+          compliantEntry?.compliantSource ?? row.compliantSource ?? null,
         evidenceCount: compliantEntry?.evidence.length ?? 0,
         meterReadMonthYear: formatMonthYear(readDate),
         readWindowMonthYear: readDate
           ? formatMonthYear(toReadWindowMonthStart(readDate))
           : "N/A",
-      };
-      return candidate;
+      } satisfies CompliantPerformanceRatioRow;
     });
   }, [
     performanceRatioCompliantContextQuery.data,

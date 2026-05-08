@@ -244,8 +244,10 @@ export type PerformanceRatioBestPerSystemPayload = {
  * calls the aggregator and narrows to `result.rows`.
  *
  * `buildId` is required because every fact row carries the build
- * that wrote it (the orphan-sweep mechanism in
- * `deleteOrphanedPerformanceRatioFacts` keys on this).
+ * that wrote it. Under Option C the per-build PK
+ * `(scopeId, buildId, key)` lets multiple builds coexist; the
+ * `pruneSupersededPerformanceRatioFacts` sweep reads `buildId` to
+ * delete rows from non-visible builds.
  *
  * **Decimal serialization.** The aggregator emits `number | null`
  * for `lifetimeReadWh` / `baselineReadWh` / `productionDeltaWh` /
@@ -482,9 +484,11 @@ export function accumulatePerformanceRatioPage(
           : null,
         baselineSource: row.baselineSource,
         lifetimeReadWh: row.lifetimeReadWh,
-        compliantSource: row.systemId
-          ? acc.autoCompliantSources.get(row.systemId)?.source ?? null
-          : null,
+        // Initial null — `buildBestPerSystemPayload` re-attaches
+        // the FINAL auto-compliant source after the entire stream
+        // has been observed (per-page state would otherwise miss
+        // a higher-priority source resolved on a later page).
+        compliantSource: null,
       };
       const existing = acc.bestPerSystem.get(systemKey);
       if (!existing || compareCompliantRowsForBestPerSystem(candidate, existing) > 0) {
@@ -694,6 +698,51 @@ async function writePerformanceRatioSummary(
   });
 }
 
+/**
+ * Single source of truth for parsing a `performanceRatioSummary`
+ * artifact's `payload` field (a JSON-stringified
+ * `PerformanceRatioSummaryPayload`). Returns `null` on malformed
+ * JSON or missing required fields. Both the router's read procs
+ * and the CSV-export builder go through this helper so a future
+ * schema change has a single audit point.
+ */
+export function parsePerformanceRatioSummaryPayload(
+  rawPayload: string | null
+): PerformanceRatioSummaryPayload | null {
+  if (!rawPayload) return null;
+  try {
+    const parsed = JSON.parse(rawPayload) as Partial<PerformanceRatioSummaryPayload>;
+    if (typeof parsed.buildId !== "string" || parsed.buildId.length === 0) {
+      return null;
+    }
+    if (typeof parsed.builtAt !== "string") return null;
+    return parsed as PerformanceRatioSummaryPayload;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Convenience: extract just the `buildId` from a summary artifact.
+ * Used by procs that only need the visibility pointer (page,
+ * filtered-aggregates, CSV-export). Equivalent to
+ * `parsePerformanceRatioSummaryPayload(...)?.buildId ?? null` but
+ * cheaper for the buildId-only case.
+ */
+export function extractPerformanceRatioVisibleBuildId(
+  rawPayload: string | null
+): string | null {
+  if (!rawPayload) return null;
+  try {
+    const parsed = JSON.parse(rawPayload) as { buildId?: unknown };
+    return typeof parsed.buildId === "string" && parsed.buildId.length > 0
+      ? parsed.buildId
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 async function writeAutoCompliantSourcesArtifact(
   scopeId: string,
   payload: PerformanceRatioAutoCompliantSourcesPayload
@@ -820,14 +869,14 @@ async function runPerformanceRatioStep(args: {
       if (signal.aborted)
         throw new Error("aborted before empty summary write");
       const builtAt = new Date();
-      const accumulators = createPerformanceRatioStreamingAccumulators();
+      const streamingTotals = createPerformanceRatioStreamingAccumulators();
       // Write side caches BEFORE summary (visibility-flip ordering).
       await writeAutoCompliantSourcesArtifact(
         scopeId,
         buildAutoCompliantSourcesPayload({
           buildId,
           builtAt,
-          accumulators,
+          accumulators: streamingTotals,
         })
       );
       await writeBestPerSystemArtifact(
@@ -835,7 +884,7 @@ async function runPerformanceRatioStep(args: {
         buildBestPerSystemPayload({
           buildId,
           builtAt,
-          accumulators,
+          accumulators: streamingTotals,
         })
       );
       const summary = buildPerformanceRatioSummaryPayload({
@@ -847,7 +896,7 @@ async function runPerformanceRatioStep(args: {
           unmatchedConvertedReads: 0,
           invalidConvertedReads: 0,
         },
-        accumulators,
+        accumulators: streamingTotals,
       });
       await writePerformanceRatioSummary(scopeId, summary);
       const prunedCount = await pruneSupersededPerformanceRatioFacts(
@@ -869,8 +918,13 @@ async function runPerformanceRatioStep(args: {
     );
     if (signal.aborted) throw new Error("aborted after static input load");
 
-    const accumulator = createPerformanceRatioAccumulator(staticInput);
-    const accumulators = createPerformanceRatioStreamingAccumulators();
+    // 2026-05-09 review fixup — rename `accumulator` to `matcher`
+    // to disambiguate from the new `streamingTotals` struct. The
+    // pre-fix names `accumulator` (singular, upstream matcher) and
+    // `accumulators` (plural, my Option-C totals) were one letter
+    // apart — easy to typo into the wrong reference.
+    const matcher = createPerformanceRatioAccumulator(staticInput);
+    const streamingTotals = createPerformanceRatioStreamingAccumulators();
     let totalFactsWritten = 0;
     let pageCount = 0;
 
@@ -879,8 +933,8 @@ async function runPerformanceRatioStep(args: {
       batchIds.convertedReadsBatchId,
       async (pageRows, startIndex) => {
         if (signal.aborted) throw new Error("aborted mid-stream");
-        accumulator.processRows(pageRows, startIndex);
-        const drained = accumulator.drainPendingRows();
+        matcher.processRows(pageRows, startIndex);
+        const drained = matcher.drainPendingRows();
         pageCount += 1;
         // 2026-05-08 step-4 hardening — yield to the event loop so
         // the heartbeat setInterval can fire even if upserts are
@@ -925,16 +979,16 @@ async function runPerformanceRatioStep(args: {
         await upsertPerformanceRatioFacts(factRows);
         totalFactsWritten += factRows.length;
         // 2026-05-09 — Option C — fold the page's raw rows into
-        // the streaming accumulators. Server-side aggregates +
+        // the streaming totals. Server-side aggregates +
         // compliant context are derived here so the final
         // summary write is constant-time.
-        accumulatePerformanceRatioPage(accumulators, drained);
+        accumulatePerformanceRatioPage(streamingTotals, drained);
       }
     );
 
     // ----- Visibility flip ordering -----
     if (signal.aborted) throw new Error("aborted before side-cache writes");
-    const counters = accumulator.getCounters();
+    const counters = matcher.getCounters();
     const builtAt = new Date();
 
     // Side caches BEFORE summary so a client that hits the new
@@ -942,11 +996,19 @@ async function runPerformanceRatioStep(args: {
     // compliant-context fetch never reads a stale side-cache row.
     await writeAutoCompliantSourcesArtifact(
       scopeId,
-      buildAutoCompliantSourcesPayload({ buildId, builtAt, accumulators })
+      buildAutoCompliantSourcesPayload({
+        buildId,
+        builtAt,
+        accumulators: streamingTotals,
+      })
     );
     await writeBestPerSystemArtifact(
       scopeId,
-      buildBestPerSystemPayload({ buildId, builtAt, accumulators })
+      buildBestPerSystemPayload({
+        buildId,
+        builtAt,
+        accumulators: streamingTotals,
+      })
     );
 
     if (signal.aborted) throw new Error("aborted before summary write");
@@ -959,7 +1021,7 @@ async function runPerformanceRatioStep(args: {
         unmatchedConvertedReads: counters.unmatchedConvertedReads,
         invalidConvertedReads: counters.invalidConvertedReads,
       },
-      accumulators,
+      accumulators: streamingTotals,
     });
     // ⚠️ This call is the visibility flip. Until it returns
     // success, page reads continue to see the prior build's
@@ -991,10 +1053,10 @@ async function runPerformanceRatioStep(args: {
       matchedConvertedReads: counters.matchedConvertedReads,
       unmatchedConvertedReads: counters.unmatchedConvertedReads,
       invalidConvertedReads: counters.invalidConvertedReads,
-      matchedSystemCount: accumulators.matchedSystemKeys.size,
-      allocationCount: accumulators.allocationCount,
-      autoCompliantSystems: accumulators.autoCompliantSources.size,
-      compliantBestPerSystem: accumulators.bestPerSystem.size,
+      matchedSystemCount: streamingTotals.matchedSystemKeys.size,
+      allocationCount: streamingTotals.allocationCount,
+      autoCompliantSystems: streamingTotals.autoCompliantSources.size,
+      compliantBestPerSystem: streamingTotals.bestPerSystem.size,
       streaming: true,
     });
   } catch (err) {

@@ -42,16 +42,7 @@
  */
 
 import { and, eq, getDb, sql, withDbRetry } from "./_core";
-import {
-  inArray,
-  asc,
-  desc,
-  isNotNull,
-  gt,
-  ne,
-  or,
-  like,
-} from "drizzle-orm";
+import { inArray, asc, desc, or, like } from "drizzle-orm";
 import {
   solarRecDashboardPerformanceRatioFacts,
   type SolarRecDashboardPerformanceRatioFact,
@@ -256,7 +247,17 @@ function buildPerformanceRatioFilterConditions(
   }
   const trimmed = (search ?? "").trim().toLowerCase();
   if (trimmed.length > 0) {
-    const pattern = `%${trimmed}%`;
+    // Escape MySQL LIKE wildcards (`%` and `_`) and the escape
+    // character itself before constructing the pattern. Without
+    // this, a user typing `_5kW` matches `15kW` / `25kW` / etc.
+    // because `_` is the LIKE single-char wildcard. ESCAPE clause
+    // is omitted because the default escape (`\`) is the one we
+    // double up below.
+    const escaped = trimmed
+      .replace(/\\/g, "\\\\")
+      .replace(/%/g, "\\%")
+      .replace(/_/g, "\\_");
+    const pattern = `%${escaped}%`;
     conditions.push(
       or(
         like(
@@ -576,32 +577,3 @@ function getAffectedRows(result: unknown): number {
   }
   return 0;
 }
-
-// ---------------------------------------------------------------------------
-// Legacy export kept for migration period — see imports
-// ---------------------------------------------------------------------------
-
-/**
- * @deprecated 2026-05-09 — replaced by the per-build PK +
- * `pruneSupersededPerformanceRatioFacts(scopeId, keepBuildIds)`.
- * Kept temporarily so consumers that still call this resolve to a
- * no-op; the runner step has been migrated to the new helper.
- *
- * Removed in a follow-up once the codebase is re-grepped.
- */
-export async function deleteOrphanedPerformanceRatioFacts(
-  scopeId: string,
-  currentBuildId: string
-): Promise<number> {
-  // Implemented via the new helper for back-compat: keep only the
-  // current build's rows. The build runner no longer calls this on
-  // the row-write path; only stragglers (e.g. test fixtures) reach
-  // here.
-  return pruneSupersededPerformanceRatioFacts(scopeId, [currentBuildId]);
-}
-// Avoid unused-import lints when `gt` / `ne` / `isNotNull` aren't
-// touched by the helpers above; they remain available for
-// follow-on aggregations the build-runner step uses internally.
-void gt;
-void ne;
-void isNotNull;

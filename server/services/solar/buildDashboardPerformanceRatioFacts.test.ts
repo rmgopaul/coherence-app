@@ -29,9 +29,6 @@ vi.mock("../../db/dashboardPerformanceRatioFacts", () => ({
   upsertPerformanceRatioFacts: mocks.upsertPerformanceRatioFacts,
   pruneSupersededPerformanceRatioFacts:
     mocks.pruneSupersededPerformanceRatioFacts,
-  // Compat shim — kept exported for back-compat callers that the
-  // 2026-05-09 Option C refactor didn't migrate yet.
-  deleteOrphanedPerformanceRatioFacts: vi.fn(),
   // Other exports unused by the builder; provide stubs.
   getPerformanceRatioFactsPage: vi.fn(),
   getPerformanceRatioFactsByKeys: vi.fn(),

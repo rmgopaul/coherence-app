@@ -2682,20 +2682,28 @@ export const solarRecDashboardPerformanceRatioFacts = mysqlTable(
       "solar_rec_dashboard_performance_ratio_facts_scope_build_monit_idx"
     ).on(table.scopeId, table.buildId, table.monitoring, table.key),
     // Sort indexes for the most common server-driven sort columns.
-    // These cover `WHERE scopeId=? AND buildId=? ORDER BY <col> ASC|DESC`
-    // without falling back to a filesort over the full per-build row
-    // set. Skipped sort columns (e.g. `lifetimeReadWh`) accept a
-    // filesort cost; can promote to a covering index if a tab read
-    // surfaces a slow query.
+    // These cover `WHERE scopeId=? AND buildId=? ORDER BY <col>,
+    // key ASC|DESC` without falling back to a filesort. The `key`
+    // suffix is the stable tie-breaker the page proc applies for
+    // pagination determinism — including it in the index lets the
+    // engine satisfy ORDER BY entirely from the index even when
+    // many rows share the same sort_col value. Skipped sort
+    // columns (e.g. `lifetimeReadWh`) accept a filesort cost; can
+    // promote if a tab read surfaces a slow query.
     scopeBuildReadDateIdx: index(
       "solar_rec_dashboard_perf_ratio_facts_scope_build_readdate_idx"
-    ).on(table.scopeId, table.buildId, table.readDate),
+    ).on(table.scopeId, table.buildId, table.readDate, table.key),
     scopeBuildPerfPercentIdx: index(
       "solar_rec_dashboard_perf_ratio_facts_scope_build_perf_pct_idx"
-    ).on(table.scopeId, table.buildId, table.performanceRatioPercent),
+    ).on(
+      table.scopeId,
+      table.buildId,
+      table.performanceRatioPercent,
+      table.key
+    ),
     scopeBuildSystemNameIdx: index(
       "solar_rec_dashboard_perf_ratio_facts_scope_build_sysname_idx"
-    ).on(table.scopeId, table.buildId, table.systemName),
+    ).on(table.scopeId, table.buildId, table.systemName, table.key),
   })
 );
 

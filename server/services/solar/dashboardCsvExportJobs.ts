@@ -1122,21 +1122,31 @@ async function buildPerformanceRatioCsvExport(
   const {
     PERFORMANCE_RATIO_SUMMARY_ARTIFACT_TYPE,
     PERFORMANCE_RATIO_SUMMARY_VERSION_KEY,
+    extractPerformanceRatioVisibleBuildId,
   } = await import("./buildDashboardPerformanceRatioFacts");
   const { getPerformanceRatioFactsPage } = await import(
     "../../db/dashboardPerformanceRatioFacts"
+  );
+  // Reuse the existing dashboard CSV export helpers rather than
+  // re-implement the escape + filename-timestamp logic.
+  const { escapeCsvCell } = await import("./buildDashboardCsvExport");
+  const { timestampForCsvFileName } = await import(
+    "./dashboardDatasetCsvExport"
   );
 
   const generatedAtIso = new Date().toISOString();
   const fileName = `performance-ratio-${timestampForCsvFileName(generatedAtIso)}.csv`;
 
-  // Resolve visible build via summary pointer.
+  // Resolve visible build via summary pointer (single source of
+  // truth: the build runner module's helper).
   const summaryRow = await getComputedArtifact(
     scopeId,
     PERFORMANCE_RATIO_SUMMARY_ARTIFACT_TYPE,
     PERFORMANCE_RATIO_SUMMARY_VERSION_KEY
   );
-  const buildId = summaryBuildIdFromPayload(summaryRow?.payload ?? null);
+  const buildId = extractPerformanceRatioVisibleBuildId(
+    summaryRow?.payload ?? null
+  );
   if (!buildId) {
     return { csv: "", fileName, rowCount: 0, csvBytes: 0 };
   }
@@ -1202,7 +1212,7 @@ async function buildPerformanceRatioCsvExport(
           headers
             .map((header) => {
               const v = (row as unknown as Record<string, unknown>)[header];
-              return csvEscape(serializeCsvValue(v));
+              return escapeCsvCell(serializeCsvValue(v));
             })
             .join(",")
         );
@@ -1237,45 +1247,18 @@ async function buildPerformanceRatioCsvExport(
   }
 }
 
-function summaryBuildIdFromPayload(payload: string | null): string | null {
-  if (!payload) return null;
-  try {
-    const parsed = JSON.parse(payload) as { buildId?: unknown };
-    return typeof parsed.buildId === "string" && parsed.buildId.length > 0
-      ? parsed.buildId
-      : null;
-  } catch {
-    return null;
-  }
-}
-
+/**
+ * Dates → ISO; null/undefined → empty; everything else → String(...).
+ * Per-row helper for the `escapeCsvCell` invocation. Drizzle returns
+ * decimals as strings already, so this is just a defensive coercion
+ * for Date columns.
+ */
 function serializeCsvValue(value: unknown): string {
   if (value === null || value === undefined) return "";
   if (value instanceof Date) {
     return Number.isNaN(value.getTime()) ? "" : value.toISOString();
   }
   return String(value);
-}
-
-function csvEscape(value: string): string {
-  if (
-    value.includes(",") ||
-    value.includes("\n") ||
-    value.includes("\r") ||
-    value.includes('"')
-  ) {
-    return `"${value.replace(/"/g, '""')}"`;
-  }
-  return value;
-}
-
-function timestampForCsvFileName(iso: string): string {
-  // 2026-05-09T13:42:00.000Z → 20260509-134200
-  return iso
-    .replace(/[-T:]/g, "")
-    .replace(/\.\d+Z$/, "")
-    .replace(/Z$/, "")
-    .replace(/(\d{8})(\d{6}).*/, "$1-$2");
 }
 
 async function buildOwnershipTileCsvFromFacts(

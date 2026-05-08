@@ -34,10 +34,13 @@ DROP INDEX `solar_rec_dashboard_performance_ratio_facts_scope_monitoring_idx` ON
 CREATE INDEX `solar_rec_dashboard_performance_ratio_facts_scope_build_match_idx` ON `solarRecDashboardPerformanceRatioFacts` (`scopeId`,`buildId`,`matchType`,`key`);--> statement-breakpoint
 CREATE INDEX `solar_rec_dashboard_performance_ratio_facts_scope_build_monit_idx` ON `solarRecDashboardPerformanceRatioFacts` (`scopeId`,`buildId`,`monitoring`,`key`);--> statement-breakpoint
 
--- Common sort columns. Skipped: `lifetimeReadWh` /
--- `productionDeltaWh` / `expectedProductionWh` / `contractValue` —
--- they accept a filesort over the per-build set today and can be
--- promoted to covering indexes if a tab surfaces a slow query.
-CREATE INDEX `solar_rec_dashboard_perf_ratio_facts_scope_build_readdate_idx` ON `solarRecDashboardPerformanceRatioFacts` (`scopeId`,`buildId`,`readDate`);--> statement-breakpoint
-CREATE INDEX `solar_rec_dashboard_perf_ratio_facts_scope_build_perf_pct_idx` ON `solarRecDashboardPerformanceRatioFacts` (`scopeId`,`buildId`,`performanceRatioPercent`);--> statement-breakpoint
-CREATE INDEX `solar_rec_dashboard_perf_ratio_facts_scope_build_sysname_idx` ON `solarRecDashboardPerformanceRatioFacts` (`scopeId`,`buildId`,`systemName`);
+-- Common sort columns. Each index includes `key` as the
+-- tie-breaker because the page proc orders by `(sortCol, key)`
+-- for pagination stability — without `key` in the index, MySQL
+-- would need a filesort to apply the secondary sort.
+-- Skipped sort columns (`lifetimeReadWh`, `productionDeltaWh`,
+-- `expectedProductionWh`, `contractValue`) accept a filesort
+-- cost; can promote if a tab read surfaces a slow query.
+CREATE INDEX `solar_rec_dashboard_perf_ratio_facts_scope_build_readdate_idx` ON `solarRecDashboardPerformanceRatioFacts` (`scopeId`,`buildId`,`readDate`,`key`);--> statement-breakpoint
+CREATE INDEX `solar_rec_dashboard_perf_ratio_facts_scope_build_perf_pct_idx` ON `solarRecDashboardPerformanceRatioFacts` (`scopeId`,`buildId`,`performanceRatioPercent`,`key`);--> statement-breakpoint
+CREATE INDEX `solar_rec_dashboard_perf_ratio_facts_scope_build_sysname_idx` ON `solarRecDashboardPerformanceRatioFacts` (`scopeId`,`buildId`,`systemName`,`key`);

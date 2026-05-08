@@ -156,6 +156,90 @@ export function resolveAutoCompliantSourceForRow(args: {
 }
 
 // ---------------------------------------------------------------------------
+// Wire shapes for the Option C Performance-Ratio procs.
+//
+// 2026-05-09 review fixup — types live here so the client tab can
+// import them without resorting to runtime `typeof row.foo === "..."`
+// checks. Both shapes mirror DB columns from
+// `solarRecDashboardPerformanceRatioFacts` minus `scopeId` /
+// `buildId` / `createdAt` / `updatedAt` (stripped at the wire
+// boundary in the page proc + the build runner's best-per-system
+// payload).
+// ---------------------------------------------------------------------------
+
+/**
+ * Wire shape for `getDashboardPerformanceRatioPage` rows.
+ * `scopeId` / `buildId` / `createdAt` / `updatedAt` are STRIPPED;
+ * date columns ship as ISO strings (revived client-side via
+ * `reviveNullableDate`); decimal columns ship as MySQL string
+ * representations (revived via `parsePerfRatioDecimal`).
+ */
+export interface PerformanceRatioPageRow {
+  key: string;
+  convertedReadKey: string;
+  matchType: string;
+  monitoring: string;
+  monitoringSystemId: string;
+  monitoringSystemName: string;
+  readDate: string | null;
+  readDateRaw: string;
+  lifetimeReadWh: string;
+  trackingSystemRefId: string;
+  systemId: string | null;
+  stateApplicationRefId: string | null;
+  systemName: string;
+  installerName: string;
+  monitoringPlatform: string;
+  portalAcSizeKw: string | null;
+  abpAcSizeKw: string | null;
+  part2VerificationDate: string | null;
+  baselineReadWh: string | null;
+  baselineDate: string | null;
+  baselineSource: string | null;
+  productionDeltaWh: string | null;
+  expectedProductionWh: string | null;
+  performanceRatioPercent: string | null;
+  contractValue: string;
+}
+
+/**
+ * Wire shape for the `bestPerSystem` array in the
+ * `getDashboardPerformanceRatioCompliantContext` response. Numeric
+ * decimals stay as `number | null` (already coerced server-side
+ * during streaming aggregation) — only date columns ship as ISO
+ * strings. `compliantSource` is the auto-resolved source from the
+ * build runner's `autoCompliantSources` Map; manual sources from
+ * localStorage overlay client-side at render time.
+ */
+export interface PerformanceRatioCompliantBestRowWire {
+  key: string;
+  systemId: string | null;
+  stateApplicationRefId: string | null;
+  trackingSystemRefId: string;
+  systemName: string;
+  monitoring: string;
+  monitoringSystemId: string;
+  monitoringSystemName: string;
+  monitoringPlatform: string;
+  matchType: string;
+  installerName: string;
+  portalAcSizeKw: number | null;
+  abpAcSizeKw: number | null;
+  part2VerificationDate: string | null;
+  readDate: string | null;
+  readDateRaw: string;
+  performanceRatioPercent: number | null;
+  productionDeltaWh: number | null;
+  expectedProductionWh: number | null;
+  contractValue: number;
+  baselineReadWh: number | null;
+  baselineDate: string | null;
+  baselineSource: string | null;
+  lifetimeReadWh: number;
+  compliantSource: string | null;
+}
+
+// ---------------------------------------------------------------------------
 // Date / number parsing
 // ---------------------------------------------------------------------------
 

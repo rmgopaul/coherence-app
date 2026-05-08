@@ -191,7 +191,13 @@ function toCsvFileSlug(value: string): string {
     .slice(0, 64);
 }
 
-function timestampForCsvFileName(iso: string): string {
+/**
+ * 2026-05-09 — promoted from private to a named export so other
+ * dashboard CSV builders (`buildPerformanceRatioCsvExport` and
+ * future siblings) can reuse the same `YYYYMMDDHHMMSS` filename
+ * timestamp convention rather than re-implementing it.
+ */
+export function timestampForCsvFileName(iso: string): string {
   return iso.replace(/[^0-9]/g, "").slice(0, 14);
 }
 

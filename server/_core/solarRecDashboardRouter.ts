@@ -403,66 +403,17 @@ function stringifyDeliveryScheduleRows(
 }
 
 // ---------------------------------------------------------------------------
-// 2026-05-09 — Option C — Performance Ratio page wire shape + helpers.
-//
-// The page proc projects the visible columns from
-// `solarRecDashboardPerformanceRatioFacts` (drops scopeId / buildId /
-// createdAt / updatedAt — dead weight on every row). Date columns
-// arrive as Date | null from Drizzle and the wire shape ships ISO
-// strings; the client revives via `reviveNullableDate`.
+// 2026-05-09 — Option C — Performance Ratio wire shapes + helpers
+// live in `@shared/solarRecPerformanceRatio` so the client tab can
+// import them. The summary-payload parser is defined in the
+// `buildDashboardPerformanceRatioFacts` build-runner module so the
+// payload-shape contract has a single audit point. Both are
+// re-exported here for ergonomics + so the router-side tests can
+// pin the typed shape against the proc projection.
 // ---------------------------------------------------------------------------
 
-export interface PerformanceRatioPageRow {
-  key: string;
-  convertedReadKey: string;
-  matchType: string;
-  monitoring: string;
-  monitoringSystemId: string;
-  monitoringSystemName: string;
-  readDate: string | null;
-  readDateRaw: string;
-  lifetimeReadWh: string;
-  trackingSystemRefId: string;
-  systemId: string | null;
-  stateApplicationRefId: string | null;
-  systemName: string;
-  installerName: string;
-  monitoringPlatform: string;
-  portalAcSizeKw: string | null;
-  abpAcSizeKw: string | null;
-  part2VerificationDate: string | null;
-  baselineReadWh: string | null;
-  baselineDate: string | null;
-  baselineSource: string | null;
-  productionDeltaWh: string | null;
-  expectedProductionWh: string | null;
-  performanceRatioPercent: string | null;
-  contractValue: string;
-}
-
-function parseSummaryBuildId(payload: string | null): string | null {
-  if (!payload) return null;
-  try {
-    const parsed = JSON.parse(payload) as { buildId?: unknown };
-    return typeof parsed.buildId === "string" && parsed.buildId.length > 0
-      ? parsed.buildId
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-function parseSummaryBuiltAt(payload: string | null): string | null {
-  if (!payload) return null;
-  try {
-    const parsed = JSON.parse(payload) as { builtAt?: unknown };
-    return typeof parsed.builtAt === "string" && parsed.builtAt.length > 0
-      ? parsed.builtAt
-      : null;
-  } catch {
-    return null;
-  }
-}
+import type { PerformanceRatioPageRow } from "@shared/solarRecPerformanceRatio";
+export type { PerformanceRatioPageRow } from "@shared/solarRecPerformanceRatio";
 
 function inferDeliveryScheduleHeaders(
   rows: readonly DeliveryScheduleBaseRow[]
@@ -3489,6 +3440,7 @@ export const solarRecDashboardRouter = t.router({
       const {
         PERFORMANCE_RATIO_SUMMARY_ARTIFACT_TYPE,
         PERFORMANCE_RATIO_SUMMARY_VERSION_KEY,
+        parsePerformanceRatioSummaryPayload,
       } = await import(
         "../services/solar/buildDashboardPerformanceRatioFacts"
       );
@@ -3498,7 +3450,14 @@ export const solarRecDashboardRouter = t.router({
         PERFORMANCE_RATIO_SUMMARY_ARTIFACT_TYPE,
         PERFORMANCE_RATIO_SUMMARY_VERSION_KEY
       );
-      const buildId = parseSummaryBuildId(summaryRow?.payload ?? null);
+      // Parse once; read both `buildId` (for the visibility filter)
+      // and `builtAt` (for the response) from the same parsed
+      // object. Pre-fix this proc parsed the JSON twice via
+      // separate buildId / builtAt helpers.
+      const summary = parsePerformanceRatioSummaryPayload(
+        summaryRow?.payload ?? null
+      );
+      const buildId = summary?.buildId ?? null;
       if (!buildId) {
         return {
           _checkpoint,
@@ -3578,7 +3537,7 @@ export const solarRecDashboardRouter = t.router({
         nextCursor: hasMore ? String(nextOffset) : null,
         hasMore,
         buildId,
-        builtAt: parseSummaryBuiltAt(summaryRow?.payload ?? null),
+        builtAt: summary?.builtAt ?? null,
       };
     }),
 
@@ -3680,6 +3639,8 @@ export const solarRecDashboardRouter = t.router({
       const {
         PERFORMANCE_RATIO_SUMMARY_ARTIFACT_TYPE,
         PERFORMANCE_RATIO_SUMMARY_VERSION_KEY,
+        extractPerformanceRatioVisibleBuildId,
+        computePortfolioRatioPercent,
       } = await import(
         "../services/solar/buildDashboardPerformanceRatioFacts"
       );
@@ -3688,7 +3649,9 @@ export const solarRecDashboardRouter = t.router({
         PERFORMANCE_RATIO_SUMMARY_ARTIFACT_TYPE,
         PERFORMANCE_RATIO_SUMMARY_VERSION_KEY
       );
-      const buildId = parseSummaryBuildId(summaryRow?.payload ?? null);
+      const buildId = extractPerformanceRatioVisibleBuildId(
+        summaryRow?.payload ?? null
+      );
       if (!buildId) {
         return {
           _runnerVersion,
@@ -3705,13 +3668,15 @@ export const solarRecDashboardRouter = t.router({
         monitoring: input.monitoring ?? null,
         search: input.search ?? null,
       });
-      const portfolioRatioPercent =
-        aggregates.totalExpectedWh > 0
-          ? Math.round(
-              (aggregates.totalDeltaWh / aggregates.totalExpectedWh) * 100 *
-                10
-            ) / 10
-          : null;
+      // Reuses the build-runner's portfolio-ratio formula so a
+      // future change to the rounding / non-finite handling lands
+      // in ONE place. Pre-fix this proc inlined a near-identical
+      // formula that lacked the build-runner's `Number.isFinite`
+      // guards.
+      const portfolioRatioPercent = computePortfolioRatioPercent(
+        aggregates.totalDeltaWh,
+        aggregates.totalExpectedWh
+      );
       return {
         _runnerVersion,
         available: true as const,
