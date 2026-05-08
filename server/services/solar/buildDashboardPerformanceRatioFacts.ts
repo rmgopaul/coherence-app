@@ -120,37 +120,37 @@ export const PERFORMANCE_RATIO_BEST_PER_SYSTEM_VERSION_KEY = "current";
 const AUTO_COMPLIANT_ENTRIES_HARD_CAP = 25_000;
 
 /**
- * Cap on best-per-system entries.
+ * Cap on best-per-system entries written to the LEGACY artifact JSON.
  *
- * 2026-05-09 — bumped from 5_000 → 30_000 after a production
- * portfolio observed 21,078 best-per-system entries. The original
- * 5 k estimate ("~few thousand on the largest portfolio") aged out
- * as the portfolio grew. Truncation at 5 k surfaced as
- * `bestPerSystemTruncated: true` + an in-tab notice; the user could
- * see only ~24% of their compliant rows in the tab + CSV export.
+ * 2026-05-09 — Reverted from 30_000 → 5_000 (the original cap) after
+ * the prod build at 22:35 UTC failed with TiDB error 8025: "entry too
+ * large, the max entry size is 6291456". TiDB's clustered-index
+ * tables (which `solarRecComputedArtifacts` is, via its varchar(64)
+ * primary key on `id`) impose a 6 MB per-row limit on cluster entry
+ * size that is ORTHOGONAL to the column type's storage capacity — so
+ * PR #522's `mediumtext` → `longtext` migration didn't fix it
+ * (column max went 16 MB → 4 GB, but the cluster entry limit is the
+ * binding constraint). 21,078 rows × ~833 B/row ≈ 17.5 MB per
+ * payload, well past the 6 MB limit; 5,000 rows × ~833 B/row ≈ 4.16
+ * MB, fits.
  *
- * 30 k = ~50% headroom over current size. At ~400 bytes JSON per
- * row (25 fields, mixed strings/numbers/nulls), worst-case payload
- * is ~12 MB. That's an order of magnitude over the 1 MB dashboard
- * wire-payload guardrail, so the read proc
- * (`getDashboardPerformanceRatioCompliantContext`) is added to
- * `DASHBOARD_OVERSIZE_ALLOWLIST` until the proper structural fix
- * lands (move best-per-system out of the artifact JSON into a
- * dedicated fact table → paginate via `useInfiniteQuery` → CSV
- * export via `startDashboardCsvExport({ exportType:
- * "performanceRatioCompliantBestCsv" })`). See the allowlist
- * comment in `dashboardResponseGuard.ts` for the migration
- * tracking pointer.
+ * **This cap only applies to the artifact JSON write.** The new
+ * `solarRecDashboardPerformanceRatioCompliantFacts` table populated
+ * by PR-CB-2's dual-write is uncapped — it stores all rows because
+ * each ROW occupies its own cluster entry (well under 6 MB even for
+ * the widest row). After PR-CB-5 cuts the client onto the paginated
+ * read proc, the artifact JSON is read-only legacy compatibility;
+ * after PR-CB-6 retires the artifact write entirely, this constant
+ * + the `buildBestPerSystemPayload` helper are deleted.
  *
- * The mediumtext storage column on `solarRecComputedArtifacts`
- * accepts up to 16 MB so storage isn't the bottleneck — the wire
- * payload is. In prod, `dashboardResponseGuardMiddleware` defaults
- * to `warn` (not `throw`), so the oversize response goes through;
- * the user gets all 30 k rows. In dev/test the middleware throws,
- * so the allowlist entry is required to keep the test suite
- * passing.
+ * Why not raise to 6_500 for marginal headroom? Per-row JSON size is
+ * data-dependent (long systemNames push it higher); a build that
+ * happens to land near the 6 MB limit could regress at any time
+ * without warning. The 5_000 cap is the conservative known-good
+ * value that pre-PR-#521 prod was running on, so we restore it
+ * verbatim and let the structural fix do the rest.
  */
-const BEST_PER_SYSTEM_HARD_CAP = 30_000;
+const BEST_PER_SYSTEM_HARD_CAP = 5_000;
 
 export type PerformanceRatioSummaryPayload = {
   // Aggregator counters (pre-existing).
