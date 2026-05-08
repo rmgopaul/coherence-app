@@ -227,6 +227,63 @@ const HEAP_SOFT_LIMIT_BYTES = 2.0 * 1024 * 1024 * 1024;
 
 const dashboardLoadSemaphore = new Semaphore(DASHBOARD_LOAD_CONCURRENCY);
 
+/**
+ * 2026-05-08 (Phase 6 observability) — periodic semaphore queue-depth
+ * logger. Emits a `[dashboard:load-semaphore]` line whenever there
+ * is at least one in-flight or waiting payload load, capped at one
+ * line per `SEMAPHORE_LOG_INTERVAL_MS`.
+ *
+ * Why: the 2026-05-08 OOM cascade had 60-second slow responses
+ * piling up in this semaphore's queue (4 concurrent slots, 8 before
+ * PR #489), but we had zero visibility into how deep the queue grew
+ * during the spiral. A failed worker today shows the heap-pressure
+ * reject log line *after* the fact; this gives us a continuous
+ * timeline of saturation BEFORE the box dies.
+ *
+ * Cost: one `setInterval` callback every 30 s; each callback reads
+ * `Semaphore.stats()` (O(1)) + `inFlightDashboardPayloadLoads.size`
+ * + emits a single `console.log` if the queue is non-trivial. Idle
+ * processes never log. Sub-millisecond overhead.
+ *
+ * `unref()` so the timer doesn't keep the event loop alive in tests
+ * or graceful-shutdown paths.
+ */
+const SEMAPHORE_LOG_INTERVAL_MS = 30_000;
+
+function logSemaphoreState(): void {
+  try {
+    const stats = dashboardLoadSemaphore.stats();
+    const inFlight = inFlightDashboardPayloadLoads.size;
+    // Suppress idle processes — only log when there's actual pressure
+    // to surface. A fully-idle dashboard router wouldn't add value;
+    // this filter keeps the production log signal-to-noise high.
+    if (stats.active === 0 && stats.waiting === 0 && inFlight === 0) {
+      return;
+    }
+    const heapUsedBytes = process.memoryUsage().heapUsed;
+    console.log(
+      `[dashboard:load-semaphore] ${JSON.stringify({
+        active: stats.active,
+        waiting: stats.waiting,
+        limit: stats.limit,
+        inFlightSingleFlight: inFlight,
+        heapUsedBytes,
+      })}`
+    );
+  } catch {
+    // Best-effort observability; never let a logger throw take down
+    // the request pipeline.
+  }
+}
+
+const dashboardLoadSemaphoreLogTimer = setInterval(
+  logSemaphoreState,
+  SEMAPHORE_LOG_INTERVAL_MS
+);
+if (typeof dashboardLoadSemaphoreLogTimer.unref === "function") {
+  dashboardLoadSemaphoreLogTimer.unref();
+}
+
 function isHeapOverSoftLimit(): boolean {
   try {
     return process.memoryUsage().heapUsed > HEAP_SOFT_LIMIT_BYTES;
