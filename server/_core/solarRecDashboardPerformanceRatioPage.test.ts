@@ -343,3 +343,155 @@ describe("startDashboardCsvExport — performanceRatioCsv input (new in Option C
     expect(proc!).toMatch(/exportType:\s*z\.literal\("performanceRatioCsv"\)[\s\S]*?sortDir:/);
   });
 });
+
+// ────────────────────────────────────────────────────────────────────
+// PR-CB-3 — getDashboardPerformanceRatioCompliantBestPage
+// ────────────────────────────────────────────────────────────────────
+
+describe("getDashboardPerformanceRatioCompliantBestPage (PR-CB-3 source rail)", () => {
+  const proc = sliceProcedure("getDashboardPerformanceRatioCompliantBestPage");
+
+  it("is registered on the dashboard router", () => {
+    expect(proc).not.toBeNull();
+  });
+
+  it("uses the solar-rec-dashboard:read permission gate", () => {
+    expect(proc!).toMatch(
+      /dashboardProcedure\(\s*"solar-rec-dashboard",\s*"read"\s*\)/
+    );
+  });
+
+  it("declares offset as a non-negative integer (default 0)", () => {
+    expect(proc!).toMatch(/offset:\s*z\.number\(\)\.int\(\)\.min\(0\)/);
+    expect(proc!).toMatch(/offset:\s*z[\s\S]*?\.default\(0\)/);
+  });
+
+  it("declares limit as bounded int [1, 1000] with default 100", () => {
+    expect(proc!).toMatch(/limit:\s*z\.number\(\)\.int\(\)/);
+    expect(proc!).toMatch(/limit:\s*z[\s\S]*?\.min\(1\)/);
+    expect(proc!).toMatch(/limit:\s*z[\s\S]*?\.max\(1000\)/);
+    expect(proc!).toMatch(/limit:\s*z[\s\S]*?\.default\(100\)/);
+  });
+
+  it("declares compliantSource as a length-bounded nullable optional string (matches DB column varchar(64))", () => {
+    expect(proc!).toMatch(
+      /compliantSource:\s*z\.string\(\)[\s\S]*?\.max\(64\)[\s\S]*?\.nullable\(\)[\s\S]*?\.optional\(\)/
+    );
+  });
+
+  it("declares monitoring as a length-bounded nullable optional string", () => {
+    expect(proc!).toMatch(
+      /monitoring:\s*z\.string\(\)[\s\S]*?\.max\(128\)[\s\S]*?\.nullable\(\)[\s\S]*?\.optional\(\)/
+    );
+  });
+
+  it("declares search as an optional bounded string (multi-column LIKE)", () => {
+    expect(proc!).toMatch(
+      /search:\s*z\.string\(\)[\s\S]*?\.max\(200\)[\s\S]*?\.nullable\(\)[\s\S]*?\.optional\(\)/
+    );
+  });
+
+  it("declares sortBy as an enum of the 4 supported sort columns (default readDate)", () => {
+    expect(proc!).toMatch(/"performanceRatioPercent"/);
+    expect(proc!).toMatch(/"readDate"/);
+    expect(proc!).toMatch(/"systemName"/);
+    expect(proc!).toMatch(/"compliantSource"/);
+    expect(proc!).toMatch(/sortBy:[\s\S]*?\.default\("readDate"\)/);
+  });
+
+  it("declares sortDir as enum [asc, desc] with default desc", () => {
+    expect(proc!).toMatch(/sortDir:\s*z\.enum\(\["asc",\s*"desc"\]\)/);
+    expect(proc!).toMatch(/sortDir:[\s\S]*?\.default\("desc"\)/);
+  });
+
+  it("emits a _runnerVersion marker for deploy verification", () => {
+    expect(proc!).toMatch(/_runnerVersion[\s\S]*?phase-2-pr-cb-3-page/);
+  });
+
+  it("emits a _checkpoint string for deploy verification", () => {
+    expect(proc!).toMatch(
+      /_checkpoint[\s\S]*?performance-ratio-compliant-best-page/
+    );
+  });
+
+  it("gates visibility on the summary artifact's buildId", () => {
+    expect(proc!).toMatch(/parsePerformanceRatioSummaryPayload/);
+    expect(proc!).toMatch(/summary\?\.buildId/);
+    expect(proc!).toMatch(/available:\s*false/);
+  });
+
+  it("returns rows + totalCount + offset + nextCursor + hasMore + buildId + builtAt", () => {
+    expect(proc!).toMatch(/rows[,\s]/);
+    expect(proc!).toMatch(/totalCount/);
+    expect(proc!).toMatch(/nextCursor/);
+    expect(proc!).toMatch(/hasMore/);
+    expect(proc!).toMatch(/buildId/);
+    expect(proc!).toMatch(/builtAt/);
+  });
+
+  it("uses the new fact-table DB helpers (page + count)", () => {
+    expect(proc!).toMatch(/getPerformanceRatioCompliantFactsPage/);
+    expect(proc!).toMatch(/getPerformanceRatioCompliantFactsCount/);
+  });
+
+  it("reuses the parent fact-table summary's buildId pointer (not the autoCompliant or bestPerSystem artifacts)", () => {
+    // The page proc reads only the summary artifact for visibility
+    // gating; secondary artifacts like
+    // PERFORMANCE_RATIO_AUTO_COMPLIANT_ARTIFACT_TYPE are NOT
+    // read here (avoids a 3-way artifact race).
+    expect(proc!).toMatch(/PERFORMANCE_RATIO_SUMMARY_ARTIFACT_TYPE/);
+    expect(proc!).not.toMatch(/PERFORMANCE_RATIO_AUTO_COMPLIANT_ARTIFACT_TYPE/);
+    expect(proc!).not.toMatch(/PERFORMANCE_RATIO_BEST_PER_SYSTEM_ARTIFACT_TYPE/);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────
+// PR-CB-3 — getDashboardPerformanceRatioCompliantBestSummary
+// ────────────────────────────────────────────────────────────────────
+
+describe("getDashboardPerformanceRatioCompliantBestSummary (PR-CB-3 source rail)", () => {
+  const proc = sliceProcedure(
+    "getDashboardPerformanceRatioCompliantBestSummary"
+  );
+
+  it("is registered on the dashboard router", () => {
+    expect(proc).not.toBeNull();
+  });
+
+  it("uses the solar-rec-dashboard:read permission gate", () => {
+    expect(proc!).toMatch(
+      /dashboardProcedure\(\s*"solar-rec-dashboard",\s*"read"\s*\)/
+    );
+  });
+
+  it("emits a _runnerVersion marker for deploy verification", () => {
+    expect(proc!).toMatch(/_runnerVersion[\s\S]*?phase-2-pr-cb-3-summary/);
+  });
+
+  it("gates visibility on the summary artifact's buildId via the shared extractor helper", () => {
+    expect(proc!).toMatch(/extractPerformanceRatioVisibleBuildId/);
+    expect(proc!).toMatch(/PERFORMANCE_RATIO_SUMMARY_ARTIFACT_TYPE/);
+  });
+
+  it("returns count + withCompliantSource aggregates", () => {
+    expect(proc!).toMatch(/count:\s*aggregates\.count/);
+    expect(proc!).toMatch(/withCompliantSource:\s*aggregates\.withCompliantSource/);
+  });
+
+  it("returns the dropdown options (compliantSourceOptions + monitoringOptions)", () => {
+    expect(proc!).toMatch(/compliantSourceOptions/);
+    expect(proc!).toMatch(/monitoringOptions/);
+  });
+
+  it("uses Promise.all for the 3 parallel reads (aggregates + 2 distinct-options)", () => {
+    expect(proc!).toMatch(/Promise\.all\(/);
+    expect(proc!).toMatch(/getPerformanceRatioCompliantFactsAggregates/);
+    expect(proc!).toMatch(/getPerformanceRatioCompliantSourceOptions/);
+    expect(proc!).toMatch(/getPerformanceRatioCompliantMonitoringOptions/);
+  });
+
+  it("returns available=false when no summary buildId exists yet (cold cache)", () => {
+    expect(proc!).toMatch(/if\s*\(\s*!buildId\s*\)/);
+    expect(proc!).toMatch(/available:\s*false/);
+  });
+});
