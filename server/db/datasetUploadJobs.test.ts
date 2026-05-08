@@ -517,35 +517,25 @@ describe("sweepStaleDatasetUploadJobs", () => {
 });
 
 describe("pruneOldTerminalDatasetUploadJobs", () => {
-  it("loads terminal-status rows older than cutoff and deletes each via deleteDatasetUploadJob", async () => {
-    const terminalRows = [
-      { id: "old-done", scopeId: "scope-1" },
-      { id: "old-failed", scopeId: "scope-1" },
-    ];
-    // Two SELECT rows (one per delete: errors + job).
-    const stub = makeDbStub({
-      selectRows: [terminalRows],
-      deleteAffected: 1,
-    });
+  // 2026-05-09 (post-merge review of #503) — switched from per-row
+  // deleteDatasetUploadJob (1 SELECT + 2N+1 round-trips) to two
+  // bulk DELETEs (children-by-subquery, then parents-by-predicate).
+  // Tests pin the call count + the affected-rows return semantics.
+
+  it("issues exactly TWO bulk DELETEs (children then parents)", async () => {
+    const stub = makeDbStub({ deleteAffected: 47 });
     mocks.getDb.mockResolvedValue(stub);
 
     const pruned = await pruneOldTerminalDatasetUploadJobs(
       7 * 24 * 60 * 60 * 1000
     );
-    expect(pruned).toBe(2);
+    // affectedRows from the parent DELETE — single integer return.
+    expect(pruned).toBe(47);
 
     const deletes = stub.calls.filter((c) => c.kind === "delete");
-    // Each row hits two DELETEs (errors then job) — total = rows × 2.
-    expect(deletes).toHaveLength(4);
-  });
-
-  it("returns 0 when no rows are old enough to prune", async () => {
-    const stub = makeDbStub({ selectRows: [[]] });
-    mocks.getDb.mockResolvedValue(stub);
-    const pruned = await pruneOldTerminalDatasetUploadJobs(
-      24 * 60 * 60 * 1000
-    );
-    expect(pruned).toBe(0);
+    // Exactly 2 DELETEs regardless of row count — bulk pattern.
+    // Pre-#503-followup this would have been 2N+1 for N parents.
+    expect(deletes).toHaveLength(2);
   });
 
   it("returns 0 when DB is unavailable", async () => {
@@ -554,20 +544,37 @@ describe("pruneOldTerminalDatasetUploadJobs", () => {
     expect(pruned).toBe(0);
   });
 
-  it("continues pruning when an individual row delete fails", async () => {
-    const terminalRows = [
-      { id: "row-a", scopeId: "scope-1" },
-      { id: "row-b", scopeId: "scope-1" },
-    ];
-    // Both rows return affected=0 — interpreted as "not deleted"
-    // by the helper, but no exception. Pruned count is 0; the
-    // sweep continues across all rows without throwing.
-    const stub = makeDbStub({
-      selectRows: [terminalRows],
-      deleteAffected: 0,
-    });
+  it("returns 0 when the parent DELETE matches no rows", async () => {
+    const stub = makeDbStub({ deleteAffected: 0 });
     mocks.getDb.mockResolvedValue(stub);
 
+    const pruned = await pruneOldTerminalDatasetUploadJobs(
+      24 * 60 * 60 * 1000
+    );
+    expect(pruned).toBe(0);
+  });
+
+  it("returns 0 when the parent DELETE itself throws (sweep tolerates transient errors)", async () => {
+    // The helper wraps each DELETE in try/catch — a parent-DELETE
+    // failure is caught + logged and returns 0, so a transient DB
+    // hiccup doesn't crash the sweeper tick. The next tick retries
+    // the same predicate (idempotent).
+    const errMessage = "transient parent delete failed";
+    const stub = makeDbStub({});
+    // Patch the delete chain so it rejects.
+    const originalDelete = stub.delete;
+    stub.delete = () => {
+      const chain = originalDelete();
+      (chain as Record<string, unknown>).then = (
+        _resolve: (out: unknown) => unknown,
+        reject?: (err: unknown) => unknown
+      ) =>
+        Promise.reject(new Error(errMessage)).catch(
+          reject ?? ((e) => { throw e; })
+        );
+      return chain;
+    };
+    mocks.getDb.mockResolvedValue(stub);
     const pruned = await pruneOldTerminalDatasetUploadJobs(60 * 1000);
     expect(pruned).toBe(0);
   });
