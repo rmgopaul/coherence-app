@@ -303,9 +303,82 @@ export async function listDatasetUploadJobErrors(
 }
 
 /**
+ * 2026-05-08 (Phase 7 fragment) — TTL prune for terminal-status
+ * (`done` or `failed`) `datasetUploadJobs` rows older than
+ * `maxAgeMs`. Removes the rows AND the per-row
+ * `datasetUploadJobErrors` they own (FK-less but logically
+ * dependent), via the existing `deleteDatasetUploadJob` helper
+ * which handles both deletes in the right order.
+ *
+ * Without this prune, every successful or failed upload accumulates
+ * a row indefinitely. Production scope-user-1 has ≥100 historic
+ * upload jobs (Phase H-1 storage audit, see
+ * `docs/h1-prod-baseline-attribution.md`); each holds ~50-200 KB of
+ * fileName + statusMessage + per-row error payloads. The total
+ * isn't headline-grabbing today (~10-20 MB) but the table grows
+ * unboundedly, which slows the in-flight job queries used by the
+ * dashboard's cloud-sync indicator.
+ *
+ * Caller-provided `maxAgeMs` should be at least the longest cache
+ * window any user might care about — 7 days is a reasonable default
+ * (`DATASET_UPLOAD_TERMINAL_RETENTION_DEFAULT` in the sweeper).
+ *
+ * Returns the count of rows actually deleted. Rows that
+ * `deleteDatasetUploadJob` reports as already-gone (e.g. raced with
+ * a manual delete) are not counted.
+ */
+export async function pruneOldTerminalDatasetUploadJobs(
+  maxAgeMs: number
+): Promise<number> {
+  const db = await getDb();
+  if (!db) return 0;
+
+  const cutoff = new Date(Date.now() - maxAgeMs);
+  const oldRows = await withDbRetry(
+    "load old terminal dataset upload jobs",
+    async () =>
+      db
+        .select({
+          id: datasetUploadJobs.id,
+          scopeId: datasetUploadJobs.scopeId,
+        })
+        .from(datasetUploadJobs)
+        .where(
+          and(
+            inArray(datasetUploadJobs.status, ["done", "failed"]),
+            lt(datasetUploadJobs.updatedAt, cutoff)
+          )
+        )
+  );
+
+  let pruned = 0;
+  for (const row of oldRows) {
+    try {
+      const deleted = await deleteDatasetUploadJob(row.scopeId, row.id);
+      if (deleted) pruned += 1;
+    } catch (err) {
+      // Per-row failures don't fail the sweep; log and continue.
+      // The next sweep tick re-attempts; idempotent.
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[pruneOldTerminalDatasetUploadJobs] failed to prune ` +
+          `scope=${row.scopeId} id=${row.id}: ` +
+          (err instanceof Error ? err.message : String(err))
+      );
+    }
+  }
+  return pruned;
+}
+
+/**
  * Hard delete a job and every error row attached to it. Reserved
  * for the cleanup cron (Phase 7) that prunes finished jobs older
  * than N days; no UI calls this today.
+ *
+ * 2026-05-08 — `pruneOldTerminalDatasetUploadJobs` is the cron
+ * caller this docstring referenced. The two helpers compose:
+ * `pruneOld...` finds the IDs to drop, `deleteDatasetUploadJob`
+ * does the per-row delete (children first).
  */
 export async function deleteDatasetUploadJob(
   scopeId: string,
