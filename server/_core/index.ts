@@ -13,6 +13,8 @@ import { startNightlySnapshotScheduler } from "./nightlySnapshotScheduler";
 import { startMonitoringScheduler } from "../solar/monitoringScheduler";
 import { startDatasetUploadStaleJobSweeper } from "../services/core/datasetUploadStaleJobSweeper";
 import { startDashboardLoadSemaphoreObservability } from "./solarRecDashboardRouter";
+import { startDashboardBuildStaleJobSweeper } from "../services/solar/dashboardBuildJobs";
+import { startDashboardCsvExportStaleJobSweeper } from "../services/solar/dashboardCsvExportJobs";
 import { registerMonitoringDetailsBuildStep } from "../services/solar/buildDashboardMonitoringDetailsFacts";
 import { registerChangeOwnershipBuildStep } from "../services/solar/buildDashboardChangeOwnershipFacts";
 import { registerOwnershipBuildStep } from "../services/solar/buildDashboardOwnershipFacts";
@@ -199,6 +201,15 @@ async function startServer() {
     // trigger a 30s setInterval. Production boot calls it under
     // the same prod-state gate as the other schedulers.
     startDashboardLoadSemaphoreObservability();
+    // 2026-05-09 (post-merge audit follow-up) — both dashboard-job
+    // modules' sweeps used to run ONLY opportunistically on a
+    // status read. If the worker died after claim AND the client
+    // moved on (page reload, tab close, started a new build), the
+    // orphan `running` row sat forever. Production evidence:
+    // bld-312c41a266cf… stuck for ~24 h on prod after a deploy.
+    // Boot-time periodic sweepers mirror startDatasetUploadStaleJobSweeper.
+    startDashboardBuildStaleJobSweeper();
+    startDashboardCsvExportStaleJobSweeper();
 
     // Mark any MonitoringBatchRun rows left in "running" state by the
     // prior Node process (killed by deploy, crash, OOM) as "failed"
