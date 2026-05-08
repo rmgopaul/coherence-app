@@ -307,8 +307,7 @@ export async function listDatasetUploadJobErrors(
  * (`done` or `failed`) `datasetUploadJobs` rows older than
  * `maxAgeMs`. Removes the rows AND the per-row
  * `datasetUploadJobErrors` they own (FK-less but logically
- * dependent), via the existing `deleteDatasetUploadJob` helper
- * which handles both deletes in the right order.
+ * dependent).
  *
  * Without this prune, every successful or failed upload accumulates
  * a row indefinitely. Production scope-user-1 has ≥100 historic
@@ -323,9 +322,19 @@ export async function listDatasetUploadJobErrors(
  * window any user might care about — 7 days is a reasonable default
  * (`DATASET_UPLOAD_TERMINAL_RETENTION_DEFAULT` in the sweeper).
  *
- * Returns the count of rows actually deleted. Rows that
- * `deleteDatasetUploadJob` reports as already-gone (e.g. raced with
- * a manual delete) are not counted.
+ * 2026-05-09 (post-merge review of #503) — switched from per-row
+ * `deleteDatasetUploadJob` calls to two bulk DELETEs. The original
+ * loop issued 1 SELECT + (1 SELECT + 2 DELETEs) per row = 2N+1 DB
+ * round-trips. On a scope with 1,000 terminal rows past TTL that's
+ * 2,001 round-trips per sweep tick — measurable load on the
+ * monitoring sweeper interval. The bulk pattern is two DELETEs:
+ * children first (errors-by-jobId subquery), then parents
+ * (terminal-status + age cutoff). The atomic-row DELETE pattern in
+ * `deleteDatasetUploadJob` is preserved for non-prune callers
+ * (single-row, scope-checked).
+ *
+ * Returns the count of parent rows actually deleted (matches the
+ * old per-row return semantics — error rows aren't double-counted).
  */
 export async function pruneOldTerminalDatasetUploadJobs(
   maxAgeMs: number
@@ -334,40 +343,72 @@ export async function pruneOldTerminalDatasetUploadJobs(
   if (!db) return 0;
 
   const cutoff = new Date(Date.now() - maxAgeMs);
-  const oldRows = await withDbRetry(
-    "load old terminal dataset upload jobs",
-    async () =>
-      db
-        .select({
-          id: datasetUploadJobs.id,
-          scopeId: datasetUploadJobs.scopeId,
-        })
-        .from(datasetUploadJobs)
-        .where(
-          and(
-            inArray(datasetUploadJobs.status, ["done", "failed"]),
-            lt(datasetUploadJobs.updatedAt, cutoff)
-          )
-        )
-  );
 
-  let pruned = 0;
-  for (const row of oldRows) {
-    try {
-      const deleted = await deleteDatasetUploadJob(row.scopeId, row.id);
-      if (deleted) pruned += 1;
-    } catch (err) {
-      // Per-row failures don't fail the sweep; log and continue.
-      // The next sweep tick re-attempts; idempotent.
-      // eslint-disable-next-line no-console
-      console.warn(
-        `[pruneOldTerminalDatasetUploadJobs] failed to prune ` +
-          `scope=${row.scopeId} id=${row.id}: ` +
-          (err instanceof Error ? err.message : String(err))
-      );
-    }
+  // Subquery: parent IDs that match the prune predicate. Used by
+  // BOTH the child-cleanup and the parent-DELETE so they target
+  // exactly the same row set. An alternative shape (one subquery
+  // each, evaluated independently) would race when concurrent
+  // inserts shift the matching set between the two DELETEs — the
+  // child rows for a freshly-inserted-and-aged job could be
+  // deleted while the parent stayed. Reusing one subquery
+  // expression is fine here; both DELETEs run in the same sweep
+  // tick and the WHERE-time evaluation is identical.
+  const matchingJobIdsSubquery = db
+    .select({ id: datasetUploadJobs.id })
+    .from(datasetUploadJobs)
+    .where(
+      and(
+        inArray(datasetUploadJobs.status, ["done", "failed"]),
+        lt(datasetUploadJobs.updatedAt, cutoff)
+      )
+    );
+
+  // Children first (FK-less but logically dependent). A failed
+  // child DELETE leaves orphans the next sweep would re-encounter
+  // via the same subquery — harmless, just dead rows. The catch
+  // logs and continues to the parent DELETE so we don't lose the
+  // chance to free the parent rows over a transient child failure.
+  try {
+    await withDbRetry(
+      "prune old terminal dataset upload job errors (bulk)",
+      async () =>
+        db
+          .delete(datasetUploadJobErrors)
+          .where(inArray(datasetUploadJobErrors.jobId, matchingJobIdsSubquery))
+    );
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      "[pruneOldTerminalDatasetUploadJobs] bulk-delete of error rows failed:",
+      err instanceof Error ? err.message : String(err)
+    );
   }
-  return pruned;
+
+  // Parents. The same subquery is re-evaluated server-side.
+  let result: unknown;
+  try {
+    result = await withDbRetry(
+      "prune old terminal dataset upload jobs (bulk)",
+      async () =>
+        db
+          .delete(datasetUploadJobs)
+          .where(
+            and(
+              inArray(datasetUploadJobs.status, ["done", "failed"]),
+              lt(datasetUploadJobs.updatedAt, cutoff)
+            )
+          )
+    );
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      "[pruneOldTerminalDatasetUploadJobs] bulk-delete of job rows failed:",
+      err instanceof Error ? err.message : String(err)
+    );
+    return 0;
+  }
+
+  return affectedRows(result);
 }
 
 /**
