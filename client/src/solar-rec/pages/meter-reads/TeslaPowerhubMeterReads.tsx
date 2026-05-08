@@ -1163,7 +1163,12 @@ export default function TeslaPowerhubMeterReads() {
           {result && showPersist && (
             <PersistConfirmation
               providerKey="tesla-powerhub"
-              providerLabel="Tesla Powerhub"
+              // 2026-05-08 — read the canonical from MONITORING_CANONICAL_NAMES
+              // ("Tesla") so the persist label matches what the system DB
+              // normalizes to. The constant changed from "Tesla Powerhub"
+              // to "Tesla" the same day; hardcoding the old string here
+              // would fork the value from the bridge path.
+              providerLabel={MONITORING_CANONICAL_NAMES.teslaPowerhub}
               rows={singleSnapshotRows}
               onDiscard={() => setShowPersist(false)}
             />

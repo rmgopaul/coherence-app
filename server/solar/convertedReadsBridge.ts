@@ -120,7 +120,33 @@ export type MonitoringRunRow = {
   lifetimeKwh: number | null;
   dateKey: string;
   status: string;
+  // 2026-05-08 — Tesla-specific alternate identifier. The Tesla
+  // Powerhub API exposes both an alphanumeric internal site ID
+  // (`siteId`, e.g. UUID-shaped) AND an STE ID (e.g. "STE12345")
+  // that's what some operators store in the system DB's
+  // `online_monitoring_system_id` field. When present, the bridge
+  // emits a SECOND converted-reads row keyed by the STE ID so the
+  // Performance Ratio matcher finds the system regardless of which
+  // identifier variant the system row carries. Other providers may
+  // populate this in the future; the bridge ignores it for non-Tesla
+  // providers today.
+  siteExternalId?: string | null;
 };
+
+/**
+ * Provider keys whose converted-reads rows should be duplicated with
+ * the alternate `siteExternalId`-keyed variant when one is present.
+ * Tesla Powerhub today; future vendors can opt in by adding their
+ * provider key here.
+ */
+const DUAL_ID_PROVIDER_KEYS = new Set([
+  "tesla-powerhub",
+  "teslapowerhub",
+]);
+
+function shouldEmitDualIdRows(providerKey: string): boolean {
+  return DUAL_ID_PROVIDER_KEYS.has(providerKey.toLowerCase());
+}
 
 export type ConvertedReadsManifestSourceSummary = {
   jobId: string;
@@ -568,15 +594,41 @@ export async function pushMonitoringRunsToConvertedReads(
     return null;
   }
 
-  const csvRows = validRuns.map((r) =>
-    buildConvertedReadRow(
-      providerLabel,
-      r.siteId,
-      r.siteName ?? r.siteId,
-      r.lifetimeKwh!,
-      r.dateKey
-    )
-  );
+  // 2026-05-08 — for dual-ID providers (Tesla today), emit BOTH the
+  // alphanumeric-siteId row AND the STE-ID row when the alternate ID
+  // is present and distinct. Both rows carry the same lifetime read,
+  // so the matcher finds the system whether its
+  // `online_monitoring_system_id` is the alphanumeric or the STE.
+  // Single-ID providers always emit one row per run.
+  const dualIdProvider = shouldEmitDualIdRows(providerKey);
+  const csvRows = validRuns.flatMap((r) => {
+    const rows: ConvertedReadRow[] = [];
+    rows.push(
+      buildConvertedReadRow(
+        providerLabel,
+        r.siteId,
+        r.siteName ?? r.siteId,
+        r.lifetimeKwh!,
+        r.dateKey
+      )
+    );
+    if (
+      dualIdProvider &&
+      r.siteExternalId &&
+      r.siteExternalId !== r.siteId
+    ) {
+      rows.push(
+        buildConvertedReadRow(
+          providerLabel,
+          r.siteExternalId,
+          r.siteName ?? r.siteExternalId,
+          r.lifetimeKwh!,
+          r.dateKey
+        )
+      );
+    }
+    return rows;
+  });
 
   const sourceId = providerSourceId(providerKey);
   await migrateLegacyPlainCsvIfPresent(userId);

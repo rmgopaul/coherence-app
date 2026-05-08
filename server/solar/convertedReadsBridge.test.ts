@@ -368,3 +368,251 @@ describe("monitoring batch sync scheduling", () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// 2026-05-08 Tesla dual-ID emission: when a Tesla Powerhub run carries an
+// STE ID (siteExternalId) distinct from the alphanumeric siteId, the bridge
+// emits TWO converted-reads rows per site so the Performance Ratio matcher
+// finds systems regardless of which identifier the system DB stored.
+// ---------------------------------------------------------------------------
+
+describe("Tesla Powerhub dual-ID converted-reads emission", () => {
+  const stored = new Map<string, string>();
+
+  beforeEach(() => {
+    stored.clear();
+    vi.resetModules();
+    vi.doMock("../db", () => ({
+      getSolarRecDashboardPayload: vi.fn(
+        async (_userId: number, key: string) => stored.get(key) ?? null
+      ),
+      saveSolarRecDashboardPayload: vi.fn(
+        async (_userId: number, key: string, payload: string) => {
+          stored.set(key, payload);
+          return true;
+        }
+      ),
+    }));
+    vi.doMock("../services/solar/coreDatasetSyncJobs", () => ({
+      startSyncJob: vi.fn(() => "test-job-id"),
+    }));
+    vi.doMock("../services/solar/serverSideMigration", () => ({
+      syncOneCoreDatasetFromStorage: vi.fn(async () => ({
+        datasetKey: "convertedReads",
+        state: "done",
+        batchId: "test-batch",
+        rowCount: 0,
+        durationMs: 1,
+      })),
+    }));
+  });
+
+  async function readManifestRows(): Promise<Record<string, string>[]> {
+    const manifest = JSON.parse(stored.get("dataset:convertedReads")!);
+    expect(manifest._rawSourcesV1).toBe(true);
+    expect(manifest.sources).toHaveLength(1);
+    const source = manifest.sources[0];
+    // The bridge writes the CSV across `chunkKeys`, with a chunk-pointer
+    // JSON stored under `source.storageKey`. Tiny test payloads collapse
+    // to one chunk; reassembly tracks the runtime path in
+    // `loadSourceRows`.
+    const chunkKeys: string[] = source.chunkKeys ?? [];
+    const parts: string[] = [];
+    for (const key of chunkKeys) {
+      const part = stored.get(`dataset:${key}`);
+      if (part !== undefined) parts.push(part);
+    }
+    const rawCsv = parts.join("");
+    const lines = rawCsv.split("\n").filter(Boolean);
+    const headers = lines[0]!.split(",");
+    return lines.slice(1).map((line) => {
+      const cells = line.split(",");
+      const row: Record<string, string> = {};
+      headers.forEach((h, i) => {
+        row[h] = cells[i] ?? "";
+      });
+      return row;
+    });
+  }
+
+  it("emits TWO rows per Tesla site (alphanumeric + STE) when siteExternalId is present and distinct", async () => {
+    const { pushMonitoringRunsToConvertedReads } = await import(
+      "./convertedReadsBridge"
+    );
+
+    const result = await pushMonitoringRunsToConvertedReads(
+      42,
+      "tesla-powerhub",
+      "Tesla",
+      [
+        {
+          provider: "tesla-powerhub",
+          siteId: "abcd-1234-uuid-shape",
+          siteName: "Acme Solar",
+          lifetimeKwh: 1234.5,
+          dateKey: "2026-05-08",
+          status: "success",
+          siteExternalId: "STE9876",
+        },
+      ],
+      { scheduleRowTableSync: false, scopeId: "scope-1" }
+    );
+
+    expect(result?.pushed).toBe(2);
+    const rows = await readManifestRows();
+    expect(rows).toHaveLength(2);
+
+    const idsEmitted = rows.map((r) => r.monitoring_system_id).sort();
+    expect(idsEmitted).toEqual(["STE9876", "abcd-1234-uuid-shape"]);
+
+    // Both rows share monitoring + name + reading + date.
+    rows.forEach((r) => {
+      expect(r.monitoring).toBe("Tesla");
+      expect(r.monitoring_system_name).toBe("Acme Solar");
+      expect(r.lifetime_meter_read_wh).toBe(String(Math.round(1234.5 * 1000)));
+      expect(r.read_date).toBe("5/8/2026");
+    });
+  });
+
+  it("emits ONE row when siteExternalId is missing (no alternate to duplicate)", async () => {
+    const { pushMonitoringRunsToConvertedReads } = await import(
+      "./convertedReadsBridge"
+    );
+
+    const result = await pushMonitoringRunsToConvertedReads(
+      42,
+      "tesla-powerhub",
+      "Tesla",
+      [
+        {
+          provider: "tesla-powerhub",
+          siteId: "abcd-1234-uuid-shape",
+          siteName: "Acme Solar",
+          lifetimeKwh: 1000,
+          dateKey: "2026-05-08",
+          status: "success",
+          // siteExternalId omitted
+        },
+      ],
+      { scheduleRowTableSync: false, scopeId: "scope-1" }
+    );
+
+    expect(result?.pushed).toBe(1);
+    const rows = await readManifestRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.monitoring_system_id).toBe("abcd-1234-uuid-shape");
+  });
+
+  it("emits ONE row when siteExternalId equals siteId (no duplicate to introduce)", async () => {
+    const { pushMonitoringRunsToConvertedReads } = await import(
+      "./convertedReadsBridge"
+    );
+
+    const result = await pushMonitoringRunsToConvertedReads(
+      42,
+      "tesla-powerhub",
+      "Tesla",
+      [
+        {
+          provider: "tesla-powerhub",
+          siteId: "STE9876",
+          siteName: "Acme Solar",
+          lifetimeKwh: 1000,
+          dateKey: "2026-05-08",
+          status: "success",
+          siteExternalId: "STE9876",
+        },
+      ],
+      { scheduleRowTableSync: false, scopeId: "scope-1" }
+    );
+
+    expect(result?.pushed).toBe(1);
+    const rows = await readManifestRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.monitoring_system_id).toBe("STE9876");
+  });
+
+  it("emits ONE row for non-Tesla providers even when siteExternalId is present", async () => {
+    const { pushMonitoringRunsToConvertedReads } = await import(
+      "./convertedReadsBridge"
+    );
+
+    const result = await pushMonitoringRunsToConvertedReads(
+      42,
+      "solaredge",
+      "SolarEdge",
+      [
+        {
+          provider: "solaredge",
+          siteId: "site-A",
+          siteName: "Acme Solar",
+          lifetimeKwh: 1000,
+          dateKey: "2026-05-08",
+          status: "success",
+          // Non-Tesla providers get single-row emission regardless of
+          // whether they happen to surface an alternate identifier.
+          siteExternalId: "ALT-ID-123",
+        },
+      ],
+      { scheduleRowTableSync: false, scopeId: "scope-1" }
+    );
+
+    expect(result?.pushed).toBe(1);
+    const rows = await readManifestRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.monitoring_system_id).toBe("site-A");
+  });
+
+  it("emits four rows for two Tesla sites (two each) and dedupes against priors on rerun", async () => {
+    const { pushMonitoringRunsToConvertedReads } = await import(
+      "./convertedReadsBridge"
+    );
+
+    const runs = [
+      {
+        provider: "tesla-powerhub",
+        siteId: "uuid-A",
+        siteName: "Site A",
+        lifetimeKwh: 100,
+        dateKey: "2026-05-08",
+        status: "success",
+        siteExternalId: "STE-A",
+      },
+      {
+        provider: "tesla-powerhub",
+        siteId: "uuid-B",
+        siteName: "Site B",
+        lifetimeKwh: 200,
+        dateKey: "2026-05-08",
+        status: "success",
+        siteExternalId: "STE-B",
+      },
+    ];
+
+    const first = await pushMonitoringRunsToConvertedReads(
+      42,
+      "tesla-powerhub",
+      "Tesla",
+      runs,
+      { scheduleRowTableSync: false, scopeId: "scope-1" }
+    );
+    expect(first?.pushed).toBe(4);
+
+    const rowsAfterFirst = await readManifestRows();
+    expect(rowsAfterFirst).toHaveLength(4);
+
+    // Re-run with the same inputs — every row dedupes; pushed should be 0.
+    const second = await pushMonitoringRunsToConvertedReads(
+      42,
+      "tesla-powerhub",
+      "Tesla",
+      runs,
+      { scheduleRowTableSync: false, scopeId: "scope-1" }
+    );
+    expect(second?.pushed).toBe(0);
+    expect(second?.skipped).toBe(2);
+
+    const rowsAfterSecond = await readManifestRows();
+    expect(rowsAfterSecond).toHaveLength(4);
+  });
+});
