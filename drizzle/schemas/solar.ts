@@ -3,6 +3,7 @@ import {
   mysqlTable,
   text,
   mediumtext,
+  longtext,
   timestamp,
   varchar,
   int,
@@ -603,7 +604,21 @@ export const solarRecComputedArtifacts = mysqlTable(
     scopeId: varchar("scopeId", { length: 64 }).notNull(),
     artifactType: varchar("artifactType", { length: 64 }).notNull(),
     inputVersionHash: varchar("inputVersionHash", { length: 64 }).notNull(),
-    payload: mediumtext("payload").notNull(),
+    /**
+     * 2026-05-09 — promoted from `mediumtext` (16 MB) to
+     * `longtext` (4 GB) after the
+     * `performanceRatioCompliantBestPerSystem` artifact crossed
+     * 16 MB at production scale. PR #521 bumped the build runner's
+     * `BEST_PER_SYSTEM_HARD_CAP` from 5_000 → 30_000 to surface
+     * all 21,078 best-per-system rows; the resulting JSON payload
+     * (~17.5 MB at 833 B/row) overflowed `mediumtext` and the
+     * build's artifact write errored out, leaving the prior
+     * 5k-truncated artifact in place. This column type bump is
+     * the interim unblock; the structural fix (move best-per-
+     * system rows out of the artifact JSON into a dedicated fact
+     * table) is the planned PR-CB-1 → PR-CB-6 series.
+     */
+    payload: longtext("payload").notNull(),
     rowCount: int("rowCount"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),

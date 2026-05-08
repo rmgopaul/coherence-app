@@ -449,6 +449,13 @@
       "when": 1778248884849,
       "tag": "0067_perf_ratio_facts_per_build_pk",
       "breakpoints": true
+    },
+    {
+      "idx": 68,
+      "version": "5",
+      "when": 1778279963455,
+      "tag": "0068_artifact_payload_to_longtext",
+      "breakpoints": true
     }
   ]
 }
