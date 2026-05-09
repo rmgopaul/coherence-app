@@ -181,10 +181,14 @@ import {
   MAX_LOCAL_LOG_STORAGE_CHARS,
   REMOTE_DATASET_KEY_MANIFEST,
   REMOTE_SNAPSHOT_LOGS_KEY,
-  DASHBOARD_TAB_VALUES,
   DEFAULT_DASHBOARD_TAB,
-  DASHBOARD_TAB_VALUE_SET,
 } from "@/solar-rec-dashboard/lib/constants";
+import {
+  type DashboardTabId,
+  isDashboardTabId,
+  getTabFromSearch,
+  resolveInitialDashboardTab,
+} from "@/solar-rec-dashboard/lib/dashboardTabs";
 import {
   resolvePart2ProjectIdentity,
   getCsvValueByHeader,
@@ -488,18 +492,11 @@ const EMPTY_PERFORMANCE_SOURCE_ROWS: PerformanceSourceRow[] = [];
 // useEffect's per-tab activation hydration; with that effect gone,
 // they have no consumers.
 
-type DashboardTabId = (typeof DASHBOARD_TAB_VALUES)[number];
-
-function isDashboardTabId(value: string): value is DashboardTabId {
-  return DASHBOARD_TAB_VALUE_SET.has(value);
-}
-
-function getTabFromSearch(search: string): DashboardTabId | null {
-  const params = new URLSearchParams(search.startsWith("?") ? search.slice(1) : search);
-  const tab = params.get("tab");
-  if (!tab || !isDashboardTabId(tab)) return null;
-  return tab;
-}
+// 2026-05-09 — `DashboardTabId`, `isDashboardTabId`,
+// `getTabFromSearch`, and `resolveInitialDashboardTab` moved to
+// `@/solar-rec-dashboard/lib/dashboardTabs.ts` so the URL → state
+// resolution path can be unit-tested without mounting the full
+// dashboard. Reimported here for in-file use.
 
 // resolveContractValueAmount, resolveValueGapAmount — moved to @/solar-rec-dashboard/lib/helpers
 
@@ -1996,7 +1993,8 @@ export default function SolarRecDashboard() {
   // Compliant source state + refs — moved to @/solar-rec-dashboard/components/PerformanceRatioTab
   // monthlySnapshotTransitions — moved to @/solar-rec-dashboard/components/SnapshotLogTab
   const [activeTab, setActiveTab] = useState<DashboardTabId>(
-    () => (getTabFromSearch(search) ?? DEFAULT_DASHBOARD_TAB) as DashboardTabId
+    () =>
+      (resolveInitialDashboardTab(search) ?? DEFAULT_DASHBOARD_TAB) as DashboardTabId
   );
   const visitedTabsRef = useRef(new Set<string>([activeTab]));
   useEffect(() => {
