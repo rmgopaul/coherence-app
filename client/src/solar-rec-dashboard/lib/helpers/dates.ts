@@ -46,3 +46,52 @@ export function isStaleUpload(
   const ageMs = Date.now() - uploadedAt.getTime();
   return ageMs > thresholdDays * DAY_MS;
 }
+
+/**
+ * Render a coarse "X ago" string for a past timestamp. Designed for
+ * "Last rebuilt:" labels and similar low-stakes age callouts where
+ * the absolute time is shown alongside (so the relative string only
+ * needs to communicate scale, not precision).
+ *
+ * Buckets:
+ *   - <  10s   →  "just now"
+ *   - <  60s   →  "Ns ago"
+ *   - <  60m   →  "Nm ago"
+ *   - <  24h   →  "Nh ago"
+ *   - >= 24h   →  "Nd ago"
+ *
+ * Future timestamps (clock skew) clamp to "just now". `null` /
+ * unparseable inputs return `null` so the caller can hide the row.
+ *
+ * `nowMs` is injectable for deterministic tests; defaults to
+ * `Date.now()`.
+ */
+export function formatRelativeTime(
+  target: Date | string | number | null | undefined,
+  nowMs: number = Date.now(),
+): string | null {
+  if (target == null) return null;
+  const targetMs =
+    target instanceof Date
+      ? target.getTime()
+      : typeof target === "number"
+        ? target
+        : Date.parse(target);
+  if (!Number.isFinite(targetMs)) return null;
+  const diffMs = nowMs - targetMs;
+  if (diffMs < 10_000) return "just now";
+  if (diffMs < 60_000) {
+    const seconds = Math.floor(diffMs / 1_000);
+    return `${seconds}s ago`;
+  }
+  if (diffMs < 60 * 60_000) {
+    const minutes = Math.floor(diffMs / 60_000);
+    return `${minutes}m ago`;
+  }
+  if (diffMs < 24 * 60 * 60_000) {
+    const hours = Math.floor(diffMs / (60 * 60_000));
+    return `${hours}h ago`;
+  }
+  const days = Math.floor(diffMs / DAY_MS);
+  return `${days}d ago`;
+}
