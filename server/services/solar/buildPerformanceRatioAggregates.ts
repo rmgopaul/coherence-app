@@ -116,6 +116,8 @@ export type PerformanceRatioCounters = {
   matchedConvertedReads: number;
   unmatchedConvertedReads: number;
   invalidConvertedReads: number;
+  /** See `PerformanceRatioAggregates.dedupedConvertedReads`. */
+  dedupedConvertedReads: number;
 };
 
 type PerformanceRatioAccumulator = {
@@ -165,6 +167,23 @@ export function createPerformanceRatioAccumulator(
   let matchedConvertedReads = 0;
   let unmatchedConvertedReads = 0;
   let invalidConvertedReads = 0;
+  let dedupedConvertedReads = 0;
+  // Cross-source dedup key set, accumulated across `processRows`
+  // pages. The matcher emits one fact row per (convertedRead row,
+  // candidate system) tuple; without dedup, two convertedReads
+  // source rows that report the SAME physical reading via different
+  // ingestion paths (`mon_batch_<provider>` API push vs.
+  // `individual_<provider>` manual CSV upload) match the same
+  // candidate at the same priority tier and emit two identical
+  // fact rows. The bridge can't dedup at write time because the
+  // sources are server-managed independently; the matcher is the
+  // chokepoint. First-wins tie-break — the surviving fact row's
+  // `monitoringSystemId` field reflects whichever raw row arrived
+  // first (which may be empty if the manual-CSV row is first), but
+  // downstream consumers of the fact table read
+  // `candidate.systemId`, not the raw row's `monitoring_system_id`,
+  // so the displayed system identity is stable.
+  const processedCrossSourceKeys = new Set<string>();
 
   return {
     processRows: (convertedReadsRows, startIndex) => {
@@ -202,6 +221,40 @@ export function createPerformanceRatioAccumulator(
 
         const readDateRaw = clean(row.read_date);
         const readDate = parseDate(readDateRaw);
+        // Cross-source dedup key.
+        //
+        // Identifier component: use the system NAME when available
+        // (the common case — the bridge always populates it; manual
+        // CSV uploads almost always populate it). Fall back to the
+        // system ID when name is empty (validity check above ensures
+        // at least one is populated). This collapses cross-source
+        // duplicates that share monitoring + name (or id) + lifetime
+        // + readDate. Edge case: rows that share monitoring +
+        // lifetime + date but differ in BOTH name and id hash to
+        // different keys and don't dedup — accepted, those are
+        // genuinely different physical readings.
+        //
+        // Date component: use the parsed `readDate.getTime()` when
+        // parsing succeeded so two source rows representing the
+        // same calendar day with different string formats
+        // (e.g. `4/13/2026` from the API push bridge vs.
+        // `2026-04-13` from a manual CSV upload — see
+        // `convertedReadsBridge.ts` `formatReadDate` for the
+        // canonical bridge format) hash to the same key. Falls
+        // back to the raw string when parsing failed (the source
+        // row would emit `readDate: null` to the matcher anyway,
+        // so dedup on the raw string is the cleanest available
+        // signal).
+        const dedupIdentifier =
+          monitoringSystemNameNormalized || monitoringSystemIdNormalized;
+        const dedupDateKey = readDate ? readDate.getTime() : readDateRaw;
+        const crossSourceKey = `${monitoringNormalized}|${dedupIdentifier}|${lifetimeReadWh}|${dedupDateKey}`;
+        if (processedCrossSourceKeys.has(crossSourceKey)) {
+          dedupedConvertedReads += 1;
+          continue;
+        }
+        processedCrossSourceKeys.add(crossSourceKey);
+
         const readKey = `converted-${globalIndex}`;
 
         const bothMatches =
@@ -335,6 +388,7 @@ export function createPerformanceRatioAccumulator(
         matchedConvertedReads,
         unmatchedConvertedReads,
         invalidConvertedReads,
+        dedupedConvertedReads,
       };
     },
     // 2026-05-08 OOM hardening — streaming-drain hook for the
@@ -357,6 +411,7 @@ export function createPerformanceRatioAccumulator(
       matchedConvertedReads,
       unmatchedConvertedReads,
       invalidConvertedReads,
+      dedupedConvertedReads,
     }),
   };
 }
@@ -382,8 +437,14 @@ import { superjsonSerde, withArtifactCache } from "./withArtifactCache";
 
 const PERFORMANCE_RATIO_ARTIFACT_TYPE = "performanceRatio";
 
+// 2026-05-09 — bumped from `@2` to `@3` for the cross-source dedup
+// fix (Bug #5 from the 2026-05-09 prod QA walk). Old `@2` cache rows
+// hold pre-dedup `rows` arrays and lack the new
+// `dedupedConvertedReads` counter; bumping forces a recompute on
+// next access. `withArtifactCache` rolls forward by the version
+// suffix in the cache key.
 export const PERFORMANCE_RATIO_RUNNER_VERSION =
-  "phase-5d-pr1-performance-ratio@2";
+  "phase-5d-pr1-performance-ratio@3";
 
 function computePerformanceRatioInputHash(
   batchIds: PerformanceRatioInputBatchIds
@@ -430,6 +491,7 @@ export async function getOrBuildPerformanceRatio(
       matchedConvertedReads: 0,
       unmatchedConvertedReads: 0,
       invalidConvertedReads: 0,
+      dedupedConvertedReads: 0,
       fromCache: false,
     };
   }

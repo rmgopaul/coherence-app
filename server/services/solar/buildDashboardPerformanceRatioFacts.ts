@@ -134,6 +134,14 @@ export type PerformanceRatioSummaryPayload = {
   matchedConvertedReads: number;
   unmatchedConvertedReads: number;
   invalidConvertedReads: number;
+  /**
+   * 2026-05-09 — Bug #5 cross-source dedup counter. See
+   * `PerformanceRatioAggregates.dedupedConvertedReads` for the
+   * semantic. Older cached payloads (pre-PR-1) lack this field; the
+   * parser tolerates it via `?? 0` so a stale summary row doesn't
+   * null-return on read.
+   */
+  dedupedConvertedReads: number;
   matchedSystemCount: number;
 
   // 2026-05-09 — Option C — server-side aggregates that the
@@ -691,6 +699,7 @@ export function buildPerformanceRatioSummaryPayload(args: {
     matchedConvertedReads: number;
     unmatchedConvertedReads: number;
     invalidConvertedReads: number;
+    dedupedConvertedReads: number;
   };
   accumulators: PerformanceRatioStreamingAccumulators;
 }): PerformanceRatioSummaryPayload {
@@ -709,6 +718,7 @@ export function buildPerformanceRatioSummaryPayload(args: {
     matchedConvertedReads: aggregate.matchedConvertedReads,
     unmatchedConvertedReads: aggregate.unmatchedConvertedReads,
     invalidConvertedReads: aggregate.invalidConvertedReads,
+    dedupedConvertedReads: aggregate.dedupedConvertedReads,
     matchedSystemCount: accumulators.matchedSystemKeys.size,
     allocationCount: accumulators.allocationCount,
     withBaseline: accumulators.withBaseline,
@@ -1013,6 +1023,20 @@ export function parsePerformanceRatioSummaryPayload(
   if (typeof parsed.matchedConvertedReads !== "number") return null;
   if (typeof parsed.unmatchedConvertedReads !== "number") return null;
   if (typeof parsed.invalidConvertedReads !== "number") return null;
+  // `dedupedConvertedReads` was added 2026-05-09 (PR-1, Bug #5
+  // cross-source dedup). Older cached summary rows lack the field;
+  // tolerate that here so a stale row doesn't null-return on read
+  // and force an unrelated rebuild. The next build refresh writes
+  // the field naturally.
+  if (
+    parsed.dedupedConvertedReads !== undefined &&
+    typeof parsed.dedupedConvertedReads !== "number"
+  ) {
+    return null;
+  }
+  if (parsed.dedupedConvertedReads === undefined) {
+    parsed.dedupedConvertedReads = 0;
+  }
   if (typeof parsed.matchedSystemCount !== "number") return null;
   // Option-C aggregate fields. A missing one means a pre-Option-C
   // payload survived; treat as not-yet-built so the client renders
@@ -1204,6 +1228,7 @@ async function runPerformanceRatioStep(args: {
           matchedConvertedReads: 0,
           unmatchedConvertedReads: 0,
           invalidConvertedReads: 0,
+          dedupedConvertedReads: 0,
         },
         accumulators: streamingTotals,
       });
@@ -1391,6 +1416,7 @@ async function runPerformanceRatioStep(args: {
         matchedConvertedReads: counters.matchedConvertedReads,
         unmatchedConvertedReads: counters.unmatchedConvertedReads,
         invalidConvertedReads: counters.invalidConvertedReads,
+        dedupedConvertedReads: counters.dedupedConvertedReads,
       },
       accumulators: streamingTotals,
     });
@@ -1467,6 +1493,11 @@ async function runPerformanceRatioStep(args: {
       matchedConvertedReads: counters.matchedConvertedReads,
       unmatchedConvertedReads: counters.unmatchedConvertedReads,
       invalidConvertedReads: counters.invalidConvertedReads,
+      // 2026-05-09 — Bug #5 cross-source dedup counter. Surfaced
+      // here so prod log filters by `[dashboard:fact-build:
+      // performanceRatio]` see how often duplicate readings get
+      // collapsed. Per-builder extras allowed under hard rule #7.
+      dedupedConvertedReads: counters.dedupedConvertedReads,
       matchedSystemCount: streamingTotals.matchedSystemKeys.size,
       allocationCount: streamingTotals.allocationCount,
       autoCompliantSystems: streamingTotals.autoCompliantSources.size,
