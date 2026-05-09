@@ -607,6 +607,15 @@ export function ScheduleBImport({
       // exits via "no-new-results". The timestamp is finalized
       // after the mutation resolves so the throttle math reflects
       // wall-clock completion, not optimistic intent.
+      //
+      // **Rollback on failure** (post-merge review fixup,
+      // 2026-05-09): if the mutation throws, we MUST roll back the
+      // optimistic count — otherwise the same N successful results
+      // never auto-retry until N+1 results arrive, and a transient
+      // network blip silently disables auto-apply for the entire
+      // scan batch. The `priorAutoApplyState` snapshot below is
+      // restored in the catch path.
+      const priorAutoApplyState = autoApplyStateRef.current;
       autoApplyStateRef.current = {
         count: successful.length,
         time: autoApplyStateRef.current.time,
@@ -615,7 +624,13 @@ export function ScheduleBImport({
         const { toDeliveryScheduleBaseRows } = await import("@/lib/scheduleBScanner");
         const mapping = contractIdMappingRef.current.size > 0 ? contractIdMappingRef.current : undefined;
         const rows = toDeliveryScheduleBaseRows(successful, mapping);
-        if (rows.length === 0) return;
+        if (rows.length === 0) {
+          // No usable rows — restore the optimistic count so the
+          // next effect fire (with potentially-usable rows) is not
+          // suppressed by "no-new-results".
+          autoApplyStateRef.current = priorAutoApplyState;
+          return;
+        }
 
         // Auto-apply: server-write only. The
         // `applyScheduleBToDeliveryObligations` mutation is the
@@ -630,17 +645,27 @@ export function ScheduleBImport({
         let serverResult: Awaited<
           ReturnType<typeof applyMutationRef.current.mutateAsync>
         > | null = null;
+        let mutationFailed = false;
         try {
           serverResult = await applyMutationRef.current.mutateAsync(
             activeJobId ? { jobId: activeJobId } : undefined
           );
         } catch (err) {
+          mutationFailed = true;
           console.error(
             "[ScheduleBImport] auto-apply server mutation failed",
             err
           );
         }
         if (cancelled) return;
+
+        if (mutationFailed) {
+          // Roll back the optimistic state advance so the next
+          // effect fire (after the throttle window) gets another
+          // chance to apply the same N successful results.
+          autoApplyStateRef.current = priorAutoApplyState;
+          return;
+        }
 
         autoApplyStateRef.current = { count: successful.length, time: Date.now() };
         setAutoApplyStatus({
@@ -661,6 +686,9 @@ export function ScheduleBImport({
         }
       } catch {
         // Best-effort — manual Apply button is still available.
+        // Roll back optimistic state for any other thrown error
+        // (the inner mutation catch handles its own rollback).
+        autoApplyStateRef.current = priorAutoApplyState;
       } finally {
         // Always release the in-flight guard. Without this, a
         // mid-body throw would leave the guard set and block all
@@ -680,6 +708,7 @@ export function ScheduleBImport({
     // The timer body reads the latest references via
     // `applyMutationRef.current` / `notifyServerDataChangedRef.
     // current`, populated by the dedicated sync effects above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     scheduleBResults,
     scheduleBStatusQuery.data?.job?.status,
