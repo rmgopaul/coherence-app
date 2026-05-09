@@ -613,10 +613,12 @@ export const solarRecComputedArtifacts = mysqlTable(
      * all 21,078 best-per-system rows; the resulting JSON payload
      * (~17.5 MB at 833 B/row) overflowed `mediumtext` and the
      * build's artifact write errored out, leaving the prior
-     * 5k-truncated artifact in place. This column type bump is
+     * 5k-truncated artifact in place. This column type bump was
      * the interim unblock; the structural fix (move best-per-
      * system rows out of the artifact JSON into a dedicated fact
-     * table) is the planned PR-CB-1 → PR-CB-6 series.
+     * table) shipped as the PR-CB-1 → PR-CB-6 series in the same
+     * day. The longtext type stays — it's a strict superset of
+     * mediumtext and reverting would require another migration.
      */
     payload: longtext("payload").notNull(),
     rowCount: int("rowCount"),

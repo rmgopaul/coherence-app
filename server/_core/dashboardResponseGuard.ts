@@ -147,37 +147,28 @@ export const DASHBOARD_HEAP_PRESSURE_REJECT_BYTES_DEFAULT =
  *     aggregator (`getOrBuildPerformanceRatio`) remains in-
  *     process for the build runner step only.
  *
- * **Active allowlist entries:**
- *
- *   - `solarRecDashboard.getDashboardPerformanceRatioCompliantContext`
- *     (added 2026-05-09 in PR #521). The Option-C build runner
- *     pre-aggregates best-per-system rows + auto-compliant sources
- *     into two artifact JSONs read by this single proc. A
- *     production portfolio outgrew the original 5 k best-per-system
- *     cap (21,078 entries observed); bumping the cap to 30 k makes
- *     all rows visible to the user but pushes the wire payload past
- *     the 1 MB budget (~8 MB worst-case at the new cap, ~12 MB
- *     at the cap ceiling). **Replacement plan:** split the proc into
- *     (a) a paginated read backed by a dedicated
- *     `solarRecDashboardPerformanceRatioCompliantBestFacts` table
- *     populated by the build runner, served via `useInfiniteQuery`
- *     just like `getDashboardPerformanceRatioPage`; (b) a
- *     paginated read for the auto-compliant sources lookup
- *     (currently capped at 25 k entries × ~30 B = ~750 KB,
- *     borderline but not the immediate problem); (c) a CSV export
- *     type `performanceRatioCompliantBestCsv` on the existing
- *     `startDashboardCsvExport` background-job runner so the full
- *     21 k+ row dump never crosses tRPC. Tracking issue:
- *     follow-up to PR #521.
+ * **The allowlist is now empty again.** PR #521's entry
+ * (`solarRecDashboard.getDashboardPerformanceRatioCompliantContext`)
+ * was retired in PR-CB-6 (2026-05-09) when the structural fix
+ * landed: best-per-system rows moved out of the artifact JSON
+ * into the dedicated
+ * `solarRecDashboardPerformanceRatioCompliantFacts` table
+ * (PR-CB-1), populated by the build runner (PR-CB-2), served
+ * via `getDashboardPerformanceRatioCompliantBestPage` /
+ * `getDashboardPerformanceRatioCompliantBestSummary` (PR-CB-3),
+ * full CSV exports via the
+ * `performanceRatioCompliantBestCsv` background job (PR-CB-4),
+ * client tab cut over (PR-CB-5), and finally the artifact JSON
+ * write + the `bestPerSystem` field on the consolidated proc
+ * dropped (this PR). The proc's slim auto-sources-only response
+ * fits under 1 MB without an allowlist exemption.
  *
  * New procs must stay under the 1 MB budget. If a future
  * regression genuinely needs the allowlist mechanism, add the
- * entry here with an inline replacement plan (and reference the
- * follow-up PR/issue tracking the migration).
+ * entry here with an inline replacement plan that names the
+ * paginated/streaming/backgrounded successor.
  */
-export const DASHBOARD_OVERSIZE_ALLOWLIST: ReadonlySet<string> = new Set([
-  "solarRecDashboard.getDashboardPerformanceRatioCompliantContext",
-]);
+export const DASHBOARD_OVERSIZE_ALLOWLIST: ReadonlySet<string> = new Set([]);
 
 export type DashboardResponseEnforcement = "warn" | "throw" | "off";
 

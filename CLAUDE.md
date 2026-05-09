@@ -671,23 +671,24 @@ in prod). Bounded responses look like this:
 | `debugDatasetPersistenceRaw` | Raw rows from every layer + verdict | ~2 KB |
 | `getDashboard<TabName>Aggregates` (DeliveryTracker / TrendDeliveryPace / TrendsProduction / ContractVintage / AppPipelineMonthly / AppPipelineCashFlow / PerformanceRatio / Forecast / Financials) | Per-tab aggregate result | ~10–500 KB |
 
-**Transitional reality: One procedure still ships an oversized
-response on the dashboard router.** `DASHBOARD_OVERSIZE_ALLOWLIST`
-in `server/_core/dashboardResponseGuard.ts` was empty after Phase
-2 retired every prior entry; PR #521 (2026-05-09) re-added a
-single live entry:
-`solarRecDashboard.getDashboardPerformanceRatioCompliantContext`.
-A production portfolio outgrew the original 5 k best-per-system
-cap (21,078 entries observed); bumping the build runner's cap to
-30 k unblocks the user but pushes the proc's wire payload past
-the 1 MB budget. The replacement plan is documented in-code at
-the allowlist entry: split the proc into a paginated read
-backed by a dedicated
-`solarRecDashboardPerformanceRatioCompliantBestFacts` table
-populated by the build runner, plus a CSV export type
-`performanceRatioCompliantBestCsv` on the existing background-
-job runner. Until that lands, the existing entry is the only
-allowlisted proc; new procs must respect the 1 MB budget.
+**Transitional reality: the allowlist is empty.** Phase 2
+retired every prior entry, and PR-CB-1 → PR-CB-6 (2026-05-09)
+shipped the structural fix that retired PR #521's interim
+allowlist entry: best-per-system compliant rows moved out of the
+artifact JSON into the dedicated
+`solarRecDashboardPerformanceRatioCompliantFacts` table,
+served via paginated reads
+(`getDashboardPerformanceRatioCompliantBestPage` /
+`getDashboardPerformanceRatioCompliantBestSummary`); full CSV
+exports via the `performanceRatioCompliantBestCsv` background-
+job pattern; client tab cut over to the new procs; legacy
+artifact write retired. `DASHBOARD_OVERSIZE_ALLOWLIST` in
+`server/_core/dashboardResponseGuard.ts` is `new Set([])` again
+— every response on the dashboard router fits under the 1 MB
+budget. New procs must respect that budget; if a future
+regression genuinely needs the allowlist mechanism, add the
+entry there with an inline replacement plan (per the prior
+retirement notes below).
 
 **`getDashboardOfflineMonitoring` retired from the allowlist (Phase
 2 PR-F-4-i, 2026-05-07).** The parent dashboard no longer calls the
@@ -1037,13 +1038,12 @@ expected post-upload state even with no chunked blob present.
    `loadDatasetRows` only when the result is consumed in-process
    by an aggregator that itself returns a small result. Existing
    row-materializing procs used to be listed in
-   `DASHBOARD_OVERSIZE_ALLOWLIST`; the only live entry today is
-   `getDashboardPerformanceRatioCompliantContext` (added 2026-05-09
-   when a production portfolio exceeded the 5 k best-per-system
-   cap; structural fix tracked at the allowlist entry's inline
-   replacement plan). Do not add a new entry without an inline
-   replacement plan that names the streaming/paginated/backgrounded
-   successor.
+   `DASHBOARD_OVERSIZE_ALLOWLIST`, which is now empty (PR-CB-6
+   retired the last live entry,
+   `getDashboardPerformanceRatioCompliantContext`, when the
+   structural fix landed); do not add a new entry without an
+   inline replacement plan that names the
+   streaming/paginated/backgrounded successor.
 2. **No client tab is allowed to read `datasets[key].rows` or
    `datasets[key].rows.length` for ANY of the 18 dataset keys.** Use
    `getDatasetSummariesAll` for counts, `getDatasetRowsPage` /
@@ -1060,17 +1060,13 @@ expected post-upload state even with no chunked blob present.
    is for normal-but-noteworthy events; persistence failures are
    `console.error` and surface to the client response.
 5. **Default Overview mount must not enable any allowlisted heavy
-   procedure.** The currently allowlisted proc is
-   `getDashboardPerformanceRatioCompliantContext` (Performance
-   Ratio tab — see the allowlist entry's replacement plan in
-   `dashboardResponseGuard.ts`). The retired Phase-2 entries
-   (`getDashboardOverviewSummary`, `getDashboardChangeOwnership`,
-   `getSystemSnapshot`, `getDashboardOfflineMonitoring`) must not
-   be re-added as live heavy mount paths. The Performance Ratio
-   compliant-context proc is gated on PerformanceRatio tab
-   activation (only fires when the user opens that tab) — that
-   gating is what keeps the default Overview mount free of heavy
-   reads. `getDashboardFinancials` is not on the allowlist (its
+   procedure.** As of 2026-05-09 the allowlist is empty —
+   `getDashboardOverviewSummary`, `getDashboardChangeOwnership`,
+   `getSystemSnapshot`, `getDashboardOfflineMonitoring`, and
+   `getDashboardPerformanceRatioCompliantContext` (the last,
+   retired by PR-CB-6 when its structural fix landed) are all
+   gone. Do not re-add them as live heavy mount paths.
+   `getDashboardFinancials` is not on the allowlist (its
    response is bounded), but it's heavy enough that it follows
    the same gating: enabled only on Financials/Pipeline tab
    activation. The Overview mount path reads only

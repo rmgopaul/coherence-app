@@ -219,16 +219,24 @@ describe("dashboard request heap env helpers", () => {
 });
 
 describe("DASHBOARD_OVERSIZE_ALLOWLIST", () => {
-  it("contains the documented live entries (PR #521 — getDashboardPerformanceRatioCompliantContext)", () => {
-    // 2026-05-09 — PR #521 re-added a single live entry after a
-    // production portfolio outgrew the 5 k best-per-system cap
-    // (21,078 entries observed). The fix bumps the build runner's
-    // cap to 30 k AND allowlists the read proc; structural fix
-    // (paginated read backed by a dedicated facts table + CSV
-    // background job) is documented at the allowlist entry's
-    // inline replacement plan in `dashboardResponseGuard.ts`.
+  it("is empty after PR-CB-6 — every known oversized response has been retired", () => {
+    // 2026-05-09 — PR-CB-6 retired the last live entry,
+    // `getDashboardPerformanceRatioCompliantContext` (added by
+    // PR #521 as an interim measure when a production portfolio
+    // outgrew the 5 k best-per-system cap). The CB-1 → CB-6
+    // series shipped the structural fix: best-per-system rows
+    // moved to a dedicated fact table
+    // (`solarRecDashboardPerformanceRatioCompliantFacts`),
+    // paginated reads
+    // (`getDashboardPerformanceRatioCompliantBestPage`), CSV
+    // exports via the `performanceRatioCompliantBestCsv`
+    // background job. The slim auto-sources-only response now
+    // fits under the 1 MB budget without an exemption.
     //
     // Retirement history (most recent first):
+    //   - `getDashboardPerformanceRatioCompliantContext` — PR-CB-6
+    //     (2026-05-09): structural fix landed; allowlist exemption
+    //     no longer needed.
     //   - `getDashboardOfflineMonitoring` — Phase 2 PR-F-4-i
     //     (2026-05-07): removed the parent client call, moved reads
     //     to summary/fact-page endpoints, then removed the router
@@ -247,9 +255,7 @@ describe("DASHBOARD_OVERSIZE_ALLOWLIST", () => {
     // The allowlist mechanism stays in the source for future
     // pressure-relief use; if a new regression genuinely needs an
     // entry, add it here with an inline replacement plan.
-    expect([...DASHBOARD_OVERSIZE_ALLOWLIST]).toEqual([
-      "solarRecDashboard.getDashboardPerformanceRatioCompliantContext",
-    ]);
+    expect([...DASHBOARD_OVERSIZE_ALLOWLIST]).toEqual([]);
   });
 
   it("uses fully-qualified router-prefixed paths (no bare procedure names)", () => {

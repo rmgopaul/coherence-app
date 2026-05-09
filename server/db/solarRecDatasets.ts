@@ -882,6 +882,59 @@ export async function pruneOldComputedArtifacts(
   return 0;
 }
 
+/**
+ * Delete every `solarRecComputedArtifacts` row matching
+ * `(scopeId, artifactType)`. Use ONLY for retired artifact types
+ * — the standard `pruneOldComputedArtifacts` keep-N-newest pattern
+ * is the right primitive for active types.
+ *
+ * 2026-05-09 — PR-CB-6 retired the
+ * `performanceRatioCompliantBestPerSystem` artifact write. Without
+ * this helper the orphan rows would persist forever (the
+ * `pruneOldComputedArtifacts` sweep runs only when a NEW write
+ * lands, and after retirement no writes ever land for that type).
+ * Per CLAUDE.md Hard Rule 9, accumulating-row tables need a TTL
+ * prune wired before shipping; for retired types the TTL is
+ * "delete the entire bucket on next build."
+ *
+ * Returns the affected-row count for observability. Idempotent —
+ * subsequent calls return 0 because the bucket is already empty.
+ */
+export async function deleteComputedArtifactsByType(
+  scopeId: string,
+  artifactType: string
+): Promise<number> {
+  const db = await getDb();
+  if (!db) return 0;
+  let result: unknown;
+  try {
+    result = await withDbRetry(
+      "delete retired computed artifacts by type",
+      () =>
+        db
+          .delete(solarRecComputedArtifacts)
+          .where(
+            and(
+              eq(solarRecComputedArtifacts.scopeId, scopeId),
+              eq(solarRecComputedArtifacts.artifactType, artifactType)
+            )
+          )
+    );
+  } catch (error) {
+    if (isMissingTableError(error)) return 0;
+    throw error;
+  }
+  if (Array.isArray(result) && result.length > 0) {
+    const ok = result[0] as { affectedRows?: unknown };
+    if (typeof ok?.affectedRows === "number") return ok.affectedRows;
+  }
+  if (result && typeof result === "object" && "affectedRows" in result) {
+    const affected = (result as { affectedRows?: unknown }).affectedRows;
+    if (typeof affected === "number") return affected;
+  }
+  return 0;
+}
+
 // ---------------------------------------------------------------------------
 // Scope Contract Scan Version Bridge
 // ---------------------------------------------------------------------------

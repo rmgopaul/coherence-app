@@ -61,7 +61,10 @@ import type {
   InsertSolarRecDashboardPerformanceRatioFact,
   InsertSolarRecDashboardPerformanceRatioCompliantFact,
 } from "../../../drizzle/schema";
-import { upsertComputedArtifact } from "../../db/solarRecDatasets";
+import {
+  upsertComputedArtifact,
+  deleteComputedArtifactsByType,
+} from "../../db/solarRecDatasets";
 import { startDashboardJobMetric } from "./dashboardJobMetrics";
 
 const STEP_NAME = "performanceRatioFacts";
@@ -106,10 +109,6 @@ export const PERFORMANCE_RATIO_AUTO_COMPLIANT_ARTIFACT_TYPE =
   "performanceRatioAutoCompliantSources";
 export const PERFORMANCE_RATIO_AUTO_COMPLIANT_VERSION_KEY = "current";
 
-export const PERFORMANCE_RATIO_BEST_PER_SYSTEM_ARTIFACT_TYPE =
-  "performanceRatioCompliantBestPerSystem";
-export const PERFORMANCE_RATIO_BEST_PER_SYSTEM_VERSION_KEY = "current";
-
 /**
  * Cap on auto-compliant-sources entries cached in a single
  * artifact row. Production today has < 5 k unique systemIds; the
@@ -119,38 +118,15 @@ export const PERFORMANCE_RATIO_BEST_PER_SYSTEM_VERSION_KEY = "current";
  */
 const AUTO_COMPLIANT_ENTRIES_HARD_CAP = 25_000;
 
-/**
- * Cap on best-per-system entries written to the LEGACY artifact JSON.
- *
- * 2026-05-09 — Reverted from 30_000 → 5_000 (the original cap) after
- * the prod build at 22:35 UTC failed with TiDB error 8025: "entry too
- * large, the max entry size is 6291456". TiDB's clustered-index
- * tables (which `solarRecComputedArtifacts` is, via its varchar(64)
- * primary key on `id`) impose a 6 MB per-row limit on cluster entry
- * size that is ORTHOGONAL to the column type's storage capacity — so
- * PR #522's `mediumtext` → `longtext` migration didn't fix it
- * (column max went 16 MB → 4 GB, but the cluster entry limit is the
- * binding constraint). 21,078 rows × ~833 B/row ≈ 17.5 MB per
- * payload, well past the 6 MB limit; 5,000 rows × ~833 B/row ≈ 4.16
- * MB, fits.
- *
- * **This cap only applies to the artifact JSON write.** The new
- * `solarRecDashboardPerformanceRatioCompliantFacts` table populated
- * by PR-CB-2's dual-write is uncapped — it stores all rows because
- * each ROW occupies its own cluster entry (well under 6 MB even for
- * the widest row). After PR-CB-5 cuts the client onto the paginated
- * read proc, the artifact JSON is read-only legacy compatibility;
- * after PR-CB-6 retires the artifact write entirely, this constant
- * + the `buildBestPerSystemPayload` helper are deleted.
- *
- * Why not raise to 6_500 for marginal headroom? Per-row JSON size is
- * data-dependent (long systemNames push it higher); a build that
- * happens to land near the 6 MB limit could regress at any time
- * without warning. The 5_000 cap is the conservative known-good
- * value that pre-PR-#521 prod was running on, so we restore it
- * verbatim and let the structural fix do the rest.
- */
-const BEST_PER_SYSTEM_HARD_CAP = 5_000;
+// 2026-05-09 — PR-CB-6 — `PERFORMANCE_RATIO_BEST_PER_SYSTEM_*`
+// constants + `BEST_PER_SYSTEM_HARD_CAP` + `buildBestPerSystemPayload`
+// + `writeBestPerSystemArtifact` retired. The artifact JSON write
+// is gone; the paginated proc backed by
+// `solarRecDashboardPerformanceRatioCompliantFacts` is the sole
+// reader path. The legacy artifact row in `solarRecComputedArtifacts`
+// (under artifactType "performanceRatioCompliantBestPerSystem") is
+// dead data — harmless (1 row per scope, ≤ 4 MB) but no longer
+// updated. A future TTL prune pass can DELETE it.
 
 export type PerformanceRatioSummaryPayload = {
   // Aggregator counters (pre-existing).
@@ -259,13 +235,11 @@ export type PerformanceRatioCompliantBestRow = {
   compliantSource: string | null;
 };
 
-export type PerformanceRatioBestPerSystemPayload = {
-  buildId: string;
-  builtAt: string;
-  rows: PerformanceRatioCompliantBestRow[];
-  truncated: boolean;
-  totalEntries: number;
-};
+// 2026-05-09 — PR-CB-6 — `PerformanceRatioBestPerSystemPayload`
+// retired. The legacy artifact write is gone; the
+// `PerformanceRatioCompliantBestRow` shape it wrapped now flows
+// directly through `entriesWithCompliantSourcesAttached` to
+// `buildPerformanceRatioCompliantFactRows` and the new fact table.
 
 /**
  * Pure transformation: PerformanceRatioRow → fact-row insert
@@ -844,53 +818,11 @@ export function entriesWithCompliantSourcesAttached(
   return out;
 }
 
-/**
- * Build the best-per-system side-cache payload from the
- * streaming accumulator. `compliantSource` on each row is set
- * AFTER the auto-compliant Map is finalized so late-stream
- * priority resolution is reflected.
- *
- * 2026-05-09 — PR-CB-2 — refactored to call
- * `entriesWithCompliantSourcesAttached` so the iteration logic
- * is shared with the new fact-table writer
- * (`buildPerformanceRatioCompliantFactRows`). Sort + truncation
- * remain payload-specific concerns.
- */
-export function buildBestPerSystemPayload(args: {
-  buildId: string;
-  builtAt: Date;
-  accumulators: PerformanceRatioStreamingAccumulators;
-}): PerformanceRatioBestPerSystemPayload {
-  const { buildId, builtAt, accumulators } = args;
-  const rows = entriesWithCompliantSourcesAttached(accumulators).map(
-    ([, row]) => row
-  );
-  // Stable display order: most-recent read-window first, then
-  // highest ratio, then systemName ascending. Mirrors the client
-  // memo's final sort.
-  rows.sort((a, b) => {
-    const aWindow = readWindowMs(a.readDate);
-    const bWindow = readWindowMs(b.readDate);
-    if (aWindow !== bWindow) return bWindow - aWindow;
-    const aRatio = a.performanceRatioPercent ?? Number.NEGATIVE_INFINITY;
-    const bRatio = b.performanceRatioPercent ?? Number.NEGATIVE_INFINITY;
-    if (aRatio !== bRatio) return bRatio - aRatio;
-    return a.systemName.localeCompare(b.systemName, undefined, {
-      sensitivity: "base",
-      numeric: true,
-    });
-  });
-  const totalEntries = rows.length;
-  const truncated = rows.length > BEST_PER_SYSTEM_HARD_CAP;
-  const kept = truncated ? rows.slice(0, BEST_PER_SYSTEM_HARD_CAP) : rows;
-  return {
-    buildId,
-    builtAt: builtAt.toISOString(),
-    rows: kept,
-    truncated,
-    totalEntries,
-  };
-}
+// 2026-05-09 — PR-CB-6 — `buildBestPerSystemPayload` retired.
+// The legacy artifact JSON write that consumed this payload is
+// gone. The `entriesWithCompliantSourcesAttached` helper above
+// remains as the single iteration entry point for the new
+// fact-table writer.
 
 /**
  * Pure transformation: best-per-system entries → compliant-fact-row
@@ -1139,18 +1071,8 @@ async function writeAutoCompliantSourcesArtifact(
   });
 }
 
-async function writeBestPerSystemArtifact(
-  scopeId: string,
-  payload: PerformanceRatioBestPerSystemPayload
-): Promise<void> {
-  await upsertComputedArtifact({
-    scopeId,
-    artifactType: PERFORMANCE_RATIO_BEST_PER_SYSTEM_ARTIFACT_TYPE,
-    inputVersionHash: PERFORMANCE_RATIO_BEST_PER_SYSTEM_VERSION_KEY,
-    payload: JSON.stringify(payload),
-    rowCount: payload.rows.length,
-  });
-}
+// 2026-05-09 — PR-CB-6 — `writeBestPerSystemArtifact` retired.
+// See the runner step below for the replaced flow.
 
 /**
  * Runner step. Drives the whole table-refresh in one pass:
@@ -1222,20 +1144,25 @@ async function runPerformanceRatioStep(args: {
     context: { scopeId },
   });
 
-  // 2026-05-09 — Option C build-isolation refactor. The fact-row
-  // PK now includes `buildId`, so this build's writes coexist with
-  // any prior build's rows in the table; visibility flips on the
-  // summary write. Strict ordering:
-  //   1. Stream pages → UPSERT rows tagged with THIS buildId
-  //      (rows are NOT visible — page reader filters by the
-  //      summary's buildId, which is still the PRIOR build's).
-  //   2. Once streaming + accumulators are complete: write
-  //      auto-compliant + best-per-system side caches under the
-  //      new buildId.
+  // 2026-05-09 — Option C build-isolation refactor (post PR-CB-6).
+  // The fact-row PK now includes `buildId`, so this build's writes
+  // coexist with any prior build's rows in the table; visibility
+  // flips on the summary write. Strict ordering:
+  //   1. Stream convertedReads pages → UPSERT parent fact rows
+  //      tagged with THIS buildId (rows are NOT visible — page
+  //      reader filters by the summary's buildId, which is still
+  //      the PRIOR build's).
+  //   2. Once streaming + accumulators are complete: UPSERT the
+  //      compliant fact rows (PR-CB-2) → write the auto-compliant
+  //      side cache under the new buildId. (PR-CB-6 retired the
+  //      best-per-system side cache; the compliant fact table is
+  //      its replacement.)
   //   3. Write the summary artifact with the new `buildId` —
   //      THIS is the visibility flip; tab reads now see the new
   //      build's rows.
-  //   4. Best-effort prune of superseded rows (older `buildId`s).
+  //   4. Best-effort prune of superseded rows (older `buildId`s)
+  //      across BOTH fact tables, plus the one-shot cleanup of the
+  //      retired bestPerSystem artifact row (CB-6 closure).
   //
   // If the runner throws between (1) and (3), the OLD summary
   // remains the visible build pointer; partially-written new
@@ -1245,26 +1172,25 @@ async function runPerformanceRatioStep(args: {
     if (signal.aborted) throw new Error("aborted before batch resolution");
     const batchIds = await resolvePerformanceRatioBatchIds(scopeId);
 
-    // No convertedReads → write empty side caches + empty
-    // summary, then prune. `allocationCount = 0` and
-    // `monitoringOptions = []` reach the client.
+    // No convertedReads → write the empty auto-compliant side
+    // cache + empty summary, then prune. `allocationCount = 0`
+    // and `monitoringOptions = []` reach the client. (PR-CB-6:
+    // best-per-system side cache retired; compliant fact table
+    // gets pruned via `pruneSupersededPerformanceRatioCompliantFacts`
+    // below.)
     if (!batchIds.convertedReadsBatchId) {
       if (signal.aborted)
         throw new Error("aborted before empty summary write");
       const builtAt = new Date();
       const streamingTotals = createPerformanceRatioStreamingAccumulators();
-      // Write side caches BEFORE summary (visibility-flip ordering).
+      // Write the auto-compliant side cache BEFORE summary
+      // (visibility-flip ordering). PR-CB-6 retired the
+      // best-per-system artifact write; the auto-compliant
+      // artifact stays (still consumed by
+      // `getDashboardPerformanceRatioCompliantContext`).
       await writeAutoCompliantSourcesArtifact(
         scopeId,
         buildAutoCompliantSourcesPayload({
-          buildId,
-          builtAt,
-          accumulators: streamingTotals,
-        })
-      );
-      await writeBestPerSystemArtifact(
-        scopeId,
-        buildBestPerSystemPayload({
           buildId,
           builtAt,
           accumulators: streamingTotals,
@@ -1303,11 +1229,31 @@ async function runPerformanceRatioStep(args: {
           }`
         );
       }
+      // 2026-05-09 — PR-CB-6 — same one-shot cleanup as the
+      // streaming path. The retired bestPerSystem artifact row
+      // can exist on a scope that hasn't run a successful build
+      // since CB-6 deployed, even if convertedReads is now empty.
+      let retiredArtifactsDeletedEmpty = 0;
+      try {
+        retiredArtifactsDeletedEmpty = await deleteComputedArtifactsByType(
+          scopeId,
+          "performanceRatioCompliantBestPerSystem"
+        );
+      } catch (cleanupErr) {
+        console.warn(
+          `${METRIC_PREFIX} cleanup of retired bestPerSystem artifact rows failed (empty-batch path): ${
+            cleanupErr instanceof Error
+              ? cleanupErr.message
+              : String(cleanupErr)
+          }`
+        );
+      }
       metric.finish({
         skipped: true,
         reason: "no convertedReads batch",
         orphanedDeleted: prunedCount,
         orphanedCompliantDeleted: prunedCompliantCount,
+        retiredArtifactsDeleted: retiredArtifactsDeletedEmpty,
       });
       return;
     }
@@ -1416,20 +1362,20 @@ async function runPerformanceRatioStep(args: {
       await upsertPerformanceRatioCompliantFacts(compliantFactRows);
     }
 
-    // Side caches BEFORE summary so a client that hits the new
-    // summary (visibility flip) and immediately follows with a
-    // compliant-context fetch never reads a stale side-cache row.
+    // Auto-compliant side cache BEFORE summary so a client that
+    // hits the new summary (visibility flip) and immediately
+    // follows with a compliant-context fetch never reads a stale
+    // side-cache row. 2026-05-09 — PR-CB-6 — bestPerSystem artifact
+    // write retired. The new
+    // `solarRecDashboardPerformanceRatioCompliantFacts` fact-table
+    // write (above, BEFORE the auto-compliant cache) is the sole
+    // storage path for compliant rows. The autoCompliantSources
+    // artifact stays — still consumed by the legacy
+    // `getDashboardPerformanceRatioCompliantContext`
+    // proc for the upper "Compliant Sources" classification table.
     await writeAutoCompliantSourcesArtifact(
       scopeId,
       buildAutoCompliantSourcesPayload({
-        buildId,
-        builtAt,
-        accumulators: streamingTotals,
-      })
-    );
-    await writeBestPerSystemArtifact(
-      scopeId,
-      buildBestPerSystemPayload({
         buildId,
         builtAt,
         accumulators: streamingTotals,
@@ -1485,6 +1431,34 @@ async function runPerformanceRatioStep(args: {
       );
     }
 
+    // 2026-05-09 — PR-CB-6 — one-shot cleanup of the legacy
+    // `performanceRatioCompliantBestPerSystem` artifact row(s)
+    // left behind by the now-retired writer. After CB-6 retires
+    // the writer, no `upsertComputedArtifact` for this artifactType
+    // ever fires for any scope, so the existing
+    // `pruneOldComputedArtifacts` keep-newest-3 sweep (triggered
+    // only on writes) NEVER reclaims the orphan row(s) — they sit
+    // forever taking 4+ MB of mediumtext per scope until something
+    // explicitly deletes them. This DELETE runs once per build and
+    // is idempotent: the second + every subsequent call returns 0
+    // affected rows in O(1) DB time. Best-effort: a failure does
+    // NOT roll back the visibility flip.
+    let retiredArtifactsDeleted = 0;
+    try {
+      retiredArtifactsDeleted = await deleteComputedArtifactsByType(
+        scopeId,
+        "performanceRatioCompliantBestPerSystem"
+      );
+    } catch (cleanupErr) {
+      console.warn(
+        `${METRIC_PREFIX} cleanup of retired bestPerSystem artifact rows failed (build still succeeded): ${
+          cleanupErr instanceof Error
+            ? cleanupErr.message
+            : String(cleanupErr)
+        }`
+      );
+    }
+
     metric.finish({
       rowsWritten: totalFactsWritten,
       pageCount,
@@ -1504,6 +1478,10 @@ async function runPerformanceRatioStep(args: {
       // validation in `buildPerformanceRatioCompliantFactRows`.
       compliantFactRowsWritten: compliantFactRows.length,
       orphanedCompliantDeleted,
+      // 2026-05-09 — PR-CB-6 — observability for the one-shot
+      // legacy artifact cleanup. Will read non-zero once per scope
+      // on the first build after CB-6 deploys, then 0 thereafter.
+      retiredArtifactsDeleted,
       streaming: true,
     });
   } catch (err) {

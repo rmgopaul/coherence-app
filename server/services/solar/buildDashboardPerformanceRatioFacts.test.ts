@@ -86,7 +86,6 @@ import {
   PERFORMANCE_RATIO_SUMMARY_ARTIFACT_TYPE,
   PERFORMANCE_RATIO_SUMMARY_VERSION_KEY,
   PERFORMANCE_RATIO_AUTO_COMPLIANT_ARTIFACT_TYPE,
-  PERFORMANCE_RATIO_BEST_PER_SYSTEM_ARTIFACT_TYPE,
   performanceRatioBuildStep,
   registerPerformanceRatioBuildStep,
 } from "./buildDashboardPerformanceRatioFacts";
@@ -1154,8 +1153,11 @@ describe("performanceRatioBuildStep — orchestration (Option C visibility flip)
       expect(pageRows[0].scopeId).toBe("scope-A");
     }
 
-    // Three artifact writes: summary + auto-compliant + best-per-system.
-    expect(mocks.upsertComputedArtifact).toHaveBeenCalledTimes(3);
+    // 2026-05-09 — PR-CB-6 — two artifact writes: summary +
+    // auto-compliant. The bestPerSystem artifact write was
+    // retired; that data now lives in the
+    // `solarRecDashboardPerformanceRatioCompliantFacts` table.
+    expect(mocks.upsertComputedArtifact).toHaveBeenCalledTimes(2);
     const summaryCall = getArtifactCallByType(
       PERFORMANCE_RATIO_SUMMARY_ARTIFACT_TYPE
     );
@@ -1240,8 +1242,9 @@ describe("performanceRatioBuildStep — orchestration (Option C visibility flip)
 
     // No fact-row writes when there's no source dataset.
     expect(mocks.upsertPerformanceRatioFacts).not.toHaveBeenCalled();
-    // Three artifact writes still: summary + auto-compliant + best-per-system.
-    expect(mocks.upsertComputedArtifact).toHaveBeenCalledTimes(3);
+    // 2026-05-09 — PR-CB-6 — two artifact writes: summary +
+    // auto-compliant. Best-per-system artifact retired.
+    expect(mocks.upsertComputedArtifact).toHaveBeenCalledTimes(2);
     const summaryCall = getArtifactCallByType(
       PERFORMANCE_RATIO_SUMMARY_ARTIFACT_TYPE
     );
@@ -1301,17 +1304,15 @@ describe("performanceRatioBuildStep — orchestration (Option C visibility flip)
         signal: new AbortController().signal,
       })
     ).resolves.toBeUndefined();
-    // Summary + side caches WERE written before the sweep
-    // attempted (visibility flip succeeded).
-    expect(mocks.upsertComputedArtifact).toHaveBeenCalledTimes(3);
+    // 2026-05-09 — PR-CB-6 — two artifact writes: summary +
+    // auto-compliant. Best-per-system artifact retired (the data
+    // is now in `solarRecDashboardPerformanceRatioCompliantFacts`).
+    expect(mocks.upsertComputedArtifact).toHaveBeenCalledTimes(2);
     expect(
       getArtifactCallByType(PERFORMANCE_RATIO_SUMMARY_ARTIFACT_TYPE)
     ).toBeDefined();
     expect(
       getArtifactCallByType(PERFORMANCE_RATIO_AUTO_COMPLIANT_ARTIFACT_TYPE)
-    ).toBeDefined();
-    expect(
-      getArtifactCallByType(PERFORMANCE_RATIO_BEST_PER_SYSTEM_ARTIFACT_TYPE)
     ).toBeDefined();
   });
 
@@ -1481,8 +1482,9 @@ describe("performanceRatioBuildStep — orchestration (Option C visibility flip)
           signal: new AbortController().signal,
         })
       ).resolves.toBeUndefined();
-      // Summary + side caches still written.
-      expect(mocks.upsertComputedArtifact).toHaveBeenCalledTimes(3);
+      // 2026-05-09 — PR-CB-6 — two artifact writes: summary +
+      // auto-compliant. Best-per-system artifact retired.
+      expect(mocks.upsertComputedArtifact).toHaveBeenCalledTimes(2);
     } finally {
       warnSpy.mockRestore();
     }
