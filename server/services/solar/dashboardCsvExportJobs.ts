@@ -204,6 +204,26 @@ export type DashboardCsvExportInput =
         | "systemName"
         | "readDate";
       sortDir: "asc" | "desc";
+    }
+  | {
+      // 2026-05-09 — PR-CB-4 — full export of the
+      // PerformanceRatioTab's compliant-best subset (the
+      // bottom-of-tab "Compliant Sources" table). Mirrors the
+      // `getDashboardPerformanceRatioCompliantBestPage` proc's
+      // filter args. Replaces the in-tab CSV download that pulled
+      // from the artifact JSON; the new path streams directly from
+      // `solarRecDashboardPerformanceRatioCompliantFacts` so the
+      // full dump never crosses tRPC.
+      exportType: "performanceRatioCompliantBestCsv";
+      compliantSource: string | null;
+      monitoring: string | null;
+      search: string | null;
+      sortBy:
+        | "performanceRatioPercent"
+        | "readDate"
+        | "systemName"
+        | "compliantSource";
+      sortDir: "asc" | "desc";
     };
 
 export type DashboardCsvExportStatus =
@@ -1036,6 +1056,37 @@ function parseInputJson(rawInput: unknown): DashboardCsvExportInput | null {
       sortDir,
     };
   }
+  if (candidate.exportType === "performanceRatioCompliantBestCsv") {
+    // PR-CB-4 — same defensive parse as the sibling
+    // `performanceRatioCsv` parser. SortBy / sortDir validated
+    // against the compliant-page enum (which is a different
+    // 4-value union than the parent perf-ratio sort enum).
+    const sortBy = candidate.sortBy;
+    const sortDir = candidate.sortDir;
+    if (
+      sortBy !== "performanceRatioPercent" &&
+      sortBy !== "readDate" &&
+      sortBy !== "systemName" &&
+      sortBy !== "compliantSource"
+    ) {
+      return null;
+    }
+    if (sortDir !== "asc" && sortDir !== "desc") return null;
+    return {
+      exportType: "performanceRatioCompliantBestCsv",
+      compliantSource:
+        typeof candidate.compliantSource === "string"
+          ? candidate.compliantSource
+          : null,
+      monitoring:
+        typeof candidate.monitoring === "string"
+          ? candidate.monitoring
+          : null,
+      search: typeof candidate.search === "string" ? candidate.search : null,
+      sortBy,
+      sortDir,
+    };
+  }
   return null;
 }
 
@@ -1077,6 +1128,9 @@ async function buildExport(
   }
   if (input.exportType === "performanceRatioCsv") {
     return buildPerformanceRatioCsvExport(scopeId, input);
+  }
+  if (input.exportType === "performanceRatioCompliantBestCsv") {
+    return buildPerformanceRatioCompliantBestCsvExport(scopeId, input);
   }
   const factArtifact = await buildChangeOwnershipTileCsvFromFacts(
     scopeId,
@@ -1200,6 +1254,177 @@ async function buildPerformanceRatioCsvExport(
 
     while (true) {
       const page = await getPerformanceRatioFactsPage(filters, {
+        limit: PAGE_SIZE,
+        offset,
+        sortBy,
+        sortDir,
+      });
+      if (page.length === 0) break;
+      const lines: string[] = [];
+      for (const row of page) {
+        lines.push(
+          headers
+            .map((header) => {
+              const v = (row as unknown as Record<string, unknown>)[header];
+              return escapeCsvCell(serializeCsvValue(v));
+            })
+            .join(",")
+        );
+      }
+      await appendFile(filePath, lines.join("\n") + "\n", "utf8");
+      totalRows += page.length;
+      offset += page.length;
+      if (page.length < PAGE_SIZE) break;
+    }
+
+    const csvBytes = (await stat(filePath)).size;
+    const cleanup = async () => {
+      if (!tempDir) return;
+      await rm(tempDir, { recursive: true, force: true });
+      tempDir = null;
+    };
+
+    return {
+      filePath,
+      fileName,
+      rowCount: totalRows,
+      csvBytes,
+      cleanup,
+    };
+  } catch (err) {
+    if (tempDir) {
+      await rm(tempDir, { recursive: true, force: true }).catch(
+        () => undefined
+      );
+    }
+    throw err;
+  }
+}
+
+/**
+ * 2026-05-09 — PR-CB-4 — full export of the PerformanceRatioTab's
+ * compliant-best subset (the bottom-of-tab "Compliant Sources"
+ * table). Mirrors the
+ * `getDashboardPerformanceRatioCompliantBestPage` proc's filter
+ * args so the CSV the user downloads matches what they see on
+ * screen.
+ *
+ * Streams the per-build subset in 500-row pages from
+ * `solarRecDashboardPerformanceRatioCompliantFacts`, appending
+ * each page to a temp file. Memory peak is bounded by ONE page
+ * worth of fact rows (~250 KB).
+ *
+ * Visibility: reads the summary's `buildId` first; never returns
+ * rows from in-flight or superseded builds. If no successful
+ * build exists for the scope, returns an empty artifact (the
+ * client gets "0 rows" + a clear empty-state).
+ *
+ * Mirrors `buildPerformanceRatioCsvExport` (the parent fact-table
+ * exporter) line-for-line — the only differences are the table
+ * being read, the filter shape, the sort enum, and the column
+ * list (compliantSource added; convertedReadKey removed since
+ * the new table uses systemKey as its source-row identifier).
+ */
+async function buildPerformanceRatioCompliantBestCsvExport(
+  scopeId: string,
+  input: Extract<
+    DashboardCsvExportInput,
+    { exportType: "performanceRatioCompliantBestCsv" }
+  >
+): Promise<BuiltCsvArtifact> {
+  const { mkdtemp, rm, stat, writeFile, appendFile } = await import(
+    "node:fs/promises"
+  );
+  const path = await import("node:path");
+  const { tmpdir } = await import("node:os");
+  const { getComputedArtifact } = await import(
+    "../../db/solarRecDatasets"
+  );
+  const {
+    PERFORMANCE_RATIO_SUMMARY_ARTIFACT_TYPE,
+    PERFORMANCE_RATIO_SUMMARY_VERSION_KEY,
+    extractPerformanceRatioVisibleBuildId,
+  } = await import("./buildDashboardPerformanceRatioFacts");
+  const { getPerformanceRatioCompliantFactsPage } = await import(
+    "../../db/dashboardPerformanceRatioCompliantFacts"
+  );
+  // Reuse the existing dashboard CSV export helpers rather than
+  // re-implement the escape + filename-timestamp logic.
+  const { escapeCsvCell } = await import("./buildDashboardCsvExport");
+  const { timestampForCsvFileName } = await import(
+    "./dashboardDatasetCsvExport"
+  );
+
+  const generatedAtIso = new Date().toISOString();
+  const fileName = `performance-ratio-compliant-best-${timestampForCsvFileName(generatedAtIso)}.csv`;
+
+  // Resolve visible build via summary pointer (single source of
+  // truth: the build runner module's helper).
+  const summaryRow = await getComputedArtifact(
+    scopeId,
+    PERFORMANCE_RATIO_SUMMARY_ARTIFACT_TYPE,
+    PERFORMANCE_RATIO_SUMMARY_VERSION_KEY
+  );
+  const buildId = extractPerformanceRatioVisibleBuildId(
+    summaryRow?.payload ?? null
+  );
+  if (!buildId) {
+    return { csv: "", fileName, rowCount: 0, csvBytes: 0 };
+  }
+
+  const filters = {
+    scopeId,
+    buildId,
+    compliantSource: input.compliantSource,
+    monitoring: input.monitoring,
+    search: input.search,
+  };
+  const sortBy = input.sortBy;
+  const sortDir = input.sortDir;
+  const PAGE_SIZE = 500;
+
+  const headers = [
+    "systemKey",
+    "key",
+    "matchType",
+    "monitoring",
+    "monitoringSystemId",
+    "monitoringSystemName",
+    "monitoringPlatform",
+    "installerName",
+    "trackingSystemRefId",
+    "systemId",
+    "stateApplicationRefId",
+    "systemName",
+    "portalAcSizeKw",
+    "abpAcSizeKw",
+    "part2VerificationDate",
+    "readDate",
+    "readDateRaw",
+    "performanceRatioPercent",
+    "productionDeltaWh",
+    "expectedProductionWh",
+    "contractValue",
+    "baselineReadWh",
+    "baselineDate",
+    "baselineSource",
+    "lifetimeReadWh",
+    "compliantSource",
+  ] as const;
+
+  let tempDir: string | null = null;
+  let totalRows = 0;
+  let offset = 0;
+
+  try {
+    tempDir = await mkdtemp(
+      path.join(tmpdir(), "solar-rec-perf-ratio-compl-csv-")
+    );
+    const filePath = path.join(tempDir, fileName);
+    await writeFile(filePath, headers.join(",") + "\n", "utf8");
+
+    while (true) {
+      const page = await getPerformanceRatioCompliantFactsPage(filters, {
         limit: PAGE_SIZE,
         offset,
         sortBy,

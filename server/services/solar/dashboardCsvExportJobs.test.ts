@@ -1306,6 +1306,88 @@ describe("dashboardCsvExportJobs — input JSON parsing", () => {
       })
     ).toBeNull();
   });
+
+  // ────────────────────────────────────────────────────────────────
+  // PR-CB-4 — performanceRatioCompliantBestCsv parser
+  // ────────────────────────────────────────────────────────────────
+
+  it("accepts a fully-formed performanceRatioCompliantBestCsv shape", () => {
+    const result = __TEST_ONLY__.parseInputJson({
+      exportType: "performanceRatioCompliantBestCsv",
+      compliantSource: "10kW AC or Less",
+      monitoring: "Enphase",
+      search: "acme",
+      sortBy: "performanceRatioPercent",
+      sortDir: "desc",
+    });
+    expect(result).toEqual({
+      exportType: "performanceRatioCompliantBestCsv",
+      compliantSource: "10kW AC or Less",
+      monitoring: "Enphase",
+      search: "acme",
+      sortBy: "performanceRatioPercent",
+      sortDir: "desc",
+    });
+  });
+
+  it("normalizes missing nullable filter args to null on performanceRatioCompliantBestCsv", () => {
+    // Defensive parse — string-or-null per filter arg. Anything
+    // non-string lands as null (matches the legacy
+    // performanceRatioCsv parser's behavior).
+    const result = __TEST_ONLY__.parseInputJson({
+      exportType: "performanceRatioCompliantBestCsv",
+      sortBy: "readDate",
+      sortDir: "asc",
+    });
+    expect(result).toEqual({
+      exportType: "performanceRatioCompliantBestCsv",
+      compliantSource: null,
+      monitoring: null,
+      search: null,
+      sortBy: "readDate",
+      sortDir: "asc",
+    });
+  });
+
+  it("rejects performanceRatioCompliantBestCsv with an unknown sortBy value", () => {
+    expect(
+      __TEST_ONLY__.parseInputJson({
+        exportType: "performanceRatioCompliantBestCsv",
+        sortBy: "productionDeltaWh", // valid for performanceRatioCsv but NOT compliant-best
+        sortDir: "desc",
+      })
+    ).toBeNull();
+  });
+
+  it("rejects performanceRatioCompliantBestCsv with an unknown sortDir value", () => {
+    expect(
+      __TEST_ONLY__.parseInputJson({
+        exportType: "performanceRatioCompliantBestCsv",
+        sortBy: "readDate",
+        sortDir: "weird",
+      })
+    ).toBeNull();
+  });
+
+  it("accepts each of the 4 supported sortBy values for performanceRatioCompliantBestCsv", () => {
+    for (const sortBy of [
+      "performanceRatioPercent",
+      "readDate",
+      "systemName",
+      "compliantSource",
+    ]) {
+      const result = __TEST_ONLY__.parseInputJson({
+        exportType: "performanceRatioCompliantBestCsv",
+        sortBy,
+        sortDir: "asc",
+      });
+      expect(result).not.toBeNull();
+      expect(result).toMatchObject({
+        exportType: "performanceRatioCompliantBestCsv",
+        sortBy,
+      });
+    }
+  });
 });
 
 // ────────────────────────────────────────────────────────────────────

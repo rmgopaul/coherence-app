@@ -344,6 +344,56 @@ describe("startDashboardCsvExport — performanceRatioCsv input (new in Option C
   });
 });
 
+describe("startDashboardCsvExport — performanceRatioCompliantBestCsv input (PR-CB-4)", () => {
+  const proc = sliceProcedure("startDashboardCsvExport");
+
+  it("accepts performanceRatioCompliantBestCsv as a discriminated-union variant", () => {
+    expect(proc!).toMatch(
+      /exportType:\s*z\.literal\("performanceRatioCompliantBestCsv"\)/
+    );
+  });
+
+  it("requires the same filter + sort args the compliant-best page proc accepts", () => {
+    // compliantSource (string-nullable) — the new filter unique
+    // to the compliant-best subset; not present on the parent
+    // performanceRatioCsv export.
+    expect(proc!).toMatch(
+      /exportType:\s*z\.literal\("performanceRatioCompliantBestCsv"\)[\s\S]*?compliantSource:/
+    );
+    expect(proc!).toMatch(
+      /exportType:\s*z\.literal\("performanceRatioCompliantBestCsv"\)[\s\S]*?monitoring:/
+    );
+    expect(proc!).toMatch(
+      /exportType:\s*z\.literal\("performanceRatioCompliantBestCsv"\)[\s\S]*?search:/
+    );
+    expect(proc!).toMatch(
+      /exportType:\s*z\.literal\("performanceRatioCompliantBestCsv"\)[\s\S]*?sortBy:/
+    );
+    expect(proc!).toMatch(
+      /exportType:\s*z\.literal\("performanceRatioCompliantBestCsv"\)[\s\S]*?sortDir:/
+    );
+  });
+
+  it("declares sortBy as the 4-value enum specific to compliant-best (NOT the parent's 5-value enum)", () => {
+    // The compliant-best sort enum has only 4 values: the parent
+    // performanceRatioCsv enum's `productionDeltaWh` and
+    // `expectedProductionWh` are not part of this enum because
+    // they're not load-bearing for the compliant-best subset
+    // (the subset is already filtered on `part2 + ratio in [30,
+    // 150]` so productionDelta and expectedProduction add no
+    // sortable signal).
+    expect(proc!).toMatch(
+      /exportType:\s*z\.literal\("performanceRatioCompliantBestCsv"\)[\s\S]*?\.enum\(\[\s*"performanceRatioPercent",\s*"readDate",\s*"systemName",\s*"compliantSource",?\s*\]\)/
+    );
+  });
+
+  it("declares sortDir as the (asc | desc) enum", () => {
+    expect(proc!).toMatch(
+      /exportType:\s*z\.literal\("performanceRatioCompliantBestCsv"\)[\s\S]*?sortDir:\s*z\.enum\(\["asc",\s*"desc"\]\)/
+    );
+  });
+});
+
 // ────────────────────────────────────────────────────────────────────
 // PR-CB-3 — getDashboardPerformanceRatioCompliantBestPage
 // ────────────────────────────────────────────────────────────────────
