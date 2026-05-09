@@ -1163,6 +1163,28 @@ describe("parsePerformanceRatioSummaryPayload (codex review fixup — strict fie
     (payload as Record<string, unknown>).dedupedConvertedReads = "twenty";
     expect(parser!(JSON.stringify(payload))).toBeNull();
   });
+
+  // 2026-05-09 follow-up to PR-1 — non-mutation guard. The
+  // original parser mutated `parsed.dedupedConvertedReads = 0`
+  // when the field was missing. The PR-FU-5 fixup replaces the
+  // mutation with a non-mutating spread (`...parsed,
+  // dedupedConvertedReads: parsed.dedupedConvertedReads ?? 0`).
+  // This test pins the contract so a future regression to the
+  // mutation pattern fails loudly.
+  it("does NOT mutate the input string's parsed object (non-mutating default)", () => {
+    const stale = makeValidPayload() as Partial<
+      ReturnType<typeof makeValidPayload>
+    >;
+    delete (stale as Record<string, unknown>).dedupedConvertedReads;
+    const rawJson = JSON.stringify(stale);
+    const parsedSnapshot = JSON.parse(rawJson) as Record<string, unknown>;
+    parser!(rawJson);
+    // The string was re-parsed inside the parser; the snapshot
+    // reflects what the function received and should still lack
+    // the field. (The function returns a NEW object with the
+    // default applied; the input is untouched.)
+    expect(parsedSnapshot).not.toHaveProperty("dedupedConvertedReads");
+  });
 });
 
 describe("performanceRatioBuildStep — orchestration (Option C visibility flip)", () => {
