@@ -92,13 +92,23 @@ describe("Solar REC shared dataset invalidation", () => {
   it("Schedule B apply paths notify the parent after server dataset changes", () => {
     expect(dashboardSource).toMatch(/onServerDataChanged=\{invalidateServerDerivedSolarData\}/);
     expect(scheduleBImportSource).toMatch(/onServerDataChanged\?:/);
-    expect(scheduleBImportSource).toMatch(/notifyServerDataChanged\("auto-apply"\)/);
+    // 2026-05-09 — PR-3 (Bug #3) hoisted `notifyServerDataChanged`
+    // into a ref to stabilize the auto-apply effect's dep array.
+    // The auto-apply path now invokes via `notifyServerDataChangedRef.
+    // current("auto-apply")`; other paths still call it directly.
+    // Both forms count as "the apply path notifies the parent" for
+    // regression-rail purposes.
+    const callsAutoApplyNotifier =
+      /notifyServerDataChanged(?:Ref\.current)?\("auto-apply"\)/;
+    expect(scheduleBImportSource).toMatch(callsAutoApplyNotifier);
     expect(scheduleBImportSource).toMatch(
-      /notifyServerDataChanged\("contract-id mapping"\)/
+      /notifyServerDataChanged(?:Ref\.current)?\("contract-id mapping"\)/
     );
-    expect(scheduleBImportSource).toMatch(/notifyServerDataChanged\("manual apply"\)/);
     expect(scheduleBImportSource).toMatch(
-      /notifyServerDataChanged\("manual CSV upload"\)/
+      /notifyServerDataChanged(?:Ref\.current)?\("manual apply"\)/
+    );
+    expect(scheduleBImportSource).toMatch(
+      /notifyServerDataChanged(?:Ref\.current)?\("manual CSV upload"\)/
     );
   });
 

@@ -54,6 +54,7 @@ import { solarRecTrpc as trpc } from "@/solar-rec/solarRecTrpc";
 import type { CsvRow } from "../state/types";
 import { bytesToBase64 } from "../lib/binaryEncoding";
 import { buildCsv, timestampForCsvFileName, triggerCsvDownload } from "../lib/csvIo";
+import { decideAutoApply } from "../lib/scheduleBAutoApplyThrottle";
 
 const NUMBER_FORMATTER = new Intl.NumberFormat("en-US");
 const formatNumber = (value: number): string => NUMBER_FORMATTER.format(value);
@@ -196,6 +197,21 @@ export function ScheduleBImport({
   // so we can rate-limit repeated setDatasets calls while the scanner is
   // running. Surfaced in a badge so the user can see "N auto-applied".
   const autoApplyStateRef = useRef<{ count: number; time: number }>({ count: 0, time: 0 });
+  // 2026-05-09 — Bug #3 race guard. The auto-apply effect re-fires
+  // whenever its dep array's references change; pre-fix, the
+  // `applyScheduleBToDeliveryObligations` mutation reference (a
+  // `useMutation()` result) was in that dep array and got a fresh
+  // identity on every parent re-render. Each fire scheduled a
+  // `setTimeout(..., 0)` whose body has multiple await points; the
+  // cleanup-cancels-timer pattern only works for timers that haven't
+  // yet fired. Multiple bodies racing → 11 concurrent
+  // mutateAsync calls. The mutation reference now lives in
+  // `applyMutationRef`, kept fresh by a side effect so the auto-
+  // apply effect's deps are stable. `autoApplyInFlightRef` is the
+  // belt-and-braces guard: even if the effect somehow fires while
+  // a timer body is awaiting, the body short-circuits at its
+  // `applyInFlight` check.
+  const autoApplyInFlightRef = useRef(false);
   const [autoApplyStatus, setAutoApplyStatus] = useState<{
     lastAppliedCount: number;
     lastAppliedAt: number | null;
@@ -223,6 +239,14 @@ export function ScheduleBImport({
     },
     [onServerDataChanged]
   );
+  // 2026-05-09 — Bug #3. Same dep-array stabilization as
+  // `applyMutationRef` above — the notifier was in the auto-apply
+  // effect's deps and changed identity whenever the parent's
+  // `invalidateServerDerivedSolarData` callback's deps churned.
+  const notifyServerDataChangedRef = useRef(notifyServerDataChanged);
+  useEffect(() => {
+    notifyServerDataChangedRef.current = notifyServerDataChanged;
+  }, [notifyServerDataChanged]);
   // apply-track-v1: persistent panel showing the last apply's
   // breakdown + the list of files whose tracking ID was already in
   // the delivery dataset. This replaces the easy-to-miss toast with
@@ -339,6 +363,15 @@ export function ScheduleBImport({
     trpc.solarRecDashboard.importScheduleBFromCsgPortal.useMutation();
   const applyScheduleBToDeliveryObligations =
     trpc.solarRecDashboard.applyScheduleBToDeliveryObligations.useMutation();
+  // 2026-05-09 — Bug #3. Hoist the mutation + notifier into refs so
+  // the auto-apply effect's dep array doesn't churn on every parent
+  // re-render. The refs always read the latest reference inside the
+  // timer body via `.current`, so the user-perceived behavior is
+  // identical to inlining; only the dep-array stability changes.
+  const applyMutationRef = useRef(applyScheduleBToDeliveryObligations);
+  useEffect(() => {
+    applyMutationRef.current = applyScheduleBToDeliveryObligations;
+  }, [applyScheduleBToDeliveryObligations]);
   // csv-upload-v1: manual Delivery Schedule CSV fallback for systems
   // the Schedule B PDF scrape is missing or erroring on.
   const uploadDeliveryScheduleCsv =
@@ -529,12 +562,6 @@ export function ScheduleBImport({
   // immediately without waiting for the debounce.
   useEffect(() => {
     const successful = scheduleBResults.filter((r) => !r.extraction.error);
-    if (successful.length === 0) return;
-    if (successful.length <= autoApplyStateRef.current.count) return;
-
-    const now = Date.now();
-    const elapsed = now - autoApplyStateRef.current.time;
-    const delay = Math.max(0, AUTO_APPLY_MIN_INTERVAL_MS - elapsed);
 
     const jobStatus = scheduleBStatusQuery.data?.job?.status;
     const jobIsComplete =
@@ -543,11 +570,47 @@ export function ScheduleBImport({
       jobStatus === "failed" ||
       jobStatus === null ||
       jobStatus === undefined;
-    const effectiveDelay = jobIsComplete ? 0 : delay;
+
+    // 2026-05-09 — Bug #3 fix. Decision logic moved to a pure
+    // helper (`decideAutoApply` in
+    // `solar-rec-dashboard/lib/scheduleBAutoApplyThrottle.ts`) so it
+    // can be unit-tested without mounting the component. The
+    // `applyInFlight` check short-circuits when a prior timer body
+    // is still awaiting — the proximate cause of the 11-concurrent-
+    // mutations fan-out from the prod walk.
+    const decision = decideAutoApply({
+      successfulResultCount: successful.length,
+      lastAppliedCount: autoApplyStateRef.current.count,
+      lastAppliedAtMs: autoApplyStateRef.current.time,
+      nowMs: Date.now(),
+      jobIsComplete,
+      minIntervalMs: AUTO_APPLY_MIN_INTERVAL_MS,
+      applyInFlight: autoApplyInFlightRef.current,
+    });
+    if (decision.kind === "skip") return;
 
     let cancelled = false;
     const timer = window.setTimeout(async () => {
       if (cancelled) return;
+      // Re-check the in-flight guard at timer-fire time. The cleanup
+      // function `cancelled = true` only catches timers that haven't
+      // fired yet; a timer body that's already past the top-level
+      // `if (cancelled) return` and into an `await` keeps running
+      // even if a later effect re-fires. Without this second check
+      // (and the `applyInFlight` skip in `decideAutoApply`),
+      // concurrent bodies would race to call `mutateAsync`.
+      if (autoApplyInFlightRef.current) return;
+      autoApplyInFlightRef.current = true;
+      // Optimistic state advance: record the count NOW (before
+      // mutateAsync), so any effect re-fire that races with this
+      // body sees `lastAppliedCount === successfulResultCount` and
+      // exits via "no-new-results". The timestamp is finalized
+      // after the mutation resolves so the throttle math reflects
+      // wall-clock completion, not optimistic intent.
+      autoApplyStateRef.current = {
+        count: successful.length,
+        time: autoApplyStateRef.current.time,
+      };
       try {
         const { toDeliveryScheduleBaseRows } = await import("@/lib/scheduleBScanner");
         const mapping = contractIdMappingRef.current.size > 0 ? contractIdMappingRef.current : undefined;
@@ -565,10 +628,10 @@ export function ScheduleBImport({
         // remains the only auto-apply→cloud-reload trigger.
         const activeJobId = scheduleBStatusQuery.data?.job?.id ?? undefined;
         let serverResult: Awaited<
-          ReturnType<typeof applyScheduleBToDeliveryObligations.mutateAsync>
+          ReturnType<typeof applyMutationRef.current.mutateAsync>
         > | null = null;
         try {
-          serverResult = await applyScheduleBToDeliveryObligations.mutateAsync(
+          serverResult = await applyMutationRef.current.mutateAsync(
             activeJobId ? { jobId: activeJobId } : undefined
           );
         } catch (err) {
@@ -585,7 +648,7 @@ export function ScheduleBImport({
           lastAppliedAt: Date.now(),
         });
         if (serverResult) {
-          await notifyServerDataChanged("auto-apply");
+          await notifyServerDataChangedRef.current("auto-apply");
           setLastServerApply({
             incoming: serverResult.incoming,
             inserted: serverResult.inserted,
@@ -598,19 +661,29 @@ export function ScheduleBImport({
         }
       } catch {
         // Best-effort — manual Apply button is still available.
+      } finally {
+        // Always release the in-flight guard. Without this, a
+        // mid-body throw would leave the guard set and block all
+        // future auto-applies until a hard reload.
+        autoApplyInFlightRef.current = false;
       }
-    }, effectiveDelay);
+    }, decision.delayMs);
 
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
     };
+    // 2026-05-09 — Bug #3. `applyScheduleBToDeliveryObligations`
+    // and `notifyServerDataChanged` are intentionally OMITTED from
+    // the dep array; both come from React Query / parent-supplied
+    // callbacks and get fresh references on every parent re-render.
+    // The timer body reads the latest references via
+    // `applyMutationRef.current` / `notifyServerDataChangedRef.
+    // current`, populated by the dedicated sync effects above.
   }, [
     scheduleBResults,
     scheduleBStatusQuery.data?.job?.status,
     scheduleBStatusQuery.data?.job?.id,
-    applyScheduleBToDeliveryObligations,
-    notifyServerDataChanged,
   ]);
 
   // contract-id-mapping-v1: onChange is now a LOCAL-ONLY state update.
