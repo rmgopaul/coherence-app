@@ -66,6 +66,7 @@ import {
   formatDate,
   formatMonthYear,
   formatNumber,
+  formatRelativeTime,
   formatSignedNumber,
   getAutoCompliantSourcePriority,
   getCsvValueByHeader,
@@ -787,6 +788,35 @@ export default memo(function PerformanceRatioTab(props: PerformanceRatioTabProps
     performanceRatioFilteredAggregatesQuery.data,
     performanceRatioFiltersAreDefault,
   ]);
+
+  // 2026-05-09 — "Last rebuilt" timestamp surface. The summary
+  // proc returns `builtAt` (ISO 8601, set by the build runner when
+  // it writes the side-cache row) on every available payload. The
+  // tab tiles read filtered or global aggregates depending on
+  // filters, but `builtAt` is always sourced from the unfiltered
+  // summary — a filter change does NOT trigger a rebuild, only a
+  // re-aggregation of the existing facts. Showing the build time
+  // alongside the tiles makes "are these numbers fresh?" answerable
+  // without a debug proc.
+  const performanceRatioBuiltAtDisplay = useMemo(() => {
+    const summary = performanceRatioSummaryQuery.data;
+    if (!summary || summary.available !== true) return null;
+    const builtAtMs = Date.parse(summary.builtAt);
+    if (!Number.isFinite(builtAtMs)) return null;
+    const relative = formatRelativeTime(builtAtMs);
+    if (!relative) return null;
+    // Absolute time uses the user's locale, with date-and-time
+    // granularity. `month: "short"` keeps it short ("May 9, 2026,
+    // 1:30 PM") so the row stays one line on narrow viewports.
+    const absolute = new Date(builtAtMs).toLocaleString(undefined, {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    });
+    return { relative, absolute };
+  }, [performanceRatioSummaryQuery.data]);
 
   // -------------------------------------------------------------------------
   // Compliant sources section
@@ -1635,6 +1665,19 @@ export default memo(function PerformanceRatioTab(props: PerformanceRatioTabProps
               </CardHeader>
             </Card>
           </div>
+
+          {performanceRatioBuiltAtDisplay ? (
+            <p
+              className="text-xs text-slate-500"
+              data-testid="performance-ratio-built-at"
+              title={`Aggregates last rebuilt at ${performanceRatioBuiltAtDisplay.absolute}`}
+            >
+              Last rebuilt {performanceRatioBuiltAtDisplay.relative}
+              <span className="ml-1 text-slate-400">
+                ({performanceRatioBuiltAtDisplay.absolute})
+              </span>
+            </p>
+          ) : null}
 
           <Card>
             <CardHeader>
