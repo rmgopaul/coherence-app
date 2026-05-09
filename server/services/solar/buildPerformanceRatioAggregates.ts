@@ -220,7 +220,10 @@ export function createPerformanceRatioAccumulator(
         }
 
         const readDateRaw = clean(row.read_date);
-        // Cross-source dedup key. Use the system NAME when available
+        const readDate = parseDate(readDateRaw);
+        // Cross-source dedup key.
+        //
+        // Identifier component: use the system NAME when available
         // (the common case — the bridge always populates it; manual
         // CSV uploads almost always populate it). Fall back to the
         // system ID when name is empty (validity check above ensures
@@ -230,16 +233,28 @@ export function createPerformanceRatioAccumulator(
         // lifetime + date but differ in BOTH name and id hash to
         // different keys and don't dedup — accepted, those are
         // genuinely different physical readings.
+        //
+        // Date component: use the parsed `readDate.getTime()` when
+        // parsing succeeded so two source rows representing the
+        // same calendar day with different string formats
+        // (e.g. `4/13/2026` from the API push bridge vs.
+        // `2026-04-13` from a manual CSV upload — see
+        // `convertedReadsBridge.ts` `formatReadDate` for the
+        // canonical bridge format) hash to the same key. Falls
+        // back to the raw string when parsing failed (the source
+        // row would emit `readDate: null` to the matcher anyway,
+        // so dedup on the raw string is the cleanest available
+        // signal).
         const dedupIdentifier =
           monitoringSystemNameNormalized || monitoringSystemIdNormalized;
-        const crossSourceKey = `${monitoringNormalized}|${dedupIdentifier}|${lifetimeReadWh}|${readDateRaw}`;
+        const dedupDateKey = readDate ? readDate.getTime() : readDateRaw;
+        const crossSourceKey = `${monitoringNormalized}|${dedupIdentifier}|${lifetimeReadWh}|${dedupDateKey}`;
         if (processedCrossSourceKeys.has(crossSourceKey)) {
           dedupedConvertedReads += 1;
           continue;
         }
         processedCrossSourceKeys.add(crossSourceKey);
 
-        const readDate = parseDate(readDateRaw);
         const readKey = `converted-${globalIndex}`;
 
         const bothMatches =

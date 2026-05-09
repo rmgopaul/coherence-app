@@ -465,6 +465,67 @@ describe("buildPerformanceRatioAggregates", () => {
     expect(result.dedupedConvertedReads).toBe(0);
   });
 
+  it("dedups across date-string formats (M/D/YYYY vs ISO) for the same calendar day", () => {
+    // Post-merge review fixup: the prod cross-source case has
+    // `mon_batch_<provider>` writing `M/D/YYYY` (per
+    // `convertedReadsBridge.ts:formatReadDate`) and
+    // `individual_<provider>` carrying whatever string the user
+    // uploaded (often `YYYY-MM-DD`). Pre-fixup the dedup key used
+    // the raw string, so two rows representing the same physical
+    // read on the same day with different format strings did NOT
+    // dedup. Post-fixup the key is the parsed `Date.getTime()`
+    // when parsing succeeded.
+    const result = buildPerformanceRatioAggregates({
+      convertedReadsRows: [
+        buildRead({
+          monitoring_system_id: "1206921",
+          monitoring_system_name: "Acme Solar 1",
+          lifetime_meter_read_wh: "71081480",
+          read_date: "4/13/2026", // mon_batch bridge format
+        }),
+        buildRead({
+          monitoring_system_id: "",
+          monitoring_system_name: "Acme Solar 1",
+          lifetime_meter_read_wh: "71081480",
+          read_date: "2026-04-13", // individual / manual upload format
+        }),
+      ],
+      systems: [buildBaseSystem()],
+      ...EMPTY_LOOKUPS,
+    });
+    expect(result.rows).toHaveLength(1);
+    expect(result.dedupedConvertedReads).toBe(1);
+  });
+
+  it("dedup partition invariant: convertedReadCount === matched + unmatched + invalid + deduped", () => {
+    // Post-merge review fixup: the matcher's accounting forms a
+    // strict partition. If a future reorder of the validity vs
+    // dedup branches breaks the invariant, this test catches it.
+    const result = buildPerformanceRatioAggregates({
+      convertedReadsRows: [
+        // 1 valid + matched + dup-of-prior:
+        buildRead({ monitoring_system_id: "SYS-A" }),
+        buildRead({ monitoring_system_id: "" }), // dedups vs above
+        // 1 valid + unmatched:
+        buildRead({
+          monitoring_system_id: "SOMETHING-ELSE",
+          monitoring_system_name: "Other System",
+        }),
+        // 1 invalid (missing monitoring):
+        buildRead({ monitoring: "" }),
+      ],
+      systems: [buildBaseSystem()],
+      ...EMPTY_LOOKUPS,
+    });
+    expect(result.convertedReadCount).toBe(4);
+    expect(
+      result.matchedConvertedReads +
+        result.unmatchedConvertedReads +
+        result.invalidConvertedReads +
+        result.dedupedConvertedReads
+    ).toBe(result.convertedReadCount);
+  });
+
   it("falls back to sysId for the dedup key when sysName is empty in both rows", () => {
     // Edge case: rows where sysName is empty and only sysId is
     // populated. The dedup key uses sysName-or-sysId; with empty
