@@ -203,6 +203,54 @@ export interface PerformanceRatioPageRow {
 }
 
 /**
+ * Wire shape for one row of the paginated
+ * `getDashboardPerformanceRatioCompliantBestPage` response (PR-CB-3).
+ *
+ * Identical to `PerformanceRatioCompliantBestRowWire` (the legacy
+ * artifact-JSON wire shape) except that decimal columns are
+ * stringified by Drizzle's MySQL driver (TiDB's `decimal()` columns
+ * preserve precision via `string`) and the row carries an
+ * additional `systemKey` field — the PK of the new fact table,
+ * load-bearing for client-side `useInfiniteQuery` deduplication
+ * and future drill-in queries.
+ *
+ * Once PR-CB-6 retires the artifact JSON path, the older
+ * `PerformanceRatioCompliantBestRowWire` shape is removed and
+ * this type becomes the sole compliant-row contract.
+ */
+export interface PerformanceRatioCompliantPageRow {
+  systemKey: string;
+  key: string;
+  systemId: string | null;
+  stateApplicationRefId: string | null;
+  trackingSystemRefId: string;
+  systemName: string;
+  monitoring: string;
+  monitoringSystemId: string;
+  monitoringSystemName: string;
+  monitoringPlatform: string;
+  matchType: string;
+  installerName: string;
+  // Drizzle's MySQL `decimal()` columns serialize as strings (the
+  // mysql2 driver preserves precision); the client revives via
+  // `parsePerfRatioDecimal` per column at render time.
+  portalAcSizeKw: string | null;
+  abpAcSizeKw: string | null;
+  part2VerificationDate: string | null;
+  readDate: string | null;
+  readDateRaw: string;
+  performanceRatioPercent: string | null;
+  productionDeltaWh: string | null;
+  expectedProductionWh: string | null;
+  contractValue: string;
+  baselineReadWh: string | null;
+  baselineDate: string | null;
+  baselineSource: string | null;
+  lifetimeReadWh: string;
+  compliantSource: string | null;
+}
+
+/**
  * Wire shape for the `bestPerSystem` array in the
  * `getDashboardPerformanceRatioCompliantContext` response. Numeric
  * decimals stay as `number | null` (already coerced server-side

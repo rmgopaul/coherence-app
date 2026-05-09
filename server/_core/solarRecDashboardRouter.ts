@@ -412,8 +412,14 @@ function stringifyDeliveryScheduleRows(
 // pin the typed shape against the proc projection.
 // ---------------------------------------------------------------------------
 
-import type { PerformanceRatioPageRow } from "@shared/solarRecPerformanceRatio";
-export type { PerformanceRatioPageRow } from "@shared/solarRecPerformanceRatio";
+import type {
+  PerformanceRatioPageRow,
+  PerformanceRatioCompliantPageRow,
+} from "@shared/solarRecPerformanceRatio";
+export type {
+  PerformanceRatioPageRow,
+  PerformanceRatioCompliantPageRow,
+} from "@shared/solarRecPerformanceRatio";
 
 function inferDeliveryScheduleHeaders(
   rows: readonly DeliveryScheduleBaseRow[]
@@ -3669,6 +3675,253 @@ export const solarRecDashboardRouter = t.router({
         portfolioRatioPercent,
       };
     }),
+
+  /**
+   * 2026-05-09 — PR-CB-3 — paginated read against the new
+   * `solarRecDashboardPerformanceRatioCompliantFacts` table. The
+   * structural successor to the artifact-JSON-backed
+   * `getDashboardPerformanceRatioCompliantContext.bestPerSystem`
+   * field; this proc keeps responses bounded under the 1 MB wire
+   * guardrail by paginating instead of serializing all 21 k+ rows
+   * into a single payload.
+   *
+   * Visibility filter: the summary artifact's `buildId` gates which
+   * build's compliant rows are visible. Mirrors the parent
+   * `getDashboardPerformanceRatioPage` proc's contract — rows from
+   * in-flight or failed builds are simply absent until that build
+   * completes its summary write.
+   *
+   * Wire payload at `limit=100`: ~50–80 KB depending on column
+   * nullability. Well under the 1 MB guardrail.
+   *
+   * Filter args: `compliantSource` (string match; the special
+   * `__none__` sentinel matches `IS NULL`), `monitoring`,
+   * `search` (LIKE %term% across systemName / systemId /
+   * trackingSystemRefId / monitoring / monitoringSystemId /
+   * monitoringSystemName / installerName, mirrors the parent
+   * fact-table proc).
+   *
+   * Sort args: `performanceRatioPercent` / `readDate` /
+   * `systemName` / `compliantSource` (covering indexes added in
+   * migration 0069 keep the most-common sorts off filesort).
+   * Tie-breaker: `systemKey ASC` (the PK column — stable across
+   * page boundaries because the PK enforces 1-row-per-systemKey).
+   */
+  getDashboardPerformanceRatioCompliantBestPage: dashboardProcedure(
+    "solar-rec-dashboard",
+    "read"
+  )
+    .input(
+      z.object({
+        offset: z.number().int().min(0).default(0),
+        limit: z.number().int().min(1).max(1000).default(100),
+        compliantSource: z.string().min(1).max(64).nullable().optional(),
+        monitoring: z.string().min(1).max(128).nullable().optional(),
+        // Trimmed + lowercased server-side; bounded to keep LIKE
+        // patterns sane.
+        search: z.string().max(200).nullable().optional(),
+        sortBy: z
+          .enum([
+            "performanceRatioPercent",
+            "readDate",
+            "systemName",
+            "compliantSource",
+          ])
+          .default("readDate"),
+        sortDir: z.enum(["asc", "desc"]).default("desc"),
+      })
+    )
+    .query(async ({ ctx, input }) => {
+      const _runnerVersion = "phase-2-pr-cb-3-page@1" as const;
+      const _checkpoint = "performance-ratio-compliant-best-page";
+
+      const { getComputedArtifact } = await import("../db/solarRecDatasets");
+      const {
+        PERFORMANCE_RATIO_SUMMARY_ARTIFACT_TYPE,
+        PERFORMANCE_RATIO_SUMMARY_VERSION_KEY,
+        parsePerformanceRatioSummaryPayload,
+      } = await import(
+        "../services/solar/buildDashboardPerformanceRatioFacts"
+      );
+
+      const summaryRow = await getComputedArtifact(
+        ctx.scopeId,
+        PERFORMANCE_RATIO_SUMMARY_ARTIFACT_TYPE,
+        PERFORMANCE_RATIO_SUMMARY_VERSION_KEY
+      );
+      const summary = parsePerformanceRatioSummaryPayload(
+        summaryRow?.payload ?? null
+      );
+      const buildId = summary?.buildId ?? null;
+      if (!buildId) {
+        return {
+          _checkpoint,
+          _runnerVersion,
+          available: false as const,
+          rows: [] as PerformanceRatioCompliantPageRow[],
+          totalCount: 0,
+          offset: input.offset,
+          nextCursor: null as string | null,
+          hasMore: false,
+          buildId: null,
+          builtAt: null,
+        };
+      }
+
+      const {
+        getPerformanceRatioCompliantFactsPage,
+        getPerformanceRatioCompliantFactsCount,
+      } = await import("../db/dashboardPerformanceRatioCompliantFacts");
+
+      const filters = {
+        scopeId: ctx.scopeId,
+        buildId,
+        compliantSource: input.compliantSource ?? null,
+        monitoring: input.monitoring ?? null,
+        search: input.search ?? null,
+      };
+      const [factRows, totalCount] = await Promise.all([
+        getPerformanceRatioCompliantFactsPage(filters, {
+          offset: input.offset,
+          limit: input.limit,
+          sortBy: input.sortBy,
+          sortDir: input.sortDir,
+        }),
+        getPerformanceRatioCompliantFactsCount(filters),
+      ]);
+
+      const rows: PerformanceRatioCompliantPageRow[] = factRows.map((row) => ({
+        systemKey: row.systemKey,
+        key: row.key,
+        systemId: row.systemId,
+        stateApplicationRefId: row.stateApplicationRefId,
+        trackingSystemRefId: row.trackingSystemRefId,
+        systemName: row.systemName,
+        monitoring: row.monitoring,
+        monitoringSystemId: row.monitoringSystemId,
+        monitoringSystemName: row.monitoringSystemName,
+        monitoringPlatform: row.monitoringPlatform,
+        matchType: row.matchType,
+        installerName: row.installerName,
+        portalAcSizeKw: row.portalAcSizeKw,
+        abpAcSizeKw: row.abpAcSizeKw,
+        part2VerificationDate: row.part2VerificationDate
+          ? row.part2VerificationDate.toISOString()
+          : null,
+        readDate: row.readDate ? row.readDate.toISOString() : null,
+        readDateRaw: row.readDateRaw,
+        performanceRatioPercent: row.performanceRatioPercent,
+        productionDeltaWh: row.productionDeltaWh,
+        expectedProductionWh: row.expectedProductionWh,
+        contractValue: row.contractValue,
+        baselineReadWh: row.baselineReadWh,
+        baselineDate: row.baselineDate
+          ? row.baselineDate.toISOString()
+          : null,
+        baselineSource: row.baselineSource,
+        lifetimeReadWh: row.lifetimeReadWh,
+        compliantSource: row.compliantSource,
+      }));
+
+      const nextOffset = input.offset + rows.length;
+      const hasMore = nextOffset < totalCount;
+      return {
+        _checkpoint,
+        _runnerVersion,
+        available: true as const,
+        rows,
+        totalCount,
+        offset: input.offset,
+        nextCursor: hasMore ? String(nextOffset) : null,
+        hasMore,
+        buildId,
+        builtAt: summary?.builtAt ?? null,
+      };
+    }),
+
+  /**
+   * 2026-05-09 — PR-CB-3 — slim summary read for the
+   * Compliant-Sources section. Returns the aggregate counts +
+   * filter-dropdown options needed to render the section's
+   * headline tiles + dropdowns without paginating the full row
+   * set.
+   *
+   * Aggregates (server-computed via SQL `COUNT(*)` /
+   * `SUM(CASE WHEN ...)`):
+   *   - `count` — total compliant rows under the visible build
+   *   - `withCompliantSource` — rows with a non-null
+   *     `compliantSource` (auto-classified at build time; manual
+   *     overlay from localStorage stays client-side)
+   *
+   * Dropdown options:
+   *   - `compliantSourceOptions` — distinct non-null values
+   *   - `monitoringOptions` — distinct non-null values
+   *
+   * Wire payload: ~5 KB worst case (typically a handful of
+   * compliant-source labels + ~10 monitoring vendors). Well under
+   * the 1 MB guardrail.
+   *
+   * Like the page proc, this is gated on the summary artifact's
+   * `buildId` pointer so cross-build rows never bleed through.
+   */
+  getDashboardPerformanceRatioCompliantBestSummary: dashboardProcedure(
+    "solar-rec-dashboard",
+    "read"
+  ).query(async ({ ctx }) => {
+    const _runnerVersion = "phase-2-pr-cb-3-summary@1" as const;
+
+    const { getComputedArtifact } = await import("../db/solarRecDatasets");
+    const {
+      PERFORMANCE_RATIO_SUMMARY_ARTIFACT_TYPE,
+      PERFORMANCE_RATIO_SUMMARY_VERSION_KEY,
+      extractPerformanceRatioVisibleBuildId,
+    } = await import(
+      "../services/solar/buildDashboardPerformanceRatioFacts"
+    );
+    const summaryRow = await getComputedArtifact(
+      ctx.scopeId,
+      PERFORMANCE_RATIO_SUMMARY_ARTIFACT_TYPE,
+      PERFORMANCE_RATIO_SUMMARY_VERSION_KEY
+    );
+    const buildId = extractPerformanceRatioVisibleBuildId(
+      summaryRow?.payload ?? null
+    );
+    if (!buildId) {
+      return { available: false as const, _runnerVersion };
+    }
+
+    const {
+      getPerformanceRatioCompliantFactsAggregates,
+      getPerformanceRatioCompliantSourceOptions,
+      getPerformanceRatioCompliantMonitoringOptions,
+    } = await import("../db/dashboardPerformanceRatioCompliantFacts");
+
+    const [aggregates, compliantSourceOptions, monitoringOptions] =
+      await Promise.all([
+        getPerformanceRatioCompliantFactsAggregates({
+          scopeId: ctx.scopeId,
+          buildId,
+        }),
+        getPerformanceRatioCompliantSourceOptions({
+          scopeId: ctx.scopeId,
+          buildId,
+        }),
+        getPerformanceRatioCompliantMonitoringOptions({
+          scopeId: ctx.scopeId,
+          buildId,
+        }),
+      ]);
+
+    return {
+      available: true as const,
+      _runnerVersion,
+      buildId,
+      count: aggregates.count,
+      withCompliantSource: aggregates.withCompliantSource,
+      compliantSourceOptions,
+      monitoringOptions,
+    };
+  }),
 
   /**
    * 2026-05-09 — Option C — auto-compliant + best-per-system
