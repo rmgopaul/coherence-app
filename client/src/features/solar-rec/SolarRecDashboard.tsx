@@ -3346,12 +3346,24 @@ export default function SolarRecDashboard() {
   // via `snapshotPart2WalkRequested`, mirroring the existing
   // `hasUserInteractedWithDashboard` lazy-trigger pattern for the
   // heavy overview-summary query.
+  //
+  // Post-merge review fixup (2026-05-09): the snapshot-log clause is
+  // **also** gated on `isSnapshotLogTabActive` so navigating away
+  // from Snapshot Log mid-walk halts the cascade. Pre-fixup the
+  // request flag stayed `true` once tripped, so a user who clicked
+  // Log Snapshot and then navigated to Trends would let the
+  // 24-call cascade finish on a tab they'd already left — defeating
+  // the bug fix's whole point. Re-entering Snapshot Log preserves
+  // the flag so the walk can resume from the cache; clicking
+  // Log Snapshot again from anywhere else has no effect (the
+  // click handler short-circuits via the `isSnapshotLogTabActive`
+  // check it already had).
   const isPart2EligibleSystemsNeeded =
     activeTab === "size" ||
     activeTab === "value" ||
     isOfflineMonitoringTabActive ||
     isFinancialsTabActive ||
-    snapshotPart2WalkRequested;
+    (isSnapshotLogTabActive && snapshotPart2WalkRequested);
 
   // PR-F-4-h retired the parent `useSystemSnapshot` call entirely.
   // PR-F-4-i broadens this bounded systems-page walk to the tabs

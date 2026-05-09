@@ -166,10 +166,15 @@ describe("Solar REC dashboard mount: heavy-query gates", () => {
     expect(predicate).toMatch(/activeTab\s*===\s*"value"/);
     expect(predicate).toMatch(/isOfflineMonitoringTabActive/);
     expect(predicate).toMatch(/isFinancialsTabActive/);
-    // Bug #6 fix — Snapshot Log is NOT in the predicate; the walk
-    // is lazy-triggered via the request flag instead.
-    expect(predicate).not.toMatch(/isSnapshotLogTabActive/);
-    expect(predicate).toMatch(/snapshotPart2WalkRequested/);
+    // Bug #6 fix — Snapshot Log no longer unconditionally triggers
+    // the walk. The lazy-trigger flag is gated together with
+    // `isSnapshotLogTabActive` (post-merge review fixup,
+    // 2026-05-09) so navigating away from Snapshot Log mid-walk
+    // halts the cascade rather than letting it complete on a tab
+    // the user has already left.
+    expect(predicate).toMatch(
+      /isSnapshotLogTabActive\s*&&\s*snapshotPart2WalkRequested/
+    );
     expect(predicate).not.toMatch(/isOverviewTabActive/);
     // The createLogEntry click handler must trip the request flag
     // when the user clicks Log Snapshot from Snapshot Log without
