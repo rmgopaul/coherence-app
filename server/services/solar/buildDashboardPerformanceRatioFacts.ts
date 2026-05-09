@@ -53,7 +53,14 @@ import {
   upsertPerformanceRatioFacts,
   pruneSupersededPerformanceRatioFacts,
 } from "../../db/dashboardPerformanceRatioFacts";
-import type { InsertSolarRecDashboardPerformanceRatioFact } from "../../../drizzle/schema";
+import {
+  upsertPerformanceRatioCompliantFacts,
+  pruneSupersededPerformanceRatioCompliantFacts,
+} from "../../db/dashboardPerformanceRatioCompliantFacts";
+import type {
+  InsertSolarRecDashboardPerformanceRatioFact,
+  InsertSolarRecDashboardPerformanceRatioCompliantFact,
+} from "../../../drizzle/schema";
 import { upsertComputedArtifact } from "../../db/solarRecDatasets";
 import { startDashboardJobMetric } from "./dashboardJobMetrics";
 
@@ -113,37 +120,37 @@ export const PERFORMANCE_RATIO_BEST_PER_SYSTEM_VERSION_KEY = "current";
 const AUTO_COMPLIANT_ENTRIES_HARD_CAP = 25_000;
 
 /**
- * Cap on best-per-system entries.
+ * Cap on best-per-system entries written to the LEGACY artifact JSON.
  *
- * 2026-05-09 — bumped from 5_000 → 30_000 after a production
- * portfolio observed 21,078 best-per-system entries. The original
- * 5 k estimate ("~few thousand on the largest portfolio") aged out
- * as the portfolio grew. Truncation at 5 k surfaced as
- * `bestPerSystemTruncated: true` + an in-tab notice; the user could
- * see only ~24% of their compliant rows in the tab + CSV export.
+ * 2026-05-09 — Reverted from 30_000 → 5_000 (the original cap) after
+ * the prod build at 22:35 UTC failed with TiDB error 8025: "entry too
+ * large, the max entry size is 6291456". TiDB's clustered-index
+ * tables (which `solarRecComputedArtifacts` is, via its varchar(64)
+ * primary key on `id`) impose a 6 MB per-row limit on cluster entry
+ * size that is ORTHOGONAL to the column type's storage capacity — so
+ * PR #522's `mediumtext` → `longtext` migration didn't fix it
+ * (column max went 16 MB → 4 GB, but the cluster entry limit is the
+ * binding constraint). 21,078 rows × ~833 B/row ≈ 17.5 MB per
+ * payload, well past the 6 MB limit; 5,000 rows × ~833 B/row ≈ 4.16
+ * MB, fits.
  *
- * 30 k = ~50% headroom over current size. At ~400 bytes JSON per
- * row (25 fields, mixed strings/numbers/nulls), worst-case payload
- * is ~12 MB. That's an order of magnitude over the 1 MB dashboard
- * wire-payload guardrail, so the read proc
- * (`getDashboardPerformanceRatioCompliantContext`) is added to
- * `DASHBOARD_OVERSIZE_ALLOWLIST` until the proper structural fix
- * lands (move best-per-system out of the artifact JSON into a
- * dedicated fact table → paginate via `useInfiniteQuery` → CSV
- * export via `startDashboardCsvExport({ exportType:
- * "performanceRatioCompliantBestCsv" })`). See the allowlist
- * comment in `dashboardResponseGuard.ts` for the migration
- * tracking pointer.
+ * **This cap only applies to the artifact JSON write.** The new
+ * `solarRecDashboardPerformanceRatioCompliantFacts` table populated
+ * by PR-CB-2's dual-write is uncapped — it stores all rows because
+ * each ROW occupies its own cluster entry (well under 6 MB even for
+ * the widest row). After PR-CB-5 cuts the client onto the paginated
+ * read proc, the artifact JSON is read-only legacy compatibility;
+ * after PR-CB-6 retires the artifact write entirely, this constant
+ * + the `buildBestPerSystemPayload` helper are deleted.
  *
- * The mediumtext storage column on `solarRecComputedArtifacts`
- * accepts up to 16 MB so storage isn't the bottleneck — the wire
- * payload is. In prod, `dashboardResponseGuardMiddleware` defaults
- * to `warn` (not `throw`), so the oversize response goes through;
- * the user gets all 30 k rows. In dev/test the middleware throws,
- * so the allowlist entry is required to keep the test suite
- * passing.
+ * Why not raise to 6_500 for marginal headroom? Per-row JSON size is
+ * data-dependent (long systemNames push it higher); a build that
+ * happens to land near the 6 MB limit could regress at any time
+ * without warning. The 5_000 cap is the conservative known-good
+ * value that pre-PR-#521 prod was running on, so we restore it
+ * verbatim and let the structural fix do the rest.
  */
-const BEST_PER_SYSTEM_HARD_CAP = 30_000;
+const BEST_PER_SYSTEM_HARD_CAP = 5_000;
 
 export type PerformanceRatioSummaryPayload = {
   // Aggregator counters (pre-existing).
@@ -445,6 +452,25 @@ interface DecimalLogContext {
  * Caller decides what to do with the null (NOT NULL columns
  * skip the row; nullable columns just pass null through).
  */
+/**
+ * Convert an ISO datetime string (or null) to a `Date` instance
+ * suitable for a Drizzle `date` column. Used by
+ * `buildPerformanceRatioCompliantFactRows` because the
+ * `bestPerSystem` Map stores accumulated rows with ISO datetime
+ * strings (the result of `Date.toISOString()` during page
+ * accumulation), but Drizzle's MySQL `date()` column with default
+ * `mode: 'date'` expects a `Date` instance — a string parameter
+ * fails type-checking.
+ *
+ * Returns `null` for null/empty inputs. Invalid date strings
+ * yield `Invalid Date` which mysql2 rejects loudly at insert
+ * time (better than silently storing a partial value).
+ */
+function toDateColumnValue(iso: string | null): Date | null {
+  if (iso === null || iso === undefined || iso === "") return null;
+  return new Date(iso);
+}
+
 function decimalForColumn(
   value: number | null,
   shape: DecimalShape,
@@ -774,10 +800,61 @@ export function buildAutoCompliantSourcesPayload(args: {
 }
 
 /**
+ * Iterate the accumulator's `bestPerSystem` Map and re-attach
+ * `compliantSource` per row using the FINAL auto-compliant Map
+ * (per-page accumulation may have set this to null when a
+ * system's first eligible row was processed before its compliant-
+ * source-priority candidate appeared on a later page).
+ *
+ * Returns `[systemKey, row]` entries — the systemKey is the Map
+ * key (computed by `accumulatePerformanceRatioPage` as
+ * `stateApplicationRefId || systemId || trackingSystemRefId ||
+ * systemName.toLowerCase()`). Both downstream consumers
+ * (artifact JSON write + fact-table write) need it: the artifact
+ * sorts + truncates by row content; the fact table writes
+ * `(scopeId, buildId, systemKey)` as its PK.
+ *
+ * 2026-05-09 — PR-CB-2 — extracted from `buildBestPerSystemPayload`
+ * so the new `buildPerformanceRatioCompliantFactRows` writer can
+ * iterate the same source-of-truth set without re-deriving the
+ * compliant-source attachment logic.
+ */
+export function entriesWithCompliantSourcesAttached(
+  accumulators: PerformanceRatioStreamingAccumulators
+): Array<[string, PerformanceRatioCompliantBestRow]> {
+  const out: Array<[string, PerformanceRatioCompliantBestRow]> = [];
+  // `Array.from(...)` over the Map's entries — the project's tsconfig
+  // doesn't enable `--downlevelIteration` so direct `for…of` over a
+  // Map fails to compile. Mirrors the existing `Array.from(map.values())`
+  // calls elsewhere in this module.
+  for (const [systemKey, candidate] of Array.from(
+    accumulators.bestPerSystem.entries()
+  )) {
+    out.push([
+      systemKey,
+      {
+        ...candidate,
+        compliantSource: candidate.systemId
+          ? accumulators.autoCompliantSources.get(candidate.systemId)?.source ??
+            null
+          : null,
+      },
+    ]);
+  }
+  return out;
+}
+
+/**
  * Build the best-per-system side-cache payload from the
  * streaming accumulator. `compliantSource` on each row is set
  * AFTER the auto-compliant Map is finalized so late-stream
  * priority resolution is reflected.
+ *
+ * 2026-05-09 — PR-CB-2 — refactored to call
+ * `entriesWithCompliantSourcesAttached` so the iteration logic
+ * is shared with the new fact-table writer
+ * (`buildPerformanceRatioCompliantFactRows`). Sort + truncation
+ * remain payload-specific concerns.
  */
 export function buildBestPerSystemPayload(args: {
   buildId: string;
@@ -785,20 +862,9 @@ export function buildBestPerSystemPayload(args: {
   accumulators: PerformanceRatioStreamingAccumulators;
 }): PerformanceRatioBestPerSystemPayload {
   const { buildId, builtAt, accumulators } = args;
-  // Re-attach `compliantSource` per row using the FINAL
-  // auto-compliant Map (per-page accumulation may have set this
-  // to null when a system's first eligible row was processed
-  // before its compliant-source-priority candidate appeared).
-  const rows: PerformanceRatioCompliantBestRow[] = [];
-  for (const candidate of Array.from(accumulators.bestPerSystem.values())) {
-    rows.push({
-      ...candidate,
-      compliantSource: candidate.systemId
-        ? accumulators.autoCompliantSources.get(candidate.systemId)?.source ??
-          null
-        : null,
-    });
-  }
+  const rows = entriesWithCompliantSourcesAttached(accumulators).map(
+    ([, row]) => row
+  );
   // Stable display order: most-recent read-window first, then
   // highest ratio, then systemName ascending. Mirrors the client
   // memo's final sort.
@@ -824,6 +890,146 @@ export function buildBestPerSystemPayload(args: {
     truncated,
     totalEntries,
   };
+}
+
+/**
+ * Pure transformation: best-per-system entries → compliant-fact-row
+ * insert records.
+ *
+ * 2026-05-09 — PR-CB-2 — the new fact-table writer that complements
+ * the artifact JSON path. Mirrors `buildPerformanceRatioFactRows`
+ * (the parent fact-table writer) line-by-line:
+ *
+ *   - Each entry's `systemKey` (the Map key) becomes the third PK
+ *     column. NOT NULL columns (`lifetimeReadWh`, `contractValue`)
+ *     drop the row when the value is non-finite OR exceeds the
+ *     decimal column's range; nullable columns get null + warn.
+ *     Range-aware conversion uses the same `decimalForColumn`
+ *     helper as the parent writer.
+ *
+ *   - `Date` round-trip: the source row's `readDate` /
+ *     `baselineDate` / `part2VerificationDate` arrive as
+ *     ISO-string-or-null (the Map's stored shape is the
+ *     post-streaming structure that
+ *     `accumulatePerformanceRatioPage` produces). Drizzle's
+ *     MySQL `date` column expects either `Date | null | string` —
+ *     we hand the ISO string directly and Drizzle's coercer
+ *     converts to `YYYY-MM-DD` for storage.
+ *
+ * **Memory shape.** Output array is `entries.length` rows long.
+ * Production today is ≤ ~25 k entries (one per unique compliant
+ * system); peak heap during this call is bounded by that array
+ * plus the source entries. The runner caller streams the result
+ * into `upsertPerformanceRatioCompliantFacts` which chunks at
+ * 200 rows / INSERT — we don't accumulate anywhere larger.
+ */
+export function buildPerformanceRatioCompliantFactRows(args: {
+  scopeId: string;
+  buildId: string;
+  entries: ReadonlyArray<[string, PerformanceRatioCompliantBestRow]>;
+}): InsertSolarRecDashboardPerformanceRatioCompliantFact[] {
+  const { scopeId, buildId, entries } = args;
+  const out: InsertSolarRecDashboardPerformanceRatioCompliantFact[] = [];
+  for (const [systemKey, row] of entries) {
+    const lifetimeReadWh = decimalForColumn(
+      row.lifetimeReadWh,
+      LIFETIME_READ_WH_DECIMAL,
+      {
+        buildId,
+        key: row.key,
+        trackingSystemRefId: row.trackingSystemRefId,
+        column: "lifetimeReadWh",
+      }
+    );
+    const contractValue = decimalForColumn(
+      row.contractValue,
+      CONTRACT_VALUE_DECIMAL,
+      {
+        buildId,
+        key: row.key,
+        trackingSystemRefId: row.trackingSystemRefId,
+        column: "contractValue",
+      }
+    );
+    if (lifetimeReadWh === null || contractValue === null) continue;
+    out.push({
+      scopeId,
+      buildId,
+      systemKey,
+      key: row.key,
+      systemId: row.systemId,
+      stateApplicationRefId: row.stateApplicationRefId,
+      trackingSystemRefId: row.trackingSystemRefId,
+      systemName: row.systemName,
+      matchType: row.matchType,
+      monitoring: row.monitoring,
+      monitoringSystemId: row.monitoringSystemId,
+      monitoringSystemName: row.monitoringSystemName,
+      monitoringPlatform: row.monitoringPlatform,
+      installerName: row.installerName,
+      portalAcSizeKw: decimalForColumn(
+        row.portalAcSizeKw,
+        AC_SIZE_KW_DECIMAL,
+        {
+          buildId,
+          key: row.key,
+          trackingSystemRefId: row.trackingSystemRefId,
+          column: "portalAcSizeKw",
+        }
+      ),
+      abpAcSizeKw: decimalForColumn(row.abpAcSizeKw, AC_SIZE_KW_DECIMAL, {
+        buildId,
+        key: row.key,
+        trackingSystemRefId: row.trackingSystemRefId,
+        column: "abpAcSizeKw",
+      }),
+      part2VerificationDate: toDateColumnValue(row.part2VerificationDate),
+      readDate: toDateColumnValue(row.readDate),
+      readDateRaw: row.readDateRaw,
+      performanceRatioPercent: decimalForColumn(
+        row.performanceRatioPercent,
+        PERFORMANCE_RATIO_PERCENT_DECIMAL,
+        {
+          buildId,
+          key: row.key,
+          trackingSystemRefId: row.trackingSystemRefId,
+          column: "performanceRatioPercent",
+        }
+      ),
+      productionDeltaWh: decimalForColumn(
+        row.productionDeltaWh,
+        WH_DECIMAL,
+        {
+          buildId,
+          key: row.key,
+          trackingSystemRefId: row.trackingSystemRefId,
+          column: "productionDeltaWh",
+        }
+      ),
+      expectedProductionWh: decimalForColumn(
+        row.expectedProductionWh,
+        WH_DECIMAL,
+        {
+          buildId,
+          key: row.key,
+          trackingSystemRefId: row.trackingSystemRefId,
+          column: "expectedProductionWh",
+        }
+      ),
+      contractValue,
+      baselineReadWh: decimalForColumn(row.baselineReadWh, WH_DECIMAL, {
+        buildId,
+        key: row.key,
+        trackingSystemRefId: row.trackingSystemRefId,
+        column: "baselineReadWh",
+      }),
+      baselineDate: toDateColumnValue(row.baselineDate),
+      baselineSource: row.baselineSource,
+      lifetimeReadWh,
+      compliantSource: row.compliantSource,
+    });
+  }
+  return out;
 }
 
 async function writePerformanceRatioSummary(
@@ -1080,10 +1286,28 @@ async function runPerformanceRatioStep(args: {
         scopeId,
         [buildId]
       );
+      // 2026-05-09 — PR-CB-2 — also prune the new compliant fact
+      // table on the empty-batch path so a prior build's rows
+      // don't linger when the user clears their convertedReads
+      // dataset.
+      let prunedCompliantCount = 0;
+      try {
+        prunedCompliantCount =
+          await pruneSupersededPerformanceRatioCompliantFacts(scopeId, [
+            buildId,
+          ]);
+      } catch (pruneErr) {
+        console.warn(
+          `${METRIC_PREFIX} prune of superseded compliant rows failed (empty-batch path): ${
+            pruneErr instanceof Error ? pruneErr.message : String(pruneErr)
+          }`
+        );
+      }
       metric.finish({
         skipped: true,
         reason: "no convertedReads batch",
         orphanedDeleted: prunedCount,
+        orphanedCompliantDeleted: prunedCompliantCount,
       });
       return;
     }
@@ -1168,6 +1392,30 @@ async function runPerformanceRatioStep(args: {
     const counters = matcher.getCounters();
     const builtAt = new Date();
 
+    // 2026-05-09 — PR-CB-2 — dual-write the best-per-system rows to
+    // the new fact table BEFORE the artifact JSON write so the new
+    // path is populated even if the artifact write fails (the wedge
+    // PR #522 worked around: a 17 MB artifact payload could overflow
+    // the storage column and abort the runner). Once PR-CB-5 ships
+    // the client onto the paginated reader, PR-CB-6 retires the
+    // artifact write entirely.
+    //
+    // The fact-table write has NO truncation cap — the artifact's
+    // `BEST_PER_SYSTEM_HARD_CAP` is artifact-only. The fact table
+    // accepts any number of rows because page reads bound the wire
+    // payload, not the storage layer.
+    const compliantEntries = entriesWithCompliantSourcesAttached(
+      streamingTotals
+    );
+    const compliantFactRows = buildPerformanceRatioCompliantFactRows({
+      scopeId,
+      buildId,
+      entries: compliantEntries,
+    });
+    if (compliantFactRows.length > 0) {
+      await upsertPerformanceRatioCompliantFacts(compliantFactRows);
+    }
+
     // Side caches BEFORE summary so a client that hits the new
     // summary (visibility flip) and immediately follows with a
     // compliant-context fetch never reads a stale side-cache row.
@@ -1222,6 +1470,21 @@ async function runPerformanceRatioStep(args: {
       );
     }
 
+    // 2026-05-09 — PR-CB-2 — same best-effort sweep for the new
+    // compliant-facts table. Independent from the parent fact
+    // table's prune so a failure on one doesn't block the other.
+    let orphanedCompliantDeleted = 0;
+    try {
+      orphanedCompliantDeleted =
+        await pruneSupersededPerformanceRatioCompliantFacts(scopeId, [buildId]);
+    } catch (pruneErr) {
+      console.warn(
+        `${METRIC_PREFIX} prune of superseded compliant rows failed (visibility flip already succeeded): ${
+          pruneErr instanceof Error ? pruneErr.message : String(pruneErr)
+        }`
+      );
+    }
+
     metric.finish({
       rowsWritten: totalFactsWritten,
       pageCount,
@@ -1234,6 +1497,13 @@ async function runPerformanceRatioStep(args: {
       allocationCount: streamingTotals.allocationCount,
       autoCompliantSystems: streamingTotals.autoCompliantSources.size,
       compliantBestPerSystem: streamingTotals.bestPerSystem.size,
+      // 2026-05-09 — PR-CB-2 — new fact-table metrics. Distinct
+      // from `compliantBestPerSystem` (which counts entries seen
+      // in the accumulator) because `compliantFactRowsWritten`
+      // reflects rows that survived the range-aware decimal
+      // validation in `buildPerformanceRatioCompliantFactRows`.
+      compliantFactRowsWritten: compliantFactRows.length,
+      orphanedCompliantDeleted,
       streaming: true,
     });
   } catch (err) {
