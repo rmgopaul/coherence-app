@@ -159,6 +159,7 @@ import { base64ToBytes, bytesToBase64 } from "@/solar-rec-dashboard/lib/binaryEn
 import { resolveHydrationKeys } from "@/solar-rec-dashboard/lib/hydrationKeys";
 import { isSolarRecDebugEnabled } from "@/solar-rec-dashboard/lib/debugFlag";
 import { deriveSnapshotPart2ValueSummary } from "@/solar-rec-dashboard/lib/snapshotPart2ValueSummary";
+import { pinSharedCountsToSlim } from "@/solar-rec-dashboard/lib/projectDashboardSummary";
 import {
   shouldSkipSnapshotLogSyncForUnsafeShrink,
   SNAPSHOT_LOG_UNSAFE_SHRINK_NOTICE,
@@ -3309,6 +3310,29 @@ export default function SolarRecDashboard() {
   type SlimOverviewSummary = SlimSummaryData & { kind: "slim" };
   type DashboardSummaryProjection = HeavyOverviewSummary | SlimOverviewSummary;
   const summary = useMemo<DashboardSummaryProjection | null>(() => {
+    // 2026-05-09 — Bug #8 fix from the prod QA walk. Pre-fix this
+    // memo swapped wholesale between the slim summary
+    // (`getDashboardSummary`, fires on cold mount) and the heavy
+    // summary (`getDashboardOverviewSummary`, gated on
+    // `isOverviewTabActive && hasUserInteractedWithDashboard`).
+    // The two aggregators expose the same shared count fields
+    // (totalSystems / reportingSystems / size buckets / reporting
+    // percent) but compute them via different paths — slim streams
+    // `srDsSolarApplications` rows with first-CSG dedup; heavy
+    // reads from the system snapshot's pre-derived fields. On prod
+    // they diverge by 25–60 per tile, which the user observed as
+    // values changing on the Overview tile after activating any
+    // tab that trips the interaction gate.
+    //
+    // Pin the shared counts to slim's deterministic values
+    // regardless of which aggregator is loaded; heavy contributes
+    // only its heavy-only fields (e.g. Part-II ownership terminated
+    // counts). Slim becomes the canonical source for shared counts
+    // across mount and post-interaction renders.
+    if (overviewSummaryQuery.data && slimSummary) {
+      const heavy = { ...overviewSummaryQuery.data, kind: "heavy" as const };
+      return pinSharedCountsToSlim(heavy, slimSummary);
+    }
     if (overviewSummaryQuery.data) {
       return { ...overviewSummaryQuery.data, kind: "heavy" };
     }
