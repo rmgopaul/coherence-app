@@ -2740,3 +2740,171 @@ export type SolarRecDashboardPerformanceRatioFact =
   typeof solarRecDashboardPerformanceRatioFacts.$inferSelect;
 export type InsertSolarRecDashboardPerformanceRatioFact =
   typeof solarRecDashboardPerformanceRatioFacts.$inferInsert;
+
+// ────────────────────────────────────────────────────────────────────
+// solarRecDashboardPerformanceRatioCompliantFacts (PR-CB-1)
+//
+// Pre-reduced "best per system" rows extracted from
+// `solarRecDashboardPerformanceRatioFacts` during the build runner's
+// streaming finalize step. Filter: `part2VerificationDate IS NOT
+// NULL AND performanceRatioPercent BETWEEN 30 AND 150`. Reduce: keep
+// the row with most-recent read-window month, then highest ratio,
+// then most-recent readDate (mirrors the historical client memo
+// `compliantPerformanceRatioRows`). Each row carries the auto-
+// compliant `compliantSource` pre-attached.
+//
+// Why a separate table: the consolidated artifact JSON
+// (`performanceRatioCompliantBestPerSystem`) outgrew its storage
+// ceiling on a production portfolio (21,078 rows × ~833 B/row ≈
+// 17.5 MB > `mediumtext`'s 16 MB; bumped to `longtext` in PR #522
+// as an interim unblock). This table is the structural fix:
+// paginated reads, no monolithic JSON write, bounded wire payloads.
+//
+// Field layout: 1:1 mapping to `PerformanceRatioCompliantBestRow`
+// in shared/solarRecPerformanceRatio. Numeric fields use the same
+// decimal precisions as the parent fact table so range-aware
+// conversion (PR #520) catches identical out-of-range values.
+//
+// Build isolation: PK includes `buildId` so multiple builds coexist
+// in the table; visibility flips on the summary artifact's `buildId`
+// pointer write (the same pattern used by the parent fact table).
+// The page reader filters `WHERE scopeId=? AND buildId=summary_buildId`
+// so rows from in-flight or failed builds are simply invisible.
+//
+// systemKey: the deterministic dedup key used as the third PK
+// column. Computed at write time as `stateApplicationRefId ||
+// systemId || trackingSystemRefId || systemName.toLowerCase()`
+// (mirrors the existing client + build runner logic). Stored
+// explicitly so the PK enforces the 1-row-per-systemKey constraint
+// without having to recompute at query time.
+// ────────────────────────────────────────────────────────────────────
+
+export const solarRecDashboardPerformanceRatioCompliantFacts = mysqlTable(
+  "solarRecDashboardPerformanceRatioCompliantFacts",
+  {
+    scopeId: varchar("scopeId", { length: 64 }).notNull(),
+    buildId: varchar("buildId", { length: 64 }).notNull(),
+    // Deterministic dedup key — `stateApplicationRefId || systemId
+    // || trackingSystemRefId || systemName.toLowerCase()`. Sized
+    // generously so the longest of those four sources fits.
+    systemKey: varchar("systemKey", { length: 256 }).notNull(),
+
+    // Source row identifier — the parent fact-table row's `key`
+    // (= `${convertedReadKey}-${candidateKey}` composite). Kept
+    // for cross-referencing during debugging; not load-bearing for
+    // page reads.
+    key: varchar("key", { length: 255 }).notNull(),
+
+    // System identification (1:1 with PerformanceRatioCompliantBestRow).
+    systemId: varchar("systemId", { length: 128 }),
+    stateApplicationRefId: varchar("stateApplicationRefId", {
+      length: 128,
+    }),
+    trackingSystemRefId: varchar("trackingSystemRefId", {
+      length: 128,
+    }).notNull(),
+    systemName: text("systemName").notNull(),
+
+    // Match info.
+    matchType: varchar("matchType", { length: 64 }).notNull(),
+    monitoring: varchar("monitoring", { length: 128 }).notNull(),
+    monitoringSystemId: varchar("monitoringSystemId", {
+      length: 255,
+    }).notNull(),
+    monitoringSystemName: varchar("monitoringSystemName", {
+      length: 255,
+    }).notNull(),
+    monitoringPlatform: varchar("monitoringPlatform", {
+      length: 255,
+    }).notNull(),
+    installerName: varchar("installerName", { length: 255 }).notNull(),
+
+    // Sizing.
+    portalAcSizeKw: decimal("portalAcSizeKw", { precision: 18, scale: 4 }),
+    abpAcSizeKw: decimal("abpAcSizeKw", { precision: 18, scale: 4 }),
+
+    // Eligibility marker (must be non-null for compliant rows but
+    // mirroring the source-table column nullability so the row
+    // shape stays 1:1 with the parent fact table — the build
+    // runner's filter is the constraint, not the schema).
+    part2VerificationDate: date("part2VerificationDate"),
+
+    // Read window.
+    readDate: date("readDate"),
+    readDateRaw: varchar("readDateRaw", { length: 64 }).notNull(),
+
+    // Performance metrics. Same precisions as the parent fact table.
+    performanceRatioPercent: decimal("performanceRatioPercent", {
+      precision: 10,
+      scale: 4,
+    }),
+    productionDeltaWh: decimal("productionDeltaWh", {
+      precision: 20,
+      scale: 4,
+    }),
+    expectedProductionWh: decimal("expectedProductionWh", {
+      precision: 20,
+      scale: 4,
+    }),
+    contractValue: decimal("contractValue", {
+      precision: 18,
+      scale: 4,
+    }).notNull(),
+
+    // Baseline.
+    baselineReadWh: decimal("baselineReadWh", { precision: 20, scale: 4 }),
+    baselineDate: date("baselineDate"),
+    baselineSource: varchar("baselineSource", { length: 255 }),
+    lifetimeReadWh: decimal("lifetimeReadWh", {
+      precision: 20,
+      scale: 4,
+    }).notNull(),
+
+    // Auto-compliant source pre-attached at build time. Manual
+    // overlay from localStorage still happens client-side at
+    // render time per the existing CompliantPerformanceRatioRow
+    // contract.
+    compliantSource: varchar("compliantSource", { length: 64 }),
+
+    // Build versioning + observability.
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    pk: primaryKey({
+      columns: [table.scopeId, table.buildId, table.systemKey],
+      name: "solar_rec_dashboard_perf_ratio_compliant_facts_pk",
+    }),
+    // Identifier-length note: index names use the abbreviated
+    // `solar_rec_dashboard_perf_ratio_compliant_facts` prefix
+    // (46 chars) to leave 18 chars for suffixes under MySQL's
+    // 64-char identifier limit.
+    //
+    // Filter index — compliantSource dropdown.
+    scopeBuildSourceIdx: index(
+      "sr_d_perf_ratio_compl_facts_scope_build_source_idx"
+    ).on(table.scopeId, table.buildId, table.compliantSource, table.systemKey),
+    // Filter index — monitoring dropdown.
+    scopeBuildMonitoringIdx: index(
+      "sr_d_perf_ratio_compl_facts_scope_build_monit_idx"
+    ).on(table.scopeId, table.buildId, table.monitoring, table.systemKey),
+    // Sort index — performanceRatioPercent (most common sort).
+    scopeBuildPerfPercentIdx: index(
+      "sr_d_perf_ratio_compl_facts_scope_build_perf_pct_idx"
+    ).on(
+      table.scopeId,
+      table.buildId,
+      table.performanceRatioPercent,
+      table.systemKey
+    ),
+    // Sort index — readDate (second-most-common sort, "newest first").
+    scopeBuildReadDateIdx: index(
+      "sr_d_perf_ratio_compl_facts_scope_build_readdate_idx"
+    ).on(table.scopeId, table.buildId, table.readDate, table.systemKey),
+  })
+);
+
+export type SolarRecDashboardPerformanceRatioCompliantFact =
+  typeof solarRecDashboardPerformanceRatioCompliantFacts.$inferSelect;
+export type InsertSolarRecDashboardPerformanceRatioCompliantFact =
+  typeof solarRecDashboardPerformanceRatioCompliantFacts.$inferInsert;
