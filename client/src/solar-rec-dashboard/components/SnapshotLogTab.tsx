@@ -78,6 +78,7 @@ import {
   formatNumber,
   toPercentValue,
 } from "@/solar-rec-dashboard/lib/helpers";
+import { findValueSourceCutoverLabel } from "@/solar-rec-dashboard/lib/snapshotLogValueSourceCutover";
 import type {
   ChangeOwnershipStatus,
   DashboardLogEntry,
@@ -436,16 +437,15 @@ export default memo(function SnapshotLogTab(props: SnapshotLogTabProps) {
 
   // 2026-05-09 follow-up to PR-4 — find the cutover point. Returns
   // the trend-row label of the FIRST entry whose `valueSource ===
-  // "slim"`, or null when all entries are pre-FU-4 (no `"slim"` tag
-  // present) or when no entries are pre-PR-4 (no marker needed —
-  // every entry uses the same source).
-  const trendValueSourceCutoverLabel = useMemo<string | null>(() => {
-    const firstSlimIndex = snapshotTrendRows.findIndex(
-      (row) => row.valueSource === "slim"
-    );
-    if (firstSlimIndex <= 0) return null; // no marker if first entry is already slim
-    return snapshotTrendRows[firstSlimIndex]!.label;
-  }, [snapshotTrendRows]);
+  // "slim"`, or null when all entries are pre-FU-4 (no `"slim"`
+  // tag present) or when every entry is already slim (no
+  // discontinuity to mark). Pure logic + the read-side semantic
+  // doc lives in `findValueSourceCutoverLabel` so this branch is
+  // unit-tested without mounting the tab.
+  const trendValueSourceCutoverLabel = useMemo<string | null>(
+    () => findValueSourceCutoverLabel(snapshotTrendRows),
+    [snapshotTrendRows]
+  );
 
   const snapshotTrendSummary = useMemo(() => {
     if (snapshotTrendRows.length === 0) return null;
