@@ -2007,6 +2007,14 @@ export default function SolarRecDashboard() {
   // values come from the slim summary instead.
   const [hasUserInteractedWithDashboard, setHasUserInteractedWithDashboard] =
     useState(false);
+  // 2026-05-09 — Bug #6 fix. Lazy trigger for the Part-II eligible
+  // systems-page walk on Snapshot Log. Stays false until the user
+  // clicks "Log Snapshot" (which needs the walk's row-walk fields
+  // to compose a log entry). When false, Snapshot Log activation
+  // does NOT fire the 24+ getDashboardSystemsPage calls — the tab
+  // just renders saved log entries instantly.
+  const [snapshotPart2WalkRequested, setSnapshotPart2WalkRequested] =
+    useState(false);
   // pipeline{Count,Kw,Interconnected,CashFlow}Range, pipelineReportLoading,
   // generatePipelineReport — moved to @/solar-rec-dashboard/components/AppPipelineTab
   // Tab-active flags kept in the parent are the ones that still
@@ -3321,12 +3329,39 @@ export default function SolarRecDashboard() {
   // to the prior client-side filter — but it doesn't require
   // hydrating the ~26 MB snapshot first.
   //
+  // 2026-05-09 — Bug #6 fix from the prod QA walk. Pre-fix this
+  // predicate included `isSnapshotLogTabActive`, so clicking the
+  // Snapshot Log tab unconditionally fired ~24-30 sequential
+  // `getDashboardSystemsPage` calls — and on prod that cascade was
+  // also the proximate trigger for the Bug #1 502 cascade (worker
+  // heap pressure → middleware-rejected requests 21–28 → LB
+  // translates to 502). Snapshot Log itself doesn't render any
+  // tile sourced from the page-walk after PR-4 (the contracted-
+  // value summary now reads from slim); the walk is still needed
+  // for the `createLogEntry` snapshot capture (`totalDeliveredValue`,
+  // change-ownership row matching). We honor that by gating the
+  // walk on a deliberate user action — clicking "Log Snapshot" —
+  // via `snapshotPart2WalkRequested`, mirroring the existing
+  // `hasUserInteractedWithDashboard` lazy-trigger pattern for the
+  // heavy overview-summary query.
+  //
+  // Post-merge review fixup (2026-05-09): the snapshot-log clause is
+  // **also** gated on `isSnapshotLogTabActive` so navigating away
+  // from Snapshot Log mid-walk halts the cascade. Pre-fixup the
+  // request flag stayed `true` once tripped, so a user who clicked
+  // Log Snapshot and then navigated to Trends would let the
+  // 24-call cascade finish on a tab they'd already left — defeating
+  // the bug fix's whole point. Re-entering Snapshot Log preserves
+  // the flag so the walk can resume from the cache; clicking
+  // Log Snapshot again from anywhere else has no effect (the
+  // click handler short-circuits via the `isSnapshotLogTabActive`
+  // check it already had).
   const isPart2EligibleSystemsNeeded =
     activeTab === "size" ||
     activeTab === "value" ||
     isOfflineMonitoringTabActive ||
     isFinancialsTabActive ||
-    isSnapshotLogTabActive;
+    (isSnapshotLogTabActive && snapshotPart2WalkRequested);
 
   // PR-F-4-h retired the parent `useSystemSnapshot` call entirely.
   // PR-F-4-i broadens this bounded systems-page walk to the tabs
@@ -5200,6 +5235,26 @@ export default function SolarRecDashboard() {
         setHasUserInteractedWithDashboard(true);
         toast.info(
           "Loading full summary… click Log Snapshot again in a moment."
+        );
+        return;
+      }
+      // 2026-05-09 — Bug #6 fix. Mirror the lazy-trigger pattern
+      // above for the Part-II systems walk. When the user clicks
+      // Log Snapshot from Snapshot Log without having first
+      // visited Size/Value/OfflineMonitoring/Financials, the walk
+      // hasn't fired yet — the readiness check sees
+      // `isPart2EligibleSystemsPagesComplete = false` and would
+      // toast "Loading Part-2 eligible system rows…" with no
+      // walk in flight to wait for. Trip the walk request here
+      // so the next render fires it; the user clicks again once
+      // it completes.
+      if (
+        isSnapshotLogTabActive &&
+        !snapshotPart2WalkRequested
+      ) {
+        setSnapshotPart2WalkRequested(true);
+        toast.info(
+          "Loading Part-2 eligible system rows… click Log Snapshot again in a moment."
         );
         return;
       }

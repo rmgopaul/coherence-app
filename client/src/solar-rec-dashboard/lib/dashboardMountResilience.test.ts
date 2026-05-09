@@ -143,6 +143,14 @@ describe("Solar REC dashboard mount: heavy-query gates", () => {
     // payload, so the tabs that need Part-II systems now share this
     // bounded page walk. It must still stay off default Overview
     // mount.
+    //
+    // 2026-05-09 — Bug #6 fix removed `isSnapshotLogTabActive` from
+    // this predicate; activating Snapshot Log no longer fires the
+    // 24+ getDashboardSystemsPage cascade. The walk is now lazy-
+    // triggered from the "Log Snapshot" button via
+    // `snapshotPart2WalkRequested`, mirroring the
+    // `hasUserInteractedWithDashboard` lazy-trigger pattern for the
+    // heavy overview-summary query.
     const block = extractUseQueryBlock(
       code,
       "getDashboardSystemsPage.useInfiniteQuery"
@@ -158,8 +166,22 @@ describe("Solar REC dashboard mount: heavy-query gates", () => {
     expect(predicate).toMatch(/activeTab\s*===\s*"value"/);
     expect(predicate).toMatch(/isOfflineMonitoringTabActive/);
     expect(predicate).toMatch(/isFinancialsTabActive/);
-    expect(predicate).toMatch(/isSnapshotLogTabActive/);
+    // Bug #6 fix — Snapshot Log no longer unconditionally triggers
+    // the walk. The lazy-trigger flag is gated together with
+    // `isSnapshotLogTabActive` (post-merge review fixup,
+    // 2026-05-09) so navigating away from Snapshot Log mid-walk
+    // halts the cascade rather than letting it complete on a tab
+    // the user has already left.
+    expect(predicate).toMatch(
+      /isSnapshotLogTabActive\s*&&\s*snapshotPart2WalkRequested/
+    );
     expect(predicate).not.toMatch(/isOverviewTabActive/);
+    // The createLogEntry click handler must trip the request flag
+    // when the user clicks Log Snapshot from Snapshot Log without
+    // having visited a tab that already triggered the walk.
+    expect(code).toMatch(
+      /isSnapshotLogTabActive[\s\S]{0,300}setSnapshotPart2WalkRequested\(true\)/
+    );
   });
 
   it("snapshot readiness gates on the Part-2 eligible walk reaching end-of-stream (Phase 2 PR-F-4-f-2)", () => {
