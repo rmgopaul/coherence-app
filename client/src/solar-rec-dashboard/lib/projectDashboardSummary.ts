@@ -15,10 +15,11 @@
  *
  * Both aggregators expose the same shared count fields
  * (`totalSystems`, `reportingSystems`, `reportingPercent`,
- * `smallSystems`, `largeSystems`) — but compute them via different
- * paths (slim streams `srDsSolarApplications` rows with first-CSG
- * dedup; heavy reads from the system snapshot's pre-derived
- * fields). On prod data the two diverge by 25–60 per tile.
+ * `smallSystems`, `largeSystems`, `unknownSizeSystems`) — but
+ * compute them via different paths (slim streams
+ * `srDsSolarApplications` rows with first-CSG dedup; heavy reads
+ * from the system snapshot's pre-derived fields). On prod data the
+ * two diverge by 25–60 per tile.
  *
  * Pre-fix the user observed: first Overview visit (slim) showed
  * `<=10 kW AC: 17,645`; after activating Performance Ratio (which
@@ -27,24 +28,33 @@
  * absolute terms but visibly inconsistent.
  *
  * Fix: when both aggregators are loaded, pin the shared count
- * fields to slim's values (the deterministic, foundation-keyed
- * source) and layer the heavy-only fields on top. Slim is the
- * canonical Part-II count source; heavy contributes only the
- * fields slim doesn't expose (e.g. Part-II-scoped ownership
- * terminated counts).
- *
- * The two aggregators may still produce divergent slim values
- * (the underlying-data question of which is "right"), but the
- * USER-VISIBLE tile is now stable across navigation. Picking ONE
- * source resolves the bug; investigating the underlying ~25–60
- * count drift is a separate diagnostic pass.
+ * fields to slim's values and layer the heavy-only fields on top.
+ * Slim becomes the **stable** source for shared counts (heavy
+ * still contributes its heavy-only fields, e.g. Part-II-scoped
+ * ownership terminated counts). "Stable" — not "canonical" or
+ * "correct": the two aggregators still produce divergent values,
+ * and which one is "right" is an underlying-data question this PR
+ * does NOT settle. Picking ONE source resolves the user-visible
+ * shift between navigation events; investigating the underlying
+ * ~25–60 count drift is tracked as a follow-up in
+ * `docs/qa-walk-2026-05-09.md` (Bug #8 follow-up section).
  */
 
 /**
- * Shared count projection — fields present on BOTH slim and heavy
- * `OverviewSummary` shapes. Structural; does not import either
- * aggregator's full type so this helper is independent of the
- * server's evolving shape.
+ * Shared count projection — fields present on BOTH slim
+ * (`buildSlimDashboardSummary.ts`) and heavy
+ * (`buildOverviewSummaryAggregates.ts`) `OverviewSummary` shapes.
+ * Structural; does not import either aggregator's full type so this
+ * helper is independent of the server's evolving shape.
+ *
+ * **Maintenance note** (post-merge review of PR-7, 2026-05-09):
+ * adding a new field to BOTH aggregators that should be pinned
+ * means adding it BOTH here AND to the override block in
+ * `pinSharedCountsToSlim`. The 2026-05-09 audit confirmed
+ * `unknownSizeSystems` is also a shared field — pinning it here
+ * forecloses the same drift on that tile. If a future shared field
+ * is added without a matching pin, the unpinned tile silently
+ * regresses to swap-between-aggregators behavior.
  */
 export type CommonOverviewCountProjection = {
   totalSystems: number;
@@ -52,6 +62,7 @@ export type CommonOverviewCountProjection = {
   reportingPercent: number | null;
   smallSystems: number;
   largeSystems: number;
+  unknownSizeSystems: number;
 };
 
 /**
@@ -76,5 +87,6 @@ export function pinSharedCountsToSlim<T extends CommonOverviewCountProjection>(
     reportingPercent: slim.reportingPercent,
     smallSystems: slim.smallSystems,
     largeSystems: slim.largeSystems,
+    unknownSizeSystems: slim.unknownSizeSystems,
   };
 }

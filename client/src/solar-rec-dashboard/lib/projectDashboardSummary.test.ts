@@ -12,6 +12,7 @@ describe("pinSharedCountsToSlim", () => {
       reportingPercent: 84.56,
       smallSystems: 17_705,
       largeSystems: 6_656,
+      unknownSizeSystems: 12,
       ownershipOverview: {
         terminatedTotal: 62, // heavy-only field, must survive
       },
@@ -22,6 +23,7 @@ describe("pinSharedCountsToSlim", () => {
       reportingPercent: 84.46,
       smallSystems: 17_645,
       largeSystems: 6_646,
+      unknownSizeSystems: 0,
     };
     const result = pinSharedCountsToSlim(heavy, slim);
     expect(result.totalSystems).toBe(24_291);
@@ -29,6 +31,9 @@ describe("pinSharedCountsToSlim", () => {
     expect(result.reportingPercent).toBe(84.46);
     expect(result.smallSystems).toBe(17_645);
     expect(result.largeSystems).toBe(6_646);
+    // 2026-05-09 follow-up: `unknownSizeSystems` is also a shared
+    // field. Pinning it forecloses the same drift on that tile.
+    expect(result.unknownSizeSystems).toBe(0);
   });
 
   it("preserves heavy-only fields verbatim", () => {
@@ -38,6 +43,7 @@ describe("pinSharedCountsToSlim", () => {
       reportingPercent: 100,
       smallSystems: 1,
       largeSystems: 0,
+      unknownSizeSystems: 0,
       ownershipOverview: {
         terminatedTotal: 99,
         otherHeavyOnlyField: { nested: "value" },
@@ -50,6 +56,7 @@ describe("pinSharedCountsToSlim", () => {
       reportingPercent: null,
       smallSystems: 0,
       largeSystems: 0,
+      unknownSizeSystems: 0,
     };
     const result = pinSharedCountsToSlim(heavy, slim);
     expect(result.ownershipOverview).toEqual({
@@ -59,6 +66,35 @@ describe("pinSharedCountsToSlim", () => {
     expect(result.anotherHeavyExclusiveField).toBe("preserved");
   });
 
+  it("preserves caller-supplied tag fields (e.g. `kind` discriminator)", () => {
+    // The parent's `summary` memo wraps the helper output as
+    // `{...heavy, kind: "heavy"}` then runs `pinSharedCountsToSlim`.
+    // Tag fields like `kind` MUST survive the pin so downstream
+    // consumers that narrow on the discriminated union still
+    // resolve correctly.
+    const heavy = {
+      totalSystems: 100,
+      reportingSystems: 80,
+      reportingPercent: 80,
+      smallSystems: 75,
+      largeSystems: 25,
+      unknownSizeSystems: 0,
+      kind: "heavy" as const,
+      heavyOnly: { details: true },
+    };
+    const slim = {
+      totalSystems: 99,
+      reportingSystems: 79,
+      reportingPercent: 79.8,
+      smallSystems: 74,
+      largeSystems: 25,
+      unknownSizeSystems: 0,
+    };
+    const result = pinSharedCountsToSlim(heavy, slim);
+    expect(result.kind).toBe("heavy");
+    expect(result.heavyOnly).toEqual({ details: true });
+  });
+
   it("preserves null reportingPercent (legitimate when totalSystems is 0)", () => {
     const heavy = {
       totalSystems: 0,
@@ -66,6 +102,7 @@ describe("pinSharedCountsToSlim", () => {
       reportingPercent: null as number | null,
       smallSystems: 0,
       largeSystems: 0,
+      unknownSizeSystems: 0,
     };
     const slim = {
       totalSystems: 0,
@@ -73,9 +110,29 @@ describe("pinSharedCountsToSlim", () => {
       reportingPercent: null as number | null,
       smallSystems: 0,
       largeSystems: 0,
+      unknownSizeSystems: 0,
     };
     const result = pinSharedCountsToSlim(heavy, slim);
     expect(result.reportingPercent).toBeNull();
+  });
+
+  it("is functionally a no-op when slim values equal heavy values", () => {
+    // Sanity guard for the equal-values case. The override still
+    // happens; the test confirms the result equals heavy.
+    const sharedCounts = {
+      totalSystems: 1000,
+      reportingSystems: 800,
+      reportingPercent: 80,
+      smallSystems: 700,
+      largeSystems: 300,
+      unknownSizeSystems: 0,
+    };
+    const heavy = {
+      ...sharedCounts,
+      ownershipOverview: { terminatedTotal: 5 },
+    };
+    const result = pinSharedCountsToSlim(heavy, sharedCounts);
+    expect(result).toEqual(heavy);
   });
 
   it("does not mutate the input objects", () => {
@@ -85,6 +142,7 @@ describe("pinSharedCountsToSlim", () => {
       reportingPercent: 80,
       smallSystems: 75,
       largeSystems: 25,
+      unknownSizeSystems: 0,
       heavyOnly: "kept",
     };
     const slim = {
@@ -93,6 +151,7 @@ describe("pinSharedCountsToSlim", () => {
       reportingPercent: 79.8,
       smallSystems: 74,
       largeSystems: 25,
+      unknownSizeSystems: 0,
     };
     const heavySnapshot = JSON.stringify(heavy);
     const slimSnapshot = JSON.stringify(slim);
