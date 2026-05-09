@@ -244,21 +244,25 @@ export function createPerformanceRatioAccumulator(
   // so the displayed system identity is stable.
   //
   // **Counter-partition semantics** (post-merge review of PR-1,
-  // 2026-05-09 follow-up). The dedup branch fires AFTER the
-  // validity check (line ~218) but BEFORE the match attempt. So:
+  // 2026-05-09 follow-up + remediation). The dedup branch fires
+  // AFTER the validity check but BEFORE the match attempt. So:
   //   - `convertedReadCount = matched + unmatched + invalid + deduped`
   //     is the strict partition.
   //   - A row that's a duplicate of a previously-matched row counts
   //     as `deduped`, not `matched`. The `matched` counter records
   //     UNIQUE physical readings that produced a fact row.
-  //   - A row that's a duplicate of a previously-unmatched/invalid
-  //     row also counts as `deduped` (its key was processed and
-  //     would not have matched). Acceptable: if the first row had
-  //     no candidate, the second row by definition has the same
-  //     keys → also no candidate → no fact emission either way.
-  //     The strict-partition invariant is maintained; the
-  //     `dedupedConvertedReads` counter just covers more cases
-  //     than "duplicate of a matched row."
+  //   - A row that's a duplicate of a previously-VALID-but-unmatched
+  //     row counts as `deduped`. Its key was added to the dedup set
+  //     by the prior row even though the prior produced no fact;
+  //     acceptable, because the second row by definition has the
+  //     same keys → also no candidate → no fact either way.
+  //   - INVALID rows (failed the validity check above) NEVER reach
+  //     the dedup branch — they hit `invalidConvertedReads += 1;
+  //     continue;` before the dedup-key is ever computed. A
+  //     subsequent invalid row with the same shape also fails
+  //     validity and increments `invalidConvertedReads` again. So
+  //     "duplicate of an invalid row" doesn't exist as a category;
+  //     the partition still holds.
   //
   // **Heap cost note.** The Set grows linearly in input row count.
   // Each entry is ~50 chars × ~2 bytes/char = ~100 bytes. On a

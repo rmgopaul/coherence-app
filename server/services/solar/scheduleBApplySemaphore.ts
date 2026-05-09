@@ -68,6 +68,42 @@ export function buildScheduleBApplyKey(
  *
  * Generic over the apply result type so callers can preserve their
  * exact shape (the apply mutation's full result envelope).
+ *
+ * **Caller contract** (post-merge review remediation, 2026-05-09):
+ *
+ * 1. **Coalesced callers receive the SAME Promise reference.**
+ *    `promiseA === promiseB` for two concurrent same-key calls.
+ *    Don't attach call-identity-tied cleanup (e.g. a `.finally`
+ *    that pings telemetry per-caller) — the Promise settles
+ *    once and any chained `.finally` runs once total. Per-caller
+ *    side effects belong AFTER the awaited result, not chained
+ *    on the Promise.
+ *
+ * 2. **All callers must use the same `T` for a given key.** The
+ *    `as Promise<T>` cast assumes coalesced callers share the
+ *    apply result shape. Every current caller is the same tRPC
+ *    handler (so `T` is identical by construction). A future
+ *    consumer that wraps two distinct mutation handlers under
+ *    the same key would get a Promise typed as their `T` but
+ *    resolving to the FIRST caller's actual value — TypeScript
+ *    won't catch the divergence.
+ *
+ * 3. **No timeout / cancellation.** A hung `apply()` blocks all
+ *    coalesced callers indefinitely. The dashboard middleware's
+ *    heap-pressure reject fires BEFORE this wrapper executes;
+ *    the apply itself runs inside a tRPC mutation whose total
+ *    timeout is governed by the upstream Express handler limit
+ *    (Render's default is 30s on request body). If apply() is
+ *    structurally bounded, this is fine. If a future apply() can
+ *    run >30s, the wrapper needs an explicit AbortSignal.
+ *
+ * 4. **In-process scope.** Single-process belt-and-braces on top
+ *    of the client-side throttle (PR-3, #532). NOT a multi-
+ *    instance correctness invariant — two server instances each
+ *    admit one apply for the same key. CLAUDE.md hard rule #8
+ *    (DB-backed registries) applies to job runners; this is a
+ *    request-coalescing semaphore (no persistent state), so the
+ *    distinction is defensible.
  */
 export function withScheduleBApplySemaphore<T>(
   key: ScheduleBApplyKey,

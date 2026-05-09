@@ -143,6 +143,32 @@ describe("withScheduleBApplySemaphore", () => {
     expect(result).toBe("second");
   });
 
+  // 2026-05-09 follow-up review remediation. The original PR
+  // tested fresh-admit after success and rejection-propagation
+  // separately; this test combines them — fresh-admit AFTER a
+  // FAILED prior settle. Pins the slot-release-on-failure
+  // contract end-to-end.
+  it("a fresh apply for the same key is admitted AFTER the prior one FAILED", async () => {
+    let firstCalls = 0;
+    let secondCalls = 0;
+
+    await expect(
+      withScheduleBApplySemaphore("k", async () => {
+        firstCalls += 1;
+        throw new Error("first apply failed");
+      })
+    ).rejects.toThrow("first apply failed");
+    expect(__getScheduleBSemaphoreSizeForTests()).toBe(0);
+
+    const result = await withScheduleBApplySemaphore("k", async () => {
+      secondCalls += 1;
+      return "second-after-failure";
+    });
+    expect(firstCalls).toBe(1);
+    expect(secondCalls).toBe(1);
+    expect(result).toBe("second-after-failure");
+  });
+
   it("a third caller that arrives WHILE the second is still in flight coalesces with it (not the first)", async () => {
     let resolveFirst!: (value: string) => void;
     const firstApply = () =>

@@ -52,9 +52,19 @@ describe("compareSlimVsHeavySummary — primary verdicts", () => {
     // says totalSystems=24291, reportingSystems=20518; heavy
     // says totalSystems=24291+60, reportingSystems=20518+25.
     // Hypothesis: ~60 unmatched Part-II ABP rows in the active
-    // batch, of which ~35 are reporting via some indirect path.
-    // (Reporting deltas don't have to match unmatched count
-    // exactly because reporting can also drift independently.)
+    // batch produce the +60 totalSystems delta. The +25 on
+    // reportingSystems is a SEPARATE mechanism (likely reporting-
+    // flag mismatch on matched systems); unmatched rows alone
+    // can't drive a positive reportingSystems delta because the
+    // heavy aggregator routes them to `notTransferredNotReporting`,
+    // which is not summed into `reportingSystems`.
+    //
+    // Post-remediation evidence math: unmatched explains the +60
+    // totalSystems delta only (not the +25 reporting). The
+    // remaining 25 units of drift are unaccounted (no reporting-
+    // flag mismatch count provided here), so the verdict still
+    // resolves to `primary:unmatched-abp-rows` (60/85 ≈ 70.6% > 50%
+    // threshold) but the evidence doesn't over-attribute.
     const result = compareSlimVsHeavySummary(
       input({
         slim: {
@@ -75,9 +85,81 @@ describe("compareSlimVsHeavySummary — primary verdicts", () => {
       })
     );
     expect(result.verdict).toBe("primary:unmatched-abp-rows");
-    expect(result.evidence.unmatchedAbpRowsExplains).toBe(85); // 60 (totalSystems) + 25 (reportingSystems, capped by delta)
+    // Post-remediation: 60 (just the totalSystems delta), not 85
+    // (which double-counted the +25 reportingSystems delta).
+    expect(result.evidence.unmatchedAbpRowsExplains).toBe(60);
+    expect(result.evidence.reportingFlagMismatchesExplains).toBe(0);
     expect(result.totalAbsoluteDrift).toBe(85);
     expect(result.verdictNote).toContain("60 Part-II ABP rows");
+  });
+
+  it("does NOT attribute reportingSystems drift to unmatched ABP rows (mechanism direction guard)", () => {
+    // Pre-remediation pre-fix the formula was `min(N,
+    // |totalSystems delta|) + min(N, |reportingSystems delta|)`,
+    // which falsely credited unmatched rows for ANY reporting
+    // delta. Heavy's `reportingSystems = notTransferredReporting +
+    // transferredReporting + terminatedReporting` formula doesn't
+    // include unmatched rows (they go to
+    // `notTransferredNotReporting`), so unmatched alone cannot
+    // drive a positive reportingSystems delta. Test pins the
+    // direction guard.
+    const result = compareSlimVsHeavySummary(
+      input({
+        slim: {
+          totalSystems: 100,
+          reportingSystems: 60, // 60 of 100 reporting
+          smallSystems: 80,
+          largeSystems: 20,
+          unknownSizeSystems: 0,
+        },
+        heavy: {
+          totalSystems: 100,
+          reportingSystems: 70, // +10 reporting (NOT from unmatched)
+          smallSystems: 80,
+          largeSystems: 20,
+          unknownSizeSystems: 0,
+        },
+        unmatchedPart2AbpProjectCount: 30, // even with high count
+      })
+    );
+    // No totalSystems delta → unmatched explains 0.
+    expect(result.evidence.unmatchedAbpRowsExplains).toBe(0);
+  });
+
+  it("does NOT double-count when both unmatched and reportingFlag mechanisms have non-zero counts", () => {
+    // Pre-remediation pre-fix BOTH mechanisms claimed a slice of
+    // the reportingSystems delta, so `explainedTotal` could
+    // exceed `totalAbsoluteDrift` and ratios could exceed 1.0.
+    // Post-remediation: unmatched is confined to totalSystems;
+    // reportingFlag is confined to reportingSystems.
+    const result = compareSlimVsHeavySummary(
+      input({
+        slim: {
+          totalSystems: 100,
+          reportingSystems: 80,
+          smallSystems: 70,
+          largeSystems: 30,
+          unknownSizeSystems: 0,
+        },
+        heavy: {
+          totalSystems: 110, // +10 (from 10 unmatched)
+          reportingSystems: 75, // -5 (from 5 reporting-flag flips)
+          smallSystems: 70,
+          largeSystems: 30,
+          unknownSizeSystems: 0,
+        },
+        unmatchedPart2AbpProjectCount: 10,
+        reportingFlagMismatchCount: 5,
+      })
+    );
+    expect(result.evidence.unmatchedAbpRowsExplains).toBe(10);
+    expect(result.evidence.reportingFlagMismatchesExplains).toBe(5);
+    // Strict invariant: explainedTotal ≤ totalAbsoluteDrift.
+    const explainedTotal =
+      result.evidence.unmatchedAbpRowsExplains +
+      result.evidence.staleSnapshotBucketsExplains +
+      result.evidence.reportingFlagMismatchesExplains;
+    expect(explainedTotal).toBeLessThanOrEqual(result.totalAbsoluteDrift);
   });
 
   it("identifies `primary:stale-snapshot-buckets` when only size buckets diverge", () => {

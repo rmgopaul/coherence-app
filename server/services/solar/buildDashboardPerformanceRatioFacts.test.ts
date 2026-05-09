@@ -1164,27 +1164,29 @@ describe("parsePerformanceRatioSummaryPayload (codex review fixup — strict fie
     expect(parser!(JSON.stringify(payload))).toBeNull();
   });
 
-  // 2026-05-09 follow-up to PR-1 — non-mutation guard. The
-  // original parser mutated `parsed.dedupedConvertedReads = 0`
-  // when the field was missing. The PR-FU-5 fixup replaces the
-  // mutation with a non-mutating spread (`...parsed,
-  // dedupedConvertedReads: parsed.dedupedConvertedReads ?? 0`).
-  // This test pins the contract so a future regression to the
-  // mutation pattern fails loudly.
-  it("does NOT mutate the input string's parsed object (non-mutating default)", () => {
-    const stale = makeValidPayload() as Partial<
-      ReturnType<typeof makeValidPayload>
-    >;
-    delete (stale as Record<string, unknown>).dedupedConvertedReads;
-    const rawJson = JSON.stringify(stale);
-    const parsedSnapshot = JSON.parse(rawJson) as Record<string, unknown>;
-    parser!(rawJson);
-    // The string was re-parsed inside the parser; the snapshot
-    // reflects what the function received and should still lack
-    // the field. (The function returns a NEW object with the
-    // default applied; the input is untouched.)
-    expect(parsedSnapshot).not.toHaveProperty("dedupedConvertedReads");
-  });
+  // 2026-05-09 — Remediation of PR-FU-5 (#543) review BLOCKER. The
+  // original PR shipped a "does NOT mutate the input" test that did
+  // not actually exercise the contract: it parsed the input string
+  // INTO ITS OWN object (separate reference from the parser's
+  // internal `parsed`), so even with the buggy mutation the snapshot
+  // was always pristine.
+  //
+  // The parser's signature takes a `string` and immutable primitives
+  // can't be mutated; the actual concern was that the parser's
+  // internal `parsed` object COULD be returned by reference (with a
+  // mutation applied to it), letting a defensive caller observe a
+  // surprise field. The non-mutating spread fix addresses this by
+  // returning a NEW object — independent of the internal `parsed`.
+  //
+  // The right test for the fix: assert the returned object has the
+  // field set to the back-compat default (which the existing
+  // "accepts a pre-PR-1 payload" test at line ~1156 already does).
+  // Adding identity-based test would require exporting an
+  // alternate object-input variant of the parser; that's a larger
+  // refactor for a non-functional change. Pinning the contract via
+  // the docstring + the existing back-compat test is the right
+  // tradeoff. Comment retained here as a marker so a future
+  // contributor doesn't re-add a misleading mutation test.
 });
 
 describe("performanceRatioBuildStep — orchestration (Option C visibility flip)", () => {

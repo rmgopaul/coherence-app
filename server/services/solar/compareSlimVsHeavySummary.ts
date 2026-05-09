@@ -136,18 +136,15 @@ const SHARED_FIELDS: readonly SharedCountField[] = [
 /**
  * **Verdict thresholds.**
  *
- * - `unexplained-drift-floor` — when a mechanism explains a STRICT
- *   majority of the drift (>50%), it's the primary verdict. With
- *   only one mechanism explaining >50%, the verdict is the single
- *   primary. With multiple mechanisms each explaining >50%
- *   (mathematically impossible — they sum to >100%), the verdict
- *   collapses to compound. With no mechanism explaining >50%, the
- *   verdict is `compound` (multiple mechanisms each contributing)
- *   or `unexplained` (none of the tracked mechanisms account for
- *   the drift).
- * - `no-drift-tolerance` — drift of 0 across all fields → no-drift.
- *   Allows for trivial epsilon if percent-fields creep in
- *   (currently strict-zero since fields are integer counts).
+ * `PRIMARY_VERDICT_THRESHOLD` — when a single mechanism explains a
+ * STRICT majority of the drift (>50%), it's the primary verdict.
+ * With multiple mechanisms each contributing partially the verdict
+ * is `compound:multiple-mechanisms`. With no mechanism accounting
+ * for the drift the verdict is `unexplained` (signal: a new
+ * mechanism may need to be added to this diagnostic).
+ *
+ * Drift of 0 across all fields short-circuits to `no-drift` BEFORE
+ * any mechanism math runs.
  */
 const PRIMARY_VERDICT_THRESHOLD = 0.5;
 
@@ -160,6 +157,16 @@ export function compareSlimVsHeavySummary(
     heavy: input.heavy[field],
     delta: input.heavy[field] - input.slim[field],
   }));
+
+  // 2026-05-09 follow-up review remediation — switch from
+  // positional `fieldDiffs[N]!` to a name-keyed lookup. A future
+  // reorder of `SHARED_FIELDS` would silently break attribution
+  // (the tests use the same constant, so they wouldn't catch it).
+  // Keying on the field name makes the math reorder-safe AND
+  // self-documenting at the call site.
+  const deltaByField = Object.fromEntries(
+    fieldDiffs.map((diff) => [diff.field, diff.delta])
+  ) as Record<SharedCountField, number>;
 
   const totalAbsoluteDrift = fieldDiffs.reduce(
     (sum, diff) => sum + Math.abs(diff.delta),
@@ -181,38 +188,57 @@ export function compareSlimVsHeavySummary(
     };
   }
 
-  // **Unmatched ABP rows** — each contributes +1 to heavy.totalSystems
-  // (and +1 to heavy's not-reporting bucket). On size buckets they
-  // contribute 0 (unmatched rows have no canonical system, hence no
-  // installedKwAc). They DO contribute to `largeSystems` /
-  // `smallSystems` / `unknownSizeSystems` indirectly only if heavy's
-  // size-bucket projection counts them — current heavy sums size
-  // buckets from the SCOPED snapshot (filtered by Part-II eligibility),
-  // which excludes unmatched rows. So unmatched rows' contribution is
-  // confined to `totalSystems` and (negatively) to `reportingSystems`.
-  const unmatchedAbpRowsExplains =
-    Math.min(input.unmatchedPart2AbpProjectCount, Math.abs(fieldDiffs[0]!.delta)) +
-    Math.min(input.unmatchedPart2AbpProjectCount, Math.abs(fieldDiffs[1]!.delta));
+  // **Unmatched ABP rows** — each contributes +1 to
+  // heavy.totalSystems (slim does not count them; foundation's
+  // canonical Part-II set excludes unmatched rows). They contribute
+  // 0 directly to heavy.reportingSystems (the heavy aggregator
+  // routes unmatched rows to `notTransferredNotReporting`, which is
+  // SUMMED INTO `notReportingOwnershipTotal` but NOT into
+  // `reportingSystems` — see `buildOverviewSummaryAggregates.ts`'s
+  // `reportingSystems = notTransferredReporting + transferredReporting
+  // + terminatedReporting` formula). They contribute 0 to size
+  // buckets (the snapshot's bucket projection filters by Part-II
+  // eligibility, excluding unmatched rows).
+  //
+  // 2026-05-09 follow-up review remediation: pre-fix the formula
+  // was `min(N, |totalSystems delta|) + min(N, |reportingSystems
+  // delta|)`, double-counting the reportingSystems delta against
+  // BOTH this mechanism and the reporting-flag-mismatch mechanism
+  // below. AND the second term incorrectly credited unmatched
+  // rows for a +25 reportingSystems delta when unmatched can ONLY
+  // push the delta toward 0 or negative (heavy reportingSystems
+  // grows only via matched-system reporting, not via unmatched).
+  // Corrected: unmatched explains the totalSystems delta only,
+  // capped by the positive (heavy > slim) direction.
+  const totalSystemsDelta = deltaByField.totalSystems;
+  const unmatchedAbpRowsExplains = Math.min(
+    input.unmatchedPart2AbpProjectCount,
+    Math.max(0, totalSystemsDelta)
+  );
 
   // **Stale snapshot buckets** — each mismatch flips a system from
   // one bucket to another. The drift it explains equals the count
-  // of mismatches, capped by the sum of absolute deltas across the
-  // 3 size-bucket fields.
+  // of mismatches × 2 (each mismatch contributes -1 in the OLD
+  // bucket and +1 in the NEW bucket = 2 absolute drift), capped by
+  // the sum of absolute deltas across the 3 size-bucket fields.
   const sizeBucketAbsoluteDrift =
-    Math.abs(fieldDiffs[2]!.delta) +
-    Math.abs(fieldDiffs[3]!.delta) +
-    Math.abs(fieldDiffs[4]!.delta);
+    Math.abs(deltaByField.smallSystems) +
+    Math.abs(deltaByField.largeSystems) +
+    Math.abs(deltaByField.unknownSizeSystems);
   const staleSnapshotBucketsExplains = Math.min(
-    input.sizeBucketMismatchCount * 2, // each mismatch contributes 2 to absolute drift (–1 in old bucket, +1 in new)
+    input.sizeBucketMismatchCount * 2,
     sizeBucketAbsoluteDrift
   );
 
   // **Reporting flag mismatches** — each mismatch flips a system
   // from reporting to not-reporting (or vice versa) without
-  // changing `totalSystems`. Confined to `reportingSystems`.
+  // changing `totalSystems`. Confined to the `reportingSystems`
+  // delta. Now the SOLE attributor for that delta — pre-remediation
+  // unmatched-ABP also claimed it, leading to over-attribution
+  // when both counts were non-zero.
   const reportingFlagMismatchesExplains = Math.min(
     input.reportingFlagMismatchCount,
-    Math.abs(fieldDiffs[1]!.delta)
+    Math.abs(deltaByField.reportingSystems)
   );
 
   const evidence = {
