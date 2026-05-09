@@ -426,9 +426,26 @@ export default memo(function SnapshotLogTab(props: SnapshotLogTabProps) {
         reportingSystems: entry.reportingSystems,
         contractedValueNotReporting: entry.contractedValueNotReporting,
         totalGap: entry.totalGap,
+        // 2026-05-09 follow-up to PR-4 — carry the provenance tag
+        // into the trend row so the rendering can identify the
+        // PR-4 cutover point and draw a reference line.
+        valueSource: entry.valueSource ?? null,
       };
     });
   }, [logEntries]);
+
+  // 2026-05-09 follow-up to PR-4 — find the cutover point. Returns
+  // the trend-row label of the FIRST entry whose `valueSource ===
+  // "slim"`, or null when all entries are pre-FU-4 (no `"slim"` tag
+  // present) or when no entries are pre-PR-4 (no marker needed —
+  // every entry uses the same source).
+  const trendValueSourceCutoverLabel = useMemo<string | null>(() => {
+    const firstSlimIndex = snapshotTrendRows.findIndex(
+      (row) => row.valueSource === "slim"
+    );
+    if (firstSlimIndex <= 0) return null; // no marker if first entry is already slim
+    return snapshotTrendRows[firstSlimIndex]!.label;
+  }, [snapshotTrendRows]);
 
   const snapshotTrendSummary = useMemo(() => {
     if (snapshotTrendRows.length === 0) return null;
@@ -840,6 +857,31 @@ export default memo(function SnapshotLogTab(props: SnapshotLogTabProps) {
                           }}
                         />
                       )}
+                    {/* 2026-05-09 follow-up to PR-4 — vertical
+                        reference line at the cutover point where
+                        the contracted-value source switched from
+                        the row-walk over `part2EligibleSystemsForSize
+                        Reporting` to the slim summary's pre-
+                        aggregated values. The two paths diverge by
+                        ~$90K out of $478M on prod, so a small
+                        step-change in the trend lines is expected
+                        across this point. The marker tells the
+                        user the discontinuity is a measurement
+                        change, not a real portfolio shift. */}
+                    {trendValueSourceCutoverLabel !== null && (
+                      <ReferenceLine
+                        yAxisId="pct"
+                        x={trendValueSourceCutoverLabel}
+                        stroke="#cbd5e1"
+                        strokeDasharray="2 4"
+                        label={{
+                          value: "value-source: slim",
+                          position: "top",
+                          fontSize: 9,
+                          fill: "#94a3b8",
+                        }}
+                      />
+                    )}
                     <Area
                       yAxisId="pct"
                       type="monotone"

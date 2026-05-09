@@ -616,6 +616,32 @@ export type DashboardLogEntry = {
   contractedValueReporting: number;
   contractedValueNotReporting: number;
   contractedValueReportingPercent: number | null;
+  /**
+   * 2026-05-09 follow-up to PR-4 (#533) — provenance tag for the
+   * contracted-value fields above. PR-4 switched the source of
+   * `totalContractedValue` and the `contractedValue*` reporting
+   * splits from a row-walk over `part2EligibleSystemsForSizeReporting`
+   * to the slim summary's pre-aggregated values. The two paths
+   * diverge by ~$90K out of $478M on prod, so log entries created
+   * before vs. after PR-4 may report subtly different totals for
+   * the same underlying portfolio.
+   *
+   * Field semantics:
+   *   - `"slim"` — entry was captured against the slim summary
+   *     values (post-PR-4 entries). Stable, deterministic source.
+   *   - `"row-walk"` — entry was captured against the row-walk
+   *     values (legacy, pre-PR-4 entries). Source of the ~$90K
+   *     drift versus slim.
+   *   - `null` — entry was created before this field existed
+   *     (pre-FU-4). Treat as `"row-walk"` for trend-chart marker
+   *     purposes since legacy entries used that path.
+   *
+   * The Snapshot Log trend chart renders a vertical reference
+   * line at the FIRST entry whose `valueSource === "slim"` so the
+   * user can see where the source switched and ignore the
+   * apparent step-change in trend.
+   */
+  valueSource?: "slim" | "row-walk" | null;
   datasets: Array<{
     key: DatasetKey;
     label: string;
