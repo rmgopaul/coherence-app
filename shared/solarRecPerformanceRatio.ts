@@ -854,4 +854,18 @@ export type PerformanceRatioAggregates = {
   matchedConvertedReads: number;
   unmatchedConvertedReads: number;
   invalidConvertedReads: number;
+  /**
+   * Rows that passed validity but were skipped to avoid emitting a
+   * duplicate fact row. Two convertedReads source rows that report
+   * the same physical reading via different ingestion paths
+   * (`mon_batch_<provider>` API push vs. `individual_<provider>`
+   * manual CSV upload) typically share monitoring + system name +
+   * lifetime + read date but differ in `monitoring_system_id` (one
+   * populated, one empty). Both match the SAME system at the same
+   * priority tier, which would otherwise emit two identical fact
+   * rows. The matcher now collapses them at emission via a
+   * cross-source dedup key; the count of skipped rows lives here so
+   * operators can see how often this is happening on prod.
+   */
+  dedupedConvertedReads: number;
 };

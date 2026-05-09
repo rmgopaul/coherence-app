@@ -1106,7 +1106,7 @@ expected post-upload state even with no chunked blob present.
    | `buildDashboardChangeOwnershipFacts` | `[dashboard:fact-build:changeOwnership]` | `scopeId` | `rowsWritten`, `orphanedDeleted`, `fromCache` |
    | `buildDashboardSystemFacts` | `[dashboard:fact-build:system]` | `scopeId` | `rowsWritten`, `part2EligibleCount`, `orphanedDeleted`, `fromCache` |
    | `buildDashboardMonitoringDetailsFacts` | `[dashboard:fact-build:monitoringDetails]` | `scopeId` | `rowsWritten`, `orphanedDeleted`, `fromCache` |
-   | `buildDashboardPerformanceRatioFacts` (success) | `[dashboard:fact-build:performanceRatio]` | `scopeId` | `rowsWritten`, `pageCount`, `orphanedDeleted`, `convertedReadCount`, `matchedConvertedReads`, `unmatchedConvertedReads`, `invalidConvertedReads`, `matchedSystemCount`, `streaming` |
+   | `buildDashboardPerformanceRatioFacts` (success) | `[dashboard:fact-build:performanceRatio]` | `scopeId` | `rowsWritten`, `pageCount`, `orphanedDeleted`, `convertedReadCount`, `matchedConvertedReads`, `unmatchedConvertedReads`, `invalidConvertedReads`, `dedupedConvertedReads`, `matchedSystemCount`, `streaming` |
    | `buildDashboardPerformanceRatioFacts` (skipped — no convertedReads) | `[dashboard:fact-build:performanceRatio]` | `scopeId` | `skipped`, `reason`, `orphanedDeleted` |
    | `dashboardBuildJobRunner` | `[dashboard:build-jobs]` | `stepCount` | `stepsRun` |
    | `dashboardCsvExportJobs` (success) | `[dashboard:csv-export-jobs]` | `exportType`, `datasetKey?` | `rowCount`, `csvBytes`, `storageWrite` |

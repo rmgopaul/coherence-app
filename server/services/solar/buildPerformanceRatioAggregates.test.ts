@@ -74,6 +74,7 @@ describe("buildPerformanceRatioAggregates", () => {
       matchedConvertedReads: 0,
       unmatchedConvertedReads: 0,
       invalidConvertedReads: 0,
+      dedupedConvertedReads: 0,
     });
   });
 
@@ -385,6 +386,165 @@ describe("buildPerformanceRatioAggregates", () => {
     expect(new Set(keys).size).toBe(keys.length);
     expect(keys).toContain("converted-0-k-A");
     expect(keys).toContain("converted-0-k-B");
+  });
+
+  // -------------------------------------------------------------------------
+  // 2026-05-09 — PR-1, Bug #5 cross-source dedup. The
+  // `convertedReadsBridge` keeps separate `mon_batch_<provider>`
+  // (API push) and `individual_<provider>` (manual CSV) sources;
+  // when both contain the same physical reading, the per-source
+  // dedup keys differ (sysId populated vs. empty) and both rows
+  // survive into `srDsConvertedReads`. They typically resolve to
+  // the SAME match candidate at the SAME priority tier, which
+  // pre-fix emitted two identical fact rows. The matcher now
+  // collapses them at emission via a cross-source dedup key
+  // (monitoring | sysName-or-sysId | lifetime | readDate).
+  // -------------------------------------------------------------------------
+
+  it("dedups cross-source duplicates with same physical reading + different sysIds", () => {
+    // The Rob Horton case from the prod walk: two source rows for
+    // SolarEdge / "Rob Horton" / 71081480 Wh on 2026-04-13 — one
+    // from the API auto-push (sysId="1206921"), one from the
+    // manual CSV upload (sysId=""). Both match "Acme Solar 1"
+    // here via "Monitoring + System Name" since the system has no
+    // matching sysId. Pre-fix → 2 rows; post-fix → 1.
+    const result = buildPerformanceRatioAggregates({
+      convertedReadsRows: [
+        buildRead({
+          monitoring_system_id: "1206921",
+          monitoring_system_name: "Acme Solar 1",
+          lifetime_meter_read_wh: "71081480",
+          read_date: "2026-04-13",
+        }),
+        buildRead({
+          monitoring_system_id: "",
+          monitoring_system_name: "Acme Solar 1",
+          lifetime_meter_read_wh: "71081480",
+          read_date: "2026-04-13",
+        }),
+      ],
+      systems: [
+        // Note: the system has its OWN sysId "SYS-A" which doesn't
+        // match either source row's sysId, so both rows match via
+        // "Monitoring + System Name" — the conditions of the
+        // user-reported duplicate.
+        buildBaseSystem(),
+      ],
+      ...EMPTY_LOOKUPS,
+    });
+    expect(result.rows).toHaveLength(1);
+    expect(result.convertedReadCount).toBe(2);
+    expect(result.matchedConvertedReads).toBe(1);
+    expect(result.dedupedConvertedReads).toBe(1);
+    expect(result.rows[0]!.matchType).toBe("Monitoring + System Name");
+  });
+
+  it("does NOT dedup rows with different lifetime reads (different physical reads)", () => {
+    const result = buildPerformanceRatioAggregates({
+      convertedReadsRows: [
+        buildRead({ lifetime_meter_read_wh: "5000000" }),
+        buildRead({ lifetime_meter_read_wh: "5000001" }),
+      ],
+      systems: [buildBaseSystem()],
+      ...EMPTY_LOOKUPS,
+    });
+    expect(result.rows).toHaveLength(2);
+    expect(result.dedupedConvertedReads).toBe(0);
+  });
+
+  it("does NOT dedup rows with different read dates (different physical reads)", () => {
+    const result = buildPerformanceRatioAggregates({
+      convertedReadsRows: [
+        buildRead({ read_date: "2026-04-13" }),
+        buildRead({ read_date: "2026-04-14" }),
+      ],
+      systems: [buildBaseSystem()],
+      ...EMPTY_LOOKUPS,
+    });
+    expect(result.rows).toHaveLength(2);
+    expect(result.dedupedConvertedReads).toBe(0);
+  });
+
+  it("falls back to sysId for the dedup key when sysName is empty in both rows", () => {
+    // Edge case: rows where sysName is empty and only sysId is
+    // populated. The dedup key uses sysName-or-sysId; with empty
+    // sysName, sysId is the dedup identifier. Two rows with the
+    // same sysId + lifetime + date dedup to one.
+    const result = buildPerformanceRatioAggregates({
+      convertedReadsRows: [
+        buildRead({
+          monitoring_system_id: "SYS-A",
+          monitoring_system_name: "",
+        }),
+        buildRead({
+          monitoring_system_id: "SYS-A",
+          monitoring_system_name: "",
+        }),
+      ],
+      systems: [buildBaseSystem()],
+      ...EMPTY_LOOKUPS,
+    });
+    expect(result.rows).toHaveLength(1);
+    expect(result.dedupedConvertedReads).toBe(1);
+  });
+
+  it("dedup spans multiple `processRows` page calls (streaming case)", () => {
+    // The fact-build runner streams convertedReads page-by-page
+    // via `forEachPerformanceRatioConvertedReadPage`. The dedup
+    // set must persist across pages, otherwise duplicates split
+    // across page boundaries would still emit twice.
+    const staticInput = {
+      systems: [buildBaseSystem()],
+      ...EMPTY_LOOKUPS,
+    };
+    const accumulator = createPerformanceRatioAccumulator(staticInput);
+
+    accumulator.processRows(
+      [
+        buildRead({
+          monitoring_system_id: "1206921",
+          monitoring_system_name: "Acme Solar 1",
+          lifetime_meter_read_wh: "71081480",
+          read_date: "2026-04-13",
+        }),
+      ],
+      0
+    );
+    // Page 2 contains the cross-source duplicate.
+    accumulator.processRows(
+      [
+        buildRead({
+          monitoring_system_id: "",
+          monitoring_system_name: "Acme Solar 1",
+          lifetime_meter_read_wh: "71081480",
+          read_date: "2026-04-13",
+        }),
+      ],
+      1
+    );
+
+    const result = accumulator.toAggregates();
+    expect(result.rows).toHaveLength(1);
+    expect(result.convertedReadCount).toBe(2);
+    expect(result.matchedConvertedReads).toBe(1);
+    expect(result.dedupedConvertedReads).toBe(1);
+  });
+
+  it("getCounters reports dedupedConvertedReads mid-stream", () => {
+    const staticInput = {
+      systems: [buildBaseSystem()],
+      ...EMPTY_LOOKUPS,
+    };
+    const accumulator = createPerformanceRatioAccumulator(staticInput);
+    accumulator.processRows([buildRead()], 0);
+    expect(accumulator.getCounters().dedupedConvertedReads).toBe(0);
+    accumulator.processRows(
+      [buildRead({ monitoring_system_id: "OTHER-ID" })],
+      1
+    );
+    // Two rows with same monitoring + sysName + lifetime + readDate
+    // collapse — the second is the dup.
+    expect(accumulator.getCounters().dedupedConvertedReads).toBe(1);
   });
 
   it("paged accumulator matches the full-array aggregate output", () => {

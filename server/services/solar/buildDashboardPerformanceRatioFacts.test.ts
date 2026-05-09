@@ -830,6 +830,7 @@ describe("buildPerformanceRatioSummaryPayload (Option C)", () => {
         matchedConvertedReads: 12_500,
         unmatchedConvertedReads: 800_000,
         invalidConvertedReads: 178_500,
+        dedupedConvertedReads: 0,
       },
       accumulators: makeEmptyAccumulators(),
     });
@@ -837,6 +838,31 @@ describe("buildPerformanceRatioSummaryPayload (Option C)", () => {
     expect(payload.matchedConvertedReads).toBe(12_500);
     expect(payload.unmatchedConvertedReads).toBe(800_000);
     expect(payload.invalidConvertedReads).toBe(178_500);
+  });
+
+  it("forwards dedupedConvertedReads counter (Bug #5 cross-source dedup, 2026-05-09)", () => {
+    const payload = buildPerformanceRatioSummaryPayload({
+      buildId: "bld-1",
+      builtAt,
+      aggregate: {
+        convertedReadCount: 1000,
+        matchedConvertedReads: 950,
+        unmatchedConvertedReads: 25,
+        invalidConvertedReads: 5,
+        dedupedConvertedReads: 20,
+      },
+      accumulators: makeEmptyAccumulators(),
+    });
+    expect(payload.dedupedConvertedReads).toBe(20);
+    // Sanity: counters partition cleanly. dedupedConvertedReads is a
+    // distinct bucket from matched/unmatched/invalid; total =
+    // matched + unmatched + invalid + deduped.
+    expect(
+      payload.matchedConvertedReads +
+        payload.unmatchedConvertedReads +
+        payload.invalidConvertedReads +
+        payload.dedupedConvertedReads
+    ).toBe(payload.convertedReadCount);
   });
 
   it("derives matchedSystemCount from the streaming accumulator's unique trackingSystemRefId set", () => {
@@ -863,6 +889,7 @@ describe("buildPerformanceRatioSummaryPayload (Option C)", () => {
         matchedConvertedReads: 2,
         unmatchedConvertedReads: 0,
         invalidConvertedReads: 0,
+        dedupedConvertedReads: 0,
       },
       accumulators,
     });
@@ -879,6 +906,7 @@ describe("buildPerformanceRatioSummaryPayload (Option C)", () => {
         matchedConvertedReads: 0,
         unmatchedConvertedReads: 0,
         invalidConvertedReads: 0,
+        dedupedConvertedReads: 0,
       },
       accumulators: makeEmptyAccumulators(),
     });
@@ -897,6 +925,7 @@ describe("buildPerformanceRatioSummaryPayload (Option C)", () => {
         matchedConvertedReads: 0,
         unmatchedConvertedReads: 0,
         invalidConvertedReads: 0,
+        dedupedConvertedReads: 0,
       },
       accumulators: makeEmptyAccumulators(),
     });
@@ -937,6 +966,7 @@ describe("buildPerformanceRatioSummaryPayload (Option C)", () => {
         matchedConvertedReads: 2,
         unmatchedConvertedReads: 0,
         invalidConvertedReads: 0,
+        dedupedConvertedReads: 0,
       },
       accumulators,
     });
@@ -1060,6 +1090,7 @@ describe("parsePerformanceRatioSummaryPayload (codex review fixup — strict fie
       matchedConvertedReads: 1,
       unmatchedConvertedReads: 0,
       invalidConvertedReads: 0,
+      dedupedConvertedReads: 0,
       matchedSystemCount: 1,
       allocationCount: 1,
       withBaseline: 1,
@@ -1110,6 +1141,28 @@ describe("parsePerformanceRatioSummaryPayload (codex review fixup — strict fie
     payload.buildId = "";
     expect(parser!(JSON.stringify(payload))).toBeNull();
   });
+
+  // 2026-05-09 — PR-1, Bug #5 cross-source dedup. The new
+  // `dedupedConvertedReads` field is REQUIRED on freshly-built
+  // payloads, but the parser tolerates older cached rows that
+  // pre-date the field by defaulting to 0 — so a stale row from
+  // before the deploy doesn't null-return on read and force an
+  // unrelated rebuild prompt on the client.
+  it("accepts a pre-PR-1 payload missing dedupedConvertedReads (defaults to 0)", () => {
+    const stale = makeValidPayload() as Partial<
+      ReturnType<typeof makeValidPayload>
+    >;
+    delete (stale as Record<string, unknown>).dedupedConvertedReads;
+    const result = parser!(JSON.stringify(stale));
+    expect(result).not.toBeNull();
+    expect(result!.dedupedConvertedReads).toBe(0);
+  });
+
+  it("rejects payloads where dedupedConvertedReads is the wrong type", () => {
+    const payload = makeValidPayload();
+    (payload as Record<string, unknown>).dedupedConvertedReads = "twenty";
+    expect(parser!(JSON.stringify(payload))).toBeNull();
+  });
 });
 
 describe("performanceRatioBuildStep — orchestration (Option C visibility flip)", () => {
@@ -1128,11 +1181,22 @@ describe("performanceRatioBuildStep — orchestration (Option C visibility flip)
     mocks.resolvePerformanceRatioBatchIds.mockResolvedValue(makeBatchIds());
     mocks.loadPerformanceRatioStaticInput.mockResolvedValue(makeStaticInput());
     mocks.pruneSupersededPerformanceRatioFacts.mockResolvedValue(3);
-    // Mock streaming source: 2 pages of 1 row each.
+    // Mock streaming source: 2 pages of 1 row each. The two rows
+    // need DIFFERENT `lifetime_meter_read_wh` values so the
+    // 2026-05-09 cross-source dedup (PR-1, Bug #5) doesn't collapse
+    // them — pre-fix they were identical and the matcher emitted
+    // one fact per row regardless. Different lifetimes simulate two
+    // distinct physical readings (e.g. consecutive days).
     mocks.forEachPerformanceRatioConvertedReadPage.mockImplementation(
       async (_scopeId: string, _batchId: string, onPage: any) => {
-        await onPage([makeConvertedReadRow()], 0);
-        await onPage([makeConvertedReadRow()], 1);
+        await onPage(
+          [makeConvertedReadRow({ lifetime_meter_read_wh: "5000000" })],
+          0
+        );
+        await onPage(
+          [makeConvertedReadRow({ lifetime_meter_read_wh: "5500000" })],
+          1
+        );
         return 2;
       }
     );
@@ -1209,8 +1273,17 @@ describe("performanceRatioBuildStep — orchestration (Option C visibility flip)
     mocks.loadPerformanceRatioStaticInput.mockResolvedValue(makeStaticInput());
     mocks.forEachPerformanceRatioConvertedReadPage.mockImplementation(
       async (_s: string, _b: string, onPage: any) => {
+        // Distinct lifetime per page so PR-1's cross-source dedup
+        // (2026-05-09) doesn't collapse the 3 rows down to 1.
         for (let i = 0; i < 3; i += 1) {
-          await onPage([makeConvertedReadRow()], i);
+          await onPage(
+            [
+              makeConvertedReadRow({
+                lifetime_meter_read_wh: String(5_000_000 + i * 100_000),
+              }),
+            ],
+            i
+          );
         }
         return 3;
       }
