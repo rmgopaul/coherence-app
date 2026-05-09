@@ -158,6 +158,7 @@ import { base64ToBytes, bytesToBase64 } from "@/solar-rec-dashboard/lib/binaryEn
 // itself was already dead after Phases 5a–5c removed IDB.
 import { resolveHydrationKeys } from "@/solar-rec-dashboard/lib/hydrationKeys";
 import { isSolarRecDebugEnabled } from "@/solar-rec-dashboard/lib/debugFlag";
+import { deriveSnapshotPart2ValueSummary } from "@/solar-rec-dashboard/lib/snapshotPart2ValueSummary";
 import {
   shouldSkipSnapshotLogSyncForUnsafeShrink,
   SNAPSHOT_LOG_UNSAFE_SHRINK_NOTICE,
@@ -3409,30 +3410,60 @@ export default function SolarRecDashboard() {
   // overviewPart2Totals — moved to OverviewTab (Phase 12)
 
   const snapshotPart2ValueSummary = useMemo(() => {
-    const totalContractedValue = part2EligibleSystemsForSizeReporting.reduce(
-      (sum, system) => sum + resolveContractValueAmount(system),
-      0
-    );
-    const contractedValueReporting = part2EligibleSystemsForSizeReporting
-      .filter((system) => system.isReporting)
-      .reduce((sum, system) => sum + resolveContractValueAmount(system), 0);
-    const contractedValueNotReporting = totalContractedValue - contractedValueReporting;
-    const contractedValueReportingPercent = toPercentValue(contractedValueReporting, totalContractedValue);
+    // 2026-05-09 — Bug #4 (FOWD) + Bug #7 (cross-tab drift) fix
+    // from the prod QA walk. The slim summary's pre-aggregated
+    // values are the canonical source for the Part-II contracted-
+    // value tile across all tabs (Overview / RecValue / etc.); the
+    // row-walk fallback is reachable only on the narrow cold-mount
+    // window before `dashboardSummaryQuery` resolves. Pure logic
+    // lives in `deriveSnapshotPart2ValueSummary` so the slim-vs-
+    // row-walk preference is unit-tested (vitest is Node-env only
+    // here; the parent component itself can't be mounted).
+    //
+    // `totalDeliveredValue` is NOT in slim
+    // (`buildSlimDashboardSummary.ts:72-80`) so it remains a row-
+    // walk regardless of which contracted-value source wins.
     const totalDeliveredValue = part2EligibleSystemsForSizeReporting.reduce(
       (sum, system) => sum + (system.deliveredValue ?? 0),
       0
     );
-    const totalGap = totalContractedValue - totalDeliveredValue;
-
-    return {
-      totalContractedValue,
+    const rowWalkTotalContractedValue =
+      part2EligibleSystemsForSizeReporting.reduce(
+        (sum, system) => sum + resolveContractValueAmount(system),
+        0
+      );
+    const rowWalkContractedValueReporting =
+      part2EligibleSystemsForSizeReporting
+        .filter((system) => system.isReporting)
+        .reduce(
+          (sum, system) => sum + resolveContractValueAmount(system),
+          0
+        );
+    const rowWalkContractedValueNotReporting =
+      rowWalkTotalContractedValue - rowWalkContractedValueReporting;
+    return deriveSnapshotPart2ValueSummary({
+      slim: slimSummary
+        ? {
+            totalContractedValue: slimSummary.totalContractedValue,
+            contractedValueReporting: slimSummary.contractedValueReporting,
+            contractedValueNotReporting:
+              slimSummary.contractedValueNotReporting,
+            contractedValueReportingPercent:
+              slimSummary.contractedValueReportingPercent,
+          }
+        : null,
+      rowWalk: {
+        totalContractedValue: rowWalkTotalContractedValue,
+        contractedValueReporting: rowWalkContractedValueReporting,
+        contractedValueNotReporting: rowWalkContractedValueNotReporting,
+        contractedValueReportingPercent: toPercentValue(
+          rowWalkContractedValueReporting,
+          rowWalkTotalContractedValue
+        ),
+      },
       totalDeliveredValue,
-      totalGap,
-      contractedValueReporting,
-      contractedValueNotReporting,
-      contractedValueReportingPercent,
-    };
-  }, [part2EligibleSystemsForSizeReporting]);
+    });
+  }, [part2EligibleSystemsForSizeReporting, slimSummary]);
 
   const sizeBreakdownRows = useMemo(() => {
     // Prefer the paginated Part-II system facts once a consuming tab

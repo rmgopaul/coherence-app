@@ -178,7 +178,20 @@ export default memo(function OverviewTab(props: OverviewTabProps) {
   // values so first-paint Overview is correct without firing the
   // heavy offlineMonitoring + snapshot queries.
   const overviewPart2Totals = useMemo(() => {
-    if (slimPart2Totals && part2EligibleSystemsForSizeReporting.length === 0) {
+    // 2026-05-09 — Bug #7 fix from the prod QA walk. Pre-fix this
+    // memo preferred the slim summary's totals only when the
+    // page-walk was empty (`length === 0`); once any
+    // `getDashboardSystemsPage` page landed it switched to
+    // recomputing from the page-walk rows. The two computations
+    // diverged by ~$90K out of $478M on prod, so the user saw the
+    // headline tile change value once a heavy tab fired the walk.
+    // Slim is now the unconditional source of truth; the page-walk
+    // is the fallback used only on the narrow cold-mount window
+    // before `dashboardSummaryQuery` resolves. Other tabs that
+    // share `snapshotPart2ValueSummary` made the same change in
+    // `SolarRecDashboard.tsx` so all Part-II contracted-value
+    // tiles sit on a single server-aggregated source.
+    if (slimPart2Totals) {
       return slimPart2Totals;
     }
     let totalContractedValuePart2 = 0;
