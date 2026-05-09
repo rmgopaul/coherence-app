@@ -1,9 +1,8 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
   DASHBOARD_TAB_ALIASES,
   getTabFromSearch,
   isDashboardTabId,
-  resolveInitialDashboardTab,
   resolveTabAlias,
 } from "./dashboardTabs";
 import { DASHBOARD_TAB_VALUES } from "./constants";
@@ -72,67 +71,13 @@ describe("getTabFromSearch", () => {
     expect(getTabFromSearch("?tab=overview")).toBe("overview");
     expect(getTabFromSearch("tab=overview")).toBe("overview");
   });
-});
 
-// resolveInitialDashboardTab — exercises both the `window`-present
-// branch (deep-link cold-mount race) and the SSR-fallback branch.
-describe("resolveInitialDashboardTab", () => {
-  // jsdom isn't loaded for this test file (vitest config = node); we
-  // simulate a window object on globalThis for the integration shape
-  // without polyfilling the full DOM.
-  const originalWindow = (globalThis as { window?: { location: { search: string } } }).window;
-
-  function setWindowSearch(search: string) {
-    (globalThis as { window?: { location: { search: string } } }).window = {
-      location: { search },
-    };
-  }
-
-  function clearWindow() {
-    if (originalWindow === undefined) {
-      delete (globalThis as { window?: unknown }).window;
-    } else {
-      (globalThis as { window?: unknown }).window = originalWindow;
-    }
-  }
-
-  beforeEach(() => {
-    clearWindow();
-  });
-
-  afterEach(() => {
-    clearWindow();
-  });
-
-  it("prefers the `window.location.search` value when both populated", () => {
-    setWindowSearch("?tab=performance-ratio");
-    // Wouter would supply `tab=overview` here on cold mount; the
-    // helper should still pick up the URL's actual tab.
-    expect(resolveInitialDashboardTab("?tab=overview")).toBe(
-      "performance-ratio"
-    );
-  });
-
-  it("falls back to the wouter `search` param when `window.location.search` has no tab", () => {
-    setWindowSearch("");
-    expect(resolveInitialDashboardTab("?tab=snapshot-log")).toBe(
-      "snapshot-log"
-    );
-  });
-
-  it("returns null when neither source has a valid tab", () => {
-    setWindowSearch("?other=foo");
-    expect(resolveInitialDashboardTab("?other=bar")).toBeNull();
-  });
-
-  it("uses the supplied search when window is unavailable (SSR path)", () => {
-    clearWindow();
-    expect(resolveInitialDashboardTab("?tab=trends")).toBe("trends");
-  });
-
-  it("resolves verbose aliases on the `window` branch (Bug #2 happy path)", () => {
-    setWindowSearch("?tab=application-pipeline");
-    expect(resolveInitialDashboardTab("")).toBe("app-pipeline");
+  it("URLSearchParams.get returns the FIRST value when `tab` appears multiple times", () => {
+    // Defensive: a duplicate `?tab=` from a malformed bookmark.
+    // URLSearchParams.get returns the first occurrence; this test
+    // pins the semantic so a future move to URLSearchParams.getAll
+    // (or similar) is a deliberate choice, not an accident.
+    expect(getTabFromSearch("?tab=overview&tab=size")).toBe("overview");
   });
 });
 
@@ -148,6 +93,16 @@ describe("DASHBOARD_TAB_ALIASES", () => {
   it("never aliases a string to itself (would be a noop entry)", () => {
     for (const [verbose, canonical] of Object.entries(DASHBOARD_TAB_ALIASES)) {
       expect(verbose).not.toBe(canonical);
+    }
+  });
+
+  it("verbose keys are NEVER themselves canonical tab ids", () => {
+    // If a verbose form happened to match a canonical id (e.g. the
+    // user added `"app-pipeline": "trends"`), `resolveTabAlias`
+    // would short-circuit on the canonical check and never honor
+    // the alias — silent dead-config. Lock the invariant.
+    for (const verbose of Object.keys(DASHBOARD_TAB_ALIASES)) {
+      expect(isDashboardTabId(verbose)).toBe(false);
     }
   });
 });

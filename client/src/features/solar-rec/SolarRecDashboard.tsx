@@ -187,7 +187,6 @@ import {
   type DashboardTabId,
   isDashboardTabId,
   getTabFromSearch,
-  resolveInitialDashboardTab,
 } from "@/solar-rec-dashboard/lib/dashboardTabs";
 import {
   resolvePart2ProjectIdentity,
@@ -492,11 +491,12 @@ const EMPTY_PERFORMANCE_SOURCE_ROWS: PerformanceSourceRow[] = [];
 // useEffect's per-tab activation hydration; with that effect gone,
 // they have no consumers.
 
-// 2026-05-09 — `DashboardTabId`, `isDashboardTabId`,
-// `getTabFromSearch`, and `resolveInitialDashboardTab` moved to
-// `@/solar-rec-dashboard/lib/dashboardTabs.ts` so the URL → state
-// resolution path can be unit-tested without mounting the full
-// dashboard. Reimported here for in-file use.
+// 2026-05-09 — `DashboardTabId`, `isDashboardTabId`, and
+// `getTabFromSearch` moved to `@/solar-rec-dashboard/lib/
+// dashboardTabs.ts` so the URL → state resolution path (including
+// the `application-pipeline → app-pipeline` alias map) can be
+// unit-tested without mounting the full dashboard. Reimported here
+// for in-file use.
 
 // resolveContractValueAmount, resolveValueGapAmount — moved to @/solar-rec-dashboard/lib/helpers
 
@@ -1993,8 +1993,7 @@ export default function SolarRecDashboard() {
   // Compliant source state + refs — moved to @/solar-rec-dashboard/components/PerformanceRatioTab
   // monthlySnapshotTransitions — moved to @/solar-rec-dashboard/components/SnapshotLogTab
   const [activeTab, setActiveTab] = useState<DashboardTabId>(
-    () =>
-      (resolveInitialDashboardTab(search) ?? DEFAULT_DASHBOARD_TAB) as DashboardTabId
+    () => (getTabFromSearch(search) ?? DEFAULT_DASHBOARD_TAB) as DashboardTabId
   );
   const visitedTabsRef = useRef(new Set<string>([activeTab]));
   useEffect(() => {
