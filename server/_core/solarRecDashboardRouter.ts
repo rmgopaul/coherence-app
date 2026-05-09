@@ -5,6 +5,10 @@ import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import { t } from "./solarRecBase";
 import { dashboardProcedure } from "./dashboardResponseGuard";
+import {
+  buildScheduleBApplyKey,
+  withScheduleBApplySemaphore,
+} from "../services/solar/scheduleBApplySemaphore";
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import {
   scheduleBImportFiles,
@@ -2116,6 +2120,22 @@ export const solarRecDashboardRouter = t.router({
         throw new Error("Schedule B import job not found.");
       }
 
+      // 2026-05-09 follow-up to PR-3 (#532) — defense-in-depth single-
+      // flight semaphore. PR-3 fixed the client-side dep-array churn
+      // that fan-out 11 concurrent mutateAsync calls; the semaphore
+      // catches anything that slips past the client throttle (defective
+      // client, network race, two browser tabs racing). Concurrent
+      // calls for the same `(scopeId, jobId)` coalesce — the second
+      // caller awaits the first's result without re-running the
+      // (expensive, write-heavy) merge. Per-scope serialization keeps
+      // multi-tenant safety intact; different `(scopeId, jobId)` pairs
+      // run independently.
+      const resolvedJob = job;
+      const semaphoreKey = buildScheduleBApplyKey(
+        ctx.scopeId,
+        resolvedJob.id
+      );
+      return withScheduleBApplySemaphore(semaphoreKey, async () => {
       // deliveryScheduleBase is row-table canonical. Fall back to the
       // legacy cloud blob only when no active srDs batch exists yet
       // (the production repair/backfill path uses that same fallback).
@@ -2348,6 +2368,7 @@ export const solarRecDashboardRouter = t.router({
         alreadyInDatabaseFileNames,
         markedAppliedCount,
       };
+      });
     }),
   /**
    * csv-upload-v1: Manually upload a Delivery Schedule CSV as a fallback

@@ -212,6 +212,30 @@ export function ScheduleBImport({
   // a timer body is awaiting, the body short-circuits at its
   // `applyInFlight` check.
   const autoApplyInFlightRef = useRef(false);
+  // 2026-05-09 follow-up to PR-3 (#532) — stale-closure chain re-fire.
+  // The auto-apply effect's body captures `successful.length` at
+  // schedule time. If new scan results arrive WHILE the body is
+  // mid-await (typical during a 500-PDF scan with 12s polls), the
+  // body completes with the OLD count and the post-mutation
+  // `autoApplyStateRef.current = { count: successful.length, ... }`
+  // write installs the STALE count. The effect's natural re-fire
+  // on `scheduleBResults` change already happened during the await
+  // and was deferred via the in-flight guard, so without this
+  // chain-trigger flag the new results sit unprocessed for up to
+  // 30s (until something else mutates a dep).
+  //
+  // Workflow: after a successful body, the body checks
+  // `scheduleBResultsRef.current` against the closure's
+  // `successful.length`. If newer results arrived, bump
+  // `autoApplyChainSerial`, which is in the effect's dep array →
+  // effect re-fires with the latest results → throttle decides
+  // whether to schedule another timer (typically with delay =
+  // remaining 30s window).
+  const scheduleBResultsRef = useRef(scheduleBResults);
+  useEffect(() => {
+    scheduleBResultsRef.current = scheduleBResults;
+  }, [scheduleBResults]);
+  const [autoApplyChainSerial, setAutoApplyChainSerial] = useState(0);
   const [autoApplyStatus, setAutoApplyStatus] = useState<{
     lastAppliedCount: number;
     lastAppliedAt: number | null;
@@ -684,6 +708,26 @@ export function ScheduleBImport({
             at: Date.now(),
           });
         }
+        // 2026-05-09 follow-up to PR-3 — stale-closure chain re-fire.
+        // The closure's `successful.length` is the count AT TIMER-
+        // SCHEDULE TIME. If new scan results arrived while the body
+        // was awaiting `mutateAsync`, the post-success
+        // `autoApplyStateRef.current = { count: successful.length }`
+        // installs the stale count and the effect's already-deferred
+        // re-fire (which happened mid-await and saw `applyInFlight`)
+        // never fires again. Bump `autoApplyChainSerial` to force the
+        // effect to re-evaluate against the latest `scheduleBResults`.
+        // The throttle decision then schedules a follow-up timer with
+        // delay = remaining 30s window, so the new batch applies on
+        // schedule rather than waiting for the next dep change.
+        if (!cancelled) {
+          const latestSuccessful = scheduleBResultsRef.current.filter(
+            (r) => !r.extraction.error
+          );
+          if (latestSuccessful.length > successful.length) {
+            setAutoApplyChainSerial((n) => n + 1);
+          }
+        }
       } catch {
         // Best-effort — manual Apply button is still available.
         // Roll back optimistic state for any other thrown error
@@ -708,11 +752,17 @@ export function ScheduleBImport({
     // The timer body reads the latest references via
     // `applyMutationRef.current` / `notifyServerDataChangedRef.
     // current`, populated by the dedicated sync effects above.
+    //
+    // 2026-05-09 follow-up: `autoApplyChainSerial` IS in the dep
+    // array — bumping it is how a successful body that detected
+    // newer results triggers a follow-up apply (stale-closure
+    // chain re-fire).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     scheduleBResults,
     scheduleBStatusQuery.data?.job?.status,
     scheduleBStatusQuery.data?.job?.id,
+    autoApplyChainSerial,
   ]);
 
   // contract-id-mapping-v1: onChange is now a LOCAL-ONLY state update.
