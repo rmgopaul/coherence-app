@@ -112,15 +112,56 @@ describe("shouldRetryDashboardTransient", () => {
   });
 });
 
-describe("dashboardTransientRetryDelay", () => {
-  it("starts at 1.5s and doubles each attempt", () => {
-    expect(dashboardTransientRetryDelay(0)).toBe(1500);
-    expect(dashboardTransientRetryDelay(1)).toBe(3000);
-    expect(dashboardTransientRetryDelay(2)).toBe(6000);
+describe("dashboardTransientRetryDelay (full-jitter)", () => {
+  // Post-merge review fixup: pre-jitter the delay was deterministic
+  // (1.5s, 3s, 6s, 15s cap), which means 24 sequential pages all
+  // hitting a 502 retried at the SAME instants — recreating the
+  // cascade. Full jitter (uniform random over `[0, ceiling]`)
+  // breaks the synchronization. Tests assert the JITTER CEILING
+  // shape (worst-case bound by attempt) rather than the exact
+  // value, since the result is non-deterministic.
+  it("attempt 0 is bounded above by 1.5s ceiling", () => {
+    for (let i = 0; i < 50; i += 1) {
+      const delay = dashboardTransientRetryDelay(0);
+      expect(delay).toBeGreaterThanOrEqual(0);
+      expect(delay).toBeLessThan(1500);
+    }
   });
 
-  it("caps at 15s to prevent runaway delays", () => {
-    expect(dashboardTransientRetryDelay(10)).toBe(15_000);
-    expect(dashboardTransientRetryDelay(50)).toBe(15_000);
+  it("attempt 1 is bounded above by 3s ceiling (doubles each attempt before cap)", () => {
+    for (let i = 0; i < 50; i += 1) {
+      const delay = dashboardTransientRetryDelay(1);
+      expect(delay).toBeGreaterThanOrEqual(0);
+      expect(delay).toBeLessThan(3000);
+    }
+  });
+
+  it("attempt 2 is bounded above by 6s ceiling", () => {
+    for (let i = 0; i < 50; i += 1) {
+      const delay = dashboardTransientRetryDelay(2);
+      expect(delay).toBeGreaterThanOrEqual(0);
+      expect(delay).toBeLessThan(6000);
+    }
+  });
+
+  it("late attempts cap at 15s ceiling (jitter is bounded by 15s)", () => {
+    for (let i = 0; i < 50; i += 1) {
+      const delay = dashboardTransientRetryDelay(50);
+      expect(delay).toBeGreaterThanOrEqual(0);
+      expect(delay).toBeLessThan(15_000);
+    }
+  });
+
+  it("yields different values across calls (jitter is real, not a constant)", () => {
+    // 100 samples — collision probability for 100 floor-of-uniform
+    // values over [0, 6000) is vanishingly small. If jitter were
+    // broken (e.g. the function returned a constant) all 100 would
+    // collide. The threshold of >50 unique values gives the test
+    // robustness without flake.
+    const samples = new Set<number>();
+    for (let i = 0; i < 100; i += 1) {
+      samples.add(dashboardTransientRetryDelay(2));
+    }
+    expect(samples.size).toBeGreaterThan(50);
   });
 });

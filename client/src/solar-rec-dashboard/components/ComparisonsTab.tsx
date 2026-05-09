@@ -94,8 +94,9 @@ export default memo(function ComparisonsTab(props: ComparisonsTabProps) {
         // `retry: false` left a single transient 429/502 on any
         // page during the systems-walk cascade as a permanent
         // failure with no recovery. The shared retry policy
-        // retries 429/502/503/504 only, with bounded exponential
-        // backoff (1.5s → 3s → 6s, max 3 attempts).
+        // retries 429/502/503/504 only, with full-jitter
+        // exponential backoff (ceilings 1.5s → 3s → 6s, capped at
+        // 15s) up to 3 retries (4 total attempts).
         retry: shouldRetryDashboardTransient,
         retryDelay: dashboardTransientRetryDelay,
         getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
