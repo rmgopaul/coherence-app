@@ -27,6 +27,10 @@ import { AskAiPanel } from "@/components/AskAiPanel";
 // PR, AlertsTab no longer reads any raw `datasets[k].rows` — it's
 // fully off the row-array consumption path.
 import { solarRecTrpc } from "@/solar-rec/solarRecTrpc";
+import {
+  dashboardTransientRetryDelay,
+  shouldRetryDashboardTransient,
+} from "@/solar-rec-dashboard/lib/dashboardRetryPolicy";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -118,7 +122,10 @@ export default memo(function AlertsTab(props: AlertsTabProps) {
       {
         enabled: isActive,
         staleTime: 60_000,
-        retry: false,
+        // 2026-05-09 — Bug #1 (502 cascade) resilience. Same shared
+        // retry policy as ComparisonsTab + OwnershipTab.
+        retry: shouldRetryDashboardTransient,
+        retryDelay: dashboardTransientRetryDelay,
         getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
         initialCursor: null,
       },

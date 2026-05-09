@@ -39,6 +39,10 @@ import {
   ownershipBadgeClass,
 } from "@/solar-rec-dashboard/lib/helpers";
 import { OWNERSHIP_ORDER } from "@/solar-rec-dashboard/lib/constants";
+import {
+  dashboardTransientRetryDelay,
+  shouldRetryDashboardTransient,
+} from "@/solar-rec-dashboard/lib/dashboardRetryPolicy";
 import { solarRecTrpc } from "@/solar-rec/solarRecTrpc";
 import { useDashboardBuildControl } from "@/solar-rec-dashboard/hooks/useDashboardBuildControl";
 import type { SolarRecAppRouter } from "@server/_core/solarRecRouter";
@@ -96,7 +100,10 @@ export default memo(function OwnershipTab() {
       },
       {
         staleTime: 60_000,
-        retry: false,
+        // 2026-05-09 — Bug #1 (502 cascade) resilience. Same
+        // shared retry policy as ComparisonsTab + AlertsTab.
+        retry: shouldRetryDashboardTransient,
+        retryDelay: dashboardTransientRetryDelay,
       },
     );
 

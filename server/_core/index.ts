@@ -3,6 +3,7 @@ import express from "express";
 import { createServer } from "http";
 import net from "net";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
+import { buildDashboardResponseMeta } from "./dashboardResponseMeta";
 import { registerOAuthRoutes } from "./oauth";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
@@ -330,6 +331,15 @@ async function startServer() {
         console.error("[SolarRecTRPC]", error.message);
       }
     },
+    // 2026-05-09 — Bug #1 (502 cascade) resilience. The dashboard
+    // middleware (`dashboardResponseGuard.ts`) throws
+    // `TRPCError({ code: "TOO_MANY_REQUESTS" })` on heap pressure,
+    // which tRPC translates to HTTP 429. Add a `Retry-After: 5`
+    // header so retry-aware clients pick the suggested delay
+    // instead of a generic backoff. Render's LB may strip the
+    // header today; the semantic is correct regardless and a
+    // future LB tuning / direct-to-origin path benefits.
+    responseMeta: ({ errors }) => buildDashboardResponseMeta({ errors }),
   });
   const solarRecMainTrpcHandler = createExpressMiddleware({
     router: appRouter,
