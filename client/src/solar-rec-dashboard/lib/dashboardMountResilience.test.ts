@@ -148,7 +148,7 @@ describe("Solar REC dashboard mount: heavy-query gates", () => {
     // this predicate; activating Snapshot Log no longer fires the
     // 24+ getDashboardSystemsPage cascade. The walk is now lazy-
     // triggered from the "Log Snapshot" button via
-    // `snapshotPart2WalkRequested`, mirroring the
+    // `hasRequestedSnapshotPart2Walk`, mirroring the
     // `hasUserInteractedWithDashboard` lazy-trigger pattern for the
     // heavy overview-summary query.
     const block = extractUseQueryBlock(
@@ -173,14 +173,14 @@ describe("Solar REC dashboard mount: heavy-query gates", () => {
     // halts the cascade rather than letting it complete on a tab
     // the user has already left.
     expect(predicate).toMatch(
-      /isSnapshotLogTabActive\s*&&\s*snapshotPart2WalkRequested/
+      /isSnapshotLogTabActive\s*&&\s*hasRequestedSnapshotPart2Walk/
     );
     expect(predicate).not.toMatch(/isOverviewTabActive/);
     // The createLogEntry click handler must trip the request flag
     // when the user clicks Log Snapshot from Snapshot Log without
     // having visited a tab that already triggered the walk.
     expect(code).toMatch(
-      /isSnapshotLogTabActive[\s\S]{0,300}setSnapshotPart2WalkRequested\(true\)/
+      /isSnapshotLogTabActive[\s\S]{0,300}setHasRequestedSnapshotPart2Walk\(true\)/
     );
   });
 

@@ -2014,7 +2014,7 @@ export default function SolarRecDashboard() {
   // to compose a log entry). When false, Snapshot Log activation
   // does NOT fire the 24+ getDashboardSystemsPage calls — the tab
   // just renders saved log entries instantly.
-  const [snapshotPart2WalkRequested, setSnapshotPart2WalkRequested] =
+  const [hasRequestedSnapshotPart2Walk, setHasRequestedSnapshotPart2Walk] =
     useState(false);
   // pipeline{Count,Kw,Interconnected,CashFlow}Range, pipelineReportLoading,
   // generatePipelineReport — moved to @/solar-rec-dashboard/components/AppPipelineTab
@@ -3365,7 +3365,7 @@ export default function SolarRecDashboard() {
   // for the `createLogEntry` snapshot capture (`totalDeliveredValue`,
   // change-ownership row matching). We honor that by gating the
   // walk on a deliberate user action — clicking "Log Snapshot" —
-  // via `snapshotPart2WalkRequested`, mirroring the existing
+  // via `hasRequestedSnapshotPart2Walk`, mirroring the existing
   // `hasUserInteractedWithDashboard` lazy-trigger pattern for the
   // heavy overview-summary query.
   //
@@ -3385,7 +3385,7 @@ export default function SolarRecDashboard() {
     activeTab === "value" ||
     isOfflineMonitoringTabActive ||
     isFinancialsTabActive ||
-    (isSnapshotLogTabActive && snapshotPart2WalkRequested);
+    (isSnapshotLogTabActive && hasRequestedSnapshotPart2Walk);
 
   // PR-F-4-h retired the parent `useSystemSnapshot` call entirely.
   // PR-F-4-i broadens this bounded systems-page walk to the tabs
@@ -5274,9 +5274,9 @@ export default function SolarRecDashboard() {
       // it completes.
       if (
         isSnapshotLogTabActive &&
-        !snapshotPart2WalkRequested
+        !hasRequestedSnapshotPart2Walk
       ) {
-        setSnapshotPart2WalkRequested(true);
+        setHasRequestedSnapshotPart2Walk(true);
         toast.info(
           "Loading Part-2 eligible system rows… click Log Snapshot again in a moment."
         );
@@ -5330,6 +5330,17 @@ export default function SolarRecDashboard() {
       contractedValueReporting: valueSummary.contractedValueReporting,
       contractedValueNotReporting: valueSummary.contractedValueNotReporting,
       contractedValueReportingPercent: valueSummary.contractedValueReportingPercent,
+      // 2026-05-09 follow-up to PR-4 — provenance tag. The
+      // readiness check above requires `summary?.kind === "heavy"`,
+      // and the heavy query is gated on `slimSummary` already
+      // being loaded (it never fires before slim resolves), so
+      // `valueSummary` here is always sourced from slim values
+      // per `deriveSnapshotPart2ValueSummary`'s preference rule.
+      // Hardcoding `"slim"` here is correct under the current
+      // contract; if a future codepath creates log entries from
+      // the row-walk fallback, that path should pass `"row-walk"`
+      // explicitly.
+      valueSource: "slim",
       datasets: (Object.keys(DATASET_DEFINITIONS) as DatasetKey[])
         .map((key) => {
           const dataset = datasets[key];

@@ -66,6 +66,32 @@ export type SlimPart2ValueProjection = {
  * Derive the value summary from the slim summary if present, else
  * from the per-system row-walk values. `totalDeliveredValue` is
  * always supplied by the caller (it's a row-walk-only field).
+ *
+ * **`totalGap` basis caveat** (post-merge review of PR-4, 2026-05-09).
+ * When slim is the source for `totalContractedValue`, the gap is
+ * computed as `slim.totalContractedValue − rowWalk.totalDeliveredValue`.
+ * The two operands have different underlying input sets:
+ *
+ * - `slim.totalContractedValue` aggregates `srDsSolarApplications`
+ *   rows under foundation's `part2EligibleCsgIds` set with
+ *   first-CSG-by-row dedup.
+ * - `rowWalk.totalDeliveredValue` aggregates `system.deliveredValue`
+ *   over `part2EligibleSystemsForSizeReporting` (the page-walk
+ *   facts table filtered by `isPart2Eligible: true`).
+ *
+ * The two pipelines diverge by ~$90K (out of $478M total) on prod
+ * data — the same drift PR-7 (#536) pinned away on the Overview
+ * shared-count tiles. So `totalGap` carries a small systemic bias
+ * of the same magnitude. Acceptable today; cleanly resolving
+ * requires either (a) slim exposing `totalDeliveredValuePart2`
+ * (non-trivial — requires adding a delivered-value walk to the
+ * foundation contract) or (b) computing both contracted and
+ * delivered from the same row-walk (re-introduces the FOWD bug
+ * PR-4 fixed). The PR-FU-1 drift diagnostic
+ * (`server/services/solar/compareSlimVsHeavySummary.ts`) +
+ * `docs/slim-vs-heavy-summary-drift.md` will surface the dominant
+ * mechanism on prod data; that work feeds a future PR that aligns
+ * the two pipelines.
  */
 export function deriveSnapshotPart2ValueSummary(args: {
   slim: SlimPart2ValueProjection | null;
