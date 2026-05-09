@@ -1034,9 +1034,6 @@ export function parsePerformanceRatioSummaryPayload(
   ) {
     return null;
   }
-  if (parsed.dedupedConvertedReads === undefined) {
-    parsed.dedupedConvertedReads = 0;
-  }
   if (typeof parsed.matchedSystemCount !== "number") return null;
   // Option-C aggregate fields. A missing one means a pre-Option-C
   // payload survived; treat as not-yet-built so the client renders
@@ -1058,7 +1055,17 @@ export function parsePerformanceRatioSummaryPayload(
   if (typeof parsed.totalContractValue !== "number") return null;
   if (!Array.isArray(parsed.monitoringOptions)) return null;
   // All required fields validated; widen back to the full type.
-  return parsed as PerformanceRatioSummaryPayload;
+  // Non-mutating default for the back-compat
+  // `dedupedConvertedReads` field (post-merge review fixup of
+  // PR-1, 2026-05-09 follow-up). Returning a fresh object instead
+  // of mutating the input keeps the parser pure — the caller's
+  // value isn't unexpectedly modified, which avoids a class of
+  // "I parsed it, now why does my JSON.stringify look different?"
+  // bugs.
+  return {
+    ...(parsed as PerformanceRatioSummaryPayload),
+    dedupedConvertedReads: parsed.dedupedConvertedReads ?? 0,
+  };
 }
 
 /**

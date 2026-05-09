@@ -106,6 +106,65 @@ export function buildPerformanceRatioAggregates(
   return accumulator.toAggregates();
 }
 
+/**
+ * Cross-source dedup key for a single normalized convertedReads row.
+ *
+ * The matcher emits one fact row per `(convertedRead row, candidate
+ * system)` tuple, so two convertedReads source rows representing
+ * the SAME physical reading via different ingestion paths
+ * (`mon_batch_<provider>` API push vs. `individual_<provider>`
+ * manual CSV upload) would emit two identical fact rows without a
+ * dedup chokepoint. This helper computes the key the matcher uses
+ * to collapse them.
+ *
+ * **Key shape: `${monitoringNormalized}|${dedupIdentifier}|${lifetimeReadWh}|${dedupDateKey}`**
+ *
+ * - **Monitoring component:** the normalized monitoring source
+ *   (e.g. `solaredge`, `enphase`). Distinct providers are distinct
+ *   physical readings even when sysName + lifetime + date all match.
+ * - **Identifier component:** the system NAME normalized when
+ *   non-empty (the common case — the bridge always populates it;
+ *   manual CSV uploads almost always populate it). Falls back to
+ *   the system ID when name is empty. The validity check at the
+ *   call site guarantees at least one is populated, so the
+ *   identifier is never the empty string. Edge case: rows that
+ *   share monitoring + lifetime + date but differ in BOTH name and
+ *   id hash to different keys and don't dedup — accepted, those
+ *   are genuinely different physical readings.
+ * - **Lifetime component:** the parsed `lifetime_meter_read_wh`
+ *   (already a number at this point). Two rows with different
+ *   lifetimes are different physical readings even when monitoring
+ *   + name + date match.
+ * - **Date component:** the parsed `readDate.getTime()` when
+ *   parsing succeeded so two source rows representing the same
+ *   calendar day with different string formats (e.g. `4/13/2026`
+ *   from `convertedReadsBridge.ts:formatReadDate` vs. `2026-04-13`
+ *   from a manual CSV upload) hash to the same key. Falls back to
+ *   the raw string when parsing failed (the source row would emit
+ *   `readDate: null` to the matcher anyway, so dedup on the raw
+ *   string is the cleanest available signal).
+ *
+ * Pure function — extracted from the accumulator inline body for
+ * code reuse + unit testability (post-merge review fixup of PR-1,
+ * 2026-05-09 follow-up).
+ */
+export function buildCrossSourceDedupKey(args: {
+  monitoringNormalized: string;
+  monitoringSystemNameNormalized: string;
+  monitoringSystemIdNormalized: string;
+  lifetimeReadWh: number;
+  readDate: Date | null;
+  readDateRaw: string;
+}): string {
+  const dedupIdentifier =
+    args.monitoringSystemNameNormalized ||
+    args.monitoringSystemIdNormalized;
+  const dedupDateKey = args.readDate
+    ? args.readDate.getTime()
+    : args.readDateRaw;
+  return `${args.monitoringNormalized}|${dedupIdentifier}|${args.lifetimeReadWh}|${dedupDateKey}`;
+}
+
 type PerformanceRatioStaticInput = Omit<
   PerformanceRatioInput,
   "convertedReadsRows"
@@ -183,6 +242,31 @@ export function createPerformanceRatioAccumulator(
   // downstream consumers of the fact table read
   // `candidate.systemId`, not the raw row's `monitoring_system_id`,
   // so the displayed system identity is stable.
+  //
+  // **Counter-partition semantics** (post-merge review of PR-1,
+  // 2026-05-09 follow-up). The dedup branch fires AFTER the
+  // validity check (line ~218) but BEFORE the match attempt. So:
+  //   - `convertedReadCount = matched + unmatched + invalid + deduped`
+  //     is the strict partition.
+  //   - A row that's a duplicate of a previously-matched row counts
+  //     as `deduped`, not `matched`. The `matched` counter records
+  //     UNIQUE physical readings that produced a fact row.
+  //   - A row that's a duplicate of a previously-unmatched/invalid
+  //     row also counts as `deduped` (its key was processed and
+  //     would not have matched). Acceptable: if the first row had
+  //     no candidate, the second row by definition has the same
+  //     keys → also no candidate → no fact emission either way.
+  //     The strict-partition invariant is maintained; the
+  //     `dedupedConvertedReads` counter just covers more cases
+  //     than "duplicate of a matched row."
+  //
+  // **Heap cost note.** The Set grows linearly in input row count.
+  // Each entry is ~50 chars × ~2 bytes/char = ~100 bytes. On a
+  // 225k-row prod batch that's ~22 MB peak — within budget given
+  // the streaming-drain pattern bounds the rest of the matcher's
+  // heap to one page's worth of fact rows. If batches grow to
+  // millions of rows, replace the Set with a hashed bloom filter
+  // or sharded LRU; for now the simple Set is correct + cheap.
   const processedCrossSourceKeys = new Set<string>();
 
   return {
@@ -221,34 +305,14 @@ export function createPerformanceRatioAccumulator(
 
         const readDateRaw = clean(row.read_date);
         const readDate = parseDate(readDateRaw);
-        // Cross-source dedup key.
-        //
-        // Identifier component: use the system NAME when available
-        // (the common case — the bridge always populates it; manual
-        // CSV uploads almost always populate it). Fall back to the
-        // system ID when name is empty (validity check above ensures
-        // at least one is populated). This collapses cross-source
-        // duplicates that share monitoring + name (or id) + lifetime
-        // + readDate. Edge case: rows that share monitoring +
-        // lifetime + date but differ in BOTH name and id hash to
-        // different keys and don't dedup — accepted, those are
-        // genuinely different physical readings.
-        //
-        // Date component: use the parsed `readDate.getTime()` when
-        // parsing succeeded so two source rows representing the
-        // same calendar day with different string formats
-        // (e.g. `4/13/2026` from the API push bridge vs.
-        // `2026-04-13` from a manual CSV upload — see
-        // `convertedReadsBridge.ts` `formatReadDate` for the
-        // canonical bridge format) hash to the same key. Falls
-        // back to the raw string when parsing failed (the source
-        // row would emit `readDate: null` to the matcher anyway,
-        // so dedup on the raw string is the cleanest available
-        // signal).
-        const dedupIdentifier =
-          monitoringSystemNameNormalized || monitoringSystemIdNormalized;
-        const dedupDateKey = readDate ? readDate.getTime() : readDateRaw;
-        const crossSourceKey = `${monitoringNormalized}|${dedupIdentifier}|${lifetimeReadWh}|${dedupDateKey}`;
+        const crossSourceKey = buildCrossSourceDedupKey({
+          monitoringNormalized,
+          monitoringSystemNameNormalized,
+          monitoringSystemIdNormalized,
+          lifetimeReadWh,
+          readDate,
+          readDateRaw,
+        });
         if (processedCrossSourceKeys.has(crossSourceKey)) {
           dedupedConvertedReads += 1;
           continue;

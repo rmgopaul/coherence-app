@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildCrossSourceDedupKey,
   buildPerformanceRatioAggregates,
   createPerformanceRatioAccumulator,
   type PerformanceRatioConvertedReadRow,
@@ -648,5 +649,107 @@ describe("buildPerformanceRatioAggregates", () => {
     accumulator.processRows(input.convertedReadsRows.slice(1), 1);
 
     expect(accumulator.toAggregates()).toEqual(full);
+  });
+
+  // 2026-05-09 follow-up to PR-1 (#530) — counter-partition test
+  // for the duplicate-of-unmatched semantic. The original PR's
+  // comment didn't acknowledge the choice; reviewer flagged it.
+  it("counts a duplicate of an UNMATCHED row as `deduped` (not `unmatched`)", () => {
+    // Two rows with identical cross-source keys but no matching
+    // system. First row → unmatched++. Second row's dedup-key
+    // collision → deduped++. Strict-partition invariant holds:
+    // convertedReadCount = matched + unmatched + invalid + deduped.
+    const result = buildPerformanceRatioAggregates({
+      convertedReadsRows: [
+        buildRead({
+          monitoring_system_id: "DOES-NOT-MATCH",
+          monitoring_system_name: "Unknown System",
+        }),
+        buildRead({
+          monitoring_system_id: "DOES-NOT-MATCH",
+          monitoring_system_name: "Unknown System",
+        }),
+      ],
+      systems: [buildBaseSystem()], // matches neither row
+      ...EMPTY_LOOKUPS,
+    });
+    expect(result.convertedReadCount).toBe(2);
+    expect(result.matchedConvertedReads).toBe(0);
+    expect(result.unmatchedConvertedReads).toBe(1);
+    expect(result.dedupedConvertedReads).toBe(1);
+    expect(
+      result.matchedConvertedReads +
+        result.unmatchedConvertedReads +
+        result.invalidConvertedReads +
+        result.dedupedConvertedReads
+    ).toBe(result.convertedReadCount);
+  });
+});
+
+// 2026-05-09 follow-up to PR-1 — extracted dedup-key helper unit
+// tests. Reviewer flagged that the inline construction was
+// uncomfortable to test and reuse from outside the accumulator.
+describe("buildCrossSourceDedupKey (extracted helper)", () => {
+  it("composes the 4-part key with sysName as the identifier when populated", () => {
+    const epoch = new Date("2026-04-13T00:00:00Z").getTime();
+    expect(
+      buildCrossSourceDedupKey({
+        monitoringNormalized: "solaredge",
+        monitoringSystemNameNormalized: "rob horton",
+        monitoringSystemIdNormalized: "1206921",
+        lifetimeReadWh: 71_081_480,
+        readDate: new Date("2026-04-13T00:00:00Z"),
+        readDateRaw: "2026-04-13",
+      })
+    ).toBe(`solaredge|rob horton|71081480|${epoch}`);
+  });
+
+  it("falls back to sysId for the identifier when sysName is empty", () => {
+    const result = buildCrossSourceDedupKey({
+      monitoringNormalized: "solaredge",
+      monitoringSystemNameNormalized: "",
+      monitoringSystemIdNormalized: "SYS-A",
+      lifetimeReadWh: 5_000_000,
+      readDate: new Date("2026-04-15T00:00:00Z"),
+      readDateRaw: "2026-04-15",
+    });
+    expect(result).toContain("solaredge|SYS-A|5000000|");
+  });
+
+  it("uses readDate.getTime() so two date-string formats for the same calendar day collapse to one key", () => {
+    // Same epoch, two different readDate strings → same key.
+    // This is the bug-fix from PR-1's fixup that the helper
+    // extraction makes testable in isolation.
+    const sharedDate = new Date(2026, 3, 13);
+    const key1 = buildCrossSourceDedupKey({
+      monitoringNormalized: "solaredge",
+      monitoringSystemNameNormalized: "rob horton",
+      monitoringSystemIdNormalized: "1206921",
+      lifetimeReadWh: 71_081_480,
+      readDate: sharedDate,
+      readDateRaw: "4/13/2026",
+    });
+    const key2 = buildCrossSourceDedupKey({
+      monitoringNormalized: "solaredge",
+      monitoringSystemNameNormalized: "rob horton",
+      monitoringSystemIdNormalized: "",
+      lifetimeReadWh: 71_081_480,
+      readDate: sharedDate,
+      readDateRaw: "2026-04-13",
+    });
+    expect(key1).toBe(key2);
+  });
+
+  it("falls back to readDateRaw when readDate failed to parse (parser returned null)", () => {
+    expect(
+      buildCrossSourceDedupKey({
+        monitoringNormalized: "x",
+        monitoringSystemNameNormalized: "y",
+        monitoringSystemIdNormalized: "z",
+        lifetimeReadWh: 1,
+        readDate: null,
+        readDateRaw: "garbled-date",
+      })
+    ).toBe("x|y|1|garbled-date");
   });
 });
