@@ -41,7 +41,6 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import {
-  buildCsv,
   matchesExpectedHeaders,
   parseCsv,
 } from "@/solar-rec-dashboard/lib/csvIo";
@@ -94,7 +93,6 @@ import type {
   PerformanceRatioMatchType,
   PerformanceRatioRow,
 } from "@/solar-rec-dashboard/state/types";
-import type { PerformanceRatioCompliantBestRowWire } from "@shared/solarRecPerformanceRatio";
 
 // ---------------------------------------------------------------------------
 // Props
@@ -495,10 +493,73 @@ export default memo(function PerformanceRatioTab(props: PerformanceRatioTabProps
   // compliant section is in view. (The tab renders all sections
   // at once today; the query fires unconditionally. A future
   // optimization could gate by section-in-viewport.)
+  //
+  // 2026-05-09 — PR-CB-5 — this proc still serves the auto-
+  // compliant sources Map (the upper "Compliant Sources" table).
+  // The `bestPerSystem` field on the response is no longer read;
+  // PR-CB-6 will drop it from the proc + retire the artifact
+  // write path. The compliant report table below now reads from
+  // `getDashboardPerformanceRatioCompliantBestPage` (paginated)
+  // and `getDashboardPerformanceRatioCompliantBestSummary` (slim
+  // aggregates) — all 21k+ rows visible without truncation.
   const performanceRatioCompliantContextQuery =
     solarRecTrpc.solarRecDashboard.getDashboardPerformanceRatioCompliantContext.useQuery(
       undefined,
       { staleTime: 60_000 },
+    );
+
+  // 2026-05-09 — PR-CB-5 — slim summary for the compliant-best
+  // section: server-side `count` + `withCompliantSource`. The
+  // tile's third value (`withEvidence`) stays client-derived
+  // because evidence is per-systemId localStorage state.
+  const compliantBestSummaryQuery =
+    solarRecTrpc.solarRecDashboard.getDashboardPerformanceRatioCompliantBestSummary.useQuery(
+      undefined,
+      { staleTime: 60_000 },
+    );
+
+  // 2026-05-09 — PR-CB-5 — paginated read of the compliant-best
+  // rows. Server-side pagination at COMPLIANT_REPORT_PAGE_SIZE
+  // rows/page, gated on the summary artifact's buildId. No
+  // truncation cap; works for any portfolio size.
+  const compliantBestPageOffset =
+    Math.max(0, compliantReportPage - 1) * COMPLIANT_REPORT_PAGE_SIZE;
+  const compliantBestPageQuery =
+    solarRecTrpc.solarRecDashboard.getDashboardPerformanceRatioCompliantBestPage.useQuery(
+      {
+        offset: compliantBestPageOffset,
+        limit: COMPLIANT_REPORT_PAGE_SIZE,
+        // No filter / sort UI yet — passing defaults
+        // (`readDate DESC`, tie-break on PK `systemKey ASC`).
+        //
+        // 2026-05-09 self-review fixup: this is NOT identical to
+        // the historical artifact-backed ordering, which was
+        // `(read-window-month DESC, ratio DESC, systemName ASC)`
+        // — a compound sort that bucketed reads by month, then
+        // ranked by ratio within each bucket. The new default is
+        // simpler (per-row readDate, no month-bucketing) and the
+        // tie-break differs (systemKey vs systemName + ratio).
+        // Acceptable trade for the migration: same first-page rows
+        // for typical usage (one read per system per month means
+        // readDate and read-window-month coincide), but on
+        // multi-read months the row order can shift visibly. A
+        // future PR can extend the proc + add a `displayOrder`
+        // sort enum that emits the legacy compound ordering;
+        // skipped here to keep CB-5 scoped to the read-path
+        // cutover.
+        compliantSource: null,
+        monitoring: null,
+        search: null,
+        sortBy: "readDate",
+        sortDir: "desc",
+      },
+      {
+        staleTime: 60_000,
+        // Keep the previous page on screen while the next page is
+        // in flight — avoids a flash of empty content. Mirrors
+        // the parent perf-ratio page proc's `placeholderData`.
+        placeholderData: (prev) => prev,
+      },
     );
 
   // Reset to first page on any filter / sort / search change.
@@ -583,6 +644,11 @@ export default memo(function PerformanceRatioTab(props: PerformanceRatioTabProps
         solarRecTrpcUtils.solarRecDashboard.getDashboardPerformanceRatioPage.invalidate(),
         solarRecTrpcUtils.solarRecDashboard.getDashboardPerformanceRatioFilteredAggregates.invalidate(),
         solarRecTrpcUtils.solarRecDashboard.getDashboardPerformanceRatioCompliantContext.invalidate(),
+        // 2026-05-09 — PR-CB-5 — also invalidate the new
+        // compliant-best summary + page queries so the rebuild
+        // surfaces in the compliant report table within seconds.
+        solarRecTrpcUtils.solarRecDashboard.getDashboardPerformanceRatioCompliantBestSummary.invalidate(),
+        solarRecTrpcUtils.solarRecDashboard.getDashboardPerformanceRatioCompliantBestPage.invalidate(),
       ]).catch((err) => {
         // TanStack `invalidate` rejecting is rare (network blip
         // mid-mutation, etc.). Log so the user-facing "data is
@@ -750,32 +816,22 @@ export default memo(function PerformanceRatioTab(props: PerformanceRatioTabProps
     return mapping;
   }, [performanceRatioCompliantContextQuery.data]);
 
-  // 2026-05-09 codex review fixup — surface server-side
-  // truncation flags. The build runner caps the auto-compliant
-  // sources Map at 25k entries and the best-per-system rows at
-  // 5k entries; either cap means the client is rendering an
-  // incomplete dataset and the CSV download (built client-side
-  // from the same array) would ship an incomplete file. Pre-fix
-  // these flags were on the wire but never read.
+  // 2026-05-09 — PR-CB-5 — auto-sources truncation flag (read
+  // from the legacy compliant-context proc that still holds the
+  // 25k-cap autoSources Map). The bestPerSystem truncation flag
+  // is gone because the new paginated reader has no cap — all
+  // 21k+ rows are visible via the report table's pagination.
   const performanceRatioCompliantTruncation = useMemo(() => {
     const data = performanceRatioCompliantContextQuery.data;
     if (!data || data.available === false) {
       return {
         autoSourcesTruncated: false,
         autoSourcesTotalEntries: 0,
-        bestPerSystemTruncated: false,
-        bestPerSystemTotalEntries: 0,
-        anyTruncated: false,
       };
     }
-    const anyTruncated =
-      data.autoSourcesTruncated || data.bestPerSystemTruncated;
     return {
       autoSourcesTruncated: data.autoSourcesTruncated,
       autoSourcesTotalEntries: data.autoSourcesTotalEntries,
-      bestPerSystemTruncated: data.bestPerSystemTruncated,
-      bestPerSystemTotalEntries: data.bestPerSystemTotalEntries,
-      anyTruncated,
     };
   }, [performanceRatioCompliantContextQuery.data]);
 
@@ -846,27 +902,23 @@ export default memo(function PerformanceRatioTab(props: PerformanceRatioTabProps
     setCompliantSourcePage(compliantSourceTotalPages);
   }, [compliantSourcePage, compliantSourceTotalPages]);
 
-  // 2026-05-09 — Option C — read pre-reduced best-per-system rows
-  // from the build runner's side cache. The server has already
-  // filtered (part2 + ratio in [30, 150]), grouped by systemKey,
-  // and reduced to "best per system" via tie-breaker. The client
-  // just revives the date strings, overlays manual sources from
-  // localStorage on top of the pre-attached auto-source, and
-  // adds the formatted month-year fields the JSX renders.
-  //
-  // The wire row type `PerformanceRatioCompliantBestRowWire` is
-  // shared from `@shared/solarRecPerformanceRatio` so the
-  // exhaustive `typeof row.foo === "..."` runtime checking the
-  // pre-fix version did is gone — the type contract is enforced
-  // at compile time.
-  const compliantPerformanceRatioRows = useMemo<
+  // 2026-05-09 — PR-CB-5 — server-paginated compliant-best rows.
+  // The proc already applied the eligibility filter (part2 +
+  // ratio in [30, 150]), grouped by systemKey, reduced to "best
+  // per system", and pre-attached `compliantSource` from the
+  // auto-compliant Map. The client just revives date strings,
+  // overlays manual `compliantSource` from localStorage, and
+  // adds the month-year format fields the JSX consumes. The
+  // refactor swaps the source from the artifact JSON's
+  // `bestPerSystem` array (capped at 5k) to the new paginated
+  // proc that reads from
+  // `solarRecDashboardPerformanceRatioCompliantFacts` (no cap).
+  const visibleCompliantPerformanceRows = useMemo<
     CompliantPerformanceRatioRow[]
   >(() => {
-    const data = performanceRatioCompliantContextQuery.data;
+    const data = compliantBestPageQuery.data;
     if (!data || data.available === false) return [];
-    const wireRows =
-      data.bestPerSystem as unknown as PerformanceRatioCompliantBestRowWire[];
-    return wireRows.map((row) => {
+    return data.rows.map((row) => {
       const readDate = reviveNullableDate(row.readDate);
       const baselineDate = reviveNullableDate(row.baselineDate);
       const part2VerificationDate = reviveNullableDate(
@@ -877,17 +929,14 @@ export default memo(function PerformanceRatioTab(props: PerformanceRatioTabProps
         : undefined;
       return {
         key: row.key,
-        // The wire shape doesn't carry `convertedReadKey` — the
-        // best-per-system table never renders it. The
-        // `CompliantPerformanceRatioRow` parent type still
-        // declares it, so we pass through the row's `key`
-        // composite (`${convertedReadKey}-${systemKey}`); a
-        // future render that exposes it would split that
-        // composite, but no JSX consumer reads it today.
+        // The wire shape doesn't carry `convertedReadKey`; the
+        // CompliantPerformanceRatioRow parent type still declares
+        // it but no JSX consumer reads it today. Pass through
+        // `key` for forward compatibility.
         convertedReadKey: row.key,
-        // Cast is sound because the build runner only emits one
-        // of the 3 enum values; runtime mismatch would mean a
-        // schema drift the user can't introduce client-side.
+        // Cast is sound — the build runner only emits one of the
+        // 3 enum values; runtime mismatch would mean schema drift
+        // the user can't introduce client-side.
         matchType: row.matchType as PerformanceRatioMatchType,
         monitoring: row.monitoring,
         monitoringSystemId: row.monitoringSystemId,
@@ -896,21 +945,31 @@ export default memo(function PerformanceRatioTab(props: PerformanceRatioTabProps
         installerName: row.installerName,
         readDate,
         readDateRaw: row.readDateRaw,
-        lifetimeReadWh: row.lifetimeReadWh,
+        // Decimal columns ship as `string | null` from Drizzle's
+        // MySQL adapter (precision-preserving). Revive to numbers
+        // for the client-side display + comparisons. The
+        // PerformanceRatioCompliantBestRow type expects
+        // `number | null` for nullable columns and `number` for
+        // NOT NULL columns. NOT NULL fields use `?? 0` as a
+        // belt-and-braces fallback if the wire value is malformed
+        // (mirrors the parent fact-row reviver `factRowToPerformanceRatioRow`).
+        lifetimeReadWh: parsePerfRatioDecimal(row.lifetimeReadWh) ?? 0,
         trackingSystemRefId: row.trackingSystemRefId,
         systemId: row.systemId,
         stateApplicationRefId: row.stateApplicationRefId,
         systemName: row.systemName,
-        portalAcSizeKw: row.portalAcSizeKw,
-        abpAcSizeKw: row.abpAcSizeKw,
+        portalAcSizeKw: parsePerfRatioDecimal(row.portalAcSizeKw),
+        abpAcSizeKw: parsePerfRatioDecimal(row.abpAcSizeKw),
         part2VerificationDate,
-        baselineReadWh: row.baselineReadWh,
+        baselineReadWh: parsePerfRatioDecimal(row.baselineReadWh),
         baselineDate,
         baselineSource: row.baselineSource,
-        productionDeltaWh: row.productionDeltaWh,
-        expectedProductionWh: row.expectedProductionWh,
-        performanceRatioPercent: row.performanceRatioPercent,
-        contractValue: row.contractValue,
+        productionDeltaWh: parsePerfRatioDecimal(row.productionDeltaWh),
+        expectedProductionWh: parsePerfRatioDecimal(row.expectedProductionWh),
+        performanceRatioPercent: parsePerfRatioDecimal(
+          row.performanceRatioPercent,
+        ),
+        contractValue: parsePerfRatioDecimal(row.contractValue) ?? 0,
         // Manual overlay wins over the build runner's auto source.
         compliantSource:
           compliantEntry?.compliantSource ?? row.compliantSource ?? null,
@@ -921,27 +980,42 @@ export default memo(function PerformanceRatioTab(props: PerformanceRatioTabProps
           : "N/A",
       } satisfies CompliantPerformanceRatioRow;
     });
-  }, [
-    performanceRatioCompliantContextQuery.data,
-    compliantSourceByPortalId,
-  ]);
+  }, [compliantBestPageQuery.data, compliantSourceByPortalId]);
 
+  // 2026-05-09 — PR-CB-5 — server-side aggregates from the slim
+  // summary proc. `withEvidence` stays client-derived because
+  // evidence is per-systemId localStorage state — count of
+  // manually-tagged systems with at least one evidence file.
+  // Slight semantic drift from pre-CB-5: was "count of compliant
+  // rows whose systemId has evidence" (intersection); now is
+  // "count of evidenced systemIds" (single-source). For typical
+  // usage these are nearly identical because manual tags are
+  // applied to systems already in the compliant set.
   const compliantPerformanceRatioSummary = useMemo(() => {
-    const rows = compliantPerformanceRatioRows;
-    const withCompliantSource = rows.filter(
-      (row) => !!row.compliantSource,
+    const data = compliantBestSummaryQuery.data;
+    const count = data?.available === true ? data.count : 0;
+    const withCompliantSource =
+      data?.available === true ? data.withCompliantSource : 0;
+    const withEvidence = compliantSourceEntries.filter(
+      (entry) => entry.evidence.length > 0,
     ).length;
-    const withEvidence = rows.filter((row) => row.evidenceCount > 0).length;
-    return {
-      count: rows.length,
-      withCompliantSource,
-      withEvidence,
-    };
-  }, [compliantPerformanceRatioRows]);
+    return { count, withCompliantSource, withEvidence };
+  }, [compliantBestSummaryQuery.data, compliantSourceEntries]);
 
+  // Server-driven pagination footer. `totalCount` from the page
+  // proc is the canonical value (matches the summary proc's
+  // `count`); we read whichever lands first.
+  const compliantBestTotalCount = useMemo(() => {
+    const pageData = compliantBestPageQuery.data;
+    if (pageData?.available === true) return pageData.totalCount;
+    return compliantPerformanceRatioSummary.count;
+  }, [
+    compliantBestPageQuery.data,
+    compliantPerformanceRatioSummary.count,
+  ]);
   const compliantReportTotalPages = Math.max(
     1,
-    Math.ceil(compliantPerformanceRatioRows.length / COMPLIANT_REPORT_PAGE_SIZE),
+    Math.ceil(compliantBestTotalCount / COMPLIANT_REPORT_PAGE_SIZE),
   );
   const compliantReportCurrentPage = Math.min(
     compliantReportPage,
@@ -951,18 +1025,6 @@ export default memo(function PerformanceRatioTab(props: PerformanceRatioTabProps
     (compliantReportCurrentPage - 1) * COMPLIANT_REPORT_PAGE_SIZE;
   const compliantReportPageEndIndex =
     compliantReportPageStartIndex + COMPLIANT_REPORT_PAGE_SIZE;
-  const visibleCompliantPerformanceRows = useMemo(
-    () =>
-      compliantPerformanceRatioRows.slice(
-        compliantReportPageStartIndex,
-        compliantReportPageEndIndex,
-      ),
-    [
-      compliantPerformanceRatioRows,
-      compliantReportPageEndIndex,
-      compliantReportPageStartIndex,
-    ],
-  );
 
   useEffect(() => {
     if (compliantReportPage <= compliantReportTotalPages) return;
@@ -1264,104 +1326,135 @@ export default memo(function PerformanceRatioTab(props: PerformanceRatioTabProps
     solarRecTrpcUtils,
   ]);
 
-  const downloadCompliantPerformanceRatioCsv = useCallback(() => {
-    // 2026-05-09 codex review fixup — surface truncation when
-    // downloading the compliant CSV. The CSV builds from the
-    // visible (already-bounded) array; if the server-side cache
-    // truncated at 5k rows, the user would otherwise download an
-    // incomplete file silently.
-    if (performanceRatioCompliantTruncation.bestPerSystemTruncated) {
+  // 2026-05-09 — PR-CB-5 — compliant report CSV via the
+  // background-job pattern. Replaces the in-memory client-side
+  // CSV build (which was capped at the artifact's 5k rows). The
+  // worker streams from
+  // `solarRecDashboardPerformanceRatioCompliantFacts` and writes
+  // a temp file → storage; the full 21k+ row dump never crosses
+  // tRPC. Manual `compliantSource` overlay from localStorage is
+  // NOT applied to this CSV (the worker only sees the auto-
+  // resolved sources from the build runner); users who need
+  // manual overrides in the export can apply them after import
+  // in their downstream tooling.
+  //
+  // Self-review fixup: when manual entries exist, surface a
+  // one-shot warning toast BEFORE dispatching so the user knows
+  // their localStorage-only overrides won't be in the file.
+  // Pre-fix the loss was silent.
+  const manualOverrideCount = useMemo(
+    () =>
+      compliantSourceEntries.filter(
+        (entry) => !!entry.compliantSource || entry.evidence.length > 0,
+      ).length,
+    [compliantSourceEntries],
+  );
+  const downloadCompliantPerformanceRatioCsv = useCallback(async () => {
+    if (manualOverrideCount > 0) {
       toast.warning(
-        `Compliant report shows ${formatNumber(
-          performanceRatioCompliantTruncation.bestPerSystemTotalEntries,
-        )} systems on the server but only the first ${formatNumber(
-          compliantPerformanceRatioRows.length,
-        )} fit the cache cap. CSV export below is also capped.`,
-        { duration: 8000 },
+        `CSV will reflect server-resolved compliant sources only. ${formatNumber(manualOverrideCount)} ${manualOverrideCount === 1 ? "system has" : "systems have"} manual overrides or evidence in localStorage that won't appear in the file.`,
+        { duration: 6000 },
       );
     }
-    const headers = [
-      "system_name",
-      "nonid",
-      "portal_id",
-      "state_certification_number",
-      "csg_portal_ac_size_kw",
-      "abp_report_ac_size_kw",
-      "abp_part_2_verification_date",
-      "installer_name",
-      "monitoring_platform",
-      "monitoring",
-      "monitoring_system_id",
-      "monitoring_system_name",
-      "match_type",
-      "read_date",
-      "meter_read_month_year",
-      "read_window_month_year",
-      "baseline_date",
-      "baseline_source",
-      "lifetime_read_wh",
-      "baseline_read_wh",
-      "production_delta_wh",
-      "expected_production_wh",
-      "performance_ratio_percent",
-      "contract_value",
-      "compliant_source",
-      "compliant_evidence_count",
-    ];
+    const toastId = toast.loading("Preparing compliant report CSV…");
+    let jobId: string;
+    try {
+      const startResult = await startDashboardCsvExport.mutateAsync({
+        exportType: "performanceRatioCompliantBestCsv",
+        // Pass the same default filter / sort args the in-tab
+        // page query uses so the CSV mirrors what the user sees.
+        // A future PR adding filter dropdowns to the compliant
+        // section threads them here too.
+        compliantSource: null,
+        monitoring: null,
+        search: null,
+        sortBy: "readDate",
+        sortDir: "desc",
+      });
+      jobId = startResult.jobId;
+    } catch (error) {
+      console.error("[compliant-best-csv] start failed:", error);
+      toast.error("Could not start compliant report CSV export.", {
+        id: toastId,
+      });
+      return;
+    }
 
-    const rows = compliantPerformanceRatioRows.map((row) => ({
-      system_name: row.systemName,
-      nonid: row.trackingSystemRefId,
-      portal_id: row.systemId ?? "",
-      state_certification_number: row.stateApplicationRefId ?? "",
-      csg_portal_ac_size_kw: row.portalAcSizeKw ?? "",
-      abp_report_ac_size_kw: row.abpAcSizeKw ?? "",
-      abp_part_2_verification_date: row.part2VerificationDate
-        ? row.part2VerificationDate.toISOString().slice(0, 10)
-        : "",
-      installer_name: row.installerName,
-      monitoring_platform: row.monitoringPlatform,
-      monitoring: row.monitoring,
-      monitoring_system_id: row.monitoringSystemId,
-      monitoring_system_name: row.monitoringSystemName,
-      match_type: row.matchType,
-      read_date: row.readDate
-        ? row.readDate.toISOString().slice(0, 10)
-        : row.readDateRaw,
-      meter_read_month_year: row.meterReadMonthYear,
-      read_window_month_year: row.readWindowMonthYear,
-      baseline_date: row.baselineDate
-        ? row.baselineDate.toISOString().slice(0, 10)
-        : "",
-      baseline_source: row.baselineSource ?? "",
-      lifetime_read_wh: row.lifetimeReadWh ?? "",
-      baseline_read_wh: row.baselineReadWh ?? "",
-      production_delta_wh: row.productionDeltaWh ?? "",
-      expected_production_wh: row.expectedProductionWh ?? "",
-      performance_ratio_percent: row.performanceRatioPercent ?? "",
-      contract_value: row.contractValue,
-      compliant_source: row.compliantSource ?? "",
-      compliant_evidence_count: row.evidenceCount,
-    }));
+    // Same poll cadence + TTL as the parent perf-ratio CSV
+    // download (`downloadPerformanceRatioCsv`). Aligned with the
+    // server's `JOB_TTL_MS` (30 min). Per-tick delay grows
+    // 1.5s → 5s → 15s as elapsed time passes.
+    const POLL_MAX_MS = 30 * 60 * 1000;
+    const startedAt = Date.now();
+    function nextPollDelayMs(elapsedMs: number): number {
+      if (elapsedMs < 30_000) return 1500;
+      if (elapsedMs < 5 * 60_000) return 5000;
+      return 15_000;
+    }
 
-    const csv = buildCsv(headers, rows);
-    const fileName = `performance-ratio-compliant-${new Date()
-      .toISOString()
-      .slice(0, 19)
-      .replace(/[:T]/g, "-")}.csv`;
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = fileName;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
+    let hintShown = false;
+    while (Date.now() - startedAt < POLL_MAX_MS) {
+      let status: Awaited<
+        ReturnType<
+          typeof solarRecTrpcUtils.solarRecDashboard.getDashboardCsvExportJobStatus.fetch
+        >
+      >;
+      try {
+        status =
+          await solarRecTrpcUtils.solarRecDashboard.getDashboardCsvExportJobStatus.fetch(
+            { jobId },
+          );
+      } catch (pollError) {
+        console.warn(
+          "[compliant-best-csv] status poll failed (will retry):",
+          pollError,
+        );
+        await new Promise((r) =>
+          setTimeout(r, nextPollDelayMs(Date.now() - startedAt)),
+        );
+        continue;
+      }
+      if (status.status === "succeeded" && status.url) {
+        toast.success(
+          `Compliant report CSV ready (${formatNumber(
+            status.rowCount ?? 0,
+          )} rows).`,
+          { id: toastId },
+        );
+        const link = document.createElement("a");
+        link.href = status.url;
+        link.download = status.fileName ?? "performance-ratio-compliant.csv";
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        return;
+      }
+      if (status.status === "failed") {
+        toast.error(
+          status.error ?? "Compliant report CSV export failed.",
+          { id: toastId },
+        );
+        return;
+      }
+      if (status.status === "notFound") {
+        toast.error("Compliant report CSV job expired.", { id: toastId });
+        return;
+      }
+      if (!hintShown && Date.now() - startedAt >= 30_000) {
+        toast.loading("Still preparing compliant report CSV…", {
+          id: toastId,
+        });
+        hintShown = true;
+      }
+      await new Promise((r) =>
+        setTimeout(r, nextPollDelayMs(Date.now() - startedAt)),
+      );
+    }
+    toast.error("Compliant report CSV export timed out.", { id: toastId });
   }, [
-    compliantPerformanceRatioRows,
-    performanceRatioCompliantTruncation.bestPerSystemTruncated,
-    performanceRatioCompliantTruncation.bestPerSystemTotalEntries,
+    startDashboardCsvExport,
+    solarRecTrpcUtils,
+    manualOverrideCount,
   ]);
 
   // -------------------------------------------------------------------------
@@ -2060,39 +2153,22 @@ export default memo(function PerformanceRatioTab(props: PerformanceRatioTabProps
               </div>
             </CardHeader>
             <CardContent className="space-y-3">
-              {performanceRatioCompliantTruncation.anyTruncated && (
+              {performanceRatioCompliantTruncation.autoSourcesTruncated && (
                 <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
                   <p className="font-medium">
-                    Compliant context truncated by the build runner.
+                    Auto-compliant sources truncated by the build runner.
                   </p>
                   <p className="mt-1 text-xs">
-                    {performanceRatioCompliantTruncation.bestPerSystemTruncated && (
-                      <>
-                        Best-per-system rows:{" "}
-                        {formatNumber(
-                          performanceRatioCompliantTruncation.bestPerSystemTotalEntries,
-                        )}{" "}
-                        observed,{" "}
-                        {formatNumber(compliantPerformanceRatioRows.length)}{" "}
-                        in cache (5,000 cap).{" "}
-                      </>
-                    )}
-                    {performanceRatioCompliantTruncation.autoSourcesTruncated && (
-                      <>
-                        Auto-compliant sources:{" "}
-                        {formatNumber(
-                          performanceRatioCompliantTruncation.autoSourcesTotalEntries,
-                        )}{" "}
-                        observed,{" "}
-                        {formatNumber(autoCompliantSourceByPortalId.size)} in
-                        cache (25,000 cap).{" "}
-                      </>
-                    )}
-                    Tables + CSV export below show only the cached subset.
-                    Promote the relevant cap in
-                    `buildDashboardPerformanceRatioFacts.ts` (or paginate the
-                    proc) before relying on this report on a portfolio that
-                    exceeds the cap.
+                    Auto-compliant sources:{" "}
+                    {formatNumber(
+                      performanceRatioCompliantTruncation.autoSourcesTotalEntries,
+                    )}{" "}
+                    observed,{" "}
+                    {formatNumber(autoCompliantSourceByPortalId.size)} in
+                    cache (25,000 cap). The compliant-report table + CSV
+                    below cover ALL systems via paginated reads — only the
+                    auto-source classification (top table) is affected by
+                    this cap.
                   </p>
                 </div>
               )}
@@ -2128,17 +2204,17 @@ export default memo(function PerformanceRatioTab(props: PerformanceRatioTabProps
               <div className="flex items-center justify-between gap-2">
                 <p className="text-xs text-slate-600">
                   Showing rows{" "}
-                  {compliantPerformanceRatioRows.length === 0
+                  {compliantBestTotalCount === 0
                     ? "0"
                     : formatNumber(compliantReportPageStartIndex + 1)}
                   -
                   {formatNumber(
                     Math.min(
                       compliantReportPageEndIndex,
-                      compliantPerformanceRatioRows.length,
+                      compliantBestTotalCount,
                     ),
                   )}{" "}
-                  of {formatNumber(compliantPerformanceRatioRows.length)}.
+                  of {formatNumber(compliantBestTotalCount)}.
                 </p>
                 <div className="flex items-center gap-2">
                   <Button
@@ -2188,7 +2264,7 @@ export default memo(function PerformanceRatioTab(props: PerformanceRatioTabProps
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {compliantPerformanceRatioRows.length === 0 ? (
+                  {compliantBestTotalCount === 0 ? (
                     <TableRow>
                       <TableCell
                         colSpan={10}
@@ -2246,23 +2322,26 @@ export default memo(function PerformanceRatioTab(props: PerformanceRatioTabProps
           },
           allRatioSummary: performanceRatioSummary,
           compliantRatioSummary: compliantPerformanceRatioSummary,
-          // Ship a small sample of rows — top 20 by performance ratio
-          // so the model sees representative data without paying for
-          // thousands of rows per ask.
-          sampleCompliantRows: compliantPerformanceRatioRows
-            .slice(0, 20)
-            .map((r) => ({
-              monitoring: r.monitoring,
-              monitoringSystemId: r.monitoringSystemId,
-              systemName: r.systemName,
-              performanceRatioPercent: r.performanceRatioPercent,
-              productionDeltaWh: r.productionDeltaWh,
-              expectedProductionWh: r.expectedProductionWh,
-              compliantSource: r.compliantSource,
-              readDate: r.readDate
-                ? new Date(r.readDate).toISOString().slice(0, 10)
-                : null,
-            })),
+          // 2026-05-09 — PR-CB-5 — sample is the currently-visible
+          // page (≤10 rows) instead of the legacy `slice(0, 20)`
+          // over the full client-side set. Server-paginated reads
+          // mean the client never holds the full row set; the
+          // visible page is representative of what the user sees
+          // on screen, which is what the model should reason about.
+          // If a future ask needs more rows for the AI prompt,
+          // wire a separate larger-page fetch with its own staleTime.
+          sampleCompliantRows: visibleCompliantPerformanceRows.map((r) => ({
+            monitoring: r.monitoring,
+            monitoringSystemId: r.monitoringSystemId,
+            systemName: r.systemName,
+            performanceRatioPercent: r.performanceRatioPercent,
+            productionDeltaWh: r.productionDeltaWh,
+            expectedProductionWh: r.expectedProductionWh,
+            compliantSource: r.compliantSource,
+            readDate: r.readDate
+              ? new Date(r.readDate).toISOString().slice(0, 10)
+              : null,
+          })),
         })}
       />
     </div>
