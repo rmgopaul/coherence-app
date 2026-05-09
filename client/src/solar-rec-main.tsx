@@ -10,6 +10,16 @@ import "./index.css";
 // No-ops in dev and on unsupported browsers; surfaces an "Update
 // available" toast when a new build reaches `installed`.
 import { registerServiceWorker } from "./lib/registerServiceWorker";
+// 2026-05-09 follow-up to PR-6 (#535): apply the dashboard retry
+// policy as the QueryClient default + plumb the server's
+// `Retry-After` header into tRPC client errors so the policy can
+// honor it. See `solar-rec-dashboard/lib/dashboardRetryPolicy.ts`
+// + `dashboardRetryAfter.ts` for the per-mechanism docstrings.
+import {
+  dashboardTransientRetryDelay,
+  shouldRetryDashboardTransient,
+} from "./solar-rec-dashboard/lib/dashboardRetryPolicy";
+import { wrapFetchWithRetryAfterCapture } from "./solar-rec-dashboard/lib/dashboardRetryAfter";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -18,15 +28,34 @@ const queryClient = new QueryClient({
       gcTime: 30 * 60_000,
       refetchOnWindowFocus: false,
       refetchOnReconnect: true,
-      retry: 2,
+      // 2026-05-09 follow-up: replace the unfiltered `retry: 2`
+      // default with the dashboard transient-retry policy. Pre-fix
+      // every query in the solar-rec app retried on 4xx-other
+      // (e.g. 401 after token expiry), uselessly burning network +
+      // server quota on deterministic errors. The policy retries
+      // only 429/502/503/504 (transient overload) up to 3 retries,
+      // honors the server's `Retry-After` floor when present, and
+      // falls back to jittered exponential backoff otherwise. Per-
+      // query overrides on the 3 systems-page tabs (Comparisons /
+      // Alerts / Ownership) become redundant after this default —
+      // dropping them is a follow-up cleanup, not behavioral.
+      retry: shouldRetryDashboardTransient,
+      retryDelay: dashboardTransientRetryDelay,
     },
     mutations: {
+      // Mutations stay at the legacy 2-retry default. The transient-
+      // retry policy is appropriate for read paths (idempotent by
+      // construction); applying it to mutations could cause the
+      // server to receive the same write twice during a 502 retry
+      // window. Only opt mutations into the policy when the writer
+      // is explicitly idempotent (e.g. `applyScheduleBToDelivery
+      // Obligations` after PR-FU-3 ships its semaphore).
       retry: 2,
     },
   },
 });
 
-const trpcFetch: typeof fetch = async (input, init) => {
+const baseFetch: typeof fetch = async (input, init) => {
   const response = await globalThis.fetch(input, {
     ...(init ?? {}),
     credentials: "include",
@@ -42,6 +71,14 @@ const trpcFetch: typeof fetch = async (input, init) => {
 
   return response;
 };
+
+// 2026-05-09 follow-up: wrap the fetch so transient-overload
+// responses (429/503/502/504) with a `Retry-After` header have the
+// header value plumbed into the tRPC client error's
+// `data.retryAfterMs` field. The retry policy reads it and uses
+// `max(retryAfterMs, jitteredDelay)` so the server's hint wins
+// when it would force a longer wait. See `dashboardRetryAfter.ts`.
+const trpcFetch = wrapFetchWithRetryAfterCapture(baseFetch);
 
 // Main app trpc instance used by meter read pages and shared dashboard helpers.
 // Route this client directly to the main-trpc endpoint to avoid split-routing

@@ -83,7 +83,19 @@ export function shouldRetryDashboardTransient(
 }
 
 /**
- * Bounded exponential backoff with full jitter.
+ * Bounded exponential backoff with full jitter, optionally taking
+ * the server's `Retry-After` hint as a floor.
+ *
+ * 2026-05-09 follow-up to PR-6 (#535) — the server emits
+ * `Retry-After: 5` on heap-pressure rejections via
+ * `server/_core/dashboardResponseMeta.ts`. The fetch wrapper in
+ * `dashboardRetryAfter.ts` plumbs the header into the tRPC
+ * client-error's `data.retryAfterMs` field; this function reads
+ * it and uses `max(retryAfterMs, jitteredCeiling)` so the
+ * server's hint wins when it would force a longer wait, and the
+ * jittered backoff still applies otherwise. When the header is
+ * absent (any non-tRPC error path, or pre-PR-6 server) the
+ * function falls back to pure jittered backoff.
  *
  * Pre-jitter: 1.5s × 2^attempt capped at 15s — works for one
  * caller, but on a paginated walk where 24 pages all hit a 502
@@ -91,23 +103,35 @@ export function shouldRetryDashboardTransient(
  * cascade. Full jitter (uniform random in `[0, base * 2^n]`) breaks
  * the synchronization without sacrificing the worst-case bound.
  *
- * Total recovery window for a 3-retry sequence: worst case ≈
- * 1.5s + 3s + 6s = 10.5s. Best case (all jitters near 0): instant
- * retries, but the heap-pressure window typically requires at
- * least one GC cycle (2-3s) to clear, so the FIRST attempt's
- * jitter should not collapse to 0 in practice. Acceptable
- * tradeoff: jitter trades small probability of a too-fast retry
- * against the certainty of synchronized cascades.
- *
- * Honoring `Retry-After` is a future enhancement — the server
- * sends it (via `dashboardResponseMeta.ts`), but React Query
- * doesn't surface response headers to `retryDelay` callbacks.
- * Bridging that gap requires either a custom tRPC link that
- * reads the header off the failed response and stuffs it into
- * the error data, or a separate retry layer below React Query.
- * Out of scope for this PR.
+ * Total recovery window for a 3-retry sequence (no Retry-After):
+ * worst case ≈ 1.5s + 3s + 6s = 10.5s. With `Retry-After: 5` on
+ * each retry, the floor pushes EVERY retry to ≥5s and jitter
+ * still spreads them slightly, so 24 simultaneous failures don't
+ * synchronize on the same retry instant.
  */
-export function dashboardTransientRetryDelay(attempt: number): number {
+export function dashboardTransientRetryDelay(
+  attempt: number,
+  error?: unknown
+): number {
   const ceiling = Math.min(15_000, 1500 * Math.pow(2, attempt));
-  return Math.floor(Math.random() * ceiling);
+  const jittered = Math.floor(Math.random() * ceiling);
+  // Read `error.data.retryAfterMs` directly here (instead of
+  // importing `extractRetryAfterMsFromError` from
+  // `dashboardRetryAfter.ts`) to keep this module's only
+  // dependency surface to the standard library. The other module
+  // is the source of truth for the field's shape; this duplication
+  // is intentional and small. When the field is absent, fall back
+  // to pure jittered backoff.
+  if (error && typeof error === "object") {
+    const candidate = error as { data?: { retryAfterMs?: unknown } };
+    const retryAfterMs = candidate.data?.retryAfterMs;
+    if (
+      typeof retryAfterMs === "number" &&
+      Number.isFinite(retryAfterMs) &&
+      retryAfterMs >= 0
+    ) {
+      return Math.max(retryAfterMs, jittered);
+    }
+  }
+  return jittered;
 }

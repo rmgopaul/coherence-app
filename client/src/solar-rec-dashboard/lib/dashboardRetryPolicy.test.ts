@@ -165,3 +165,58 @@ describe("dashboardTransientRetryDelay (full-jitter)", () => {
     expect(samples.size).toBeGreaterThan(50);
   });
 });
+
+// 2026-05-09 follow-up to PR-6 (#535) — Retry-After honoring.
+describe("dashboardTransientRetryDelay — Retry-After honoring (PR-FU-2)", () => {
+  it("uses the server's retryAfterMs as a floor when it exceeds the jittered ceiling", () => {
+    // Server says wait 5000ms. Attempt 0's jittered ceiling is
+    // 1500ms, so the server's floor wins on every sample.
+    for (let i = 0; i < 50; i += 1) {
+      const delay = dashboardTransientRetryDelay(0, {
+        data: { retryAfterMs: 5000 },
+      });
+      expect(delay).toBeGreaterThanOrEqual(5000);
+    }
+  });
+
+  it("uses the jittered ceiling when it exceeds the server's retryAfterMs (max wins)", () => {
+    // Server says wait 100ms. Attempt 50's jittered ceiling is
+    // 15_000ms, so jitter wins on most samples. The 100ms floor
+    // only matters when jitter produces a value < 100, which is
+    // rare (100/15000 ≈ 0.7% of samples).
+    const samples = Array.from({ length: 100 }, () =>
+      dashboardTransientRetryDelay(10, {
+        data: { retryAfterMs: 100 },
+      })
+    );
+    const aboveServerFloor = samples.filter((s) => s > 100).length;
+    expect(aboveServerFloor).toBeGreaterThan(90);
+  });
+
+  it("falls back to pure jitter when the error has no retryAfterMs", () => {
+    for (let i = 0; i < 20; i += 1) {
+      const delay = dashboardTransientRetryDelay(
+        0,
+        new Error("network down")
+      );
+      expect(delay).toBeGreaterThanOrEqual(0);
+      expect(delay).toBeLessThan(1500);
+    }
+  });
+
+  it("ignores malformed retryAfterMs values (NaN / negative / string / non-object)", () => {
+    for (const bad of [NaN, -1, "5000", null, undefined, {}]) {
+      const delay = dashboardTransientRetryDelay(0, {
+        data: { retryAfterMs: bad },
+      });
+      expect(delay).toBeGreaterThanOrEqual(0);
+      expect(delay).toBeLessThan(1500);
+    }
+  });
+
+  it("works without a second `error` argument (backward compat with PR-6 callers)", () => {
+    const delay = dashboardTransientRetryDelay(0);
+    expect(delay).toBeGreaterThanOrEqual(0);
+    expect(delay).toBeLessThan(1500);
+  });
+});
