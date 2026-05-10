@@ -9,6 +9,10 @@ import {
   buildScheduleBApplyKey,
   withScheduleBApplySemaphore,
 } from "../services/solar/scheduleBApplySemaphore";
+import {
+  DATASETS_WITH_RAW_ROW,
+  type DatasetKey,
+} from "../../shared/datasetUpload.helpers";
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import {
   scheduleBImportFiles,
@@ -734,7 +738,27 @@ export const solarRecDashboardRouter = t.router({
       z.object({
         dryRun: z.boolean().default(true),
         scopeId: z.string().min(1).nullable().default(null),
-        datasetKey: z.string().min(1).nullable().default(null),
+        // 2026-05-10 remediation — validate the dataset key against
+        // the canonical `DATASETS_WITH_RAW_ROW` list at the Zod
+        // boundary so an operator typo gets a clear "Invalid enum
+        // value" error before any DB work, not a confusing
+        // `datasetsSkippedNoParser: ['typo']` response from a
+        // downstream parser-lookup miss. Pre-fix the proc accepted
+        // any non-empty string and unsoundly cast it to `DatasetKey`;
+        // that hid every typo as a silent skip.
+        //
+        // The Zod tuple coercion is safe at runtime because
+        // `DATASETS_WITH_RAW_ROW` is non-empty + frozen. Single
+        // source of truth — see `shared/datasetUpload.helpers.ts`.
+        datasetKey: z
+          .enum(
+            DATASETS_WITH_RAW_ROW as readonly [
+              DatasetKey,
+              ...DatasetKey[],
+            ]
+          )
+          .nullable()
+          .default(null),
         batchId: z.string().min(1).nullable().default(null),
         pageSize: z.number().int().positive().max(2000).default(500),
       })
@@ -743,23 +767,14 @@ export const solarRecDashboardRouter = t.router({
       const { runBackfillSrDsTypedColumns } = await import(
         "../scripts/backfillSrDsTypedColumnsFromRawRow"
       );
-      const { DATASETS_WITH_RAW_ROW } = await import(
-        "../scripts/backfillSrDsTypedColumnsFromRawRow"
-      );
-      // Safe-cast the datasetKey input through the canonical key
-      // union. The Zod schema accepts any non-empty string so an
-      // operator can pass an unknown dataset and get a clear
-      // rejection from `selectDatasetsToBackfill`'s REJECT_DATASETS
-      // map (or the `getDatasetParser` skip path) rather than a
-      // confusing tRPC validation error.
-      const datasetKey = input.datasetKey as
-        | (typeof DATASETS_WITH_RAW_ROW)[number]
-        | null;
       try {
+        // Zod's enum validation guarantees `input.datasetKey` is
+        // either null or a valid `DatasetKey` member, so the
+        // assignment is type-safe without an `as` cast.
         const result = await runBackfillSrDsTypedColumns({
           dryRun: input.dryRun,
           scopeId: input.scopeId,
-          datasetKey,
+          datasetKey: input.datasetKey,
           batchId: input.batchId,
           pageSize: input.pageSize,
         });
