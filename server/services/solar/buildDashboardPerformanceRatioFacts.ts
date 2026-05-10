@@ -173,6 +173,34 @@ export type PerformanceRatioSummaryPayload = {
   buildId: string;
   aggregatorVersion: string;
   builtAt: string;
+
+  /**
+   * 2026-05-09 — baseline-fallback diagnostic. Surfaces on the
+   * `[dashboard:fact-build:performanceRatio]` metric line as
+   * `baseline*` extras; this field persists the same numbers on
+   * the summary side-cache so an operator can read them via tRPC
+   * (`getDashboardPerformanceRatioSummary`) without grepping prod
+   * logs. Optional because pre-2026-05-09 cached summary rows
+   * lack the field; the parser tolerates `undefined` so a stale
+   * row doesn't null-return on read.
+   *
+   * Buckets are mutually exclusive and sum to `missing`. See
+   * `classifyPerformanceRatioBaselineFallback` in
+   * `loadPerformanceRatioInput.ts` for resolution semantics.
+   */
+  baselineFallbackDiagnostic?: {
+    totalSystems: number;
+    withBaseline: number;
+    missing: number;
+    bucketAMissingFromAccountSolarGen: number;
+    bucketBValueParseFailed: number;
+    bucketCCaseOrWhitespaceMismatch: number;
+    fallbackEligibleByDateOnline: number;
+    missingNoDateOnline: number;
+    accountSolarGenRowsTotal: number;
+    accountSolarGenRowsBlankGatsGenId: number;
+    accountSolarGenRowsBlankValue: number;
+  };
 };
 
 /**
@@ -704,6 +732,14 @@ export function buildPerformanceRatioSummaryPayload(args: {
     dedupedConvertedReads: number;
   };
   accumulators: PerformanceRatioStreamingAccumulators;
+  /**
+   * 2026-05-09 — optional baseline-fallback diagnostic. When
+   * provided, persists onto the summary side-cache so an operator
+   * can query it via tRPC. Unset when called from a code path
+   * that doesn't compute the diagnostic (e.g. legacy tests
+   * constructed the summary directly from accumulators alone).
+   */
+  baselineFallbackDiagnostic?: PerformanceRatioSummaryPayload["baselineFallbackDiagnostic"];
 }): PerformanceRatioSummaryPayload {
   const { buildId, builtAt, aggregate, accumulators } = args;
   const portfolioRatioPercent = computePortfolioRatioPercent(
@@ -734,6 +770,9 @@ export function buildPerformanceRatioSummaryPayload(args: {
     buildId,
     aggregatorVersion: PERFORMANCE_RATIO_RUNNER_VERSION,
     builtAt: builtAt.toISOString(),
+    ...(args.baselineFallbackDiagnostic
+      ? { baselineFallbackDiagnostic: args.baselineFallbackDiagnostic }
+      : {}),
   };
 }
 
@@ -1056,6 +1095,35 @@ export function parsePerformanceRatioSummaryPayload(
   }
   if (typeof parsed.totalContractValue !== "number") return null;
   if (!Array.isArray(parsed.monitoringOptions)) return null;
+  // 2026-05-09 — `baselineFallbackDiagnostic` is optional. Older
+  // cached summary rows (pre-this-PR) lack the field; tolerate
+  // `undefined` so a stale row doesn't null-return on read.
+  // When present, every counter must be a number — a malformed
+  // diagnostic shouldn't surface NaN to the client. We don't
+  // null-return the whole payload on diagnostic shape failure
+  // because the diagnostic is observability, not load-bearing
+  // for the tile values.
+  let baselineFallbackDiagnostic:
+    | PerformanceRatioSummaryPayload["baselineFallbackDiagnostic"]
+    | undefined = undefined;
+  if (parsed.baselineFallbackDiagnostic !== undefined) {
+    const d = parsed.baselineFallbackDiagnostic;
+    const isValidDiagnostic =
+      d !== null &&
+      typeof d === "object" &&
+      typeof d.totalSystems === "number" &&
+      typeof d.withBaseline === "number" &&
+      typeof d.missing === "number" &&
+      typeof d.bucketAMissingFromAccountSolarGen === "number" &&
+      typeof d.bucketBValueParseFailed === "number" &&
+      typeof d.bucketCCaseOrWhitespaceMismatch === "number" &&
+      typeof d.fallbackEligibleByDateOnline === "number" &&
+      typeof d.missingNoDateOnline === "number" &&
+      typeof d.accountSolarGenRowsTotal === "number" &&
+      typeof d.accountSolarGenRowsBlankGatsGenId === "number" &&
+      typeof d.accountSolarGenRowsBlankValue === "number";
+    if (isValidDiagnostic) baselineFallbackDiagnostic = d;
+  }
   // All required fields validated; widen back to the full type.
   // Non-mutating default for the back-compat
   // `dedupedConvertedReads` field (post-merge review fixup of
@@ -1064,9 +1132,16 @@ export function parsePerformanceRatioSummaryPayload(
   // value isn't unexpectedly modified, which avoids a class of
   // "I parsed it, now why does my JSON.stringify look different?"
   // bugs.
+  // Explicit field set (vs. conditional spread) for the
+  // diagnostic. The parsed object may carry a malformed
+  // `baselineFallbackDiagnostic` that the strict-shape check
+  // rejected; without this assignment the spread above would copy
+  // the malformed value through. `undefined` serializes out via
+  // `JSON.stringify`, so the next persist round-trip drops it.
   return {
     ...(parsed as PerformanceRatioSummaryPayload),
     dedupedConvertedReads: parsed.dedupedConvertedReads ?? 0,
+    baselineFallbackDiagnostic,
   };
 }
 
@@ -1417,6 +1492,25 @@ async function runPerformanceRatioStep(args: {
     );
 
     if (signal.aborted) throw new Error("aborted before summary write");
+    // 2026-05-09 — baseline-fallback diagnostic. Computed BEFORE
+    // the summary write so the bucket counts persist on the
+    // summary side-cache and become readable via tRPC
+    // (`getDashboardPerformanceRatioSummary`). The same numbers
+    // also flatten onto the `metric.finish` extras below for log
+    // ingestion. `accountSolarGenerationStats` is populated by
+    // the streaming loader; defensive fallback to an empty
+    // accumulator keeps the call safe for hand-constructed test
+    // fixtures that omit it.
+    const baselineFallbackBuckets = classifyPerformanceRatioBaselineFallback({
+      systems: staticInput.systems,
+      generationBaselineByTrackingId:
+        staticInput.generationBaselineByTrackingId,
+      generatorDateOnlineByTrackingId:
+        staticInput.generatorDateOnlineByTrackingId,
+      accountSolarGenerationStats:
+        staticInput.accountSolarGenerationStats ??
+        createAccountSolarGenerationStats(),
+    });
     const summary = buildPerformanceRatioSummaryPayload({
       buildId,
       builtAt,
@@ -1428,6 +1522,26 @@ async function runPerformanceRatioStep(args: {
         dedupedConvertedReads: counters.dedupedConvertedReads,
       },
       accumulators: streamingTotals,
+      baselineFallbackDiagnostic: {
+        totalSystems: baselineFallbackBuckets.totalSystems,
+        withBaseline: baselineFallbackBuckets.systemsWithBaseline,
+        missing: baselineFallbackBuckets.systemsMissingBaseline,
+        bucketAMissingFromAccountSolarGen:
+          baselineFallbackBuckets.bucketAMissingFromAccountSolarGen,
+        bucketBValueParseFailed:
+          baselineFallbackBuckets.bucketBValueParseFailed,
+        bucketCCaseOrWhitespaceMismatch:
+          baselineFallbackBuckets.bucketCCaseOrWhitespaceMismatch,
+        fallbackEligibleByDateOnline:
+          baselineFallbackBuckets.fallbackEligibleByDateOnline,
+        missingNoDateOnline:
+          baselineFallbackBuckets.missingBaselineAndNoDateOnline,
+        accountSolarGenRowsTotal: baselineFallbackBuckets.rowsTotal,
+        accountSolarGenRowsBlankGatsGenId:
+          baselineFallbackBuckets.rowsBlankGatsGenId,
+        accountSolarGenRowsBlankValue:
+          baselineFallbackBuckets.rowsBlankValue,
+      },
     });
     // ⚠️ This call is the visibility flip. Until it returns
     // success, page reads continue to see the prior build's
@@ -1494,29 +1608,10 @@ async function runPerformanceRatioStep(args: {
       );
     }
 
-    // 2026-05-09 — baseline-fallback diagnostic. The matcher emits
-    // fact rows where `baselineSource === "Generator Details (Date
-    // Online @ day 15, baseline 0)"` for systems that lack a
-    // `generationBaselineByTrackingId` entry; on prod ~6000 systems
-    // hit this branch. Attribute that count to one of four root
-    // causes so an operator can tell at a glance whether the file
-    // is incomplete (Bucket A), the meter-read column is blank
-    // (Bucket B), or the join is dropping rows over case-only
-    // mismatches (Bucket C). `accountSolarGenerationStats` is
-    // present whenever the streaming loader ran (the typical
-    // path); a defensive fallback to an empty stats object keeps
-    // the call safe for hand-constructed test fixtures that omit
-    // it.
-    const baselineFallbackBuckets = classifyPerformanceRatioBaselineFallback({
-      systems: staticInput.systems,
-      generationBaselineByTrackingId: staticInput.generationBaselineByTrackingId,
-      generatorDateOnlineByTrackingId:
-        staticInput.generatorDateOnlineByTrackingId,
-      accountSolarGenerationStats:
-        staticInput.accountSolarGenerationStats ??
-        createAccountSolarGenerationStats(),
-    });
-
+    // `baselineFallbackBuckets` was computed earlier (before the
+    // summary write) so the diagnostic could persist onto the
+    // summary side-cache. Reuse the same struct here for the
+    // metric line.
     metric.finish({
       rowsWritten: totalFactsWritten,
       pageCount,
