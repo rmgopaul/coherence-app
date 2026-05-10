@@ -1164,6 +1164,78 @@ describe("parsePerformanceRatioSummaryPayload (codex review fixup — strict fie
     expect(parser!(JSON.stringify(payload))).toBeNull();
   });
 
+  // 2026-05-09 — baseline-fallback diagnostic. Optional field;
+  // older cached payloads lack it but must still parse. New
+  // payloads carry the bucket counts under
+  // `baselineFallbackDiagnostic`. The parser tolerates absence
+  // (back-compat) AND silently drops a malformed diagnostic
+  // (observability is non-load-bearing — the tile values must
+  // still render even if the diagnostic shape regresses).
+  it("accepts a payload missing baselineFallbackDiagnostic (back-compat)", () => {
+    const result = parser!(JSON.stringify(makeValidPayload()));
+    expect(result).not.toBeNull();
+    expect(
+      (result as { baselineFallbackDiagnostic?: unknown })
+        .baselineFallbackDiagnostic
+    ).toBeUndefined();
+  });
+
+  it("preserves a fully-formed baselineFallbackDiagnostic", () => {
+    const payload = makeValidPayload() as Record<string, unknown>;
+    payload.baselineFallbackDiagnostic = {
+      totalSystems: 100,
+      withBaseline: 80,
+      missing: 20,
+      bucketAMissingFromAccountSolarGen: 12,
+      bucketBValueParseFailed: 5,
+      bucketCCaseOrWhitespaceMismatch: 3,
+      fallbackEligibleByDateOnline: 18,
+      missingNoDateOnline: 2,
+      accountSolarGenRowsTotal: 1_000_000,
+      accountSolarGenRowsBlankGatsGenId: 10,
+      accountSolarGenRowsBlankValue: 5_000,
+    };
+    const result = parser!(JSON.stringify(payload));
+    expect(result).not.toBeNull();
+    const diag = (
+      result as {
+        baselineFallbackDiagnostic?: {
+          totalSystems: number;
+          bucketAMissingFromAccountSolarGen: number;
+        };
+      }
+    ).baselineFallbackDiagnostic;
+    expect(diag).toBeDefined();
+    expect(diag!.totalSystems).toBe(100);
+    expect(diag!.bucketAMissingFromAccountSolarGen).toBe(12);
+  });
+
+  it("drops a malformed baselineFallbackDiagnostic but still returns the rest of the payload", () => {
+    // A diagnostic missing the bucketB field shouldn't null-return
+    // the whole payload — the tile values are load-bearing, the
+    // diagnostic is observability.
+    const payload = makeValidPayload() as Record<string, unknown>;
+    payload.baselineFallbackDiagnostic = {
+      totalSystems: 100,
+      withBaseline: 80,
+      missing: 20,
+      bucketAMissingFromAccountSolarGen: 12,
+      // bucketBValueParseFailed missing
+      bucketCCaseOrWhitespaceMismatch: 3,
+      fallbackEligibleByDateOnline: 18,
+      missingNoDateOnline: 2,
+      accountSolarGenRowsTotal: 1_000_000,
+      accountSolarGenRowsBlankGatsGenId: 10,
+      accountSolarGenRowsBlankValue: 5_000,
+    };
+    const result = parser!(JSON.stringify(payload));
+    expect(result).not.toBeNull();
+    expect(
+      (result as { baselineFallbackDiagnostic?: unknown })
+        .baselineFallbackDiagnostic
+    ).toBeUndefined();
+  });
+
   // 2026-05-09 — Remediation of PR-FU-5 (#543) review BLOCKER. The
   // original PR shipped a "does NOT mutate the input" test that did
   // not actually exercise the contract: it parsed the input string
