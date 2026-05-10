@@ -7,7 +7,7 @@
  * while any row is live, otherwise every 30 seconds. Row click
  * navigates to the corresponding manager surface.
  */
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useLocation } from "wouter";
 import { solarRecTrpc as trpc } from "../solarRecTrpc";
 import { PermissionGate } from "../components/PermissionGate";
@@ -153,8 +153,30 @@ export default function JobsIndex() {
   );
 }
 
+/**
+ * Display order for the filter chips. Mirrors the table's read
+ * priority — long-batch runners first, then the dashboard-side
+ * jobs that are newer additions. The "all" chip is always first.
+ */
+const RUNNER_KIND_ORDER: RunnerKind[] = [
+  "contract-scan",
+  "din-scrape",
+  "schedule-b-import",
+  "dashboard-build",
+  "dashboard-csv-export",
+  "dataset-upload",
+];
+
+type RunnerFilter = RunnerKind | "all";
+
 function JobsIndexImpl() {
   const [, setLocation] = useLocation();
+
+  // 2026-05-10 — filter state. `"all"` (default) shows every kind;
+  // selecting a chip narrows the table to one runner kind. Stored
+  // in component state — no URL persistence yet because the chips
+  // are quick toggles, not deep-linkable views.
+  const [filter, setFilter] = useState<RunnerFilter>("all");
 
   // We set the polling cadence based on the *previous* response —
   // if any row was live last time, poll fast; otherwise slow. React
@@ -162,6 +184,12 @@ function JobsIndexImpl() {
   // job transitioning to live causes the next interval to drop to
   // 3s on its own. The callback receives the Query (not the data)
   // in TanStack Query v5; pull data off `query.state.data`.
+  //
+  // NB: the live check ignores the filter — if ANY runner kind is
+  // live, we poll fast even when the user has scoped the view. Two
+  // reasons: (a) a chip change should never silently slow the poll,
+  // and (b) the live-count badge always reflects the unfiltered
+  // total so the user knows there's activity off-screen.
   const indexQuery = trpc.jobs.getJobsIndex.useQuery(
     { limitPerRunner: 25 },
     {
@@ -176,11 +204,35 @@ function JobsIndexImpl() {
     }
   );
 
-  const jobs = indexQuery.data?.jobs ?? [];
+  const allJobs = indexQuery.data?.jobs ?? [];
+
+  // Per-kind counts feed the chip badges so the user can see "5
+  // builds, 2 uploads, 0 exports" at a glance without expanding
+  // each filter.
+  const countsByKind = useMemo(() => {
+    const counts: Record<RunnerKind, number> = {
+      "contract-scan": 0,
+      "din-scrape": 0,
+      "schedule-b-import": 0,
+      "dashboard-build": 0,
+      "dashboard-csv-export": 0,
+      "dataset-upload": 0,
+    };
+    for (const job of allJobs) {
+      const kind = job.runnerKind as RunnerKind;
+      if (kind in counts) counts[kind] += 1;
+    }
+    return counts;
+  }, [allJobs]);
+
+  const jobs = useMemo(() => {
+    if (filter === "all") return allJobs;
+    return allJobs.filter((j) => j.runnerKind === filter);
+  }, [allJobs, filter]);
 
   const liveCount = useMemo(
-    () => jobs.filter((j) => isLive(j.status as JobStatus)).length,
-    [jobs]
+    () => allJobs.filter((j) => isLive(j.status as JobStatus)).length,
+    [allJobs]
   );
 
   function handleRowClick(runnerKind: RunnerKind) {
@@ -220,12 +272,62 @@ function JobsIndexImpl() {
         </div>
       </div>
 
+      <div
+        className="flex flex-wrap items-center gap-2"
+        data-testid="jobs-filter-chips"
+      >
+        <button
+          type="button"
+          onClick={() => setFilter("all")}
+          className={`rounded-full border px-3 py-1 text-xs transition-colors ${
+            filter === "all"
+              ? "border-primary bg-primary text-primary-foreground"
+              : "border-border bg-background text-muted-foreground hover:bg-muted"
+          }`}
+        >
+          All
+          <span className="ml-1.5 opacity-70">({allJobs.length})</span>
+        </button>
+        {RUNNER_KIND_ORDER.map((kind) => {
+          const count = countsByKind[kind];
+          const active = filter === kind;
+          // Hide chips for runner kinds with 0 jobs to keep the row
+          // tight on a quiet day. The "All" chip always renders so the
+          // user can clear the filter even when their currently
+          // selected kind has zero rows in this fetch.
+          if (count === 0 && !active) return null;
+          return (
+            <button
+              key={kind}
+              type="button"
+              onClick={() => setFilter(kind)}
+              className={`rounded-full border px-3 py-1 text-xs transition-colors ${
+                active
+                  ? "border-primary bg-primary text-primary-foreground"
+                  : "border-border bg-background text-muted-foreground hover:bg-muted"
+              }`}
+            >
+              {RUNNER_LABEL[kind]}
+              <span className="ml-1.5 opacity-70">({count})</span>
+            </button>
+          );
+        })}
+      </div>
+
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Recent jobs</CardTitle>
+          <CardTitle className="text-base">
+            {filter === "all" ? "Recent jobs" : RUNNER_LABEL[filter]}
+          </CardTitle>
           <CardDescription>
             Up to 25 most recent jobs per runner. Polls every 3 seconds
             while any job is live.
+            {filter !== "all" && (
+              <>
+                {" "}Filtered to <strong>{RUNNER_LABEL[filter]}</strong>;
+                use the chips above to switch.
+              </>
+            )}
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -237,7 +339,9 @@ function JobsIndexImpl() {
             </p>
           ) : jobs.length === 0 ? (
             <p className="text-sm text-muted-foreground">
-              No jobs yet. Start one from the Tools sidebar.
+              {filter === "all"
+                ? "No jobs yet. Start one from the Tools sidebar."
+                : `No ${RUNNER_LABEL[filter]} jobs in the recent window. Try the "All" chip to see other runners.`}
             </p>
           ) : (
             <div className="overflow-x-auto">
