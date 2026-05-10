@@ -167,16 +167,65 @@ function parseStoredRawRow(rawRow: unknown): CsvRow | null {
   return row;
 }
 
+/**
+ * Build the dedup key for a stored `srDsAccountSolarGeneration` row.
+ *
+ * **Hard invariant (2026-05-10):** every field that the Performance
+ * Ratio aggregator USES from the row must be sourced from the typed
+ * column alone — never from `rawRow` JSON. The aggregator only reads
+ * `lastMeterReadKwh` for value computation (`SKIP_RAW_ROW_TABLES`
+ * excludes `srDsAccountSolarGeneration` from rawRow loads to bound
+ * peak heap on 400k+ rows). A dedup key that reads rawRow as a
+ * fallback for `lastMeterReadKwh` would diverge from the aggregator's
+ * view: a row whose typed col is null but whose rawRow has a populated
+ * value would "look populated" to dedup but "look blank" to the
+ * aggregator. A re-upload of the SAME data would then dedup-skip →
+ * never insert → typed column stays null forever → aggregator stays
+ * blank-blind forever. That divergence is the prod bug fixed by
+ * PR #548 (one-shot backfill) and prevented going forward by this
+ * function — `lastMeterReadKwh` is now read ONLY from the typed
+ * column.
+ *
+ * `meterId` keeps its rawRow fallback because the schema has NO
+ * `meterId` typed column (`srDsAccountSolarGeneration` only has
+ * `id, scopeId, batchId, gatsGenId, facilityName, monthOfGeneration,
+ * lastMeterReadDate, lastMeterReadKwh, rawRow, createdAt`). Without
+ * the rawRow fallback the meterId key part would always be empty for
+ * stored rows — the dedup key would differ on every re-upload and
+ * insert duplicates. The aggregator does NOT use meterId for value
+ * computation (only for compaction identity), so the divergence
+ * concern doesn't apply here.
+ *
+ * Convergence story for legacy null-typed-col rows: stored-side key
+ * has empty `lastMeterReadKwh` part, upload-side key for a fresh
+ * re-upload has the populated value → keys differ → both rows land
+ * → compaction picks the newer (typed-populated) row by
+ * `lastMeterReadDate` + `createdAt`. Data converges on the canonical
+ * typed-column representation. PR #548's backfill avoids waiting for
+ * a per-row re-upload by repairing every legacy row in one pass.
+ *
+ * Pure: no DB / I/O. Single source of truth for the dedup key shape.
+ * The upload-side `rowKey` (`accountSolarGeneration` branch in
+ * `rowKey` below) computes the same shape from raw CSV rows; the
+ * two MUST stay aligned for fresh-row dedup to work. Aligned today:
+ * upload-side reads `lastMeterReadKwh` via `pickAccountSolarGeneration
+ * LastMeterRead` (which finds the value in the raw CSV's
+ * `Last Meter Read (kWh/Btu)` etc.), stored-side reads the typed
+ * column the parser wrote from that same alias resolution. Same
+ * value → same key.
+ */
 export function buildAccountSolarGenerationStoredRowKey(
   row: Record<string, unknown>
 ): string {
+  // `meterId` is not a typed column on `srDsAccountSolarGeneration` —
+  // it lives only in `rawRow`. Falling back to rawRow for meterId is
+  // necessary for the key to be non-empty; this does NOT cause the
+  // dedup-vs-aggregator divergence the bug exploited because the
+  // aggregator never reads meterId for value computation.
   const rawRow = parseStoredRawRow(row.rawRow);
   const meterId =
     clean(row.meterId) ??
     (rawRow ? pickAccountSolarGenerationMeterId(rawRow) : null);
-  const lastMeterReadKwh =
-    clean(row.lastMeterReadKwh) ??
-    (rawRow ? pickAccountSolarGenerationLastMeterRead(rawRow) : null);
 
   return [
     normalizeKeyPart(row.gatsGenId),
@@ -184,7 +233,9 @@ export function buildAccountSolarGenerationStoredRowKey(
     normalizeKeyPart(row.monthOfGeneration),
     normalizeKeyPart(row.lastMeterReadDate),
     normalizeKeyPart(meterId),
-    normalizeKeyPart(lastMeterReadKwh),
+    // `lastMeterReadKwh` reads ONLY the typed column. See the
+    // hard-invariant block in the docstring above for why.
+    normalizeKeyPart(row.lastMeterReadKwh),
   ].join("|");
 }
 
