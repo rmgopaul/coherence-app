@@ -37,8 +37,21 @@ describe("isLiveJobStatus", () => {
     expect(isLiveJobStatus("stopping")).toBe(true);
   });
 
-  it("returns false for completed/failed/stopped/unknown", () => {
-    expect(isLiveJobStatus("completed")).toBe(false);
+  // 2026-05-10 — extended for dataset-upload state machine. The
+  // upload runner walks queued → uploading → parsing → preparing →
+  // writing → done; all the intermediate states are "live" for
+  // polling purposes.
+  it("returns true for dataset-upload intermediate states", () => {
+    expect(isLiveJobStatus("uploading")).toBe(true);
+    expect(isLiveJobStatus("parsing")).toBe(true);
+    expect(isLiveJobStatus("preparing")).toBe(true);
+    expect(isLiveJobStatus("writing")).toBe(true);
+  });
+
+  it("returns false for terminal statuses across all runner kinds", () => {
+    expect(isLiveJobStatus("completed")).toBe(false); // contract / din / schedule-b
+    expect(isLiveJobStatus("succeeded")).toBe(false); // dashboard-build / csv-export
+    expect(isLiveJobStatus("done")).toBe(false); // dataset-upload
     expect(isLiveJobStatus("failed")).toBe(false);
     expect(isLiveJobStatus("stopped")).toBe(false);
     // Defensive: any future status that isn't in the live set is
