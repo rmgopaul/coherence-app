@@ -61,24 +61,46 @@ const RUNNER_LABEL: Record<RunnerKind, string> = {
 };
 
 /**
- * Where a row click should land. Schedule B doesn't have a standalone
- * manager page yet — it lives inside the dashboard's Delivery Tracker
- * tab — so we navigate to that tab via the existing `?tab=` query
- * param the dashboard already honors.
+ * Where a row click should land for the 3 batch runners. Schedule B
+ * doesn't have a standalone manager page yet — it lives inside the
+ * dashboard's Delivery Tracker tab — so we navigate to that tab via
+ * the existing `?tab=` query param the dashboard already honors.
  *
- * The 3 new kinds (dashboard-build / csv-export / dataset-upload) all
- * deep-link to the dashboard itself — that's where the "Building…"
- * badge / inline dialogs live. Until each gets a dedicated manager,
- * landing on the dashboard is the closest thing to a "details" view.
+ * The 3 newer kinds (dashboard-build / csv-export / dataset-upload)
+ * route to a generic detail page at `/solar-rec/jobs/<kind>/<id>`
+ * — see `routeForRow` below for the per-row URL construction. They
+ * are NOT in this map because they need the per-job id, not a
+ * static href.
  */
-const RUNNER_HREF: Record<RunnerKind, string> = {
+const RUNNER_HREF: Record<
+  "contract-scan" | "din-scrape" | "schedule-b-import",
+  string
+> = {
   "contract-scan": "/solar-rec/contract-scrape-manager",
   "din-scrape": "/solar-rec/din-scrape-manager",
   "schedule-b-import": "/solar-rec/dashboard?tab=delivery-tracker",
-  "dashboard-build": "/solar-rec/dashboard",
-  "dashboard-csv-export": "/solar-rec/dashboard",
-  "dataset-upload": "/solar-rec/dashboard",
 };
+
+/**
+ * Compute the navigation target for a row click. Batch-runner rows
+ * (contract-scan / din-scrape / schedule-b-import) navigate to
+ * their existing manager pages — those already show per-job
+ * details and have rich controls (start / stop / view results).
+ * Dashboard-build / csv-export / dataset-upload rows route to the
+ * generic detail page at `/solar-rec/jobs/<kind>/<id>` since their
+ * "managers" (the dashboard + per-card dialogs) only show CURRENT
+ * state, not specific historical jobs.
+ */
+function routeForRow(runnerKind: RunnerKind, id: string): string {
+  if (
+    runnerKind === "contract-scan" ||
+    runnerKind === "din-scrape" ||
+    runnerKind === "schedule-b-import"
+  ) {
+    return RUNNER_HREF[runnerKind];
+  }
+  return `/solar-rec/jobs/${runnerKind}/${encodeURIComponent(id)}`;
+}
 
 function isLive(status: JobStatus): boolean {
   return (
@@ -235,8 +257,8 @@ function JobsIndexImpl() {
     [allJobs]
   );
 
-  function handleRowClick(runnerKind: RunnerKind) {
-    setLocation(RUNNER_HREF[runnerKind]);
+  function handleRowClick(runnerKind: RunnerKind, id: string) {
+    setLocation(routeForRow(runnerKind, id));
   }
 
   return (
@@ -247,7 +269,8 @@ function JobsIndexImpl() {
           <p className="text-sm text-muted-foreground">
             Live + recent runs across contract scrape, DIN scrape,
             Schedule B import, dashboard rebuilds, CSV exports, and
-            dataset uploads. Click a row to open the manager.
+            dataset uploads. Click a row to open the manager or job
+            detail page.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -366,7 +389,7 @@ function JobsIndexImpl() {
                       <TableRow
                         key={`${runnerKind}-${job.id}`}
                         className="cursor-pointer"
-                        onClick={() => handleRowClick(runnerKind)}
+                        onClick={() => handleRowClick(runnerKind, job.id)}
                       >
                         <TableCell className="font-medium">
                           <div className="flex items-center gap-2">

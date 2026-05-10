@@ -75,6 +75,10 @@ const InvoiceMatchDashboard = lazy(
 // surfaces live + recent runs across all four job runners.
 // Module key `jobs` (already in MODULES). Read-only page.
 const JobsIndex = lazy(() => import("./pages/JobsIndex"));
+// 2026-05-10: per-job detail page for the 3 newer runner kinds
+// (`dashboard-build`, `dashboard-csv-export`, `dataset-upload`).
+// The 3 batch runners keep their existing manager-page deep-link.
+const JobDetail = lazy(() => import("./pages/JobDetail"));
 // Task 9.4 (2026-04-28): system detail page MVP — one page per CSG ID
 // composing the registry record + latest contract scan + DIN scrape
 // + Schedule B import result. Module key `portfolio-workbench`.
@@ -251,6 +255,9 @@ function AuthenticatedApp() {
                 <PermissionGate moduleKey="jobs">
                   <JobsIndex />
                 </PermissionGate>
+              </Route>
+              <Route path="/solar-rec/jobs/:kind/:id">
+                <JobDetail />
               </Route>
               <Route path="/solar-rec/system/:csgId">
                 <SystemDetail />
