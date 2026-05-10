@@ -30,19 +30,34 @@ import {
 import { Button } from "@/components/ui/button";
 import { RefreshCcw, ArrowRight } from "lucide-react";
 
-type RunnerKind = "contract-scan" | "din-scrape" | "schedule-b-import";
+type RunnerKind =
+  | "contract-scan"
+  | "din-scrape"
+  | "schedule-b-import"
+  | "dashboard-build"
+  | "dashboard-csv-export"
+  | "dataset-upload";
 type JobStatus =
   | "queued"
   | "running"
   | "stopping"
   | "stopped"
   | "completed"
-  | "failed";
+  | "succeeded"
+  | "failed"
+  | "preparing"
+  | "uploading"
+  | "parsing"
+  | "writing"
+  | "done";
 
 const RUNNER_LABEL: Record<RunnerKind, string> = {
   "contract-scan": "Contract Scrape",
   "din-scrape": "DIN Scrape",
   "schedule-b-import": "Schedule B Import",
+  "dashboard-build": "Dashboard Rebuild",
+  "dashboard-csv-export": "Dashboard CSV Export",
+  "dataset-upload": "Dataset Upload",
 };
 
 /**
@@ -50,15 +65,31 @@ const RUNNER_LABEL: Record<RunnerKind, string> = {
  * manager page yet — it lives inside the dashboard's Delivery Tracker
  * tab — so we navigate to that tab via the existing `?tab=` query
  * param the dashboard already honors.
+ *
+ * The 3 new kinds (dashboard-build / csv-export / dataset-upload) all
+ * deep-link to the dashboard itself — that's where the "Building…"
+ * badge / inline dialogs live. Until each gets a dedicated manager,
+ * landing on the dashboard is the closest thing to a "details" view.
  */
 const RUNNER_HREF: Record<RunnerKind, string> = {
   "contract-scan": "/solar-rec/contract-scrape-manager",
   "din-scrape": "/solar-rec/din-scrape-manager",
   "schedule-b-import": "/solar-rec/dashboard?tab=delivery-tracker",
+  "dashboard-build": "/solar-rec/dashboard",
+  "dashboard-csv-export": "/solar-rec/dashboard",
+  "dataset-upload": "/solar-rec/dashboard",
 };
 
 function isLive(status: JobStatus): boolean {
-  return status === "queued" || status === "running" || status === "stopping";
+  return (
+    status === "queued" ||
+    status === "running" ||
+    status === "stopping" ||
+    status === "uploading" ||
+    status === "parsing" ||
+    status === "preparing" ||
+    status === "writing"
+  );
 }
 
 function formatRelativeTime(date: Date | null): string {
@@ -81,10 +112,16 @@ function statusVariant(
   switch (status) {
     case "running":
     case "stopping":
+    case "uploading":
+    case "parsing":
+    case "preparing":
+    case "writing":
       return "default";
     case "queued":
       return "secondary";
     case "completed":
+    case "succeeded":
+    case "done":
       return "outline";
     case "failed":
       return "destructive";
@@ -156,8 +193,9 @@ function JobsIndexImpl() {
         <div>
           <h1 className="text-2xl font-semibold">Jobs</h1>
           <p className="text-sm text-muted-foreground">
-            Live + recent runs across contract scrape, DIN scrape, and
-            Schedule B import. Click a row to open the manager.
+            Live + recent runs across contract scrape, DIN scrape,
+            Schedule B import, dashboard rebuilds, CSV exports, and
+            dataset uploads. Click a row to open the manager.
           </p>
         </div>
         <div className="flex items-center gap-2">

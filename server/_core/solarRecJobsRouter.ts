@@ -23,8 +23,10 @@ import { t, requirePermission } from "./solarRecBase";
 
 /** Bumped when the response shape or filter logic changes. Surfaced
  *  on every `getJobsIndex` response per the CLAUDE.md hard rule for
- *  long-running server jobs / observability of deploys. */
-export const SOLAR_REC_JOBS_ROUTER_VERSION = "solar-rec-jobs@1";
+ *  long-running server jobs / observability of deploys.
+ *  v2 (2026-05-10): added `dashboard-build`, `dashboard-csv-export`,
+ *  and `dataset-upload` runner kinds. */
+export const SOLAR_REC_JOBS_ROUTER_VERSION = "solar-rec-jobs@2";
 
 export const solarRecJobsRouter = t.router({
   getJobsIndex: requirePermission("jobs", "read")

@@ -9,6 +9,20 @@
  * the dashboard already distinguishes upload-sourced from CSG-sourced
  * via filename prefix.
  *
+ * 2026-05-10 — extended to surface dashboard-rebuild + CSV-export +
+ * dataset-upload jobs in the same feed. These three were previously
+ * tracked in their own DB tables but had no aggregated UI; rebuilds
+ * in particular run for 15-20 minutes and were only observable via
+ * the dashboard's header badge. Each new kind normalizes to the same
+ * `JobsIndexRow` shape:
+ *   - `total` = totalSteps / 1 / totalRows respectively
+ *   - `successCount` = currentStep / 1-on-success / rowsWritten
+ *   - `failureCount` = 0 / 1-on-failure / rowsParsed-minus-rowsWritten
+ *   - `currentItem` = factTable+message / exportType / datasetKey:fileName
+ * The conventions trade a small loss of label fidelity (e.g. "1/5"
+ * means "step 1 of 5" not "1 contract of 5") for a single rendering
+ * path in the UI.
+ *
  * Used by `/solar-rec/jobs` to render a single live + recent table.
  * Polling cadence is 3s while any row is live.
  */
@@ -21,13 +35,19 @@ import {
   contractScanJobs,
   scheduleBImportJobs,
   dinScrapeJobs,
+  solarRecDashboardBuilds,
+  dashboardCsvExportJobs,
+  datasetUploadJobs,
 } from "../../drizzle/schema";
 import { eq } from "drizzle-orm";
 
 export type JobsIndexRunnerKind =
   | "contract-scan"
   | "din-scrape"
-  | "schedule-b-import";
+  | "schedule-b-import"
+  | "dashboard-build"
+  | "dashboard-csv-export"
+  | "dataset-upload";
 
 export type JobsIndexStatus =
   | "queued"
@@ -35,7 +55,13 @@ export type JobsIndexStatus =
   | "stopping"
   | "stopped"
   | "completed"
-  | "failed";
+  | "succeeded"
+  | "failed"
+  | "preparing"
+  | "uploading"
+  | "parsing"
+  | "writing"
+  | "done";
 
 /**
  * Normalized job row shared across all three job tables. The shape
@@ -67,9 +93,22 @@ export interface JobsIndexRow {
  * Whether a status string represents an in-flight job. Used both
  * server-side (to gate live indicators) and client-side (to gate
  * the 3-second poll). Keep in sync with the runner state machines.
+ *
+ * Covers all six runner kinds:
+ *   - contract / din / schedule-b: queued | running | stopping
+ *   - dashboard-build + csv-export: queued | running
+ *   - dataset-upload: queued | uploading | parsing | preparing | writing
  */
 export function isLiveJobStatus(status: string): boolean {
-  return status === "queued" || status === "running" || status === "stopping";
+  return (
+    status === "queued" ||
+    status === "running" ||
+    status === "stopping" ||
+    status === "uploading" ||
+    status === "parsing" ||
+    status === "preparing" ||
+    status === "writing"
+  );
 }
 
 /**
@@ -92,10 +131,50 @@ export function compareJobsIndexRows(
 }
 
 /**
- * Fetch up to `limit` rows from each of the 3 job tables, normalize
- * to JobsIndexRow, merge, and order by `createdAt DESC`. Default
- * limit is 25 per table → up to 75 rows returned, which keeps the
- * payload well under the 1 MB hard rule from CLAUDE.md.
+ * Parse a `solarRecDashboardBuilds.progressJson` blob without
+ * throwing. The runner writes `{ currentStep, totalSteps, percent,
+ * message, factTable }` but the column is unstructured `json` so a
+ * future shape drift wouldn't blow up the index read. Returns null
+ * for any shape we don't recognise.
+ */
+function parseBuildProgress(progressJson: unknown): {
+  currentStep: number;
+  totalSteps: number;
+  factTable: string | null;
+  message: string | null;
+} | null {
+  if (!progressJson || typeof progressJson !== "object") return null;
+  const obj = progressJson as Record<string, unknown>;
+  const currentStep = typeof obj.currentStep === "number" ? obj.currentStep : null;
+  const totalSteps = typeof obj.totalSteps === "number" ? obj.totalSteps : null;
+  if (currentStep === null || totalSteps === null) return null;
+  return {
+    currentStep,
+    totalSteps,
+    factTable:
+      typeof obj.factTable === "string"
+        ? obj.factTable
+        : null,
+    message: typeof obj.message === "string" ? obj.message : null,
+  };
+}
+
+/**
+ * Parse a `dashboardCsvExportJobs.input` blob to pull the
+ * `exportType` discriminator for the `currentItem` column.
+ * Tolerant — unknown shape returns null and the row still renders.
+ */
+function parseCsvExportType(input: unknown): string | null {
+  if (!input || typeof input !== "object") return null;
+  const obj = input as Record<string, unknown>;
+  return typeof obj.exportType === "string" ? obj.exportType : null;
+}
+
+/**
+ * Fetch up to `limit` rows from each job table, normalize to
+ * JobsIndexRow, merge, and order by `createdAt DESC`. Default limit
+ * is 25 per table → up to 150 rows total (6 tables), well under the
+ * 1 MB hard rule from CLAUDE.md.
  *
  * Live jobs are included implicitly because they sort to the top by
  * `createdAt`. The caller (UI) treats them specially via
@@ -109,7 +188,14 @@ export async function listRecentJobsAcrossRunners(
   if (!db) return [];
 
   return withDbRetry("list recent jobs across runners", async () => {
-    const [contractRows, scheduleBRows, dinRows] = await Promise.all([
+    const [
+      contractRows,
+      scheduleBRows,
+      dinRows,
+      buildRows,
+      csvExportRows,
+      uploadRows,
+    ] = await Promise.all([
       db
         .select({
           id: contractScanJobs.id,
@@ -167,6 +253,66 @@ export async function listRecentJobsAcrossRunners(
         .where(eq(dinScrapeJobs.scopeId, scopeId))
         .orderBy(desc(dinScrapeJobs.createdAt))
         .limit(limit),
+      // Dashboard rebuilds — `progressJson` carries step progress;
+      // mapped into total / successCount below. `stoppedAt` not
+      // applicable (no cancel state), so it stays null.
+      db
+        .select({
+          id: solarRecDashboardBuilds.id,
+          status: solarRecDashboardBuilds.status,
+          progressJson: solarRecDashboardBuilds.progressJson,
+          errorMessage: solarRecDashboardBuilds.errorMessage,
+          startedAt: solarRecDashboardBuilds.startedAt,
+          completedAt: solarRecDashboardBuilds.completedAt,
+          createdAt: solarRecDashboardBuilds.createdAt,
+          updatedAt: solarRecDashboardBuilds.updatedAt,
+        })
+        .from(solarRecDashboardBuilds)
+        .where(eq(solarRecDashboardBuilds.scopeId, scopeId))
+        .orderBy(desc(solarRecDashboardBuilds.createdAt))
+        .limit(limit),
+      // CSV exports — no step progress; success/failure are binary
+      // on `status`. `rowCount` populates as the success signal.
+      db
+        .select({
+          id: dashboardCsvExportJobs.id,
+          status: dashboardCsvExportJobs.status,
+          input: dashboardCsvExportJobs.input,
+          rowCount: dashboardCsvExportJobs.rowCount,
+          errorMessage: dashboardCsvExportJobs.errorMessage,
+          startedAt: dashboardCsvExportJobs.startedAt,
+          completedAt: dashboardCsvExportJobs.completedAt,
+          createdAt: dashboardCsvExportJobs.createdAt,
+          updatedAt: dashboardCsvExportJobs.updatedAt,
+        })
+        .from(dashboardCsvExportJobs)
+        .where(eq(dashboardCsvExportJobs.scopeId, scopeId))
+        .orderBy(desc(dashboardCsvExportJobs.createdAt))
+        .limit(limit),
+      // Dataset uploads — `rowsWritten` / `totalRows` map onto
+      // successCount / total directly. `rowsParsed - rowsWritten`
+      // approximates failureCount during the active write phase
+      // (rows that parsed but were dedup-skipped show up here too,
+      // which is fine — the dataset-upload manager UI distinguishes).
+      db
+        .select({
+          id: datasetUploadJobs.id,
+          status: datasetUploadJobs.status,
+          datasetKey: datasetUploadJobs.datasetKey,
+          fileName: datasetUploadJobs.fileName,
+          totalRows: datasetUploadJobs.totalRows,
+          rowsParsed: datasetUploadJobs.rowsParsed,
+          rowsWritten: datasetUploadJobs.rowsWritten,
+          errorMessage: datasetUploadJobs.errorMessage,
+          startedAt: datasetUploadJobs.startedAt,
+          completedAt: datasetUploadJobs.completedAt,
+          createdAt: datasetUploadJobs.createdAt,
+          updatedAt: datasetUploadJobs.updatedAt,
+        })
+        .from(datasetUploadJobs)
+        .where(eq(datasetUploadJobs.scopeId, scopeId))
+        .orderBy(desc(datasetUploadJobs.createdAt))
+        .limit(limit),
     ]);
 
     const merged: JobsIndexRow[] = [
@@ -194,6 +340,81 @@ export async function listRecentJobsAcrossRunners(
           status: r.status as JobsIndexStatus,
         })
       ),
+      ...buildRows.map((r): JobsIndexRow => {
+        const progress = parseBuildProgress(r.progressJson);
+        const totalSteps = progress?.totalSteps ?? 0;
+        const currentStep = progress?.currentStep ?? 0;
+        const factTable = progress?.factTable;
+        const message = progress?.message;
+        // `currentItem` surfaces the step name + message so a
+        // 15-minute build doesn't look like it's hung at "step 4/5".
+        const currentItem =
+          factTable && message
+            ? `${factTable}: ${message}`
+            : factTable ?? message ?? null;
+        return {
+          id: r.id,
+          runnerKind: "dashboard-build",
+          status: r.status as JobsIndexStatus,
+          total: totalSteps,
+          successCount: r.status === "succeeded" ? totalSteps : currentStep,
+          failureCount: r.status === "failed" ? 1 : 0,
+          currentItem,
+          error: r.errorMessage,
+          startedAt: r.startedAt,
+          stoppedAt: null,
+          completedAt: r.completedAt,
+          createdAt: r.createdAt,
+          updatedAt: r.updatedAt,
+        };
+      }),
+      ...csvExportRows.map((r): JobsIndexRow => {
+        const exportType = parseCsvExportType(r.input);
+        // CSV exports have no incremental progress — they're either
+        // queued, running, succeeded, or failed. Use total=1 so the
+        // progress label shows "0/1" → "1/1" rather than "—".
+        const succeeded = r.status === "succeeded";
+        const failed = r.status === "failed";
+        return {
+          id: r.id,
+          runnerKind: "dashboard-csv-export",
+          status: r.status as JobsIndexStatus,
+          total: 1,
+          successCount: succeeded ? 1 : 0,
+          failureCount: failed ? 1 : 0,
+          currentItem: exportType,
+          error: r.errorMessage,
+          startedAt: r.startedAt,
+          stoppedAt: null,
+          completedAt: r.completedAt,
+          createdAt: r.createdAt,
+          updatedAt: r.updatedAt,
+        };
+      }),
+      ...uploadRows.map((r): JobsIndexRow => {
+        // Dataset uploads: `rowsWritten` is the canonical success
+        // count (rows that landed in the typed columns); the gap
+        // between `rowsParsed` and `rowsWritten` represents dedup-
+        // skipped rows on append-mode datasets, which we treat as
+        // non-failures (they're correctly NOT re-inserted).
+        const rowsWritten = r.rowsWritten ?? 0;
+        const totalRows = r.totalRows ?? 0;
+        return {
+          id: r.id,
+          runnerKind: "dataset-upload",
+          status: r.status as JobsIndexStatus,
+          total: totalRows,
+          successCount: rowsWritten,
+          failureCount: r.status === "failed" ? 1 : 0,
+          currentItem: `${r.datasetKey}: ${r.fileName}`,
+          error: r.errorMessage,
+          startedAt: r.startedAt,
+          stoppedAt: null,
+          completedAt: r.completedAt,
+          createdAt: r.createdAt,
+          updatedAt: r.updatedAt,
+        };
+      }),
     ];
 
     // Live jobs sort to the top because their `createdAt` is recent.
