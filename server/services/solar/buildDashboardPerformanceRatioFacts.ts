@@ -43,6 +43,8 @@ import {
   forEachPerformanceRatioConvertedReadPage,
   loadPerformanceRatioStaticInput,
   resolvePerformanceRatioBatchIds,
+  classifyPerformanceRatioBaselineFallback,
+  createAccountSolarGenerationStats,
 } from "./loadPerformanceRatioInput";
 import {
   type PerformanceRatioRow,
@@ -1492,6 +1494,29 @@ async function runPerformanceRatioStep(args: {
       );
     }
 
+    // 2026-05-09 — baseline-fallback diagnostic. The matcher emits
+    // fact rows where `baselineSource === "Generator Details (Date
+    // Online @ day 15, baseline 0)"` for systems that lack a
+    // `generationBaselineByTrackingId` entry; on prod ~6000 systems
+    // hit this branch. Attribute that count to one of four root
+    // causes so an operator can tell at a glance whether the file
+    // is incomplete (Bucket A), the meter-read column is blank
+    // (Bucket B), or the join is dropping rows over case-only
+    // mismatches (Bucket C). `accountSolarGenerationStats` is
+    // present whenever the streaming loader ran (the typical
+    // path); a defensive fallback to an empty stats object keeps
+    // the call safe for hand-constructed test fixtures that omit
+    // it.
+    const baselineFallbackBuckets = classifyPerformanceRatioBaselineFallback({
+      systems: staticInput.systems,
+      generationBaselineByTrackingId: staticInput.generationBaselineByTrackingId,
+      generatorDateOnlineByTrackingId:
+        staticInput.generatorDateOnlineByTrackingId,
+      accountSolarGenerationStats:
+        staticInput.accountSolarGenerationStats ??
+        createAccountSolarGenerationStats(),
+    });
+
     metric.finish({
       rowsWritten: totalFactsWritten,
       pageCount,
@@ -1521,6 +1546,26 @@ async function runPerformanceRatioStep(args: {
       // on the first build after CB-6 deploys, then 0 thereafter.
       retiredArtifactsDeleted,
       streaming: true,
+      // 2026-05-09 — baseline-fallback diagnostic. Flat fields
+      // (vs. nested object) so log-line grep + scrape pipelines
+      // pick them up without a parser change.
+      baselineTotalSystems: baselineFallbackBuckets.totalSystems,
+      baselineWithBaseline: baselineFallbackBuckets.systemsWithBaseline,
+      baselineMissing: baselineFallbackBuckets.systemsMissingBaseline,
+      baselineMissingBucketA:
+        baselineFallbackBuckets.bucketAMissingFromAccountSolarGen,
+      baselineMissingBucketB:
+        baselineFallbackBuckets.bucketBValueParseFailed,
+      baselineMissingBucketC:
+        baselineFallbackBuckets.bucketCCaseOrWhitespaceMismatch,
+      baselineFallbackEligibleByDateOnline:
+        baselineFallbackBuckets.fallbackEligibleByDateOnline,
+      baselineMissingNoDateOnline:
+        baselineFallbackBuckets.missingBaselineAndNoDateOnline,
+      accountSolarGenRowsTotal: baselineFallbackBuckets.rowsTotal,
+      accountSolarGenRowsBlankGatsGenId:
+        baselineFallbackBuckets.rowsBlankGatsGenId,
+      accountSolarGenRowsBlankValue: baselineFallbackBuckets.rowsBlankValue,
     });
   } catch (err) {
     metric.fail(err);
