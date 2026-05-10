@@ -297,7 +297,7 @@ function emptyCounts(): DatasetCounts {
   };
 }
 
-async function backfillOneDataset(
+export async function backfillOneDataset(
   db: NonNullable<Awaited<ReturnType<typeof getDb>>>,
   datasetKey: DatasetKey,
   parser: DatasetUploadParser<unknown>,
@@ -396,7 +396,7 @@ async function backfillOneDataset(
 // CLI entry
 // ────────────────────────────────────────────────────────────────────
 
-function selectDatasetsToBackfill(opts: RunOptions): DatasetKey[] {
+export function selectDatasetsToBackfill(opts: RunOptions): DatasetKey[] {
   if (opts.datasetKey) {
     const reason = REJECT_DATASETS[opts.datasetKey];
     if (reason) {
@@ -409,44 +409,53 @@ function selectDatasetsToBackfill(opts: RunOptions): DatasetKey[] {
   return [...DATASETS_WITH_RAW_ROW];
 }
 
-async function main(): Promise<void> {
-  const opts = parseArgs(process.argv.slice(2));
+/**
+ * 2026-05-10 — reusable entry point for the backfill, callable
+ * from a tRPC admin proc as well as the CLI `main()` below.
+ *
+ * Iterates over the datasets selected by `selectDatasetsToBackfill`,
+ * obtaining each dataset's parser via the registry and delegating
+ * to `backfillOneDataset`. Returns aggregated counts across all
+ * datasets, plus a per-dataset breakdown so the caller can render
+ * a meaningful summary.
+ *
+ * Memory-safe: each dataset's loop is bounded by `opts.pageSize`;
+ * results are accumulated as scalars + a small per-dataset array,
+ * not full row buffers. Suitable for invocation from a tRPC mutation
+ * even on production-shape tables (~25k–400k rows per dataset).
+ *
+ * Dataset selection failures (rejected key) propagate as errors so
+ * the caller can surface a clear message; no silent skips.
+ */
+export interface BackfillRunResult {
+  totals: DatasetCounts;
+  perDataset: Array<{ datasetKey: DatasetKey; counts: DatasetCounts }>;
+  datasetsRun: DatasetKey[];
+  datasetsSkippedNoParser: DatasetKey[];
+}
+
+export async function runBackfillSrDsTypedColumns(
+  opts: RunOptions
+): Promise<BackfillRunResult> {
   const db = await getDb();
   if (!db) {
     throw new Error("Database not configured (DATABASE_URL missing).");
   }
-
   const datasets = selectDatasetsToBackfill(opts);
-
-  process.stdout.write(
-    `[backfill] datasets: ${datasets.join(", ")}\n` +
-      `[backfill] scope: ${opts.scopeId ?? "<all>"}\n` +
-      `[backfill] batch: ${opts.batchId ?? "<all>"}\n` +
-      `[backfill] dryRun: ${opts.dryRun}\n` +
-      `[backfill] pageSize: ${opts.pageSize}\n`
-  );
-
-  const totals: DatasetCounts = emptyCounts();
+  const totals = emptyCounts();
+  const perDataset: BackfillRunResult["perDataset"] = [];
+  const datasetsRun: DatasetKey[] = [];
+  const datasetsSkippedNoParser: DatasetKey[] = [];
 
   for (const datasetKey of datasets) {
     const parser = getDatasetParser(datasetKey);
     if (!parser) {
-      process.stdout.write(
-        `[backfill ${datasetKey}] no parser wired — skipping\n`
-      );
+      datasetsSkippedNoParser.push(datasetKey);
       continue;
     }
-    process.stdout.write(`[backfill ${datasetKey}] starting\n`);
     const counts = await backfillOneDataset(db, datasetKey, parser, opts);
-    process.stdout.write(
-      `[backfill ${datasetKey}] candidates=${counts.candidates} ` +
-        `parsed=${counts.parsed} ` +
-        `wouldUpdate=${counts.wouldUpdate} ` +
-        `unchanged=${counts.unchanged} ` +
-        `written=${counts.written} ` +
-        `unparseableRawRow=${counts.unparseableRawRow} ` +
-        `parserReturnedNull=${counts.parserReturnedNull}\n`
-    );
+    perDataset.push({ datasetKey, counts });
+    datasetsRun.push(datasetKey);
     totals.candidates += counts.candidates;
     totals.parsed += counts.parsed;
     totals.wouldUpdate += counts.wouldUpdate;
@@ -456,6 +465,43 @@ async function main(): Promise<void> {
     totals.parserReturnedNull += counts.parserReturnedNull;
   }
 
+  return { totals, perDataset, datasetsRun, datasetsSkippedNoParser };
+}
+
+async function main(): Promise<void> {
+  const opts = parseArgs(process.argv.slice(2));
+
+  // 2026-05-10 — CLI delegates to the shared `runBackfillSrDsTypedColumns`
+  // entry point so the tRPC admin proc + CLI share one impl. Stdout
+  // formatting stays here (operator-facing), the work loop is shared.
+  process.stdout.write(
+    `[backfill] scope: ${opts.scopeId ?? "<all>"}\n` +
+      `[backfill] dataset: ${opts.datasetKey ?? "<all>"}\n` +
+      `[backfill] batch: ${opts.batchId ?? "<all>"}\n` +
+      `[backfill] dryRun: ${opts.dryRun}\n` +
+      `[backfill] pageSize: ${opts.pageSize}\n`
+  );
+
+  const result = await runBackfillSrDsTypedColumns(opts);
+
+  for (const { datasetKey, counts } of result.perDataset) {
+    process.stdout.write(
+      `[backfill ${datasetKey}] candidates=${counts.candidates} ` +
+        `parsed=${counts.parsed} ` +
+        `wouldUpdate=${counts.wouldUpdate} ` +
+        `unchanged=${counts.unchanged} ` +
+        `written=${counts.written} ` +
+        `unparseableRawRow=${counts.unparseableRawRow} ` +
+        `parserReturnedNull=${counts.parserReturnedNull}\n`
+    );
+  }
+  for (const skipped of result.datasetsSkippedNoParser) {
+    process.stdout.write(
+      `[backfill ${skipped}] no parser wired — skipped\n`
+    );
+  }
+
+  const { totals } = result;
   process.stdout.write(
     `[backfill] DONE candidates=${totals.candidates} ` +
       `parsed=${totals.parsed} ` +

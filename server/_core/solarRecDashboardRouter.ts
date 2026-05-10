@@ -695,6 +695,92 @@ export const solarRecDashboardRouter = t.router({
   }),
 
   /**
+   * 2026-05-10 — admin entry point for the rawRow → typed-column
+   * backfill. Wraps `runBackfillSrDsTypedColumns` so the script
+   * can run from the dashboard without shell access.
+   *
+   * Why this exists:
+   *   The v2 upload parser previously dropped values when the
+   *   header alias didn't match (e.g. `Last Meter Read (kWh/Btu)`
+   *   was unrecognised pre-2026-04-30, leaving every old
+   *   `srDsAccountSolarGeneration` row with `lastMeterReadKwh`
+   *   typed-column null but the value still in `rawRow` JSON).
+   *   The Performance Ratio aggregator only reads the typed
+   *   column → those systems land in Bucket B (value parse
+   *   failed) and incorrectly take the `Generator Details (Date
+   *   Online @ day 15, baseline 0)` fallback. This proc
+   *   re-parses each row's `rawRow` through the modern parser
+   *   and writes the typed column. Idempotent — re-running after
+   *   success writes zero rows.
+   *
+   * Caller contract:
+   *   - Always start with `dryRun: true` to preview `wouldUpdate`
+   *     before authorising writes. The proc returns identical
+   *     shape in both modes; only `written` differs.
+   *   - Targeting the active batch (`batchId` from
+   *     `solarRecActiveDatasetVersions`) keeps the run under a
+   *     few minutes for production-sized tables. A multi-batch
+   *     run (no `batchId` arg) can take 30+ minutes — fine
+   *     under tRPC's 30-minute proxy timeout but consider an
+   *     out-of-band run for very large scopes.
+   *   - The proc holds the request open for the duration of the
+   *     backfill; clients should set a long fetch timeout.
+   */
+  backfillSrDsTypedColumns: dashboardProcedure(
+    "solar-rec-dashboard",
+    "admin"
+  )
+    .input(
+      z.object({
+        dryRun: z.boolean().default(true),
+        scopeId: z.string().min(1).nullable().default(null),
+        datasetKey: z.string().min(1).nullable().default(null),
+        batchId: z.string().min(1).nullable().default(null),
+        pageSize: z.number().int().positive().max(2000).default(500),
+      })
+    )
+    .mutation(async ({ input }) => {
+      const { runBackfillSrDsTypedColumns } = await import(
+        "../scripts/backfillSrDsTypedColumnsFromRawRow"
+      );
+      const { DATASETS_WITH_RAW_ROW } = await import(
+        "../scripts/backfillSrDsTypedColumnsFromRawRow"
+      );
+      // Safe-cast the datasetKey input through the canonical key
+      // union. The Zod schema accepts any non-empty string so an
+      // operator can pass an unknown dataset and get a clear
+      // rejection from `selectDatasetsToBackfill`'s REJECT_DATASETS
+      // map (or the `getDatasetParser` skip path) rather than a
+      // confusing tRPC validation error.
+      const datasetKey = input.datasetKey as
+        | (typeof DATASETS_WITH_RAW_ROW)[number]
+        | null;
+      try {
+        const result = await runBackfillSrDsTypedColumns({
+          dryRun: input.dryRun,
+          scopeId: input.scopeId,
+          datasetKey,
+          batchId: input.batchId,
+          pageSize: input.pageSize,
+        });
+        return {
+          ...result,
+          _runnerVersion: "backfill-srds-typed-cols-v1" as const,
+        };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        const stack = err instanceof Error ? err.stack : undefined;
+        // eslint-disable-next-line no-console
+        console.error("[backfillSrDsTypedColumns] failed:", message, stack);
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: `backfillSrDsTypedColumns failed: ${message}`,
+          cause: err,
+        });
+      }
+    }),
+
+  /**
    * Return every in-flight sync job for the current scope. Called
    * by the client on mount so a tab reload during a running sync
    * resumes polling instead of losing track of the background
