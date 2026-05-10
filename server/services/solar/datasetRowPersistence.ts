@@ -121,30 +121,6 @@ function pickAccountSolarGenerationMeterId(row: CsvRow): string | null {
   return pick(row, ...ACCOUNT_SOLAR_GENERATION_METER_ID_KEYS);
 }
 
-/**
- * 2026-05-10 — extract `Last Meter Read (kWh)` from a stored
- * `rawRow` JSON blob, using the same alias list as the
- * upload parser + dedup key builder. Self-contained wrapper around
- * `parseStoredRawRow` + `pickAccountSolarGenerationLastMeterRead`
- * so the legacy-row backfill migration
- * (`backfillAccountSolarGenerationMeterRead.ts`) can re-derive the
- * typed-column value without re-parsing the original CSV.
- *
- * Returns `null` when the rawRow is unparseable, missing, or when
- * none of the alias headers are present with a non-empty value.
- *
- * Pure: no DB / I/O. Single source of truth for the alias list is
- * `ACCOUNT_SOLAR_GENERATION_LAST_METER_READ_KEYS` above; do not
- * duplicate it elsewhere.
- */
-export function extractAccountSolarGenerationMeterReadFromRawRow(
-  rawRow: unknown
-): string | null {
-  const parsed = parseStoredRawRow(rawRow);
-  if (!parsed) return null;
-  return pickAccountSolarGenerationLastMeterRead(parsed);
-}
-
 function parseStoredRawRow(rawRow: unknown): CsvRow | null {
   let value: unknown = rawRow;
   if (typeof rawRow === "string") {

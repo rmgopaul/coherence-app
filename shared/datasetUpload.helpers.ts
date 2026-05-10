@@ -140,6 +140,43 @@ export const MULTI_APPEND_DATASET_KEYS: ReadonlySet<DatasetKey> = new Set<Datase
 ]);
 
 /**
+ * 2026-05-10 — datasets backed by an `srDs*` table that has a
+ * `rawRow` JSON column AND a v2 parser registered. The
+ * `solarRecDashboard.backfillSrDsTypedColumns` admin proc accepts
+ * exactly these keys (or null for "run on all of them") because
+ * a rawRow → typed-column repair is structurally impossible
+ * without both inputs.
+ *
+ * Excluded:
+ *   - `contractedDate` — `srDsContractedDate` has no `rawRow`
+ *     column (pre-Phase-1 schema choice; the table stores
+ *     {systemId, contractedDate} only).
+ *   - `deliveryScheduleBase` — populated by the Schedule B PDF
+ *     scanner, not CSV upload. No CSV parser exists.
+ *
+ * Single source of truth — the backfill script + the admin proc's
+ * Zod enum BOTH derive from this list. Do not redeclare elsewhere.
+ */
+export const DATASETS_WITH_RAW_ROW: readonly DatasetKey[] = [
+  "solarApplications",
+  "abpReport",
+  "generationEntry",
+  "accountSolarGeneration",
+  "annualProductionEstimates",
+  "convertedReads",
+  "transferHistory",
+  "generatorDetails",
+  "abpCsgSystemMapping",
+  "abpProjectApplicationRows",
+  "abpPortalInvoiceMapRows",
+  "abpCsgPortalDatabaseRows",
+  "abpQuickBooksRows",
+  "abpUtilityInvoiceRows",
+  "abpIccReport2Rows",
+  "abpIccReport3Rows",
+] as const;
+
+/**
  * The merge strategy this dataset uses when ingested via the v2
  * upload runner. Multi-append datasets accumulate; everything else
  * replaces the active batch.

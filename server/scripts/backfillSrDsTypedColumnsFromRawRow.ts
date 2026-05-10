@@ -63,44 +63,22 @@
  */
 import "dotenv/config";
 import { eq, gt, sql, and, asc } from "drizzle-orm";
-import type { MySqlTable } from "drizzle-orm/mysql-core";
 import { getDb } from "../db";
 import {
   getDatasetParser,
   type DatasetUploadParser,
 } from "../services/core/datasetUploadParsers";
-import type { DatasetKey } from "../../shared/datasetUpload.helpers";
+import {
+  DATASETS_WITH_RAW_ROW,
+  type DatasetKey,
+} from "../../shared/datasetUpload.helpers";
 
-// ────────────────────────────────────────────────────────────────────
-// Datasets that have a `rawRow` JSON column AND a v2 parser. Only
-// these are repairable by this script — `srDsContractedDate` has no
-// `rawRow` (pre-Phase-1 schema choice; the table stores typed
-// {systemId, contractedDate} only).
-//
-// `deliveryScheduleBase` is also excluded because it has no parser
-// (populated by the Schedule B PDF scanner, not CSV upload).
-//
-// Adding a new dataset to v2 means: add a parser in the registry
-// AND add the key here when the row table includes `rawRow`.
-// ────────────────────────────────────────────────────────────────────
-export const DATASETS_WITH_RAW_ROW: readonly DatasetKey[] = [
-  "solarApplications",
-  "abpReport",
-  "generationEntry",
-  "accountSolarGeneration",
-  "annualProductionEstimates",
-  "convertedReads",
-  "transferHistory",
-  "generatorDetails",
-  "abpCsgSystemMapping",
-  "abpProjectApplicationRows",
-  "abpPortalInvoiceMapRows",
-  "abpCsgPortalDatabaseRows",
-  "abpQuickBooksRows",
-  "abpUtilityInvoiceRows",
-  "abpIccReport2Rows",
-  "abpIccReport3Rows",
-] as const;
+// 2026-05-10 — `DATASETS_WITH_RAW_ROW` was hoisted to
+// `shared/datasetUpload.helpers.ts` so the admin tRPC proc's Zod
+// enum can validate against it without duplicating the list. The
+// re-export keeps existing callers (CLI + tests) on the same import
+// path.
+export { DATASETS_WITH_RAW_ROW };
 
 // Datasets the user is most likely to pass via `--dataset` that
 // this script CANNOT repair, with reasons. We fail fast rather
