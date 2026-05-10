@@ -1106,7 +1106,7 @@ expected post-upload state even with no chunked blob present.
    | `buildDashboardChangeOwnershipFacts` | `[dashboard:fact-build:changeOwnership]` | `scopeId` | `rowsWritten`, `orphanedDeleted`, `fromCache` |
    | `buildDashboardSystemFacts` | `[dashboard:fact-build:system]` | `scopeId` | `rowsWritten`, `part2EligibleCount`, `orphanedDeleted`, `fromCache` |
    | `buildDashboardMonitoringDetailsFacts` | `[dashboard:fact-build:monitoringDetails]` | `scopeId` | `rowsWritten`, `orphanedDeleted`, `fromCache` |
-   | `buildDashboardPerformanceRatioFacts` (success) | `[dashboard:fact-build:performanceRatio]` | `scopeId` | `rowsWritten`, `pageCount`, `orphanedDeleted`, `convertedReadCount`, `matchedConvertedReads`, `unmatchedConvertedReads`, `invalidConvertedReads`, `dedupedConvertedReads`, `matchedSystemCount`, `streaming` |
+   | `buildDashboardPerformanceRatioFacts` (success) | `[dashboard:fact-build:performanceRatio]` | `scopeId` | `rowsWritten`, `pageCount`, `orphanedDeleted`, `convertedReadCount`, `matchedConvertedReads`, `unmatchedConvertedReads`, `invalidConvertedReads`, `dedupedConvertedReads`, `matchedSystemCount`, `streaming`, `baselineTotalSystems`, `baselineWithBaseline`, `baselineMissing`, `baselineMissingBucketA`, `baselineMissingBucketB`, `baselineMissingBucketC`, `baselineFallbackEligibleByDateOnline`, `baselineMissingNoDateOnline`, `accountSolarGenRowsTotal`, `accountSolarGenRowsBlankGatsGenId`, `accountSolarGenRowsBlankValue` |
    | `buildDashboardPerformanceRatioFacts` (skipped — no convertedReads) | `[dashboard:fact-build:performanceRatio]` | `scopeId` | `skipped`, `reason`, `orphanedDeleted` |
    | `dashboardBuildJobRunner` | `[dashboard:build-jobs]` | `stepCount` | `stepsRun` |
    | `dashboardCsvExportJobs` (success) | `[dashboard:csv-export-jobs]` | `exportType`, `datasetKey?` | `rowCount`, `csvBytes`, `storageWrite` |
@@ -1119,7 +1119,17 @@ expected post-upload state even with no chunked blob present.
    monitoring eligibility join is the slow path and the count is
    the load-bearing signal that the join produced anything;
    `performance-ratio` carries the streaming-aggregator counters
-   because it's the only builder that streams. Adding a new
+   because it's the only builder that streams. The
+   `baseline*` + `accountSolarGen*` extras (added 2026-05-09)
+   attribute the count of systems that fall back from
+   `accountSolarGeneration` → `Date Online @ day 15, baseline 0`
+   to one of three root causes (Bucket A: id never appeared in
+   the file; Bucket B: id appeared but every row had a blank/non-
+   numeric `Last Meter Read`; Bucket C: case/whitespace-only
+   mismatch on the join key). The classifier in
+   `loadPerformanceRatioInput.ts` is pure + unit-tested; the
+   stats accumulator runs alongside the existing streaming
+   loader pass so there's no second scan. Adding a new
    per-builder extra is fine — it goes through caller-supplied
    `finish()` extras, the metric API does not constrain the keys.
    When you do, update this table in the same PR so the

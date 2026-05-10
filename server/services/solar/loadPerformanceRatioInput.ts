@@ -134,6 +134,56 @@ async function streamSrDsRowsPage(
 const STREAM_PAGE_SIZE_DEFAULT = 2_500;
 
 /**
+ * 2026-05-09 — diagnostic accumulator for the
+ * `accountSolarGeneration` → baseline-map streaming pass. Tracks
+ * the per-row + per-system signals needed to attribute the
+ * "Generator Details (Date Online @ day 15, baseline 0)" fallback
+ * count to one of four root causes (see
+ * `classifyPerformanceRatioBaselineFallback` below).
+ *
+ * Lives at row-time on this struct so the streaming loader can
+ * populate it without re-reading any rows; classification runs once
+ * after all pages have been consumed. Construct with
+ * `createAccountSolarGenerationStats()` to ensure every field has
+ * a fresh allocation.
+ */
+export type AccountSolarGenerationStats = {
+  rowsTotal: number;
+  rowsBlankGatsGenId: number;
+  rowsBlankValue: number;
+  /**
+   * Every non-empty, exact (case-and-whitespace-preserving)
+   * `GATS Gen ID` seen in the file. Used to detect Bucket A
+   * (system's id never appeared at all).
+   */
+  seenGatsGenIds: Set<string>;
+  /**
+   * Every non-empty `GATS Gen ID` lowercased. Used to detect
+   * Bucket D (system's id present but format-mismatched). Stored
+   * separately so Bucket A vs. Bucket D is unambiguous.
+   */
+  seenGatsGenIdsLowercased: Set<string>;
+  /**
+   * Subset of `seenGatsGenIds` for which AT LEAST ONE row had a
+   * parseable `Last Meter Read` value. A `GATS Gen ID` whose every
+   * row has a blank/non-numeric meter-read column lands in
+   * `seenGatsGenIds` but NOT here, which surfaces as Bucket B.
+   */
+  idsWithAtLeastOneValidValue: Set<string>;
+};
+
+export function createAccountSolarGenerationStats(): AccountSolarGenerationStats {
+  return {
+    rowsTotal: 0,
+    rowsBlankGatsGenId: 0,
+    rowsBlankValue: 0,
+    seenGatsGenIds: new Set(),
+    seenGatsGenIdsLowercased: new Set(),
+    idsWithAtLeastOneValidValue: new Set(),
+  };
+}
+
+/**
  * Per-row accumulator for `srDsAccountSolarGeneration` pages.
  * Mirrors the accountSolarGeneration branch of
  * `buildGenerationBaselineByTrackingId` (in
@@ -144,6 +194,17 @@ const STREAM_PAGE_SIZE_DEFAULT = 2_500;
  * Mutates `mapping` in place. Returns nothing — the caller owns
  * the Map across pages.
  *
+ * 2026-05-09 — optional `stats` argument for the baseline-fallback
+ * diagnostic. When provided, the function records every row's
+ * shape (blank id, blank value, valid id+value) on the struct so
+ * the post-load classifier can attribute the
+ * "fall back to Generator Details" hit-count to one of four
+ * causes (see `classifyPerformanceRatioBaselineFallback`).
+ * Backward-compatible: callers that don't pass `stats` get the
+ * pre-fix behavior unchanged. Tests that asserted bulk parity
+ * continue to pass because the dedup logic is untouched — the
+ * stats accumulator is read-but-write-only side data.
+ *
  * Exported so the parity test
  * (`loadPerformanceRatioInput.streamingBaseline.test.ts`) can
  * verify that calling this incrementally over chunked pages
@@ -152,17 +213,30 @@ const STREAM_PAGE_SIZE_DEFAULT = 2_500;
  */
 export function applyAccountSolarGenerationPageToBaselineMap(
   mapping: Map<string, GenerationBaseline>,
-  page: CsvRow[]
+  page: CsvRow[],
+  stats?: AccountSolarGenerationStats
 ): void {
   for (const row of page) {
+    if (stats) stats.rowsTotal += 1;
     const trackingSystemRefId = clean((row as SolarRecCsvRow)["GATS Gen ID"]);
-    if (!trackingSystemRefId) continue;
+    if (!trackingSystemRefId) {
+      if (stats) stats.rowsBlankGatsGenId += 1;
+      continue;
+    }
+    if (stats) {
+      stats.seenGatsGenIds.add(trackingSystemRefId);
+      stats.seenGatsGenIdsLowercased.add(trackingSystemRefId.toLowerCase());
+    }
     const valueWh = parseEnergyToWh(
       resolveLastMeterReadRawValue(row as SolarRecCsvRow),
       "Last Meter Read (kWh)",
       "kwh"
     );
-    if (valueWh === null) continue;
+    if (valueWh === null) {
+      if (stats) stats.rowsBlankValue += 1;
+      continue;
+    }
+    if (stats) stats.idsWithAtLeastOneValidValue.add(trackingSystemRefId);
     const date =
       parseDate((row as SolarRecCsvRow)["Last Meter Read Date"]) ??
       parseDate((row as SolarRecCsvRow)["Month of Generation"]);
@@ -193,6 +267,150 @@ export function applyAccountSolarGenerationPageToBaselineMap(
       }
     }
   }
+}
+
+/**
+ * 2026-05-09 — bucket classifier for the Performance Ratio
+ * baseline-fallback diagnostic.
+ *
+ * Why this exists: when `buildPerformanceRatioAggregates`
+ * processes a matched (convertedRead row, candidate system) tuple,
+ * it tries `generationBaselineByTrackingId.get(systemRef)` first;
+ * on miss, it falls back to the `Date Online @ day 15, baseline 0`
+ * shape sourced from `generatorDetails`. A high fallback hit-count
+ * (e.g. ~6000 systems) usually points to one of four root causes,
+ * and this classifier attributes the systems-missing-baseline
+ * count to those four buckets.
+ *
+ * Inputs are the post-load `generationBaselineByTrackingId` map
+ * (built from `generationEntry` + `accountSolarGeneration`), the
+ * `generatorDateOnlineByTrackingId` map (the fallback source),
+ * the row-level stats accumulated during the
+ * `accountSolarGeneration` streaming pass, and the system list
+ * the matcher will iterate against.
+ *
+ * Buckets (mutually exclusive, sums to `systemsMissingBaseline`):
+ *   - **A. missingFromAccountSolarGen**: the system's
+ *     `trackingSystemRefId` never appeared in
+ *     `accountSolarGeneration` (case-insensitive). Most likely the
+ *     row simply isn't in the file.
+ *   - **B. valueParseFailed**: the system's id appeared but every
+ *     row had a blank or non-numeric `Last Meter Read` (and
+ *     aliases) — the parser couldn't extract a value, so no
+ *     candidate ever entered the dedup compare.
+ *   - **C. caseOrWhitespaceMismatch**: the system's id is NOT in
+ *     `seenGatsGenIds` exactly, but its lowercased form IS in
+ *     `seenGatsGenIdsLowercased`. Strong signal that the join is
+ *     dropping rows over case/whitespace differences alone — a
+ *     normalized join would recover them.
+ *   - **D. presentInGenerationEntryOnly**: the system has a
+ *     baseline (so it's NOT missing) — surfaces as the
+ *     `withBaseline` count for sanity-check; not in the
+ *     missing-buckets sum.
+ *
+ * Bucket-resolution order: C > A > B. We check the lowercased
+ * form first because a system that's only present via
+ * case-mismatch should be classified as D (the actionable bucket),
+ * not as A (which would imply the file is incomplete). Any system
+ * that matches lowercased but not exact is a D regardless of
+ * whether its lowercased rows had valid values.
+ *
+ * `fallbackEligibleByDateOnline` counts systems missing a baseline
+ * AND present in `generatorDateOnlineByTrackingId` — those are the
+ * ones that actually emit fact rows with the
+ * "Generator Details (Date Online @ day 15, baseline 0)" source.
+ * The remainder (`missingBaselineAndNoDateOnline`) emit no fact
+ * row for the matched candidate at all (`baselineValueWh === null
+ * → productionDeltaWh === null`).
+ *
+ * Pure function — `systems` and the maps are read-only. Safe to
+ * unit test without a DB.
+ */
+export type PerformanceRatioBaselineFallbackBuckets = {
+  totalSystems: number;
+  systemsWithBaseline: number;
+  systemsMissingBaseline: number;
+  bucketAMissingFromAccountSolarGen: number;
+  bucketBValueParseFailed: number;
+  bucketCCaseOrWhitespaceMismatch: number;
+  fallbackEligibleByDateOnline: number;
+  missingBaselineAndNoDateOnline: number;
+  rowsTotal: number;
+  rowsBlankGatsGenId: number;
+  rowsBlankValue: number;
+};
+
+export function classifyPerformanceRatioBaselineFallback(args: {
+  systems: ReadonlyArray<{ trackingSystemRefId: string | null }>;
+  generationBaselineByTrackingId: ReadonlyMap<string, unknown>;
+  generatorDateOnlineByTrackingId: ReadonlyMap<string, Date>;
+  accountSolarGenerationStats: AccountSolarGenerationStats;
+}): PerformanceRatioBaselineFallbackBuckets {
+  const {
+    systems,
+    generationBaselineByTrackingId,
+    generatorDateOnlineByTrackingId,
+    accountSolarGenerationStats: stats,
+  } = args;
+
+  let systemsWithBaseline = 0;
+  let bucketA = 0;
+  let bucketB = 0;
+  let bucketC = 0;
+  let fallbackEligibleByDateOnline = 0;
+  let missingBaselineAndNoDateOnline = 0;
+  let totalSystems = 0;
+
+  for (const system of systems) {
+    const ref = system.trackingSystemRefId;
+    if (!ref) continue;
+    totalSystems += 1;
+
+    if (generationBaselineByTrackingId.has(ref)) {
+      systemsWithBaseline += 1;
+      continue;
+    }
+
+    // Missing baseline. Classify the cause.
+    const lowered = ref.toLowerCase();
+    const seenExact = stats.seenGatsGenIds.has(ref);
+    const seenLowered = stats.seenGatsGenIdsLowercased.has(lowered);
+
+    if (!seenExact && seenLowered) {
+      // Row(s) exist for the lowercased form but not exact —
+      // case/whitespace-class mismatch.
+      bucketC += 1;
+    } else if (!seenExact) {
+      // Row(s) never appeared at all (under any case).
+      bucketA += 1;
+    } else {
+      // Row(s) appeared exactly, but no row had a parseable value;
+      // otherwise this system would have a baseline.
+      bucketB += 1;
+    }
+
+    // Fallback eligibility — does it land on the
+    // "Date Online @ day 15, baseline 0" path or no fact row at all?
+    if (generatorDateOnlineByTrackingId.has(ref)) {
+      fallbackEligibleByDateOnline += 1;
+    } else {
+      missingBaselineAndNoDateOnline += 1;
+    }
+  }
+
+  return {
+    totalSystems,
+    systemsWithBaseline,
+    systemsMissingBaseline: totalSystems - systemsWithBaseline,
+    bucketAMissingFromAccountSolarGen: bucketA,
+    bucketBValueParseFailed: bucketB,
+    bucketCCaseOrWhitespaceMismatch: bucketC,
+    fallbackEligibleByDateOnline,
+    missingBaselineAndNoDateOnline,
+    rowsTotal: stats.rowsTotal,
+    rowsBlankGatsGenId: stats.rowsBlankGatsGenId,
+    rowsBlankValue: stats.rowsBlankValue,
+  };
 }
 
 function uniqueNonEmpty(values: readonly (string | null | undefined)[]): string[] {
@@ -557,7 +775,17 @@ export async function resolvePerformanceRatioBatchIds(
 export type PerformanceRatioStaticInput = Omit<
   PerformanceRatioInput,
   "convertedReadsRows"
->;
+> & {
+  /**
+   * 2026-05-09 — populated by the streaming loader so the build
+   * runner can pass it to `classifyPerformanceRatioBaselineFallback`
+   * and surface bucket counts on the
+   * `[dashboard:fact-build:performanceRatio]` metric line. Optional
+   * because tests may construct a `PerformanceRatioStaticInput`
+   * directly without exercising the streaming pass.
+   */
+  accountSolarGenerationStats?: AccountSolarGenerationStats;
+};
 
 // 2026-05-08 step-4 hardening — was 5_000. See STREAM_PAGE_SIZE_DEFAULT
 // above for the failure mode this addresses. Each page allocates one
@@ -640,6 +868,12 @@ export async function loadPerformanceRatioStaticInput(
   ) as Map<string, GenerationBaseline>;
   generationEntryRows = [];
 
+  // 2026-05-09 — accumulate per-row stats during the streaming
+  // pass so the build runner can attribute baseline-fallback hits
+  // to one of four root causes via
+  // `classifyPerformanceRatioBaselineFallback`. Cheap (a few
+  // counters + 3 Set.add calls per row); no second pass.
+  const accountSolarGenerationStats = createAccountSolarGenerationStats();
   if (batchIds.accountSolarGenerationBatchId) {
     await streamSrDsRowsPage(
       scopeId,
@@ -648,13 +882,19 @@ export async function loadPerformanceRatioStaticInput(
       (page) => {
         applyAccountSolarGenerationPageToBaselineMap(
           generationBaselineByTrackingId,
-          page
+          page,
+          accountSolarGenerationStats
         );
       }
     );
     process.stdout.write(
       `[loadPerformanceRatioInput] streamed accountSolarGeneration; ` +
         `baselineMapSize=${generationBaselineByTrackingId.size} ` +
+        `rowsTotal=${accountSolarGenerationStats.rowsTotal} ` +
+        `rowsBlankGatsGenId=${accountSolarGenerationStats.rowsBlankGatsGenId} ` +
+        `rowsBlankValue=${accountSolarGenerationStats.rowsBlankValue} ` +
+        `uniqueGatsGenIds=${accountSolarGenerationStats.seenGatsGenIds.size} ` +
+        `uniqueIdsWithValue=${accountSolarGenerationStats.idsWithAtLeastOneValidValue.size} ` +
         `heapUsed=${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB\n`
     );
   }
@@ -764,6 +1004,7 @@ export async function loadPerformanceRatioStaticInput(
     generationBaselineByTrackingId:
       generationBaselineByTrackingId as unknown as PerformanceRatioInput["generationBaselineByTrackingId"],
     generatorDateOnlineByTrackingId,
+    accountSolarGenerationStats,
   };
 }
 
