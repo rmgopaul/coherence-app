@@ -4367,7 +4367,7 @@ function parseSolarEdgeTeamMetadata(
   }
 }
 
-type SolarEdgeCredentialRow = {
+export type SolarEdgeCredentialRow = {
   id: string;
   connectionName: string | null;
   context: SolarEdgeTeamContext;
@@ -4478,7 +4478,7 @@ type SolarEdgeBulkInverterRow = {
   error: string | null;
 };
 
-function selectSolarEdgeContexts(
+export function selectSolarEdgeContexts(
   rows: SolarEdgeCredentialRow[],
   scope: "active" | "all",
   connectionId?: string | null
@@ -4491,7 +4491,7 @@ function selectSolarEdgeContexts(
   return rows.length > 0 ? [rows[0]] : [];
 }
 
-async function runSolarEdgeBulk<
+export async function runSolarEdgeBulk<
   T extends { status: "Found" | "Not Found" | "Error"; error: string | null },
 >(
   rows: SolarEdgeCredentialRow[],
@@ -4532,28 +4532,65 @@ async function runSolarEdgeBulk<
     async (siteId: string) => {
       let matched: SolarEdgeCredentialRow | null = null;
       let lastError: string | null = null;
-      let lastPayload: T | null = null;
+      // 2026-05-10 fix — pre-fix this was a single `lastPayload` that
+      // got overwritten unconditionally every iteration. When a site
+      // was Found in credential N but the loop kept going (`scope ===
+      // "all"`), credentials N+1..K returned `{ status: "Error",
+      // inverterCount: null, ... }` and clobbered the successful
+      // payload. By the time `toBulk(..., lastPayload, ...)` ran, the
+      // returned payload had every data field nulled out and an error
+      // string from a UNRELATED credential. The CSV the user saw
+      // looked like `status: Found, matched_connection: <X>,
+      // inverter_count: <blank>, ... error: 403 from credential Y` —
+      // mathematically impossible to act on.
+      //
+      // The fix: track the Found payload separately. If anything
+      // returned Found, that's the result we want to surface. Only
+      // fall back to the most recent non-Found payload when no
+      // credential found the site at all.
+      let foundPayload: T | null = null;
+      let nonFoundPayload: T | null = null;
       let foundIn = 0;
       let checked = 0;
       for (const row of candidates) {
         checked += 1;
         try {
           const payload = await fetchOne(row, siteId);
-          lastPayload = payload;
           if (payload.status === "Found") {
             matched = row;
+            foundPayload = payload;
             foundIn += 1;
             if (scope === "active") break;
-          } else if (payload.status === "Error") {
-            lastError = payload.error;
+          } else {
+            nonFoundPayload = payload;
+            if (payload.status === "Error") {
+              lastError = payload.error;
+            }
           }
         } catch (err) {
           lastError = err instanceof Error ? err.message : String(err);
         }
       }
-      const finalStatus: "Found" | "Not Found" | "Error" =
-        matched !== null ? "Found" : lastError ? "Error" : "Not Found";
-      return toBulk(siteId, matched, lastPayload, lastError, checked, foundIn);
+      // Prefer the Found payload when one exists. Otherwise fall back
+      // to the most recent non-Found payload so empty-portfolio sites
+      // (every credential returned "Not Found" or 403) still get a
+      // shape-correct row with the error message attached.
+      const finalPayload: T | null = foundPayload ?? nonFoundPayload;
+      // Suppress `lastError` when we DID find the site — the matched
+      // credential succeeded; subsequent credentials' 403s aren't
+      // user-actionable noise. Keeping the suppression conditional on
+      // `matched !== null` (not `foundPayload !== null`) defends
+      // against a future code path that sets matched without
+      // capturing the payload.
+      const finalError: string | null = matched !== null ? null : lastError;
+      return toBulk(
+        siteId,
+        matched,
+        finalPayload,
+        finalError,
+        checked,
+        foundIn
+      );
     }
   );
   for (const row of results) {
