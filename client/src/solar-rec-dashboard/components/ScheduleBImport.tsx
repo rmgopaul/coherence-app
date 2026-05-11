@@ -2244,7 +2244,12 @@ export function ScheduleBImport({
               <div>
                 <p className="text-xs font-bold uppercase tracking-wider">GATS ID to Contract ID Mapping</p>
                 <p className="text-xs text-muted-foreground">
-                  Paste two columns: GATS ID and Contract Number (CSV, tab, or one per line). Saved server-side so it persists across refreshes.
+                  Paste two columns: GATS ID and Contract Number (CSV, tab,
+                  or one per line). Saved server-side and{" "}
+                  <strong>auto-applied on every Schedule B import</strong> —
+                  no need to re-click after each upload. Click the button
+                  below only when you change the mapping and want to apply
+                  it immediately.
                 </p>
               </div>
               {contractIdMappingCount > 0 && (

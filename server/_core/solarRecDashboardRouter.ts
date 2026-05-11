@@ -382,6 +382,7 @@ import {
   cleanScheduleBCell,
   loadDeliveryScheduleBaseDataset,
   parseContractIdMappingText,
+  patchRowsWithContractIdMapping,
   findFirstTransferEnergyYear,
   makeDeliveryRowKey,
   scheduleRowsEqual,
@@ -2258,6 +2259,14 @@ export const solarRecDashboardRouter = t.router({
       // Augment with saved NON-ID → Contract-ID mapping so new rows
       // get their contract ID even when the delivery tracker was cleared.
       // Existing row assignments take priority (already in the map).
+      //
+      // 2026-05-11 — also retain the full saved mapping so we can
+      // re-patch ALL merged rows below (post-merge). Pre-fix the
+      // mapping only helped NEW incoming rows; existing rows with
+      // empty `utility_contract_number` stayed empty until the user
+      // manually clicked "Save & Apply mapping" on the Delivery
+      // Tracker page. Now the auto-apply path mirrors the button.
+      let savedContractIdMapping: ReadonlyMap<string, string> = new Map();
       try {
         const savedMappingText = await getSolarRecDashboardPayload(
           ctx.userId,
@@ -2265,6 +2274,7 @@ export const solarRecDashboardRouter = t.router({
         );
         if (savedMappingText) {
           const savedMapping = parseContractIdMappingText(savedMappingText);
+          savedContractIdMapping = savedMapping;
           for (const [gatsId, cId] of Array.from(savedMapping.entries())) {
             if (!contractIdByTrackingId.has(gatsId)) {
               contractIdByTrackingId.set(gatsId, cId);
@@ -2400,6 +2410,27 @@ export const solarRecDashboardRouter = t.router({
         .map((key) => mergedByKey.get(key))
         .filter((row): row is Record<string, string> => Boolean(row));
 
+      // 2026-05-11 — auto-apply saved contract-id mapping to ALL
+      // merged rows (existing + new). Pre-fix the mapping only
+      // augmented NEW incoming rows via `contractIdByTrackingId`;
+      // EXISTING rows with empty `utility_contract_number` stayed
+      // empty until the user manually clicked "Save & Apply
+      // mapping" on the Delivery Tracker page. That meant after
+      // every Schedule B re-import, the user had to re-click the
+      // button to restore contract IDs that the saved mapping
+      // already knew. Now the auto-apply path mirrors the manual
+      // button — saved mapping wins on every import.
+      //
+      // No-op when no saved mapping exists (the helper short-
+      // circuits on empty mapping).
+      const contractIdPatchResult = patchRowsWithContractIdMapping(
+        mergedRows,
+        savedContractIdMapping
+      );
+      const finalRows = contractIdPatchResult.rows;
+      const contractIdPatched = contractIdPatchResult.patched;
+      const contractIdUnchanged = contractIdPatchResult.unchanged;
+
       const mergedHeaders: string[] = [];
       const pushHeader = (header: string) => {
         const cleanHeader = cleanScheduleBCell(header);
@@ -2408,7 +2439,10 @@ export const solarRecDashboardRouter = t.router({
       };
       existingDataset.headers.forEach(pushHeader);
       incomingRows.forEach((row) => Object.keys(row).forEach(pushHeader));
-      mergedRows.forEach((row) => Object.keys(row).forEach(pushHeader));
+      // Ensure utility_contract_number is in the headers so columns
+      // appear on rows that didn't have it before the auto-patch.
+      pushHeader("utility_contract_number");
+      finalRows.forEach((row) => Object.keys(row).forEach(pushHeader));
 
       const uploadedAt = new Date().toISOString();
       const { key: storageKey } = await buildDashboardStorageKeys(
@@ -2422,7 +2456,7 @@ export const solarRecDashboardRouter = t.router({
         fileName: existingDataset.fileName || "Schedule B Import",
         uploadedAt,
         headers: mergedHeaders,
-        rows: mergedRows,
+        rows: finalRows,
       });
 
       // Mark the consumed result rows as applied so the Apply
@@ -2454,7 +2488,7 @@ export const solarRecDashboardRouter = t.router({
         updated,
         unchanged,
         errors: conversionErrors,
-        totalRows: mergedRows.length,
+        totalRows: finalRows.length,
         batchId: persistence.batchId,
         rowCount: persistence.rowCount,
         rowTableStatus: persistence.rowTableStatus,
@@ -2468,6 +2502,12 @@ export const solarRecDashboardRouter = t.router({
         appliedFileNames,
         alreadyInDatabaseFileNames,
         markedAppliedCount,
+        // 2026-05-11 — auto-applied saved contract-id mapping
+        // counters so the client can surface "<N> contract IDs
+        // auto-applied" feedback without a second proc round-trip.
+        contractIdMappingSize: savedContractIdMapping.size,
+        contractIdAutoPatched: contractIdPatched,
+        contractIdAutoUnchanged: contractIdUnchanged,
       };
       });
     }),
@@ -2702,36 +2742,16 @@ export const solarRecDashboardRouter = t.router({
       }
 
       // ── Step 4: Patch utility_contract_number on matching rows.
-      let patched = 0;
-      let unchanged = 0;
-      const patchedRows = existingDataset.rows.map((row) => {
-        const trackingId = cleanScheduleBCell(
-          row.tracking_system_ref_id
-        ).toUpperCase();
-        if (!trackingId) {
-          unchanged += 1;
-          return row;
-        }
-        const newContractId = mapping.get(trackingId);
-        if (!newContractId) {
-          unchanged += 1;
-          return row;
-        }
-        const currentContractId = cleanScheduleBCell(
-          row.utility_contract_number
-        );
-        if (currentContractId === newContractId) {
-          // Already set to the mapped value — count as unchanged
-          // so the user sees accurate "patched" totals.
-          unchanged += 1;
-          return row;
-        }
-        patched += 1;
-        return {
-          ...row,
-          utility_contract_number: newContractId,
-        };
-      });
+      // 2026-05-11 — extracted the inline patch loop to the shared
+      // helper `patchRowsWithContractIdMapping`. The same helper is
+      // used by `applyScheduleBToDeliveryObligations` so an auto-
+      // apply after Schedule B import gives the user the same result
+      // as clicking this button manually.
+      const {
+        rows: patchedRows,
+        patched,
+        unchanged,
+      } = patchRowsWithContractIdMapping(existingDataset.rows, mapping);
 
       // Make sure the headers include utility_contract_number so
       // the column appears on any rows that didn't have it before.

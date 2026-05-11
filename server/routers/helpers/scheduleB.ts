@@ -376,6 +376,75 @@ export function parseContractIdMappingText(text: string): Map<string, string> {
   return mapping;
 }
 
+/**
+ * Apply a `tracking_system_ref_id → utility_contract_number` mapping
+ * to a set of canonical delivery-schedule rows. Pure — no DB / I/O.
+ *
+ * Used by:
+ *   1. `applyScheduleBContractIdMapping` (the user-facing
+ *      "Save & Apply mapping" button) — applies the freshly-pasted
+ *      mapping to the active delivery-schedule batch.
+ *   2. `applyScheduleBToDeliveryObligations` (the auto-apply path
+ *      triggered after every Schedule B import) — re-applies the
+ *      saved mapping to the merged delivery-schedule rows so the
+ *      user doesn't have to click the button after every import.
+ *
+ * Semantics:
+ *   - Mapping wins. A row whose current `utility_contract_number`
+ *     differs from the mapping value is overwritten (counted as
+ *     "patched"). A row that already matches counts as "unchanged".
+ *   - Rows with no `tracking_system_ref_id` are left untouched
+ *     (counted as "unchanged"). The dedup-by-tracking-id logic
+ *     elsewhere already filters these out of downstream aggregators.
+ *   - Mapping keys are uppercased (matches `parseContractIdMappingText`
+ *     output). Row tracking IDs are uppercased at lookup time to
+ *     match.
+ *   - Empty mapping or empty rows array → no-op. The caller checks
+ *     `mapping.size > 0` to skip cheaply when there's nothing to do,
+ *     but the helper itself is safe to call with either.
+ *
+ * @returns The patched rows (new array; never mutates input) plus
+ *          counters for telemetry / response payload.
+ */
+export interface PatchRowsWithContractIdMappingResult {
+  rows: Array<Record<string, string>>;
+  patched: number;
+  unchanged: number;
+}
+
+export function patchRowsWithContractIdMapping(
+  rows: ReadonlyArray<Record<string, string>>,
+  mapping: ReadonlyMap<string, string>
+): PatchRowsWithContractIdMappingResult {
+  if (mapping.size === 0 || rows.length === 0) {
+    return { rows: rows.slice(), patched: 0, unchanged: rows.length };
+  }
+  let patched = 0;
+  let unchanged = 0;
+  const out = rows.map((row) => {
+    const trackingId = cleanScheduleBCell(
+      row.tracking_system_ref_id
+    ).toUpperCase();
+    if (!trackingId) {
+      unchanged += 1;
+      return row;
+    }
+    const newContractId = mapping.get(trackingId);
+    if (!newContractId) {
+      unchanged += 1;
+      return row;
+    }
+    const currentContractId = cleanScheduleBCell(row.utility_contract_number);
+    if (currentContractId === newContractId) {
+      unchanged += 1;
+      return row;
+    }
+    patched += 1;
+    return { ...row, utility_contract_number: newContractId };
+  });
+  return { rows: out, patched, unchanged };
+}
+
 const SCHEDULE_B_TRANSFER_UTILITY_TOKENS = ["comed", "ameren", "midamerican"];
 
 function parseScheduleBNumber(value: unknown): number | null {
