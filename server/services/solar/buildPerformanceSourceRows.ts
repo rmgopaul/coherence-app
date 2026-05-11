@@ -238,26 +238,131 @@ async function computePerformanceSourceRowsInputHash(
   return { hash, abpReportBatchId, scheduleBatchId };
 }
 
+/**
+ * 2026-05-11 — diagnostic counters surfaced by the proc so an
+ * operator can answer "why did this aggregate return 0 rows?" without
+ * spelunking the recompute path. Pin the shape via an exported
+ * interface so the response type stays stable for client consumers.
+ *
+ * **Cache-hit semantics.** On a warm cache the diagnostic is mostly
+ * the zero-default — only `rowsEmitted` is populated (from the
+ * cached payload's `rows.length`). Materializing the other counters
+ * would require reloading the source datasets and would defeat the
+ * cache. Consumers should branch on the proc's `fromCache` flag:
+ *   - `fromCache: false` → all counters reflect the cold recompute.
+ *   - `fromCache: true` → only `rowsEmitted` is meaningful; the
+ *     other fields are zero placeholders.
+ */
+export interface PerformanceSourceRowsDiagnostic {
+  /** Total raw delivery-schedule rows fed into the aggregator. */
+  scheduleRowsTotal: number;
+  /** Subset whose tracking_system_ref_id is non-empty. */
+  scheduleRowsWithTrackingId: number;
+  /** Subset whose tracking_system_ref_id is in `eligibleTrackingIds`. */
+  scheduleRowsEligible: number;
+  /** Size of the `eligibleTrackingIds` set produced by `buildPart2EligibilityMaps`. */
+  eligibleTrackingIdCount: number;
+  /** Size of the systems-by-tracking-id map (i.e., snapshot systems with a tracking id). */
+  systemsByTrackingIdCount: number;
+  /**
+   * Number of systems in the snapshot — used to detect a degraded
+   * snapshot (zero systems despite non-empty solarApplications input)
+   * which is the most common "suspicious empty" indicator.
+   */
+  snapshotSystemCount: number;
+  /** Final emitted row count — same as the returned `rows.length`. */
+  rowsEmitted: number;
+}
+
+/**
+ * 2026-05-11 — predicate used by `withArtifactCache.shouldCache` to
+ * detect a "suspicious empty" recompute result. We do NOT cache a
+ * zero-row result when the inputs that drive it were populated —
+ * that pattern almost always means something went sideways mid-
+ * recompute (snapshot degraded under heap pressure, a join missed
+ * because the snapshot returned 0 systems, etc.) and caching the
+ * empty would mask the bug until the next batch upload. Exported so
+ * tests can pin the heuristic.
+ */
+export function shouldCachePerformanceSourceRowsResult(args: {
+  rowsEmitted: number;
+  scheduleRowsTotal: number;
+  eligibleTrackingIdCount: number;
+}): boolean {
+  // Trivially-empty inputs → empty output is genuine, cache it.
+  if (args.scheduleRowsTotal === 0 || args.eligibleTrackingIdCount === 0) {
+    return true;
+  }
+  // Non-empty inputs but zero rows — suspicious. Don't cache; let
+  // the next call recompute and surface fresh diagnostics.
+  if (args.rowsEmitted === 0) {
+    return false;
+  }
+  return true;
+}
+
 export async function getOrBuildPerformanceSourceRows(
   scopeId: string
 ): Promise<{
   rows: PerformanceSourceRow[];
   fromCache: boolean;
+  diagnostic: PerformanceSourceRowsDiagnostic;
 }> {
   const { hash, abpReportBatchId, scheduleBatchId } =
     await computePerformanceSourceRowsInputHash(scopeId);
 
   // No delivery-schedule rows → nothing to aggregate. Mirror the
-  // client memo's empty-state behavior.
+  // client memo's empty-state behavior. Return a zero-diagnostic so
+  // the caller sees the exact reason ("no schedule batch") in the
+  // surfaced shape.
   if (!scheduleBatchId) {
-    return { rows: [], fromCache: false };
+    return {
+      rows: [],
+      fromCache: false,
+      diagnostic: {
+        scheduleRowsTotal: 0,
+        scheduleRowsWithTrackingId: 0,
+        scheduleRowsEligible: 0,
+        eligibleTrackingIdCount: 0,
+        systemsByTrackingIdCount: 0,
+        snapshotSystemCount: 0,
+        rowsEmitted: 0,
+      },
+    };
   }
 
   // No Part-2-verified abpReport → no eligible tracking IDs → empty
   // result. Skip the snapshot build + transfer-lookup load.
   if (!abpReportBatchId) {
-    return { rows: [], fromCache: false };
+    return {
+      rows: [],
+      fromCache: false,
+      diagnostic: {
+        scheduleRowsTotal: 0,
+        scheduleRowsWithTrackingId: 0,
+        scheduleRowsEligible: 0,
+        eligibleTrackingIdCount: 0,
+        systemsByTrackingIdCount: 0,
+        snapshotSystemCount: 0,
+        rowsEmitted: 0,
+      },
+    };
   }
+
+  // 2026-05-11 — the diagnostic counters live in this closure so the
+  // recompute can populate them in-flight. The cache miss path
+  // surfaces fresh counters; the cache hit path uses zero counters
+  // (we don't re-derive them from the cached payload — they're
+  // observability for cold-recompute behaviour, not per-call state).
+  let diagnostic: PerformanceSourceRowsDiagnostic = {
+    scheduleRowsTotal: 0,
+    scheduleRowsWithTrackingId: 0,
+    scheduleRowsEligible: 0,
+    eligibleTrackingIdCount: 0,
+    systemsByTrackingIdCount: 0,
+    snapshotSystemCount: 0,
+    rowsEmitted: 0,
+  };
 
   const { result, fromCache } = await withArtifactCache<PerformanceSourceRow[]>(
     {
@@ -266,6 +371,20 @@ export async function getOrBuildPerformanceSourceRows(
       inputVersionHash: hash,
       serde: superjsonSerde<PerformanceSourceRow[]>(),
       rowCount: (rows) => rows.length,
+      // 2026-05-11 — see `shouldCachePerformanceSourceRowsResult`
+      // docstring. We refuse to poison the cache with a "0 rows
+      // despite non-empty inputs" result. Without this gate, a
+      // recompute that hit mid-flight heap pressure or a partial
+      // snapshot load would write an empty array and every
+      // subsequent call would serve it from cache forever (until
+      // the user uploads a new abpReport / schedule that bumps the
+      // input hash).
+      shouldCache: (rows) =>
+        shouldCachePerformanceSourceRowsResult({
+          rowsEmitted: rows.length,
+          scheduleRowsTotal: diagnostic.scheduleRowsTotal,
+          eligibleTrackingIdCount: diagnostic.eligibleTrackingIdCount,
+        }),
       recompute: async () => {
         const [snapshot, abpReportRows, scheduleRows, transferLookup] =
           await Promise.all([
@@ -295,15 +414,50 @@ export async function getOrBuildPerformanceSourceRows(
           systemsByTrackingId.set(sys.trackingSystemRefId, sys);
         }
 
-        return buildPerformanceSourceRows({
+        const rows = buildPerformanceSourceRows({
           scheduleRows,
           eligibleTrackingIds,
           systemsByTrackingId,
           transferDeliveryLookup: transferLookup,
         });
+
+        // 2026-05-11 — populate the diagnostic counters. A second
+        // pass over scheduleRows is O(N) on the same array we just
+        // iterated; on production-shape data (~25k rows) this adds
+        // <50 ms but lets the proc surface "this is why the result
+        // is empty" without a follow-up debug roundtrip.
+        let scheduleRowsWithTrackingId = 0;
+        let scheduleRowsEligible = 0;
+        for (const row of scheduleRows) {
+          const trackingId = clean(row.tracking_system_ref_id);
+          if (!trackingId) continue;
+          scheduleRowsWithTrackingId += 1;
+          if (eligibleTrackingIds.has(trackingId)) {
+            scheduleRowsEligible += 1;
+          }
+        }
+        diagnostic = {
+          scheduleRowsTotal: scheduleRows.length,
+          scheduleRowsWithTrackingId,
+          scheduleRowsEligible,
+          eligibleTrackingIdCount: eligibleTrackingIds.size,
+          systemsByTrackingIdCount: systemsByTrackingId.size,
+          snapshotSystemCount: systems.length,
+          rowsEmitted: rows.length,
+        };
+
+        return rows;
       },
     }
   );
 
-  return { rows: result, fromCache };
+  // On cache hit, `diagnostic` is the zero-default declared above;
+  // the surfaced shape stays consistent regardless of cold/warm.
+  // Override `rowsEmitted` so a warm cache still reports something
+  // meaningful.
+  if (fromCache) {
+    diagnostic = { ...diagnostic, rowsEmitted: result.length };
+  }
+
+  return { rows: result, fromCache, diagnostic };
 }

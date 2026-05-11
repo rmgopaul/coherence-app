@@ -576,3 +576,111 @@ describe("withArtifactCache (superjson serde)", () => {
     expect(second.result.n).toBe(42);
   });
 });
+
+/**
+ * 2026-05-11 — `shouldCache` predicate. Lets callers refuse to
+ * persist a "suspicious empty" recompute result so we don't poison
+ * the cache when a recompute completes but produces zero rows
+ * because of mid-flight heap pressure / partial-load / etc.
+ *
+ * The shape `shouldCache(result): boolean` is intentionally caller-
+ * defined — each aggregator knows what "suspicious" means for its
+ * own output. The helper just gates the write on the predicate's
+ * boolean.
+ */
+describe("withArtifactCache (shouldCache predicate)", () => {
+  it("writes to the cache when shouldCache returns true (the default)", async () => {
+    mocks.getComputedArtifact.mockResolvedValue(null);
+
+    await withArtifactCache<{ rows: number[] }>({
+      scopeId: SCOPE_ID,
+      artifactType: ARTIFACT,
+      inputVersionHash: HASH,
+      serde: jsonSerde<{ rows: number[] }>(),
+      recompute: vi.fn(async () => ({ rows: [1, 2, 3] })),
+      rowCount: (r) => r.rows.length,
+      shouldCache: () => true,
+    });
+
+    expect(mocks.upsertComputedArtifact).toHaveBeenCalledTimes(1);
+  });
+
+  it("skips the cache write when shouldCache returns false", async () => {
+    mocks.getComputedArtifact.mockResolvedValue(null);
+
+    const out = await withArtifactCache<{ rows: number[] }>({
+      scopeId: SCOPE_ID,
+      artifactType: ARTIFACT,
+      inputVersionHash: HASH,
+      serde: jsonSerde<{ rows: number[] }>(),
+      recompute: vi.fn(async () => ({ rows: [] })),
+      rowCount: (r) => r.rows.length,
+      shouldCache: (r) => r.rows.length > 0,
+    });
+
+    expect(mocks.upsertComputedArtifact).not.toHaveBeenCalled();
+    // The result still flows back to the caller — just not cached.
+    expect(out.result.rows).toEqual([]);
+    expect(out.fromCache).toBe(false);
+  });
+
+  it("defaults to caching when the predicate is omitted (back-compat)", async () => {
+    mocks.getComputedArtifact.mockResolvedValue(null);
+
+    await withArtifactCache<{ rows: number[] }>({
+      scopeId: SCOPE_ID,
+      artifactType: ARTIFACT,
+      inputVersionHash: HASH,
+      serde: jsonSerde<{ rows: number[] }>(),
+      recompute: vi.fn(async () => ({ rows: [] })),
+      rowCount: (r) => r.rows.length,
+      // No shouldCache → default behavior (cache the result).
+    });
+
+    expect(mocks.upsertComputedArtifact).toHaveBeenCalledTimes(1);
+  });
+
+  it("propagates a throw from the predicate (does not swallow)", async () => {
+    mocks.getComputedArtifact.mockResolvedValue(null);
+
+    await expect(
+      withArtifactCache<{ rows: number[] }>({
+        scopeId: SCOPE_ID,
+        artifactType: ARTIFACT,
+        inputVersionHash: HASH,
+        serde: jsonSerde<{ rows: number[] }>(),
+        recompute: vi.fn(async () => ({ rows: [1] })),
+        rowCount: (r) => r.rows.length,
+        shouldCache: () => {
+          throw new Error("predicate exploded");
+        },
+      })
+    ).rejects.toThrow("predicate exploded");
+
+    expect(mocks.upsertComputedArtifact).not.toHaveBeenCalled();
+  });
+
+  it("does not invoke the predicate on cache hit", async () => {
+    mocks.getComputedArtifact.mockResolvedValue({
+      payload: JSON.stringify({ rows: [9, 9, 9] }),
+    });
+    const shouldCache = vi.fn(() => true);
+    const recompute = vi.fn();
+
+    const out = await withArtifactCache<{ rows: number[] }>({
+      scopeId: SCOPE_ID,
+      artifactType: ARTIFACT,
+      inputVersionHash: HASH,
+      serde: jsonSerde<{ rows: number[] }>(),
+      recompute,
+      rowCount: (r) => r.rows.length,
+      shouldCache,
+    });
+
+    // Cache hit short-circuits before recompute / predicate.
+    expect(recompute).not.toHaveBeenCalled();
+    expect(shouldCache).not.toHaveBeenCalled();
+    expect(out.fromCache).toBe(true);
+    expect(out.result.rows).toEqual([9, 9, 9]);
+  });
+});

@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { buildPerformanceSourceRows } from "./buildPerformanceSourceRows";
+import {
+  buildPerformanceSourceRows,
+  shouldCachePerformanceSourceRowsResult,
+} from "./buildPerformanceSourceRows";
 import { buildTransferDeliveryLookupFixture as lookupFor } from "./aggregatorTestFixtures";
 import type { SnapshotSystem } from "./aggregatorHelpers";
 
@@ -240,5 +243,83 @@ describe("buildPerformanceSourceRows", () => {
     expect(rows[0].years[0].delivered).toBe(50);
     expect(rows[0].years[1].yearIndex).toBe(1);
     expect(rows[0].years[1].delivered).toBe(0);
+  });
+});
+
+/**
+ * 2026-05-11 — predicate that decides whether a freshly-computed
+ * result should be persisted to the `solarRecComputedArtifacts`
+ * cache. Used by `getOrBuildPerformanceSourceRows` via
+ * `withArtifactCache.shouldCache`. The key behaviour: a 0-row result
+ * with non-empty inputs is "suspicious" and must NOT be cached;
+ * otherwise we'd serve the empty forever until the next input-batch
+ * change.
+ */
+describe("shouldCachePerformanceSourceRowsResult", () => {
+  it("caches genuinely-empty results when the schedule input was empty", () => {
+    expect(
+      shouldCachePerformanceSourceRowsResult({
+        rowsEmitted: 0,
+        scheduleRowsTotal: 0,
+        eligibleTrackingIdCount: 0,
+      })
+    ).toBe(true);
+  });
+
+  it("caches genuinely-empty results when no tracking ids are eligible", () => {
+    expect(
+      shouldCachePerformanceSourceRowsResult({
+        rowsEmitted: 0,
+        scheduleRowsTotal: 1000,
+        eligibleTrackingIdCount: 0,
+      })
+    ).toBe(true);
+  });
+
+  it("REFUSES to cache 0-row results when inputs were populated (the bug-fix case)", () => {
+    // Pre-fix this case poisoned the cache: the recompute hit mid-
+    // flight heap pressure (or some other transient), produced an
+    // empty array, withArtifactCache wrote it, and every subsequent
+    // request served `[]` forever (until the next batch upload bumped
+    // the input hash). Now the predicate returns false → cache write
+    // is skipped → next request retries the recompute.
+    expect(
+      shouldCachePerformanceSourceRowsResult({
+        rowsEmitted: 0,
+        scheduleRowsTotal: 24_000,
+        eligibleTrackingIdCount: 22_000,
+      })
+    ).toBe(false);
+  });
+
+  it("caches non-empty results regardless of input shape", () => {
+    expect(
+      shouldCachePerformanceSourceRowsResult({
+        rowsEmitted: 1,
+        scheduleRowsTotal: 1,
+        eligibleTrackingIdCount: 1,
+      })
+    ).toBe(true);
+    expect(
+      shouldCachePerformanceSourceRowsResult({
+        rowsEmitted: 50_000,
+        scheduleRowsTotal: 24_000,
+        eligibleTrackingIdCount: 22_000,
+      })
+    ).toBe(true);
+  });
+
+  it("caches when schedule rows exist but eligibility is empty (no part-2 abp report yet)", () => {
+    // Genuine empty: the user uploaded a delivery schedule but
+    // hasn't yet uploaded a Part-2-verified abpReport. Caching the
+    // empty is fine because the next abp upload bumps the input
+    // hash and triggers a recompute.
+    expect(
+      shouldCachePerformanceSourceRowsResult({
+        rowsEmitted: 0,
+        scheduleRowsTotal: 24_000,
+        eligibleTrackingIdCount: 0,
+      })
+    ).toBe(true);
   });
 });

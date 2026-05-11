@@ -62,6 +62,34 @@ export type WithArtifactCacheInput<T> = {
   recompute: () => Promise<T>;
   /** How to populate `solarRecComputedArtifacts.rowCount` for a given result. */
   rowCount: (result: T) => number;
+  /**
+   * 2026-05-11 — optional gate on whether a freshly-computed result
+   * should be persisted to the cache. Returns `true` to cache (the
+   * default behaviour when this option is omitted) or `false` to
+   * return the result to the caller WITHOUT writing it to
+   * `solarRecComputedArtifacts`.
+   *
+   * Use this to avoid poisoning the cache with a "suspicious" empty
+   * result — most often when a recompute completes but produces zero
+   * rows despite non-empty input batches. That pattern usually means
+   * something went sideways mid-recompute (a join missed because the
+   * snapshot returned 0 systems due to mid-flight heap pressure /
+   * partial-load / etc.) and serving the empty result from cache
+   * forever afterwards is worse than recomputing on the next call.
+   *
+   * The predicate runs after `recompute` succeeds. If it throws, the
+   * thrown error propagates to the caller (the helper doesn't try to
+   * swallow it — that would be just as bad as caching the empty
+   * result).
+   *
+   * **Per-caller decision, not a per-aggregator default.** Each
+   * caller knows what "suspicious" means for its own output (rows
+   * empty + inputs populated? snapshot.systems empty + solarApps
+   * batch non-empty? per-month aggregates empty + year-boundary
+   * input was present?). Centralising the heuristic here would
+   * couple every aggregator to a shape the helper doesn't know.
+   */
+  shouldCache?: (result: T) => boolean;
 };
 
 // ---------------------------------------------------------------------------
@@ -189,6 +217,24 @@ async function runRecomputeAndCache<T>(
   input: WithArtifactCacheInput<T>
 ): Promise<{ result: T; fromCache: false }> {
   const result = await input.recompute();
+
+  // 2026-05-11 — consult the caller's `shouldCache` gate before
+  // persisting. The default is to cache (when the gate is omitted),
+  // which preserves the pre-2026-05-11 behaviour for every caller
+  // that hasn't opted into the gate. See the docstring on
+  // `WithArtifactCacheInput.shouldCache` for the rationale.
+  const shouldCache = input.shouldCache ? input.shouldCache(result) : true;
+  if (!shouldCache) {
+    // Loud enough to grep when investigating "why didn't this
+    // aggregator's result land in the cache?". Not an error — the
+    // caller deliberately opted out for this run.
+    console.warn(
+      `[withArtifactCache] skipped cache write for ${input.artifactType} ` +
+        `(scope=${input.scopeId} hash=${input.inputVersionHash.slice(0, 10)}); ` +
+        `shouldCache predicate returned false — likely a suspicious empty result.`
+    );
+    return { result, fromCache: false };
+  }
 
   try {
     await upsertComputedArtifact({

@@ -82,6 +82,33 @@ export interface ForecastAggregates {
   energyYearLabel: string;
 }
 
+/**
+ * 2026-05-11 — diagnostic counters surfaced by the proc so an
+ * operator can answer "why did Forecast return 0 rows?" without
+ * spelunking the recompute path. Mirrors the
+ * `PerformanceSourceRowsDiagnostic` pattern; the Forecast aggregator
+ * consumes `buildPerformanceSourceRows` output and then groups by
+ * contract, so the upstream counters tell most of the story.
+ *
+ * **Cache-hit semantics.** On a warm cache only `rowsEmitted` is
+ * meaningful (echoed from the cached payload). The other counters
+ * stay at the zero-default because materializing them would require
+ * reloading the source datasets — the very work the cache exists to
+ * avoid. Consumers should branch on the proc's `fromCache` flag.
+ */
+export interface ForecastDiagnostic {
+  /** Snapshot systems used as the eligibility universe. */
+  snapshotSystemCount: number;
+  /** Part-2-verified eligible tracking ids cardinality. */
+  eligibleTrackingIdCount: number;
+  /** Delivery-schedule rows fed into `buildPerformanceSourceRows`. */
+  scheduleRowsTotal: number;
+  /** Performance-source rows produced by the upstream aggregator. */
+  performanceSourceRowsCount: number;
+  /** Final forecast contract rows emitted. */
+  rowsEmitted: number;
+}
+
 // ---------------------------------------------------------------------------
 // Energy-year computation — runs at request time so May 1 boundary
 // crossings invalidate the cache automatically.
@@ -353,8 +380,31 @@ export const __forecastAggregatesTest = {
  *     supplies empty arrays + maps and the aggregator produces
  *     consistent empty output.
  */
+/**
+ * 2026-05-11 — exported predicate so tests can pin the
+ * "suspicious empty" heuristic. We refuse to cache a zero-row
+ * result when the inputs that drive it were populated — the
+ * post-mortem of 2026-05-11 traced a 24/34s "fromCache: true,
+ * rows: []" response back to exactly this pattern (recompute hit
+ * mid-flight heap pressure, returned `[]`, withArtifactCache
+ * cached it, all subsequent calls served the empty forever).
+ */
+export function shouldCacheForecastResult(args: {
+  rowsEmitted: number;
+  scheduleRowsTotal: number;
+  eligibleTrackingIdCount: number;
+}): boolean {
+  if (args.scheduleRowsTotal === 0 || args.eligibleTrackingIdCount === 0) {
+    return true;
+  }
+  if (args.rowsEmitted === 0) {
+    return false;
+  }
+  return true;
+}
+
 export async function getOrBuildForecastAggregates(scopeId: string): Promise<
-  ForecastAggregates & { fromCache: boolean }
+  ForecastAggregates & { fromCache: boolean; diagnostic: ForecastDiagnostic }
 > {
   const batchIds = await resolveForecastBatchIds(scopeId);
   const energyYear = computeEnergyYearWindow();
@@ -364,10 +414,28 @@ export async function getOrBuildForecastAggregates(scopeId: string): Promise<
       rows: [],
       energyYearLabel: energyYear.label,
       fromCache: false,
+      diagnostic: {
+        snapshotSystemCount: 0,
+        eligibleTrackingIdCount: 0,
+        scheduleRowsTotal: 0,
+        performanceSourceRowsCount: 0,
+        rowsEmitted: 0,
+      },
     };
   }
 
   const inputVersionHash = computeForecastInputHash(batchIds, energyYear.label);
+
+  // 2026-05-11 — populated in-flight by the recompute closure so the
+  // proc can surface "why is this empty?" diagnostics on cold-recompute
+  // responses. Warm cache hits override `rowsEmitted` below.
+  let diagnostic: ForecastDiagnostic = {
+    snapshotSystemCount: 0,
+    eligibleTrackingIdCount: 0,
+    scheduleRowsTotal: 0,
+    performanceSourceRowsCount: 0,
+    rowsEmitted: 0,
+  };
 
   const { result, fromCache } = await withArtifactCache<ForecastAggregates>({
     scopeId,
@@ -375,6 +443,16 @@ export async function getOrBuildForecastAggregates(scopeId: string): Promise<
     inputVersionHash,
     serde: jsonSerde<ForecastAggregates>(),
     rowCount: (data) => data.rows.length,
+    // 2026-05-11 — refuse to poison the cache with a 0-row result when
+    // the inputs that drove it were non-empty. See
+    // `shouldCacheForecastResult` docstring + the
+    // `PerformanceSourceRows` sibling for the bug this fixes.
+    shouldCache: (data) =>
+      shouldCacheForecastResult({
+        rowsEmitted: data.rows.length,
+        scheduleRowsTotal: diagnostic.scheduleRowsTotal,
+        eligibleTrackingIdCount: diagnostic.eligibleTrackingIdCount,
+      }),
     recompute: async () => {
       // 2026-04-29 OOM hotfix (PR 2.5) — load datasets sequentially
       // with explicit array-drop between phases. Same pattern as
@@ -486,6 +564,18 @@ export async function getOrBuildForecastAggregates(scopeId: string): Promise<
         energyYear,
       });
 
+      // 2026-05-11 — populate the diagnostic counters so the proc
+      // surfaces "this is why the result has this shape" without a
+      // follow-up debug round-trip. Pure O(1) snapshots of state we
+      // already computed.
+      diagnostic = {
+        snapshotSystemCount: systems.length,
+        eligibleTrackingIdCount: eligibleTrackingIds.size,
+        scheduleRowsTotal: scheduleRows.length,
+        performanceSourceRowsCount: performanceSourceRows.length,
+        rowsEmitted: rows.length,
+      };
+
       return {
         rows,
         energyYearLabel: energyYear.label,
@@ -493,5 +583,12 @@ export async function getOrBuildForecastAggregates(scopeId: string): Promise<
     },
   });
 
-  return { ...result, fromCache };
+  // On cache hit, the in-flight diagnostic stays at its zero-default
+  // (recompute didn't run). Echo `rowsEmitted` from the cached
+  // payload so the surfaced shape stays consistent.
+  if (fromCache) {
+    diagnostic = { ...diagnostic, rowsEmitted: result.rows.length };
+  }
+
+  return { ...result, fromCache, diagnostic };
 }
