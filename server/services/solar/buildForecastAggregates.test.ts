@@ -31,8 +31,8 @@ describe("Forecast aggregate cache key", () => {
     expect(before).not.toBe(after);
   });
 
-  it("uses the runner version that includes transferHistory freshness", () => {
-    expect(FORECAST_RUNNER_VERSION).toBe("phase-5d-pr2-forecast@4");
+  it("uses the runner version bumped for the 2026-05-11 cache-poisoning invalidation", () => {
+    expect(FORECAST_RUNNER_VERSION).toBe("phase-5d-pr2-forecast@5");
   });
 });
 
