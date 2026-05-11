@@ -295,7 +295,15 @@ const FORECAST_DEPS = [
 
 const FORECAST_ARTIFACT_TYPE = "forecast";
 
-export const FORECAST_RUNNER_VERSION = "phase-5d-pr2-forecast@4";
+export const FORECAST_RUNNER_VERSION = "phase-5d-pr2-forecast@5";
+// 2026-05-11 (@5): force-invalidate the existing poisoned cache
+// rows that PR #556's `shouldCache` predicate would have rejected
+// had it been live at the time. The cache hash bundles the runner
+// version, so bumping it here gives every scope a clean cache miss
+// → fresh recompute on the next request → PR #556's predicate
+// gates the write, so a transient failure no longer poisons.
+// Pure operational lever; no behaviour change beyond cache
+// invalidation.
 // 2026-05-05 (@4): include transferHistory in the input hash.
 // Forecast reads delivered REC history through
 // `buildTransferDeliveryLookupForScope`, so transfer uploads must
