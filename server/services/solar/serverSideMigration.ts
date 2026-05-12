@@ -232,7 +232,44 @@ function mergeCsvTexts(csvs: string[]): string {
   return parts.join("\n");
 }
 
-async function loadDatasetPayload(
+/**
+ * If `payload` is a v1 `saveDataset` JSON envelope
+ * `{ fileName, uploadedAt, headers, csvText }`, return the inner
+ * `csvText`. Otherwise return the payload unchanged.
+ *
+ * The v1 `saveDataset` client path (`SolarRecDashboard.tsx`)
+ * always serializes via `serializeDatasetForRemote()` which
+ * produces this envelope, then splits it into ≤250 KB chunks
+ * (`REMOTE_DATASET_CHUNK_CHAR_LIMIT`). Reassembled chunks AND
+ * unchunked direct writes share the same envelope shape, so
+ * Case 2 (chunked) and Case 3 (direct) below both need to
+ * unwrap.
+ *
+ * Shape uniqueness: real CSV cannot pass `JSON.parse()` (header
+ * rows are not valid JSON tokens), and a payload that does parse
+ * but lacks a string `csvText` falls through to the raw return —
+ * so envelope-only payloads are the only ones that get unwrapped.
+ * Exported for direct unit testing.
+ */
+export function maybeUnwrapV1Envelope(payload: string): string {
+  try {
+    const parsed = JSON.parse(payload);
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      typeof (parsed as { csvText?: unknown }).csvText === "string"
+    ) {
+      return (parsed as { csvText: string }).csvText;
+    }
+  } catch {
+    // Not JSON — payload is raw CSV; passthrough.
+  }
+  return payload;
+}
+
+// Exported for unit tests. Production callers go through
+// `migrateOneDataset` / `syncOneCoreDatasetFromStorage`.
+export async function loadDatasetPayload(
   userId: number,
   datasetKey: string,
   reportProgress?: DatasetSyncProgressReporter
@@ -322,11 +359,33 @@ async function loadDatasetPayload(
         })
       );
     }
-    return merged;
+    // 2026-05-12 — `splitTextIntoChunks` (the v1 client-side chunker)
+    // slices the SAME `serializeDatasetForRemote()` envelope into
+    // ≤250 KB substrings. Reassembling concatenates them back into
+    // the original envelope JSON, so the post-reassembly result needs
+    // the same unwrap as the unchunked Case 3 path below. PR #559
+    // initial revision missed this and only fixed Case 3, leaving
+    // the multi-MB stuck datasets (4.76 MB abpQuickBooksRows etc.)
+    // still broken because they hit Case 2.
+    return maybeUnwrapV1Envelope(merged);
   }
 
-  // Case 3: direct payload (very small datasets only).
-  return basePayload;
+  // Case 3: direct payload — either raw CSV text OR a legacy v1
+  // upload envelope.
+  //
+  // 2026-05-12 — the v1 `saveDataset` proc stored payloads as a JSON
+  // envelope `{ fileName, uploadedAt, headers, csvText }` for
+  // datasets that fit under the single-row chunk limit (no manifest,
+  // no chunk pointer indirection). For those datasets Case 1 and
+  // Case 2 both return null, and the migration code below feeds
+  // `basePayload` to `parseCsvText` — which then parses the
+  // envelope keys (`fileName`, `uploadedAt`, `headers`, `csvText`)
+  // as if they were the dataset's CSV header row, producing
+  // "missing required columns" errors. abpUtilityInvoiceRows
+  // (~308 KB) fits Case 3 after the chunker decided NOT to split a
+  // payload barely over the threshold in early uploads (single
+  // raw row stored direct). Same envelope, same unwrap.
+  return maybeUnwrapV1Envelope(basePayload);
 }
 
 // ---------------------------------------------------------------------------
