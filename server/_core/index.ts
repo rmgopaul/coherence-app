@@ -107,7 +107,52 @@ const SOLAR_REC_ROUTER_ROOTS = new Set([
   "abpSettlement",
   "csgPortal",
   "dinScrape",
+  // 2026-05-12 — these three were added to `solarRecAppRouter` (PR #167
+  // / #171 / #173) but never to this allowlist. Without them, the
+  // dispatcher below forwarded `jobs.*` / `systems.*` / `worksets.*`
+  // requests to the main `appRouter`, which 404'd with
+  // "No procedure found on path …". Keep this set in sync with the
+  // top-level keys of `solarRecAppRouter` in solarRecRouter.ts —
+  // every addition to that router must mirror an entry here.
+  "jobs",
+  "systems",
+  "worksets",
 ]);
+
+/**
+ * Regression rail: assert that every top-level key of
+ * `solarRecAppRouter` is mirrored in `SOLAR_REC_ROUTER_ROOTS`. The
+ * dispatcher uses the allowlist to decide which router handles
+ * `/solar-rec/api/trpc/*` calls; drift between the two silently
+ * 404s every request to the missing root (the 2026-05-12 incident
+ * with `jobs` / `systems` / `worksets`). Running at module-load is
+ * deliberate — boot-time failure is louder than a 404 in prod.
+ */
+function assertSolarRecRouterRootsInSync(): void {
+  // tRPC v11 exposes the top-level sub-routers / procedures under
+  // `_def.procedures` keyed by the FULL dotted path. The root is the
+  // segment before the first `.`.
+  const procedures =
+    (solarRecAppRouter as unknown as { _def: { procedures: Record<string, unknown> } })._def
+      .procedures ?? {};
+  const routerRoots = new Set<string>();
+  for (const path of Object.keys(procedures)) {
+    const root = path.split(".")[0];
+    if (root) routerRoots.add(root);
+  }
+  const missing: string[] = [];
+  routerRoots.forEach((root) => {
+    if (!SOLAR_REC_ROUTER_ROOTS.has(root)) missing.push(root);
+  });
+  if (missing.length > 0) {
+    throw new Error(
+      `SOLAR_REC_ROUTER_ROOTS is missing top-level solarRecAppRouter keys: ` +
+        `${missing.sort().join(", ")}. Add them to the Set in server/_core/index.ts ` +
+        `or the dispatcher will forward these requests to the main router and 404.`
+    );
+  }
+}
+assertSolarRecRouterRootsInSync();
 
 function getTrpcProcedureRoots(pathname: string): string[] {
   const normalized = decodeURIComponent(pathname).replace(/^\/+/, "").trim();
