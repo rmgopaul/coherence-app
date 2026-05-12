@@ -36,7 +36,16 @@ import {
   resolveSolarRecScopeId,
 } from "./solarRecAuth";
 import { solarRecAppRouter, createSolarRecContext } from "./solarRecRouter";
+import {
+  SOLAR_REC_ROUTER_ROOTS,
+  assertSolarRecRouterRootsInSync,
+} from "./solarRecRouterRoots";
 import { getLocalStorageRoot, isStorageProxyConfigured, LOCAL_STORAGE_ROUTE_PREFIX } from "../storage";
+
+// Boot-time guard: crash loud if SOLAR_REC_ROUTER_ROOTS has drifted
+// from solarRecAppRouter. See the JSDoc in solarRecRouterRoots.ts
+// for the failure mode this prevents.
+assertSolarRecRouterRootsInSync(solarRecAppRouter);
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -57,57 +66,12 @@ async function findAvailablePort(startPort: number = 3000): Promise<number> {
   throw new Error(`No available port found starting from ${startPort}`);
 }
 
-// Roots that belong to the standalone Solar REC tRPC router
-// (server/_core/solarRecRouter.ts). Any request to /solar-rec/api/trpc
-// whose procedure root is in this set gets handled by that router;
-// anything else falls through to the main router in server/routers.ts.
-//
-// HISTORY:
-// 2026-04-10: "solarRecDashboard" was removed from this set because
-//   the in-_core dashboardRouter was dead code — no client called
-//   solarRecTrpc.solarRecDashboard.*. Legacy traffic to
-//   /solar-rec/api/trpc/solarRecDashboard.* fell through to the
-//   main router in server/routers.ts (the live copy at the time).
-// 2026-04-15: "auth" and "enphaseV2" removed alongside their dead
-//   sub-routers. Main-app pages use the main appRouter's auth /
-//   enphaseV2 routers via the primary trpc client, not solarRecTrpc.
-// 2026-04-26 (Task 5.5): "solarRecDashboard" RE-ADDED. The router
-//   has been migrated from server/routers/solarRecDashboard.ts to
-//   server/_core/solarRecDashboardRouter.ts and is now composed
-//   into solarRecAppRouter with `requirePermission("solar-rec-
-//   dashboard", level)` middleware on every procedure. The old
-//   main-router mount has been removed; main-app /api/trpc/
-//   solarRecDashboard.* requests would now 404. The legacy
-//   /solar-rec-dashboard URL on App.tsx has been retired in favor
-//   of the /solar-rec/dashboard route on SolarRecApp.tsx.
-const SOLAR_REC_ROUTER_ROOTS = new Set([
-  "users",
-  "credentials",
-  "monitoring",
-  "permissions",
-  "generac",
-  "solis",
-  "goodwe",
-  "hoymiles",
-  "locus",
-  "apsystems",
-  "solarlog",
-  "growatt",
-  "ekm",
-  "fronius",
-  "ennexos",
-  "enphaseV4",
-  "solaredge",
-  "teslaPowerhub",
-  "sunpower",
-  "egauge",
-  "solarRecDashboard",
-  "contractScan",
-  "zendesk",
-  "abpSettlement",
-  "csgPortal",
-  "dinScrape",
-]);
+// `SOLAR_REC_ROUTER_ROOTS` + `assertSolarRecRouterRootsInSync` live in
+// `./solarRecRouterRoots.ts`. The set is the dispatcher's allowlist
+// (used by the route below); the assertion runs at module load
+// (top of file) to crash boot if the set drifts from the actual
+// router. See that module's JSDoc for the full failure-mode history
+// (2026-04-10 / 2026-04-15 / 2026-04-26 / 2026-05-12).
 
 function getTrpcProcedureRoots(pathname: string): string[] {
   const normalized = decodeURIComponent(pathname).replace(/^\/+/, "").trim();
