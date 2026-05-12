@@ -232,7 +232,9 @@ function mergeCsvTexts(csvs: string[]): string {
   return parts.join("\n");
 }
 
-async function loadDatasetPayload(
+// Exported for unit tests. Production callers go through
+// `migrateOneDataset` / `syncOneCoreDatasetFromStorage`.
+export async function loadDatasetPayload(
   userId: number,
   datasetKey: string,
   reportProgress?: DatasetSyncProgressReporter
@@ -325,7 +327,37 @@ async function loadDatasetPayload(
     return merged;
   }
 
-  // Case 3: direct payload (very small datasets only).
+  // Case 3: direct payload — either raw CSV text OR a legacy v1
+  // upload envelope.
+  //
+  // 2026-05-12 — the v1 `saveDataset` proc stored payloads as a JSON
+  // envelope `{ fileName, uploadedAt, headers, csvText }` for
+  // datasets that fit under the single-row chunk limit (no manifest,
+  // no chunk pointer indirection). For those datasets Case 1 and
+  // Case 2 both return null, and the migration code below feeds
+  // `basePayload` to `parseCsvText` — which then parses the
+  // envelope keys (`fileName`, `uploadedAt`, `headers`, `csvText`)
+  // as if they were the dataset's CSV header row, producing
+  // "missing required columns" errors. abpQuickBooksRows,
+  // abpProjectApplicationRows, and abpUtilityInvoiceRows were stuck
+  // in this state on prod for 2+ weeks (Task 5.12 PR-3 / 6 / 7
+  // shipped the parsers; the migration never succeeded because of
+  // this bug). Detect the envelope shape and extract the inner
+  // CSV. Falls through to returning the raw payload when the
+  // payload is genuine CSV (no `csvText` key, e.g. a direct chunk
+  // write that bypassed `saveDataset`).
+  try {
+    const maybeEnvelope = JSON.parse(basePayload);
+    if (
+      maybeEnvelope &&
+      typeof maybeEnvelope === "object" &&
+      typeof (maybeEnvelope as { csvText?: unknown }).csvText === "string"
+    ) {
+      return (maybeEnvelope as { csvText: string }).csvText;
+    }
+  } catch {
+    // Not JSON — fall through; payload is raw CSV.
+  }
   return basePayload;
 }
 
