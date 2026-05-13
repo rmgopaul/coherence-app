@@ -266,14 +266,25 @@ describe("shouldCachePerformanceSourceRowsResult", () => {
     ).toBe(true);
   });
 
-  it("caches genuinely-empty results when no tracking ids are eligible", () => {
+  it("REFUSES to cache when schedule rows exist but eligibility is empty (2026-05-12 tighter)", () => {
+    // The prior predicate cached this case as "genuine empty
+    // because no eligible IDs". Prod 2026-05-13 showed exactly
+    // this shape poisoned the cache: deliveryScheduleBase had
+    // 24k rows + abpReport had 28k rows, but a transient
+    // recompute produced `eligibleTrackingIdCount=0` (snapshot
+    // degraded mid-build, or a join missed under heap pressure),
+    // the predicate let the empty array cache, and every
+    // subsequent call served the poisoned empty payload forever.
+    // New behaviour: any 0-row result with non-empty schedule
+    // input is refused — let the next call retry and surface
+    // fresh diagnostics.
     expect(
       shouldCachePerformanceSourceRowsResult({
         rowsEmitted: 0,
         scheduleRowsTotal: 1000,
         eligibleTrackingIdCount: 0,
       })
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it("REFUSES to cache 0-row results when inputs were populated (the bug-fix case)", () => {
@@ -309,16 +320,16 @@ describe("shouldCachePerformanceSourceRowsResult", () => {
     ).toBe(true);
   });
 
-  it("caches when schedule rows exist but eligibility is empty (no part-2 abp report yet)", () => {
-    // Genuine empty: the user uploaded a delivery schedule but
-    // hasn't yet uploaded a Part-2-verified abpReport. Caching the
-    // empty is fine because the next abp upload bumps the input
-    // hash and triggers a recompute.
+  it("caches the all-empty case (scheduleRowsTotal === 0 — truly nothing to aggregate)", () => {
+    // The ONLY "cache the empty result" path post-tighten: no
+    // schedule rows at all → empty output is structurally
+    // guaranteed regardless of eligibility shape. Pinning the
+    // sole acceptable cache-empty branch.
     expect(
       shouldCachePerformanceSourceRowsResult({
         rowsEmitted: 0,
-        scheduleRowsTotal: 24_000,
-        eligibleTrackingIdCount: 0,
+        scheduleRowsTotal: 0,
+        eligibleTrackingIdCount: 42_000,
       })
     ).toBe(true);
   });
