@@ -269,6 +269,12 @@ export async function runDatasetUploadJob(
     let parsedSinceFlush = 0;
     let rowIndex = 0;
     const writeBuffer: unknown[] = [];
+    // 2026-05-12 — capture first row's header set so we can include
+    // it in the "all rows dropped" failure message below. The
+    // stream-parser hands us key/value objects per row, not a
+    // separate header list. Single-assign so subsequent rows don't
+    // reallocate.
+    let observedHeaderNames: readonly string[] = [];
 
     const flushParserProgress = async () => {
       if (parsedSinceFlush <= 0) return;
@@ -295,6 +301,9 @@ export async function runDatasetUploadJob(
     };
 
     for await (const rawRow of streamCsvRowsFromFile(job.storageKey)) {
+      if (observedHeaderNames.length === 0) {
+        observedHeaderNames = Object.keys(rawRow);
+      }
       // Per-row append dedup. `appendDedupKeys` is mutated in-place
       // so duplicates within the current upload also collapse —
       // matches `partitionAppendRowsByKeySet` semantics.
@@ -356,6 +365,60 @@ export async function runDatasetUploadJob(
     await updateDatasetUploadJob(scopeId, jobId, {
       totalRows: totalRowsParsed,
     });
+
+    // 2026-05-12 — refuse to activate an empty batch when the
+    // user uploaded a non-empty CSV. If every row's `parseRow`
+    // returned null (e.g., the dataset's required field alias is
+    // missing from EVERY row's headers — the
+    // `abpUtilityInvoiceRows` SYSTEM_ID alias-mismatch failure
+    // mode), we'd otherwise silently flip the active version to
+    // a 0-row batch and the user has no idea why their upload
+    // didn't take.
+    //
+    // CLAUDE.md hard rule #4 ("No silent error swallowing in
+    // persistence paths") + the v1 sibling guard in
+    // `ingestDataset` for the migration path. For append mode,
+    // factor `clonedRowCount` out — a 0-write append against a
+    // non-empty prior batch should still succeed (the upload had
+    // no new rows, but the batch isn't empty).
+    if (
+      totalRowsParsed > 0 &&
+      totalRowsWritten === 0 &&
+      clonedRowCount === 0
+    ) {
+      // Diagnostic wording distinguishes "every parseRow returned
+      // null" from "every parseRow threw" so the user can act on
+      // the right cause. Both cases have the same predicate but
+      // different remediation.
+      const dropReason =
+        totalErrorCount > 0
+          ? `the dataset parser raised ${totalErrorCount.toLocaleString()} exception(s) ` +
+            `and dropped every row`
+          : `the dataset parser dropped all of them silently — typically because ` +
+            `a required field (systemId, invoiceNumber, applicationId, …) was ` +
+            `missing from every row's headers`;
+      const error =
+        `Upload parsed ${totalRowsParsed.toLocaleString()} rows but ${dropReason}. ` +
+        `Headers in the file: [${observedHeaderNames
+          .slice(0, 12)
+          .join(", ")}${observedHeaderNames.length > 12 ? ", …" : ""}]. ` +
+        `Re-upload with the expected headers, or use "Clear" to empty the dataset.`;
+      // Mirror the catch-handler cleanup path so the new failure
+      // doesn't leave a `processing` import-batch row + an
+      // `importFiles` entry orphaned. Reviewer caught: previous
+      // revision called only `failJob` and skipped this.
+      await cleanupFailedUploadBatch(job.datasetKey, batchId, error);
+      await failJob(scopeId, jobId, currentStatus, error);
+      // Best-effort temp file cleanup.
+      void fs.unlink(job.storageKey).catch(() => undefined);
+      return {
+        status: "failed",
+        totalRows: totalRowsParsed,
+        rowsWritten: 0,
+        errorCount: totalErrorCount,
+        batchId,
+      };
+    }
 
     // Account Solar Generation keeps the newest read for a system+meter.
     // Compact after all append rows are present but before activation so
