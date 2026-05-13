@@ -1910,16 +1910,21 @@ export default function SolarRecDashboard() {
    * helper so upload success and Schedule B changes refresh the same
    * downstream server aggregates.
   */
-  const triggerCoreDatasetSrDsSync = useCallback(
-    (key: string, options?: { force?: boolean }) => {
-      // 2026-05-12 — `force: true` lets the storage-only auto-heal
-      // path (see useEffect below) bypass the hot-dataset gating.
-      // The gating is a performance optimization for the post-
-      // upload re-sync flow (only the 7 tab-feeding datasets get
-      // re-synced after a Schedule B change). Auto-heal needs to
-      // sync ANY storage-only dataset, not just the hot ones.
-      if (!options?.force && !CORE_DATASET_KEYS_FOR_TYPED_SYNC.has(key)) return;
-
+  // 2026-05-13 — was `triggerCoreDatasetSrDsSync(key, { force?: boolean })`.
+  // The `force: true` escape hatch (added in PR #561 for the
+  // auto-heal path that needs to sync ANY storage-only dataset,
+  // not just the 7 hot tab-feeding datasets) became the third
+  // gate on top of `activeCoreDatasetSyncJobRef` and
+  // `autoHealAttemptedRef` (PR #561/#563). Rather than maintain
+  // a boolean option that exists solely for one caller's
+  // semantics, this function now ALWAYS triggers the sync; the
+  // post-upload-re-sync call sites guard inline with
+  // `CORE_DATASET_KEYS_FOR_TYPED_SYNC.has(key)`, and the
+  // auto-heal call site just calls directly. The function's
+  // responsibility is clearer: "kick off a srDs sync for the
+  // given dataset key, polling until terminal status."
+  const triggerDatasetSrDsSync = useCallback(
+    (key: string) => {
       void (async () => {
         let jobId: string;
         try {
@@ -2031,7 +2036,6 @@ export default function SolarRecDashboard() {
     [
       CORE_DATASET_SYNC_POLL_INTERVAL_MS,
       CORE_DATASET_SYNC_POLL_TIMEOUT_MS,
-      CORE_DATASET_KEYS_FOR_TYPED_SYNC,
       finishCoreDatasetSync,
       setDatabaseSyncProgressFromStatus,
       setDatasetSyncProgressState,
@@ -2097,9 +2101,15 @@ export default function SolarRecDashboard() {
       console.info(
         `[solar-rec] auto-heal: dataset "${key}" is storage-only (cloud blob present, no active batch); triggering syncCoreDatasetFromStorage.`
       );
-      triggerCoreDatasetSrDsSync(key, { force: true });
+      // No `CORE_DATASET_KEYS_FOR_TYPED_SYNC` gate here — auto-heal
+      // must be able to migrate ANY storage-only dataset, not just
+      // the 7 hot tab-feeders that the Schedule B re-sync path
+      // covers. Previously this used `triggerCoreDatasetSrDsSync(
+      // key, { force: true })`; now that the function no longer
+      // gates internally, the explicit call directly is the call.
+      triggerDatasetSrDsSync(key);
     }
-  }, [storageOnlyKeysToAutoHeal, triggerCoreDatasetSrDsSync, syncJobIssues]);
+  }, [storageOnlyKeysToAutoHeal, triggerDatasetSrDsSync, syncJobIssues]);
 
   const saveRemoteDashboardStateRef = useRef(saveRemoteDashboardState);
   saveRemoteDashboardStateRef.current = saveRemoteDashboardState;
@@ -2870,7 +2880,7 @@ export default function SolarRecDashboard() {
           setDatasetCloudSyncBadge(key, "pending");
           invalidateDatasetCloudStatuses();
           if (CORE_DATASET_KEYS_FOR_TYPED_SYNC.has(key)) {
-            triggerCoreDatasetSrDsSync(key);
+            triggerDatasetSrDsSync(key);
           } else {
             setDatasetSyncProgressState(key, {
               stage: "uploading",
@@ -2927,7 +2937,7 @@ export default function SolarRecDashboard() {
         // rows. Doesn't block the user — if the sync fails the old
         // srDs batch stays active as the reader's source of truth.
         if (CORE_DATASET_KEYS_FOR_TYPED_SYNC.has(key)) {
-          triggerCoreDatasetSrDsSync(key);
+          triggerDatasetSrDsSync(key);
         } else {
           setDatasetSyncProgressState(key, {
             stage: "uploading",
@@ -2958,7 +2968,7 @@ export default function SolarRecDashboard() {
       saveRemotePayloadWithChunks,
       setDatasetCloudSyncBadge,
       setDatasetSyncProgressState,
-      triggerCoreDatasetSrDsSync,
+      triggerDatasetSrDsSync,
       CORE_DATASET_KEYS_FOR_TYPED_SYNC,
     ]
   );
@@ -4906,7 +4916,9 @@ export default function SolarRecDashboard() {
                 }
                 setDatasetCloudSyncBadge(key, "pending");
                 invalidateDatasetCloudStatuses();
-                triggerCoreDatasetSrDsSync(key);
+                if (CORE_DATASET_KEYS_FOR_TYPED_SYNC.has(key)) {
+                  triggerDatasetSrDsSync(key);
+                }
               } catch {
                 if (forceSyncRequested) {
                   forcedRemoteDatasetSyncKeysRef.current.delete(key);
@@ -4946,7 +4958,9 @@ export default function SolarRecDashboard() {
               setDatasetCloudSyncBadge(key, "pending");
               invalidateDatasetCloudStatuses();
               // Phase 8.1.5: keep srDs* in sync for core datasets.
-              triggerCoreDatasetSrDsSync(key);
+              if (CORE_DATASET_KEYS_FOR_TYPED_SYNC.has(key)) {
+                triggerDatasetSrDsSync(key);
+              }
             } catch {
               if (forceSyncRequested) {
                 forcedRemoteDatasetSyncKeysRef.current.delete(key);
@@ -5092,7 +5106,7 @@ export default function SolarRecDashboard() {
     remoteStateHydrated,
     saveRemotePayloadWithChunks,
     setDatasetCloudSyncBadge,
-    triggerCoreDatasetSrDsSync,
+    triggerDatasetSrDsSync,
   ]);
 
   useEffect(() => {
