@@ -158,6 +158,7 @@ import { base64ToBytes, bytesToBase64 } from "@/solar-rec-dashboard/lib/binaryEn
 // itself was already dead after Phases 5a–5c removed IDB.
 import { resolveHydrationKeys } from "@/solar-rec-dashboard/lib/hydrationKeys";
 import { isSolarRecDebugEnabled } from "@/solar-rec-dashboard/lib/debugFlag";
+import { pickStorageOnlyDatasetKeys } from "@/solar-rec-dashboard/lib/storageOnlyAutoHeal";
 import { deriveSnapshotPart2ValueSummary } from "@/solar-rec-dashboard/lib/snapshotPart2ValueSummary";
 import { pinSharedCountsToSlim } from "@/solar-rec-dashboard/lib/projectDashboardSummary";
 import {
@@ -1514,6 +1515,7 @@ export default function SolarRecDashboard() {
       rowCount: number | null;
       byteCount: number | null;
       cloudStatus: "synced" | "failed" | "missing";
+      populationStatus: "populated" | "empty" | "missing" | "failed";
       lastUpdated: string | null;
       isRowBacked: boolean;
       lastUploadFileName: string | null;
@@ -1526,6 +1528,7 @@ export default function SolarRecDashboard() {
           rowCount: s.rowCount,
           byteCount: s.byteCount,
           cloudStatus: s.cloudStatus,
+          populationStatus: s.populationStatus,
           lastUpdated: s.lastUpdated,
           isRowBacked: s.isRowBacked,
           lastUploadFileName: s.lastUploadFileName,
@@ -1828,8 +1831,14 @@ export default function SolarRecDashboard() {
    * downstream server aggregates.
   */
   const triggerCoreDatasetSrDsSync = useCallback(
-    (key: string) => {
-      if (!CORE_DATASET_KEYS_FOR_TYPED_SYNC.has(key)) return;
+    (key: string, options?: { force?: boolean }) => {
+      // 2026-05-12 — `force: true` lets the storage-only auto-heal
+      // path (see useEffect below) bypass the hot-dataset gating.
+      // The gating is a performance optimization for the post-
+      // upload re-sync flow (only the 7 tab-feeding datasets get
+      // re-synced after a Schedule B change). Auto-heal needs to
+      // sync ANY storage-only dataset, not just the hot ones.
+      if (!options?.force && !CORE_DATASET_KEYS_FOR_TYPED_SYNC.has(key)) return;
 
       void (async () => {
         let jobId: string;
@@ -1949,6 +1958,47 @@ export default function SolarRecDashboard() {
       trpcUtils,
     ]
   );
+
+  // 2026-05-12 — storage-only auto-heal. When
+  // `getDatasetSummariesAll` reports a dataset with
+  // `cloudStatus === "synced"` + `populationStatus === "missing"`
+  // (the v1 chunked-CSV blob exists but no `srDs*` rows back it —
+  // happened when a v1 upload's row-table migration failed
+  // silently; PR #559 fixed the underlying parse bug), kick off
+  // `syncCoreDatasetFromStorage` automatically so the dashboard
+  // self-heals on next mount.
+  //
+  // De-duped by `activeCoreDatasetSyncJobRef` (the same ref the
+  // post-upload re-sync uses), so two effect runs in quick
+  // succession can't queue two ingests for the same key. The
+  // sorted-key list from `pickStorageOnlyDatasetKeys` keeps the
+  // effect deps stable across renders that don't change the set.
+  const storageOnlyKeysToAutoHeal = useMemo(
+    () =>
+      pickStorageOnlyDatasetKeys(
+        (datasetSummariesQuery.data?.summaries ?? []).map((s) => ({
+          datasetKey: s.datasetKey,
+          cloudStatus: s.cloudStatus,
+          populationStatus: s.populationStatus,
+          byteCount: s.byteCount,
+        }))
+      ),
+    [datasetSummariesQuery.data?.summaries]
+  );
+  useEffect(() => {
+    if (storageOnlyKeysToAutoHeal.length === 0) return;
+    for (const key of storageOnlyKeysToAutoHeal) {
+      const alreadySyncing =
+        activeCoreDatasetSyncJobRef.current[key as DatasetKey];
+      if (alreadySyncing) continue;
+      // eslint-disable-next-line no-console
+      console.info(
+        `[solar-rec] auto-heal: dataset "${key}" is storage-only (cloud blob present, no active batch); triggering syncCoreDatasetFromStorage.`
+      );
+      triggerCoreDatasetSrDsSync(key, { force: true });
+    }
+  }, [storageOnlyKeysToAutoHeal, triggerCoreDatasetSrDsSync]);
+
   const saveRemoteDashboardStateRef = useRef(saveRemoteDashboardState);
   saveRemoteDashboardStateRef.current = saveRemoteDashboardState;
   const getRemoteDatasetRef = useRef(getRemoteDataset);
@@ -7009,9 +7059,24 @@ const aiDataContext = useMemo(() => {
                     ) : serverCloudStatus?.recoverable ? (
                       <div className="space-y-2">
                         <div className="flex flex-wrap items-center gap-2">
-                          <Badge className="border-emerald-200 bg-emerald-100 text-emerald-800">
-                            Saved in cloud
-                          </Badge>
+                          {/* 2026-05-12 — `populationStatus === "missing"`
+                              means the cloud blob is persisted but no
+                              `srDs*` rows exist for it. Auto-heal effect
+                              above kicks off a server-side migration on
+                              detection; show a distinct chip so the user
+                              knows their data isn't reachable by tabs yet
+                              (and isn't surprised to see the slot say
+                              "Saved in cloud" while the populated counter
+                              treats it as missing). */}
+                          {datasetSummary?.populationStatus === "missing" ? (
+                            <Badge className="border-amber-200 bg-amber-100 text-amber-900">
+                              Saved in cloud · Migrating to row table…
+                            </Badge>
+                          ) : (
+                            <Badge className="border-emerald-200 bg-emerald-100 text-emerald-800">
+                              Saved in cloud
+                            </Badge>
+                          )}
                         </div>
                         {/* Phase 5e (PR #275) removed the IDB hydration
                             chain that previously held fileName + upload
