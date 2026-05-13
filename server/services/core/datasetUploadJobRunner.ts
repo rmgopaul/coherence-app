@@ -53,6 +53,7 @@ import {
   type DatasetMergeStrategy,
   type UploadStatus,
 } from "../../../shared/datasetUpload.helpers";
+import { formatTruncatedHeaderList } from "../solar/datasetIngestErrorMessages";
 
 /**
  * Local alias for the CSV row shape `loadExistingRowKeys` /
@@ -399,9 +400,7 @@ export async function runDatasetUploadJob(
             `missing from every row's headers`;
       const error =
         `Upload parsed ${totalRowsParsed.toLocaleString()} rows but ${dropReason}. ` +
-        `Headers in the file: [${observedHeaderNames
-          .slice(0, 12)
-          .join(", ")}${observedHeaderNames.length > 12 ? ", …" : ""}]. ` +
+        `Headers in the file: [${formatTruncatedHeaderList(observedHeaderNames, 12)}]. ` +
         `Re-upload with the expected headers, or use "Clear" to empty the dataset.`;
       // Mirror the catch-handler cleanup path so the new failure
       // doesn't leave a `processing` import-batch row + an

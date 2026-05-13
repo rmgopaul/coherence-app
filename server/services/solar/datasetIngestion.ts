@@ -25,6 +25,7 @@ import {
   buildSyncProgress,
   type CoreDatasetSyncProgress,
 } from "./coreDatasetSyncProgress";
+import { formatTruncatedHeaderList } from "./datasetIngestErrorMessages";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -450,14 +451,13 @@ export async function ingestDataset(
       // units. Matches what `createImportFile` already records
       // for the same blob a few lines above.
       const fileBytes = Buffer.byteLength(csvText, "utf8");
-      // Keep the message under the 200-char client truncation in
-      // `SolarRecDashboard.tsx` (the sync-issues banner slices at
-      // 200). Five headers truncated to the first 6 cover the
-      // typical ABP/CSG/scheduleBase shapes.
+      // Headers truncated to the first 6 — keeps the message
+      // under MAX_SYNC_NOTICE_LENGTH (the client truncation limit)
+      // on the typical ABP/CSG/scheduleBase header shapes.
       const error =
         `${definition.label} CSV had 0 data rows ` +
         `(${fileBytes.toLocaleString()} bytes, headers: ` +
-        `${parsed.headers.slice(0, 6).join(", ")}). ` +
+        `${formatTruncatedHeaderList(parsed.headers, 6)}). ` +
         `Re-upload with data rows, or use "Clear" to empty.`;
       await updateImportBatchStatus(batchId, "failed", { error });
       return {
