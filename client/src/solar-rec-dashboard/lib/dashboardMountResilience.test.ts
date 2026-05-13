@@ -695,6 +695,15 @@ describe("Solar REC dashboard mount: heavy-query gates", () => {
     // silent-restore lived). The effect runs against
     // `snapshotLogsServerQuery.data`; scan from that token to the
     // matching `}, [snapshotLogsServerQuery.data])` close.
+    //
+    // **Anchor fragility note.** Both anchor strings
+    // (`"const data = snapshotLogsServerQuery.data;"` and
+    // `"}, [snapshotLogsServerQuery.data]);"`) are unique in the
+    // file as of 2026-05-12, and the deps-array format is single-
+    // line. A future Prettier reformat that wraps the dep array
+    // (`}, [\n  snapshotLogsServerQuery.data,\n]);`) will make
+    // `hydrationEnd === -1`, which the `toBeGreaterThan` guard
+    // below catches as a loud test failure — not a silent skip.
     const hydrationStart = code.indexOf(
       "const data = snapshotLogsServerQuery.data;"
     );

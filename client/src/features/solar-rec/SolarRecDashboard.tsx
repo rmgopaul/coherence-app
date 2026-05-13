@@ -1337,14 +1337,28 @@ function persistLogsToStorage(entries: ReadonlyArray<DashboardLogEntry>): void {
     if (serialized.length > MAX_LOCAL_LOG_STORAGE_CHARS) {
       // Don't write a truncated copy — better to fall back to
       // cloud as source of truth on next session than persist a
-      // possibly-misleading partial set.
+      // possibly-misleading partial set. Per CLAUDE.md hard rule #4
+      // ("No silent error swallowing in persistence paths"), this
+      // is grep-loud so a persistent failure shows up in user
+      // reports.
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[snapshot-log] localStorage cap exceeded — entry count=${entries.length}, serialized bytes=${serialized.length}, cap=${MAX_LOCAL_LOG_STORAGE_CHARS}. Cleared the local key; relying on cloud sync.`
+      );
       window.localStorage.removeItem(LOGS_STORAGE_KEY);
       return;
     }
     window.localStorage.setItem(LOGS_STORAGE_KEY, serialized);
-  } catch {
-    // Quota exceeded or storage access denied — silently fall
-    // through. Cloud sync remains the durable channel.
+  } catch (err) {
+    // Quota exceeded or storage access denied (e.g. Safari
+    // private-mode). Cloud sync remains the durable channel, but
+    // log so a persistent failure is greppable in prod — same
+    // motivation as the cap branch above.
+    // eslint-disable-next-line no-console
+    console.warn(
+      "[snapshot-log] localStorage write failed; cloud sync remains the durable channel:",
+      err instanceof Error ? err.message : err
+    );
   }
 }
 
