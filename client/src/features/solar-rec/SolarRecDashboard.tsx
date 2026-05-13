@@ -6517,6 +6517,17 @@ const aiDataContext = useMemo(() => {
                         size="sm"
                         className="h-6 px-2 text-xs text-amber-900 hover:bg-amber-100"
                         onClick={() => {
+                          // Drop the per-session auto-heal gate so the
+                          // auto-heal effect can re-fire on the next
+                          // mount/refetch. Without this delete, the
+                          // effect's middle gate (`autoHealAttemptedRef
+                          // .current.has(key)`) stays TRUE and the user
+                          // is locked out of auto-heal until a page
+                          // reload — even though Dismiss clears the
+                          // banner state. Mirrors the cleanup in
+                          // `finishCoreDatasetSync` (success path),
+                          // `clearDataset`, and `clearAll`.
+                          autoHealAttemptedRef.current.delete(key);
                           setSyncJobIssues((previous) => {
                             if (!previous[key]) return previous;
                             const next = { ...previous };
