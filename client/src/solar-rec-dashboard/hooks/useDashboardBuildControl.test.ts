@@ -47,4 +47,35 @@ describe("fact-backed tab build controls", () => {
     expect(comparisonsTab).toMatch(/getDashboardSystemsPage\.invalidate/);
     expect(comparisonsTab).toMatch(/Rebuild table/);
   });
+
+  // 2026-05-13 — pin the inline build-progress bar in every tab
+  // that has a "Rebuild table" button. Pre-fix the button showed
+  // a flat "Building…" string while the server actually emitted
+  // per-step progress (currentStep / totalSteps / percent /
+  // message / factTable) — the data was there, the UI wasn't.
+  // Adding `<DashboardBuildProgressBar>` below each button
+  // surfaces the real progress. This rail ensures a future
+  // refactor doesn't silently drop the mount + the user goes
+  // back to the flat placeholder.
+  it("each rebuild-capable tab mounts <DashboardBuildProgressBar>", () => {
+    const tabs = [
+      "../components/AlertsTab.tsx",
+      "../components/ChangeOwnershipTab.tsx",
+      "../components/ComparisonsTab.tsx",
+      "../components/OfflineMonitoringTab.tsx",
+      "../components/OwnershipTab.tsx",
+    ];
+    for (const tabPath of tabs) {
+      const code = readSource(tabPath);
+      expect(code, `${tabPath} should import the progress bar`).toMatch(
+        /import\s+\{\s*DashboardBuildProgressBar\s*\}/,
+      );
+      expect(code, `${tabPath} should destructure buildProgress`).toMatch(
+        /buildProgress,/,
+      );
+      expect(code, `${tabPath} should mount the bar JSX`).toMatch(
+        /<DashboardBuildProgressBar/,
+      );
+    }
+  });
 });

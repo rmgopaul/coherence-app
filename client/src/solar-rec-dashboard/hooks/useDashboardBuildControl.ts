@@ -8,10 +8,38 @@ export interface UseDashboardBuildControlOptions {
   startFailureMessage?: string;
 }
 
+/**
+ * Real-time per-step build progress, mirrored from the server's
+ * `DashboardBuildProgress` shape (see
+ * `server/services/solar/dashboardBuildJobs.ts:64-70`).
+ *
+ * The runner writes this row on every step boundary
+ * (`Starting <stepName>` at start, `Build complete` at end), so a
+ * 2 s poll gives the user a smooth per-step progress bar instead
+ * of the flat "Building…" placeholder.
+ */
+export interface DashboardBuildProgressSnapshot {
+  currentStep: number;
+  totalSteps: number;
+  /** Server-computed percent (0-100). Caller should clamp before render. */
+  percent: number;
+  /** Stage label, e.g. "Starting ownershipFacts" / "Build complete". */
+  message: string | null;
+  /** Name of the fact table currently being built. null between steps + on final. */
+  factTable: string | null;
+}
+
 export interface DashboardBuildControl {
   buildErrorMessage: string | null;
   buildStatus: string | null;
   isBuildRunning: boolean;
+  /**
+   * 2026-05-13 — real per-step progress mirrored from the runner's
+   * DB-backed status row. Null when no build is in flight or the
+   * server hasn't reported a progress row yet. Replaces the flat
+   * "Building…" placeholder that the rebuild buttons used to show.
+   */
+  buildProgress: DashboardBuildProgressSnapshot | null;
   startBuild: () => Promise<void>;
 }
 
@@ -104,10 +132,19 @@ export function useDashboardBuildControl(
     buildStatus === "queued" ||
     buildStatus === "running";
 
+  // 2026-05-13 — mirror the server's per-step progress row. The
+  // server writes this BEFORE each step starts ("Starting X") and
+  // after the final step succeeds ("Build complete" at 100%). Null
+  // when the build is queued but hasn't entered the loop yet, OR
+  // when the row's `progressJson` couldn't be parsed (the server-
+  // side `parseProgress` returns null in that case).
+  const buildProgress = buildStatusQuery.data?.progress ?? null;
+
   return {
     buildErrorMessage,
     buildStatus,
     isBuildRunning,
+    buildProgress,
     startBuild,
   };
 }

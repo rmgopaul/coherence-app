@@ -49,6 +49,7 @@ import {
 } from "@/solar-rec-dashboard/lib/helpers";
 import { solarRecTrpc } from "@/solar-rec/solarRecTrpc";
 import { useDashboardBuildControl } from "@/solar-rec-dashboard/hooks/useDashboardBuildControl";
+import { DashboardBuildProgressBar } from "@/solar-rec-dashboard/components/DashboardBuildProgressBar";
 import {
   dashboardTransientRetryDelay,
   shouldRetryDashboardTransient,
@@ -124,7 +125,7 @@ export default memo(function ComparisonsTab(props: ComparisonsTabProps) {
     [utils],
   );
 
-  const { buildErrorMessage, isBuildRunning, startBuild } =
+  const { buildErrorMessage, isBuildRunning, buildProgress, startBuild } =
     useDashboardBuildControl({
       onSucceeded: resetSystemsPageCache,
     });
@@ -248,6 +249,10 @@ export default memo(function ComparisonsTab(props: ComparisonsTabProps) {
               {isBuildRunning ? "Building..." : "Rebuild table"}
             </Button>
           </div>
+          <DashboardBuildProgressBar
+            isBuildRunning={isBuildRunning}
+            progress={buildProgress}
+          />
         </CardContent>
       </Card>
 

@@ -55,6 +55,7 @@ import {
 } from "@/solar-rec-dashboard/lib/csvIo";
 import { formatNumber } from "@/solar-rec-dashboard/lib/helpers";
 import { useDashboardBuildControl } from "@/solar-rec-dashboard/hooks/useDashboardBuildControl";
+import { DashboardBuildProgressBar } from "@/solar-rec-dashboard/components/DashboardBuildProgressBar";
 import type {
   AlertItem,
   CsvDataset,
@@ -151,7 +152,7 @@ export default memo(function AlertsTab(props: AlertsTabProps) {
     [utils],
   );
 
-  const { buildErrorMessage, isBuildRunning, startBuild } =
+  const { buildErrorMessage, isBuildRunning, buildProgress, startBuild } =
     useDashboardBuildControl({
       onSucceeded: resetSystemsPageCache,
     });
@@ -318,6 +319,10 @@ export default memo(function AlertsTab(props: AlertsTabProps) {
               {isBuildRunning ? "Building..." : "Rebuild table"}
             </Button>
           </div>
+          <DashboardBuildProgressBar
+            isBuildRunning={isBuildRunning}
+            progress={buildProgress}
+          />
         </CardContent>
       </Card>
 
