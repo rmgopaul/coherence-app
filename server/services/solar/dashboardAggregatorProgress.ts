@@ -21,10 +21,32 @@
  *     if the process dies mid-recompute, the tRPC request also
  *     dies and the client retries — there's nothing to recover.
  *
- *   - One entry per `(scopeId, aggregatorKey)`. A new recompute
- *     overwrites the prior entry; concurrent recomputes for the
- *     same key are prevented upstream by `withArtifactCache`'s
- *     single-flight.
+ *   - **SINGLE-INSTANCE PROD ASSUMPTION.** This works because
+ *     the resolver running the recompute and the resolver
+ *     answering the client's poll are the same Node process. If
+ *     this service is ever scaled out behind a load balancer
+ *     (multi-instance Render web service, K8s replicas, etc.),
+ *     Process A could be running the recompute while Process B
+ *     answers the client's poll with `null`. To support
+ *     multi-instance scale-out, replace this Map with a DB-backed
+ *     table following the `dashboardCsvExportJobs` pattern
+ *     (Phase 6 PR-B): `(scopeId, aggregatorKey)` row with
+ *     `stage / fractionComplete / updatedAt / state` columns,
+ *     atomic upsert on each `report()`, prune on `finish()` /
+ *     `fail()`. The reporter interface below stays unchanged;
+ *     only the storage backend swaps.
+ *
+ *   - One entry per `(scopeId, aggregatorKey)`. Concurrent
+ *     recomputes for the same key are prevented upstream by
+ *     `withArtifactCache`'s single-flight, so the racy
+ *     "two `startAggregatorProgress` calls overlap" case can
+ *     only happen if two clients hit the proc at the same
+ *     instant before either reaches `withArtifactCache`. In that
+ *     case the second `start()` call detects a running entry
+ *     for the same key and JOINS it (returns a reporter whose
+ *     `report()` calls update the same entry, but whose
+ *     `finish()` / `fail()` are suppressed — the joined caller
+ *     doesn't own the entry's terminal state).
  *
  *   - Auto-clears the entry on `finish()` / `fail()`. A failed
  *     recompute leaves the entry briefly visible with `state:
@@ -117,6 +139,16 @@ function clampFraction(value: number): number {
  * `reporter.finish()` (happy path) or `reporter.fail(error)`
  * (exception path) — typically in a `try / finally` around the
  * recompute body.
+ *
+ * **Join semantics on collision.** If a running entry already
+ * exists for `(scopeId, aggregatorKey)` (two clients raced into
+ * the proc before `withArtifactCache`'s single-flight gate
+ * de-duped them), the second call does NOT overwrite the entry.
+ * Instead it returns a "joined" reporter whose `report()` calls
+ * are silently dropped (the first caller owns the progress
+ * stream) and whose `finish()` / `fail()` are no-ops (the first
+ * caller's terminal state wins). Without this guard, both
+ * callers' `setTimeout` prunes would race for the same key.
  */
 export function startAggregatorProgress(
   scopeId: string,
@@ -124,6 +156,17 @@ export function startAggregatorProgress(
   initialStageLabel: string = "Starting"
 ): AggregatorProgressReporter {
   const key = makeKey(scopeId, aggregatorKey);
+  const existing = registry.get(key);
+  if (existing && existing.state === "running") {
+    // Join the in-flight entry — return a reporter whose methods
+    // are no-ops. The first caller's `withArtifactCache`
+    // single-flight will resolve both callers' promises.
+    return {
+      report: () => {},
+      finish: () => {},
+      fail: () => {},
+    };
+  }
   const now = Date.now();
   registry.set(key, {
     scopeId,
