@@ -1845,6 +1845,28 @@ export default function SolarRecDashboard() {
         autoHealAttemptedRef.current.delete(key);
       }
 
+      // 2026-05-13 — terminal-state outcome log. Reviewer pass on
+      // today's 10-PR series noted the auto-heal flow logged
+      // `[solar-rec] auto-heal: triggering` at the call site but
+      // had no matching `dataset-sync: completed` line here — so
+      // attributing a populated-counter transition (e.g. 14 → 17
+      // after auto-heal kicks off three syncs) required reading
+      // the next dashboard query response rather than the log
+      // stream. Failure / timeout paths farther down already emit
+      // `console.error` for visibility; this matches the "done"
+      // path. Covers every caller (auto-heal, post-upload re-sync,
+      // force-sync, Schedule B apply effect) — the trigger-site
+      // logs already distinguish source.
+      //
+      // CLAUDE.md rule #4 ("No silent error swallowing in
+      // persistence paths") applies equally to the success path's
+      // observability: a sync that resolves to `unknown` state is
+      // still an event we want to attribute.
+      // eslint-disable-next-line no-console
+      console.info(
+        `[solar-rec] dataset-sync: completed key=${key} jobId=${jobId} state=${state}`
+      );
+
       const sid = scopeIdRef.current;
 
       if (state === "done") {
