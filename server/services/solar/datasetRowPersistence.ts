@@ -249,6 +249,15 @@ export type AppendPreparationOptions = {
   onProgress?: (progress: AppendPreparationProgress) => void | Promise<void>;
 };
 
+// 25,000 rows × ~4 KB per row (typical srDs* row with a medium-sized
+// `rawRow` JSON) is ~100 MB — right at TiDB's default
+// `txn-total-size-limit`. The proven `cloneConvertedReadsBatch` has
+// run at 1.58M rows without issue under this constant, so the
+// real-world rawRow shape is well under the 4 KB ceiling. If a
+// future dataset starts pushing per-row sizes higher (e.g., a much
+// fatter rawRow), halve this for that table specifically rather
+// than lowering the global constant — the smaller datasets benefit
+// from larger pages.
 const APPEND_PREP_PAGE_SIZE = 25_000;
 
 function extractExecuteRows<TRow>(result: unknown): TRow[] {

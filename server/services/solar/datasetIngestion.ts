@@ -492,11 +492,48 @@ export async function ingestDataset(
       );
       const activeBatch = await getActiveBatchForDataset(scopeId, datasetKey);
       if (activeBatch) {
+        // 2026-05-13 — wire the paginated clone's per-page progress
+        // back to the user-visible sync bar. Pre-fix the cloner ran
+        // as one statement, so a single `reportProgress` at 25% and
+        // another at 40% was enough. Post-fix the cloner pages
+        // (~26 pages on a 649k-row transferHistory batch), and
+        // without an onProgress callback the bar appears stuck at
+        // 25% for the entire clone — looks hung even though it's
+        // working. We emit message-only ticks per page (percent
+        // pinned at the phase start so we don't lie about progress)
+        // until the clone finishes, then jump to a midpoint as a
+        // milestone before filterAppendRows runs.
         const clonedRowCount = await cloneDatasetBatchRows(
           scopeId,
           activeBatch.id,
           batchId,
-          datasetKey
+          datasetKey,
+          {
+            onProgress: ({ processedRows }) => {
+              reportProgress?.(
+                buildSyncProgress({
+                  phase: "filtering_duplicates",
+                  startPercent: 25,
+                  endPercent: 40,
+                  current: 0,
+                  total: 1,
+                  unitLabel: "steps",
+                  message: `Cloning prior batch (${processedRows.toLocaleString()} rows processed)`,
+                })
+              );
+            },
+          }
+        );
+        reportProgress?.(
+          buildSyncProgress({
+            phase: "filtering_duplicates",
+            startPercent: 25,
+            endPercent: 40,
+            current: 1,
+            total: 2,
+            unitLabel: "steps",
+            message: `Cloned ${clonedRowCount.toLocaleString()} prior rows — filtering duplicates`,
+          })
         );
         const filtered = await filterAppendRows(
           scopeId,
