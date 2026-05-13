@@ -1744,6 +1744,15 @@ export default function SolarRecDashboard() {
     [allDatasetKeys, solarRecTrpcUtils]
   );
 
+  // 2026-05-12 — auto-heal "tried this session" tracker. Hoisted
+  // above `finishCoreDatasetSync` (and above the auto-heal effect
+  // below) so the cleanup callbacks can capture it: a successful
+  // sync clears the entry so a future v1 upload that ends up
+  // storage-only again CAN be auto-healed without a page reload.
+  // `clearDataset` / `clearAll` clear it too so the next upload of
+  // the same key starts fresh.
+  const autoHealAttemptedRef = useRef<Set<string>>(new Set());
+
   const finishCoreDatasetSync = useCallback(
     async (
       key: DatasetKey,
@@ -1763,6 +1772,11 @@ export default function SolarRecDashboard() {
           delete next[key];
           return next;
         });
+        // Drop the per-session auto-heal gate entry too. Without
+        // this, a future v1 upload of the same key that AGAIN
+        // ends up storage-only (e.g., underlying parse bug
+        // resurfaces) sits un-healed until the user reloads.
+        autoHealAttemptedRef.current.delete(key);
       }
 
       const sid = scopeIdRef.current;
@@ -1986,8 +2000,9 @@ export default function SolarRecDashboard() {
   //
   // The sorted-key list from `pickStorageOnlyDatasetKeys` keeps
   // the effect deps stable across renders that don't change the
-  // set.
-  const autoHealAttemptedRef = useRef<Set<string>>(new Set());
+  // set. `autoHealAttemptedRef` is declared above
+  // `finishCoreDatasetSync` so the cleanup paths there can
+  // delete its entries on a successful sync.
   const storageOnlyKeysToAutoHeal = useMemo(
     () =>
       pickStorageOnlyDatasetKeys(
@@ -3163,6 +3178,9 @@ export default function SolarRecDashboard() {
     });
     forcedRemoteDatasetSyncKeysRef.current.delete(key);
     delete activeCoreDatasetSyncJobRef.current[key];
+    // Drop the per-session auto-heal gate so the next upload of
+    // the same key can be auto-healed if it ends up storage-only.
+    autoHealAttemptedRef.current.delete(key);
   };
 
   const clearAll = () => {
@@ -3177,6 +3195,9 @@ export default function SolarRecDashboard() {
     setSyncJobIssues({});
     forcedRemoteDatasetSyncKeysRef.current.clear();
     activeCoreDatasetSyncJobRef.current = {};
+    // Reset per-session auto-heal gate so future uploads of any
+    // dataset can be auto-healed without a page reload.
+    autoHealAttemptedRef.current.clear();
     // meterReads state is now owned by MeterReadsTab; it resets on unmount.
   };
 
