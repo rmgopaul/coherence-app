@@ -141,8 +141,18 @@ describe("runDashboardBuildJob — claim semantics", () => {
   });
 });
 
-describe("runDashboardBuildJob — empty steps array (PR-B default)", () => {
-  it("claims, writes a 100% progress, completes success — no steps run", async () => {
+describe("runDashboardBuildJob — empty steps array (2026-05-13 guard)", () => {
+  it("FAILS loudly with a clear error rather than silently succeeding", async () => {
+    // 2026-05-13 — was "succeeds with 100% / 0 steps" (Phase 2
+    // PR-B's skeleton-runner contract, valid when no fact
+    // builders were registered yet). Now that production
+    // registers 5 fact-building steps at server boot, an empty
+    // array at runtime always indicates a bug: either the
+    // boot-time `register*BuildStep()` calls failed silently
+    // (the pre-fix race window between server.listen() and the
+    // first build), or a test bled `setDashboardBuildSteps([])`
+    // into a prod path. Either way, "succeeded" with no work
+    // done is the wrong outcome — flip to a loud failure.
     installDbStub({
       rowAtStart: { id: "bld-empty", scopeId: "s", status: "queued" },
     });
@@ -150,18 +160,20 @@ describe("runDashboardBuildJob — empty steps array (PR-B default)", () => {
 
     await runDashboardBuildJob("bld-empty");
 
-    expect(mocks.completeSolarRecDashboardBuildSuccess).toHaveBeenCalledTimes(
+    expect(mocks.completeSolarRecDashboardBuildSuccess).not.toHaveBeenCalled();
+    expect(mocks.completeSolarRecDashboardBuildFailure).toHaveBeenCalledTimes(
       1
     );
-    expect(mocks.completeSolarRecDashboardBuildFailure).not.toHaveBeenCalled();
-    // Final 100% progress write fires.
+    const [, , , errorMessage] =
+      mocks.completeSolarRecDashboardBuildFailure.mock.calls[0];
+    expect(errorMessage).toMatch(/No build steps registered/);
+    expect(errorMessage).toMatch(/server\/_core\/index\.ts/);
+    // No progress writes — the guard fails before the per-step
+    // loop, so we never wrote the "Starting X" / "Build complete"
+    // updates.
     expect(
       mocks.updateSolarRecDashboardBuildProgress
-    ).toHaveBeenCalledTimes(1);
-    const [, , , progress] =
-      mocks.updateSolarRecDashboardBuildProgress.mock.calls[0];
-    expect((progress as { percent: number }).percent).toBe(100);
-    expect((progress as { totalSteps: number }).totalSteps).toBe(0);
+    ).not.toHaveBeenCalled();
   });
 });
 

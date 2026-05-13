@@ -34,7 +34,11 @@
  * srDs* tables + the system snapshot.
  */
 
-import type { DashboardBuildStep } from "./dashboardBuildJobRunner";
+import {
+  type DashboardBuildStep,
+  getDashboardBuildSteps,
+  setDashboardBuildSteps,
+} from "./dashboardBuildJobRunner";
 import {
   createPerformanceRatioAccumulator,
   PERFORMANCE_RATIO_RUNNER_VERSION,
@@ -1692,11 +1696,8 @@ let registered = false;
  * means performanceRatio runs fifth; that's fine — they have no
  * dependency on each other.
  */
-export async function registerPerformanceRatioBuildStep(): Promise<void> {
+export function registerPerformanceRatioBuildStep(): void {
   if (registered) return;
-  const { getDashboardBuildSteps, setDashboardBuildSteps } = await import(
-    "./dashboardBuildJobRunner"
-  );
   const previous = getDashboardBuildSteps();
   if (previous.some(step => step.name === STEP_NAME)) {
     registered = true;
