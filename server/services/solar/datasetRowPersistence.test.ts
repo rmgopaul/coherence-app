@@ -1,8 +1,16 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   buildAccountSolarGenerationStoredRowKey,
   buildAppendRowKey,
 } from "./datasetRowPersistence";
+
+function readPersistenceSource(): string {
+  return readFileSync(
+    new URL("./datasetRowPersistence.ts", import.meta.url),
+    "utf8"
+  );
+}
 
 describe("buildAppendRowKey", () => {
   it("uses the CSG portal kWh/Btu meter-read header for Account Solar Generation", () => {
@@ -209,5 +217,76 @@ describe("buildAppendRowKey", () => {
     });
 
     expect(key).toBe("non305284|3/7/26 3:48|12");
+  });
+});
+
+// 2026-05-13 — regression rails for the append-mode batch cloners.
+//
+// Pre-fix `cloneTransferHistoryBatch` (and `cloneAccountSolarGenerationBatch`)
+// issued a single `INSERT INTO ... SELECT FROM <self>` against the
+// source batch. On prod scope-user-1 the transferHistory active
+// batch holds ~649k rows; the single statement exceeded TiDB's
+// default `txn-total-size-limit` (100 MB) and surfaced as a generic
+// Drizzle `Failed query` with no further context.
+//
+// `cloneConvertedReadsBatch` had ALREADY been paginated (cursor +
+// LIMIT APPEND_PREP_PAGE_SIZE) for exactly this reason — its
+// convertedReads active batch holds ~1.58M rows on the same scope
+// and would have hit the same wall. The post-fix transferHistory
+// and accountSolarGen cloners mirror that cursor-paged pattern.
+//
+// These rails assert the source still contains the page-cursor
+// idiom for all three cloners; a future refactor that quietly
+// collapses any cloner back to a single statement will fail here
+// before it can ship.
+describe("batch-row cloners — pagination rails", () => {
+  it("all three append-mode cloners page through the source batch", () => {
+    const src = readPersistenceSource();
+
+    // Shared by the cursor-paged form on all three cloners.
+    expect(src).toContain("APPEND_PREP_PAGE_SIZE");
+
+    // Per-table SELECT-id pagination labels — uniqueness pins each
+    // cloner separately so a deletion of one is loud here.
+    expect(src).toContain("page transfer history clone ids");
+    expect(src).toContain("page account solar generation clone ids");
+    expect(src).toContain("page converted reads clone ids");
+
+    // Per-table INSERT page labels.
+    expect(src).toContain("clone transfer history batch page");
+    expect(src).toContain("clone account solar generation batch page");
+    expect(src).toContain("clone converted reads batch page");
+  });
+
+  it("no append-mode cloner uses an unbounded INSERT...SELECT against its self table", () => {
+    const src = readPersistenceSource();
+
+    // The pre-fix shape: an `INSERT INTO <table>` block whose
+    // SELECT body has no `id <=` upper-bound and no `LIMIT`. The
+    // paginated form ALWAYS has the chunkEnd predicate
+    // `AND id <= ${chunkEndId}` inside the SELECT body.
+    for (const table of [
+      "srDsTransferHistory",
+      "srDsAccountSolarGeneration",
+      "srDsConvertedReads",
+    ]) {
+      // Find every INSERT block targeting this table. Each block
+      // is delimited by the next `\`\)` that closes the
+      // `db.execute(sql\`...\`)` call. We assert every such block
+      // contains the `id <=` upper-bound predicate.
+      const insertBlocks = [
+        ...src.matchAll(new RegExp(`INSERT INTO ${table}[\\s\\S]*?\`\\s*\\)`, "g")),
+      ];
+      expect(
+        insertBlocks.length,
+        `expected at least one INSERT block for ${table}`
+      ).toBeGreaterThan(0);
+      for (const block of insertBlocks) {
+        expect(
+          block[0],
+          `INSERT block for ${table} must page via 'AND id <=' — found an unbounded INSERT...SELECT`
+        ).toMatch(/AND id <=/);
+      }
+    }
   });
 });

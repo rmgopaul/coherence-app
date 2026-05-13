@@ -249,6 +249,15 @@ export type AppendPreparationOptions = {
   onProgress?: (progress: AppendPreparationProgress) => void | Promise<void>;
 };
 
+// 25,000 rows × ~4 KB per row (typical srDs* row with a medium-sized
+// `rawRow` JSON) is ~100 MB — right at TiDB's default
+// `txn-total-size-limit`. The proven `cloneConvertedReadsBatch` has
+// run at 1.58M rows without issue under this constant, so the
+// real-world rawRow shape is well under the 4 KB ceiling. If a
+// future dataset starts pushing per-row sizes higher (e.g., a much
+// fatter rawRow), halve this for that table specifically rather
+// than lowering the global constant — the smaller datasets benefit
+// from larger pages.
 const APPEND_PREP_PAGE_SIZE = 25_000;
 
 function extractExecuteRows<TRow>(result: unknown): TRow[] {
@@ -1097,90 +1106,183 @@ const transferHistoryRowExists: AppendRowChecker = async (
   return rows.length > 0;
 };
 
+// 2026-05-13 — accountSolarGeneration + transferHistory clone paths
+// MUST page through the source batch the same way the
+// convertedReads cloner already does. The single-shot
+// `INSERT INTO ... SELECT FROM <self>` form below was the pre-fix
+// implementation; on prod scope-user-1, transferHistory's active
+// batch holds ~649k rows and accountSolarGeneration's holds
+// ~25k. The single statement exceeded TiDB's default
+// `txn-total-size-limit` (100 MB) on transferHistory and surfaced
+// to the user as a generic Drizzle `Failed query` with no further
+// context. accountSolarGeneration was below the limit today but is
+// the same shape and will hit the same wall once the upload count
+// grows. The paginated form below mirrors `cloneConvertedReadsBatch`
+// at lines 1249-1327 — id-cursor + LIMIT ${APPEND_PREP_PAGE_SIZE},
+// one txn per page.
+
 const cloneAccountSolarGenerationBatch: BatchRowCloner = async (
   scopeId,
   fromBatchId,
-  toBatchId
+  toBatchId,
+  options
 ) => {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
-  const result = await withDbRetry("clone account solar generation batch", () =>
-    db.execute(sql`
-      INSERT INTO srDsAccountSolarGeneration (
-        id,
-        scopeId,
-        batchId,
-        gatsGenId,
-        facilityName,
-        monthOfGeneration,
-        lastMeterReadDate,
-        lastMeterReadKwh,
-        rawRow,
-        createdAt
-      )
-      SELECT
-        REPLACE(UUID(), '-', ''),
-        ${scopeId},
-        ${toBatchId},
-        gatsGenId,
-        facilityName,
-        monthOfGeneration,
-        lastMeterReadDate,
-        lastMeterReadKwh,
-        rawRow,
-        CURRENT_TIMESTAMP
-      FROM srDsAccountSolarGeneration
-      WHERE scopeId = ${scopeId}
-        AND batchId = ${fromBatchId}
-    `)
-  );
+  let cursor: string | null = null;
+  let cloned = 0;
 
-  return getDbExecuteAffectedRows(result);
+  for (;;) {
+    const cursorClause: ReturnType<typeof sql> = cursor
+      ? sql`AND id > ${cursor}`
+      : sql``;
+    const idResult: unknown = await withDbRetry(
+      "page account solar generation clone ids",
+      () =>
+        db.execute(sql`
+        SELECT id
+        FROM srDsAccountSolarGeneration
+        WHERE scopeId = ${scopeId}
+          AND batchId = ${fromBatchId}
+          ${cursorClause}
+        ORDER BY id
+        LIMIT ${APPEND_PREP_PAGE_SIZE}
+      `)
+    );
+    const idRows: Array<{ id: string }> = extractExecuteRows<{ id: string }>(
+      idResult
+    );
+    if (idRows.length === 0) break;
+
+    const chunkEndId: string = String(idRows[idRows.length - 1]!.id);
+    const lowerBound: ReturnType<typeof sql> = cursor
+      ? sql`AND id > ${cursor}`
+      : sql``;
+    const result = await withDbRetry(
+      "clone account solar generation batch page",
+      () =>
+        db.execute(sql`
+        INSERT INTO srDsAccountSolarGeneration (
+          id,
+          scopeId,
+          batchId,
+          gatsGenId,
+          facilityName,
+          monthOfGeneration,
+          lastMeterReadDate,
+          lastMeterReadKwh,
+          rawRow,
+          createdAt
+        )
+        SELECT
+          REPLACE(UUID(), '-', ''),
+          ${scopeId},
+          ${toBatchId},
+          gatsGenId,
+          facilityName,
+          monthOfGeneration,
+          lastMeterReadDate,
+          lastMeterReadKwh,
+          rawRow,
+          CURRENT_TIMESTAMP
+        FROM srDsAccountSolarGeneration
+        WHERE scopeId = ${scopeId}
+          AND batchId = ${fromBatchId}
+          ${lowerBound}
+          AND id <= ${chunkEndId}
+      `)
+    );
+
+    cloned += getDbExecuteAffectedRows(result);
+    cursor = chunkEndId;
+    await options?.onProgress?.({ processedRows: cloned });
+    if (idRows.length < APPEND_PREP_PAGE_SIZE) break;
+  }
+
+  return cloned;
 };
 
 const cloneTransferHistoryBatch: BatchRowCloner = async (
   scopeId,
   fromBatchId,
-  toBatchId
+  toBatchId,
+  options
 ) => {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
-  const result = await withDbRetry("clone transfer history batch", () =>
-    db.execute(sql`
-      INSERT INTO srDsTransferHistory (
-        id,
-        scopeId,
-        batchId,
-        transactionId,
-        unitId,
-        transferCompletionDate,
-        quantity,
-        transferor,
-        transferee,
-        rawRow,
-        createdAt
-      )
-      SELECT
-        REPLACE(UUID(), '-', ''),
-        ${scopeId},
-        ${toBatchId},
-        transactionId,
-        unitId,
-        transferCompletionDate,
-        quantity,
-        transferor,
-        transferee,
-        rawRow,
-        CURRENT_TIMESTAMP
-      FROM srDsTransferHistory
-      WHERE scopeId = ${scopeId}
-        AND batchId = ${fromBatchId}
-    `)
-  );
+  let cursor: string | null = null;
+  let cloned = 0;
 
-  return getDbExecuteAffectedRows(result);
+  for (;;) {
+    const cursorClause: ReturnType<typeof sql> = cursor
+      ? sql`AND id > ${cursor}`
+      : sql``;
+    const idResult: unknown = await withDbRetry(
+      "page transfer history clone ids",
+      () =>
+        db.execute(sql`
+        SELECT id
+        FROM srDsTransferHistory
+        WHERE scopeId = ${scopeId}
+          AND batchId = ${fromBatchId}
+          ${cursorClause}
+        ORDER BY id
+        LIMIT ${APPEND_PREP_PAGE_SIZE}
+      `)
+    );
+    const idRows: Array<{ id: string }> = extractExecuteRows<{ id: string }>(
+      idResult
+    );
+    if (idRows.length === 0) break;
+
+    const chunkEndId: string = String(idRows[idRows.length - 1]!.id);
+    const lowerBound: ReturnType<typeof sql> = cursor
+      ? sql`AND id > ${cursor}`
+      : sql``;
+    const result = await withDbRetry("clone transfer history batch page", () =>
+      db.execute(sql`
+        INSERT INTO srDsTransferHistory (
+          id,
+          scopeId,
+          batchId,
+          transactionId,
+          unitId,
+          transferCompletionDate,
+          quantity,
+          transferor,
+          transferee,
+          rawRow,
+          createdAt
+        )
+        SELECT
+          REPLACE(UUID(), '-', ''),
+          ${scopeId},
+          ${toBatchId},
+          transactionId,
+          unitId,
+          transferCompletionDate,
+          quantity,
+          transferor,
+          transferee,
+          rawRow,
+          CURRENT_TIMESTAMP
+        FROM srDsTransferHistory
+        WHERE scopeId = ${scopeId}
+          AND batchId = ${fromBatchId}
+          ${lowerBound}
+          AND id <= ${chunkEndId}
+      `)
+    );
+
+    cloned += getDbExecuteAffectedRows(result);
+    cursor = chunkEndId;
+    await options?.onProgress?.({ processedRows: cloned });
+    if (idRows.length < APPEND_PREP_PAGE_SIZE) break;
+  }
+
+  return cloned;
 };
 
 // Task 5.12 PR-10: convertedReads dedup checker. Mirrors the bridge's
