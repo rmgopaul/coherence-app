@@ -418,6 +418,50 @@ export async function ingestDataset(
       };
     }
 
+    // 2026-05-12 — refuse to activate an empty batch when the
+    // input CSV had content. Background: the auto-heal path runs
+    // `ingestDataset` against existing chunked-CSV blobs in
+    // `solarRecDashboardStorage`. If the blob has valid headers
+    // but no data rows (parser produced an empty row array — could
+    // be a header-only export, an upload format the parser
+    // doesn't grok, or a manifest path with empty source files),
+    // we used to activate the new batch with rowCount=0. That
+    // showed `populationStatus="empty"` in the summaries proc and
+    // tab aggregators silently saw no data — the 2026-05-12
+    // `abpUtilityInvoiceRows` failure mode: 308 KB blob → empty
+    // batch → silent.
+    //
+    // CLAUDE.md hard rule #4: "No silent error swallowing in
+    // persistence paths." Surface the empty result as a failure
+    // with diagnostic info so the user knows the migration didn't
+    // actually carry data through, and they can re-upload or
+    // investigate the format mismatch.
+    //
+    // Why `parsed.rows.length === 0` is the trigger (not
+    // `csvText.length > some_threshold`): once headers validate,
+    // a header-only blob has no data rows to ingest by
+    // definition. Even if the file was originally just headers
+    // (user mistake), silently committing 0 rows hides the
+    // mistake — making it a failure surfaces the actionable
+    // problem.
+    if (parsed.rows.length === 0) {
+      const error =
+        `${definition.label} CSV parsed to 0 data rows. ` +
+        `File size: ${csvText.length} bytes. ` +
+        `Headers found: [${parsed.headers.slice(0, 10).join(", ")}]. ` +
+        `The file may have only a header row, or the parser found no ` +
+        `data rows after the header. Re-upload the CSV with data rows ` +
+        `or use the "Clear" action if you intended to empty the dataset.`;
+      await updateImportBatchStatus(batchId, "failed", { error });
+      return {
+        batchId,
+        status: "failed",
+        rowCount: 0,
+        dedupedCount: 0,
+        errors: [{ rowIndex: 0, message: error }],
+      };
+    }
+
     // Handle append vs replace
     let rowsToPersist = parsed.rows;
     let dedupedCount = 0;
