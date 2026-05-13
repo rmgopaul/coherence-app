@@ -5,6 +5,7 @@ import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import { t } from "./solarRecBase";
 import { dashboardProcedure } from "./dashboardResponseGuard";
+import { pickNewestTimestamp } from "./datasetSummaryTimestamp";
 import {
   buildScheduleBApplyKey,
   withScheduleBApplySemaphore,
@@ -5826,11 +5827,28 @@ export const solarRecDashboardRouter = t.router({
           datasetKey,
           rowCount,
           byteCount: syncRow?.payloadBytes ?? null,
-          lastUpdated:
-            syncRow?.updatedAt?.toISOString() ??
-            activeBatch?.completedAt?.toISOString() ??
-            activeBatch?.createdAt?.toISOString() ??
-            null,
+          // 2026-05-12 — pick the NEWEST of the candidate timestamps
+          // rather than cascading. The old `syncRow.updatedAt ??
+          // activeBatch.completedAt ?? activeBatch.createdAt`
+          // cascade preferred the legacy chunked-CSV sync row,
+          // which is never updated by v2 uploads (v2 writes to
+          // `srDs*` row tables + `solarRecImportBatches` only).
+          // Every v2 upload would therefore appear "stale" — the
+          // Data Quality tab compared `now - lastUpdated` against
+          // its age threshold, and `lastUpdated` was pinned to the
+          // last v1 upload date. Prod observed up to 331 hours of
+          // drift (e.g. accountSolarGeneration: lastUpdated=
+          // 2026-04-28 vs uploadCompletedAt=2026-05-12).
+          //
+          // `uploadCompletedAt` is added to the candidate set
+          // because it's the v2 batch's authoritative "this is
+          // when the user's upload finished" stamp.
+          lastUpdated: pickNewestTimestamp([
+            syncRow?.updatedAt,
+            activeBatch?.uploadCompletedAt,
+            activeBatch?.completedAt,
+            activeBatch?.createdAt,
+          ]),
           batchId: activeBatch?.batchId ?? null,
           payloadSha256:
             syncRow?.payloadSha256 && syncRow.payloadSha256.length > 0
