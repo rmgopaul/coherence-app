@@ -189,7 +189,24 @@ export const PERFORMANCE_SOURCE_ROWS_RUNNER_VERSION =
   // but its inputs go through the corrected helper now and the
   // cache key bundles the runner version, so we bump for
   // consistency with the sibling aggregators.
-  "phase-5e-pr8-performancesourcerows@2";
+  //
+  // 2026-05-12 (@3): force-invalidate poisoned cache entries.
+  // Prod (2026-05-13) observed `getDashboardPerformanceSourceRows`
+  // returning `fromCache: true` with an all-zero diagnostic
+  // even though deliveryScheduleBase / abpReport / etc. were all
+  // populated with non-empty active batches. Some earlier
+  // recompute (likely during one of the v1 → v2 migration
+  // auto-heal cycles) cached `rows: []` for the current input
+  // hash, and `shouldCachePerformanceSourceRowsResult`'s
+  // permissive `eligibleTrackingIdCount === 0 → allow caching`
+  // branch let it land. Subsequent calls served the poisoned
+  // empty payload forever, breaking REC Performance Eval +
+  // Snapshot Log + createLogEntry on this scope. Bumping the
+  // version changes the cache key for every scope → next call
+  // misses → fresh recompute runs → predicate (tightened below)
+  // refuses to cache an empty result whenever schedule rows
+  // exist. Same operational pattern as PR #557's forecast bump.
+  "phase-5e-pr8-performancesourcerows@3";
 
 async function computePerformanceSourceRowsInputHash(
   scopeId: string
@@ -290,12 +307,32 @@ export function shouldCachePerformanceSourceRowsResult(args: {
   scheduleRowsTotal: number;
   eligibleTrackingIdCount: number;
 }): boolean {
-  // Trivially-empty inputs → empty output is genuine, cache it.
-  if (args.scheduleRowsTotal === 0 || args.eligibleTrackingIdCount === 0) {
+  // Trivially-empty schedule input → empty output is genuine.
+  // This is the only "cache the empty result" path: when there
+  // are no schedule rows to aggregate over, the result must be
+  // empty regardless of what the eligibility filter produces.
+  if (args.scheduleRowsTotal === 0) {
     return true;
   }
-  // Non-empty inputs but zero rows — suspicious. Don't cache; let
-  // the next call recompute and surface fresh diagnostics.
+  // 2026-05-12 — refuse to cache an empty result when schedule
+  // rows exist. The prior `args.eligibleTrackingIdCount === 0
+  // → cache` branch was the cache-poison path observed on prod
+  // 2026-05-13: deliveryScheduleBase had 24k rows + abpReport
+  // had 28k rows, but a transient recompute produced
+  // `eligibleTrackingIdCount=0` (snapshot degraded mid-build, or
+  // a join missed because the snapshot returned 0 systems under
+  // heap pressure), the predicate let the empty array cache, and
+  // every subsequent call served the poisoned empty payload —
+  // until either the next batch upload (rare) or a runner-
+  // version bump.
+  //
+  // With this tighter predicate, a recompute that emits 0 rows
+  // from a non-trivial schedule (regardless of why) is refused
+  // by the cache. Next call recomputes fresh; if the system is
+  // genuinely empty on this scope (no Part-2-verified rows
+  // anywhere), the recompute is sub-second so the recompute-per-
+  // call cost is negligible while the cache-poison risk is
+  // eliminated.
   if (args.rowsEmitted === 0) {
     return false;
   }
