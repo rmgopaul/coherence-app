@@ -33,10 +33,6 @@
  */
 
 import { createHash } from "node:crypto";
-import {
-  srDsAbpReport,
-  srDsDeliverySchedule,
-} from "../../../drizzle/schemas/solar";
 import { getActiveVersionsForKeys } from "../../db/solarRecDatasets";
 import {
   buildScheduleYearEntries,
@@ -50,21 +46,16 @@ import {
   extractSnapshotSystems,
   getDeliveredForYear,
 } from "./aggregatorHelpers";
-import {
-  buildPart2EligibilityMaps,
-} from "./buildContractVintageAggregates";
-import {
-  computeSystemSnapshotHash,
-  getOrBuildSystemSnapshot,
-  loadDatasetRows,
-} from "./buildSystemSnapshot";
-import {
-  buildTransferDeliveryLookupForScope,
-  type TransferDeliveryLookupPayload,
-} from "./buildTransferDeliveryLookup";
+import { buildPart2EligibilityMaps } from "./buildContractVintageAggregates";
+import { computeSystemSnapshotHash } from "./buildSystemSnapshot";
+import type { TransferDeliveryLookupPayload } from "./buildTransferDeliveryLookup";
 import { superjsonSerde, withArtifactCache } from "./withArtifactCache";
 import { startAggregatorProgress } from "./dashboardAggregatorProgress";
 import { shouldCacheAggregatorEmptyResult } from "./aggregatorCachePredicates";
+import {
+  loadCommonAggregatorInputs,
+  AGGREGATOR_STAGE_1_CAP,
+} from "./aggregatorInputs";
 
 // ---------------------------------------------------------------------------
 // Pure aggregator — byte-for-byte mirror of the parent useMemo. Extracted
@@ -407,73 +398,23 @@ export async function getOrBuildPerformanceSourceRows(
           eligibleTrackingIdCount: diagnostic.eligibleTrackingIdCount,
         }),
       recompute: async () => {
-        // Stage 1 (5 → 80%): four parallel I/O reads. Each input's
-        // `.then()` ticks the bar as that promise resolves;
-        // weights match cold-cache wall-clock share — snapshot is
-        // the slow one (system-snapshot build is its own cache miss).
-        const STAGE_1_BASE = 0.05;
-        const STAGE_1_CAP = 0.8;
-        const STEP_WEIGHTS = {
-          snapshot: 0.6,
-          schedule: 0.05,
-          abpReport: 0.07,
-          transfer: 0.03,
-        } as const;
-        let stage1Fraction = STAGE_1_BASE;
-        const tickStage1 = (label: string, delta: number): void => {
-          stage1Fraction = Math.min(stage1Fraction + delta, STAGE_1_CAP);
-          progress.report({
-            stage: "loading",
-            stageLabel: label,
-            fractionComplete: stage1Fraction,
-          });
-        };
-        progress.report({
-          stage: "loading",
-          stageLabel: "Loading inputs",
-          fractionComplete: STAGE_1_BASE,
-        });
-        const snapshotPromise = getOrBuildSystemSnapshot(scopeId).then(
-          (value) => {
-            tickStage1("Loaded system snapshot", STEP_WEIGHTS.snapshot);
-            return value;
-          }
-        );
-        const abpReportPromise = loadDatasetRows(
-          scopeId,
-          abpReportBatchId,
-          srDsAbpReport
-        ).then((value) => {
-          tickStage1("Loaded abpReport", STEP_WEIGHTS.abpReport);
-          return value;
-        });
-        const schedulePromise = loadDatasetRows(
-          scopeId,
-          scheduleBatchId,
-          srDsDeliverySchedule
-        ).then((value) => {
-          tickStage1("Loaded deliverySchedule", STEP_WEIGHTS.schedule);
-          return value;
-        });
-        const transferPromise = buildTransferDeliveryLookupForScope(
-          scopeId
-        ).then((value) => {
-          tickStage1("Loaded transferHistory", STEP_WEIGHTS.transfer);
-          return value;
-        });
-        const [snapshot, abpReportRows, scheduleRows, transferLookup] =
-          await Promise.all([
-            snapshotPromise,
-            abpReportPromise,
-            schedulePromise,
-            transferPromise,
-          ]);
+        // Stage 1 (5 → 80%): four parallel I/O reads, ticking
+        // progress as each resolves. See
+        // `aggregatorInputs.ts :: loadCommonAggregatorInputs` for
+        // the shared loader contract + the per-input weight tuning.
+        const { snapshot, abpReportRows, scheduleRows, transferLookup } =
+          await loadCommonAggregatorInputs(
+            scopeId,
+            abpReportBatchId,
+            scheduleBatchId,
+            progress
+          );
 
         // Stage 2 (80 → 88%): eligibility map + per-trackingId index.
         progress.report({
           stage: "computing",
           stageLabel: "Building Part-2 eligibility map",
-          fractionComplete: STAGE_1_CAP,
+          fractionComplete: AGGREGATOR_STAGE_1_CAP,
         });
         const systems: SnapshotSystem[] = extractSnapshotSystems(
           snapshot.systems
