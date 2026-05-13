@@ -45,8 +45,25 @@ export function DashboardBuildProgressBar({
   const stageLabel =
     progress?.factTable ?? progress?.message ?? "Preparing build";
 
+  // 2026-05-13 — clamp `currentStep + 1` to `totalSteps`. The
+  // server runner writes `currentStep: i` mid-loop (0-based) but
+  // bumps to `currentStep: totalSteps` on the final "Build complete"
+  // tick, so the raw `currentStep + 1` would render "Step 6 of 5"
+  // for the brief window between that tick and the status flip to
+  // `succeeded` (when the bar unmounts).
+  const displayStep =
+    progress && progress.totalSteps > 0
+      ? Math.min(progress.currentStep + 1, progress.totalSteps)
+      : null;
+
   return (
-    <div className="mt-2 space-y-1.5 rounded-md border border-sky-200 bg-sky-50/70 px-3 py-2">
+    // aria-live="polite" announces stage / percent changes to
+    // screen readers without interrupting their focus.
+    <div
+      className="mt-2 space-y-1.5 rounded-md border border-sky-200 bg-sky-50/70 px-3 py-2"
+      role="status"
+      aria-live="polite"
+    >
       <div className="flex items-center justify-between gap-3 text-xs text-sky-900">
         <span className="flex items-center gap-2 font-medium">
           <Loader2
@@ -58,9 +75,9 @@ export function DashboardBuildProgressBar({
         <span className="tabular-nums">{percent ?? "—"}%</span>
       </div>
       <Progress value={percent ?? 0} className="h-2 bg-sky-100" />
-      {progress && progress.totalSteps > 0 ? (
+      {progress && displayStep !== null ? (
         <p className="text-xs text-sky-900/80">
-          Step {progress.currentStep + 1} of {progress.totalSteps}
+          Step {displayStep} of {progress.totalSteps}
           {progress.message ? ` · ${progress.message}` : null}
         </p>
       ) : null}

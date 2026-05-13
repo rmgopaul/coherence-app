@@ -70,8 +70,12 @@ describe("fact-backed tab build controls", () => {
       expect(code, `${tabPath} should import the progress bar`).toMatch(
         /import\s+\{\s*DashboardBuildProgressBar\s*\}/,
       );
+      // Tightened from /buildProgress,/ — that pattern broke if
+      // Prettier reformatted the destructure to put `buildProgress`
+      // last (no trailing comma without `trailingComma: all`). The
+      // word-boundary form survives any ordering.
       expect(code, `${tabPath} should destructure buildProgress`).toMatch(
-        /buildProgress,/,
+        /\bbuildProgress\b/,
       );
       expect(code, `${tabPath} should mount the bar JSX`).toMatch(
         /<DashboardBuildProgressBar/,
