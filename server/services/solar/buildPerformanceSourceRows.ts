@@ -64,6 +64,7 @@ import {
 } from "./buildTransferDeliveryLookup";
 import { superjsonSerde, withArtifactCache } from "./withArtifactCache";
 import { startAggregatorProgress } from "./dashboardAggregatorProgress";
+import { shouldCacheAggregatorEmptyResult } from "./aggregatorCachePredicates";
 
 // ---------------------------------------------------------------------------
 // Pure aggregator — byte-for-byte mirror of the parent useMemo. Extracted
@@ -293,51 +294,20 @@ export interface PerformanceSourceRowsDiagnostic {
 }
 
 /**
- * 2026-05-11 — predicate used by `withArtifactCache.shouldCache` to
- * detect a "suspicious empty" recompute result. We do NOT cache a
- * zero-row result when the inputs that drive it were populated —
- * that pattern almost always means something went sideways mid-
- * recompute (snapshot degraded under heap pressure, a join missed
- * because the snapshot returned 0 systems, etc.) and caching the
- * empty would mask the bug until the next batch upload. Exported so
- * tests can pin the heuristic.
+ * 2026-05-13 — thin alias for the shared
+ * `shouldCacheAggregatorEmptyResult` predicate. The
+ * `performanceSourceRows`, `forecast`, and any future aggregator
+ * with the same `(scheduleRowsTotal, eligibleTrackingIdCount,
+ * rowsEmitted)` shape all share one implementation now — see
+ * `aggregatorCachePredicates.ts` for the rationale and incident
+ * history (PRs #556 / #557 / #567 / today's fix).
+ *
+ * Kept as a named export so existing tests + the in-module call
+ * site compile unchanged; the name still describes "the
+ * performanceSourceRows-shape predicate" at the call site.
  */
-export function shouldCachePerformanceSourceRowsResult(args: {
-  rowsEmitted: number;
-  scheduleRowsTotal: number;
-  eligibleTrackingIdCount: number;
-}): boolean {
-  // Trivially-empty schedule input → empty output is genuine.
-  // This is the only "cache the empty result" path: when there
-  // are no schedule rows to aggregate over, the result must be
-  // empty regardless of what the eligibility filter produces.
-  if (args.scheduleRowsTotal === 0) {
-    return true;
-  }
-  // 2026-05-12 — refuse to cache an empty result when schedule
-  // rows exist. The prior `args.eligibleTrackingIdCount === 0
-  // → cache` branch was the cache-poison path observed on prod
-  // 2026-05-13: deliveryScheduleBase had 24k rows + abpReport
-  // had 28k rows, but a transient recompute produced
-  // `eligibleTrackingIdCount=0` (snapshot degraded mid-build, or
-  // a join missed because the snapshot returned 0 systems under
-  // heap pressure), the predicate let the empty array cache, and
-  // every subsequent call served the poisoned empty payload —
-  // until either the next batch upload (rare) or a runner-
-  // version bump.
-  //
-  // With this tighter predicate, a recompute that emits 0 rows
-  // from a non-trivial schedule (regardless of why) is refused
-  // by the cache. Next call recomputes fresh; if the system is
-  // genuinely empty on this scope (no Part-2-verified rows
-  // anywhere), the recompute is sub-second so the recompute-per-
-  // call cost is negligible while the cache-poison risk is
-  // eliminated.
-  if (args.rowsEmitted === 0) {
-    return false;
-  }
-  return true;
-}
+export const shouldCachePerformanceSourceRowsResult =
+  shouldCacheAggregatorEmptyResult;
 
 export async function getOrBuildPerformanceSourceRows(
   scopeId: string

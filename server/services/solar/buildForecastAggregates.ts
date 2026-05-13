@@ -58,6 +58,7 @@ import {
   type PerformanceSourceRow,
 } from "@shared/solarRecPerformanceRatio";
 import { jsonSerde, withArtifactCache } from "./withArtifactCache";
+import { shouldCacheAggregatorEmptyResult } from "./aggregatorCachePredicates";
 
 export interface ForecastContractRow {
   contract: string;
@@ -295,7 +296,22 @@ const FORECAST_DEPS = [
 
 const FORECAST_ARTIFACT_TYPE = "forecast";
 
-export const FORECAST_RUNNER_VERSION = "phase-5d-pr2-forecast@5";
+// 2026-05-13 (@6): force-invalidate poisoned cache rows. The
+// sibling `shouldCachePerformanceSourceRowsResult` was tightened
+// in PR #567 to refuse caching empty results from non-trivial
+// schedule input; this aggregator carried the SAME predicate
+// shape (the `eligibleTrackingIdCount === 0 → cache` poison
+// vector) and the same cache-key contract. Without the bump, any
+// scope that already poisoned its forecast cache during the
+// 2026-05-11 incident OR experiences a transient
+// `eligibleTrackingIdCount=0` recompute now would serve the
+// empty result forever.
+//
+// Operationally identical to PR #557's @5 bump (also a forecast
+// cache invalidation after PR #556 first introduced the
+// predicate). The pattern is now thoroughly documented in
+// `aggregatorCachePredicates.ts`.
+export const FORECAST_RUNNER_VERSION = "phase-5d-pr2-forecast@6";
 // 2026-05-11 (@5): force-invalidate the existing poisoned cache
 // rows that PR #556's `shouldCache` predicate would have rejected
 // had it been live at the time. The cache hash bundles the runner
@@ -389,27 +405,19 @@ export const __forecastAggregatesTest = {
  *     consistent empty output.
  */
 /**
- * 2026-05-11 — exported predicate so tests can pin the
- * "suspicious empty" heuristic. We refuse to cache a zero-row
- * result when the inputs that drive it were populated — the
- * post-mortem of 2026-05-11 traced a 24/34s "fromCache: true,
- * rows: []" response back to exactly this pattern (recompute hit
- * mid-flight heap pressure, returned `[]`, withArtifactCache
- * cached it, all subsequent calls served the empty forever).
+ * 2026-05-13 — thin alias for the shared
+ * `shouldCacheAggregatorEmptyResult` predicate. The forecast
+ * aggregator, `performanceSourceRows`, and any future aggregator
+ * with the same `(scheduleRowsTotal, eligibleTrackingIdCount,
+ * rowsEmitted)` shape all share one implementation now — see
+ * `aggregatorCachePredicates.ts` for the rationale and the
+ * incident history (PRs #556 / #557 / #567 / today's fix).
+ *
+ * Kept as a named export so existing tests + the in-module call
+ * site compile unchanged; the name still describes "the
+ * forecast-shape predicate" at the call site.
  */
-export function shouldCacheForecastResult(args: {
-  rowsEmitted: number;
-  scheduleRowsTotal: number;
-  eligibleTrackingIdCount: number;
-}): boolean {
-  if (args.scheduleRowsTotal === 0 || args.eligibleTrackingIdCount === 0) {
-    return true;
-  }
-  if (args.rowsEmitted === 0) {
-    return false;
-  }
-  return true;
-}
+export const shouldCacheForecastResult = shouldCacheAggregatorEmptyResult;
 
 export async function getOrBuildForecastAggregates(scopeId: string): Promise<
   ForecastAggregates & { fromCache: boolean; diagnostic: ForecastDiagnostic }
