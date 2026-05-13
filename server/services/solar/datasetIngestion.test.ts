@@ -133,7 +133,7 @@ describe("ingestDataset", () => {
 
       expect(result.status).toBe("failed");
       expect(result.rowCount).toBe(0);
-      expect(result.errors[0]?.message).toMatch(/parsed to 0 data rows/);
+      expect(result.errors[0]?.message).toMatch(/had 0 data rows/);
       expect(result.errors[0]?.message).toMatch(/System ID/);
       expect(mocks.activateDatasetVersion).not.toHaveBeenCalled();
       expect(mocks.updateImportBatchStatus).toHaveBeenCalledWith(
@@ -143,6 +143,26 @@ describe("ingestDataset", () => {
           error: expect.stringMatching(/0 data rows/),
         })
       );
+    });
+
+    it("error message stays under the 200-char client truncation", async () => {
+      // SolarRecDashboard.tsx renders sync issues via
+      // `info.message.slice(0, 200)`. Keeping the new message
+      // under that cap avoids cutting off the remediation hint.
+      const csv =
+        "System ID,Payment Number,Total RECS,REC Price,Invoice Amount ($),Customer\n";
+
+      const result = await ingestDataset(
+        "scope-1",
+        "abpUtilityInvoiceRows",
+        csv,
+        "test.csv",
+        "replace",
+        42
+      );
+
+      expect(result.status).toBe("failed");
+      expect(result.errors[0]?.message.length).toBeLessThanOrEqual(200);
     });
 
     it("still fails on bad headers (existing rail — pin against shadowing)", async () => {
@@ -162,7 +182,7 @@ describe("ingestDataset", () => {
       expect(mocks.activateDatasetVersion).not.toHaveBeenCalled();
     });
 
-    it("error message names the file size for diagnosability", async () => {
+    it("error message names the file size (UTF-8 bytes) for diagnosability", async () => {
       const csv =
         "systemId,paymentNumber,recQuantity,recPrice,invoiceAmount" +
         " ".repeat(120) +
@@ -178,8 +198,11 @@ describe("ingestDataset", () => {
       );
 
       expect(result.status).toBe("failed");
+      // UTF-8 byte length (matches `createImportFile.sizeBytes`),
+      // formatted with locale separators (e.g. "1,234").
+      const expectedBytes = Buffer.byteLength(csv, "utf8");
       expect(result.errors[0]?.message).toMatch(
-        new RegExp(`File size: ${csv.length} bytes`)
+        new RegExp(`${expectedBytes.toLocaleString()} bytes`)
       );
     });
 

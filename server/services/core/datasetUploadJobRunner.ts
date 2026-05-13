@@ -386,16 +386,28 @@ export async function runDatasetUploadJob(
       totalRowsWritten === 0 &&
       clonedRowCount === 0
     ) {
+      // Diagnostic wording distinguishes "every parseRow returned
+      // null" from "every parseRow threw" so the user can act on
+      // the right cause. Both cases have the same predicate but
+      // different remediation.
+      const dropReason =
+        totalErrorCount > 0
+          ? `the dataset parser raised ${totalErrorCount.toLocaleString()} exception(s) ` +
+            `and dropped every row`
+          : `the dataset parser dropped all of them silently — typically because ` +
+            `a required field (systemId, invoiceNumber, applicationId, …) was ` +
+            `missing from every row's headers`;
       const error =
-        `Upload parsed ${totalRowsParsed.toLocaleString()} CSV rows but the ` +
-        `dataset parser dropped all of them (typically because a required ` +
-        `field — e.g. systemId, invoiceNumber, applicationId — was missing ` +
-        `from every row's headers). ` +
-        `Headers found in the file: [${observedHeaderNames
+        `Upload parsed ${totalRowsParsed.toLocaleString()} rows but ${dropReason}. ` +
+        `Headers in the file: [${observedHeaderNames
           .slice(0, 12)
           .join(", ")}${observedHeaderNames.length > 12 ? ", …" : ""}]. ` +
-        `Re-upload the CSV with the expected header naming, or use the ` +
-        `"Clear" action if you intended to empty the dataset.`;
+        `Re-upload with the expected headers, or use "Clear" to empty the dataset.`;
+      // Mirror the catch-handler cleanup path so the new failure
+      // doesn't leave a `processing` import-batch row + an
+      // `importFiles` entry orphaned. Reviewer caught: previous
+      // revision called only `failJob` and skipped this.
+      await cleanupFailedUploadBatch(job.datasetKey, batchId, error);
       await failJob(scopeId, jobId, currentStatus, error);
       // Best-effort temp file cleanup.
       void fs.unlink(job.storageKey).catch(() => undefined);

@@ -445,13 +445,20 @@ export async function ingestDataset(
     // mistake — making it a failure surfaces the actionable
     // problem.
     if (parsed.rows.length === 0) {
+      // Use UTF-8 byte length (the on-the-wire / on-disk size)
+      // rather than `csvText.length` which counts UTF-16 code
+      // units. Matches what `createImportFile` already records
+      // for the same blob a few lines above.
+      const fileBytes = Buffer.byteLength(csvText, "utf8");
+      // Keep the message under the 200-char client truncation in
+      // `SolarRecDashboard.tsx` (the sync-issues banner slices at
+      // 200). Five headers truncated to the first 6 cover the
+      // typical ABP/CSG/scheduleBase shapes.
       const error =
-        `${definition.label} CSV parsed to 0 data rows. ` +
-        `File size: ${csvText.length} bytes. ` +
-        `Headers found: [${parsed.headers.slice(0, 10).join(", ")}]. ` +
-        `The file may have only a header row, or the parser found no ` +
-        `data rows after the header. Re-upload the CSV with data rows ` +
-        `or use the "Clear" action if you intended to empty the dataset.`;
+        `${definition.label} CSV had 0 data rows ` +
+        `(${fileBytes.toLocaleString()} bytes, headers: ` +
+        `${parsed.headers.slice(0, 6).join(", ")}). ` +
+        `Re-upload with data rows, or use "Clear" to empty.`;
       await updateImportBatchStatus(batchId, "failed", { error });
       return {
         batchId,
