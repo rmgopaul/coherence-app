@@ -3469,6 +3469,35 @@ export const solarRecDashboardRouter = t.router({
   }),
 
   /**
+   * 2026-05-12 — server-side per-step progress channel for the
+   * dashboard tab aggregators (Phase B2). Clients poll while their
+   * main aggregator query is in-flight and render a determinate
+   * progress bar with the current stage label + percent.
+   *
+   * Returns null when no recompute is in flight for the given
+   * `aggregatorKey`. Returns a slim state object otherwise. Wire
+   * shape is tiny (~200 B); polling at 500 ms is cheap.
+   *
+   * Today only `contractVintage` is instrumented; follow-up PRs
+   * roll out the same pattern to the other 9 aggregators.
+   */
+  getDashboardAggregatorProgress: dashboardProcedure(
+    "solar-rec-dashboard",
+    "read"
+  )
+    .input(z.object({ aggregatorKey: z.string().min(1).max(64) }))
+    .query(async ({ ctx, input }) => {
+      const { getAggregatorProgress } = await import(
+        "../services/solar/dashboardAggregatorProgress"
+      );
+      const state = getAggregatorProgress(ctx.scopeId, input.aggregatorKey);
+      return {
+        progress: state,
+        _runnerVersion: "aggregator-progress-v1",
+      };
+    }),
+
+  /**
    * Task 5.13 PR-4 (2026-04-27) — server-side production-trend
    * aggregate for the Trends tab. Replaces the parent's two raw-row
    * useMemos (`trendProductionMoM` over `convertedReads.rows` +

@@ -403,46 +403,105 @@ export async function getOrBuildContractVintageAggregates(
     return { rows: [], fromCache: false };
   }
 
-  const { result, fromCache } = await withArtifactCache<
-    ContractVintageAggregate[]
-  >({
+  // 2026-05-12 — emit real-time progress to the in-memory
+  // `dashboardAggregatorProgress` channel so the ContractsTab /
+  // AnnualReviewTab can render a determinate progress bar while
+  // a cold-cache recompute runs (5–15s on prod-scale inputs).
+  // The reporter is a no-op when the entry isn't being polled by
+  // any client. `finish()` / `fail()` happen via the
+  // `withArtifactCache` outcome below.
+  const { startAggregatorProgress } = await import(
+    "./dashboardAggregatorProgress"
+  );
+  const progress = startAggregatorProgress(
     scopeId,
-    artifactType: ARTIFACT_TYPE,
-    inputVersionHash: hash,
-    serde: superjsonSerde<ContractVintageAggregate[]>(),
-    rowCount: (rows) => rows.length,
-    recompute: async () => {
-      const [snapshot, abpReportRows, scheduleRows, transferLookup] =
-        await Promise.all([
-          getOrBuildSystemSnapshot(scopeId),
-          loadDatasetRows(scopeId, abpReportBatchId, srDsAbpReport),
-          loadDatasetRows(scopeId, scheduleBatchId, srDsDeliverySchedule),
-          buildTransferDeliveryLookupForScope(scopeId),
-        ]);
+    "contractVintage",
+    "Preparing"
+  );
+  try {
+    const { result, fromCache } = await withArtifactCache<
+      ContractVintageAggregate[]
+    >({
+      scopeId,
+      artifactType: ARTIFACT_TYPE,
+      inputVersionHash: hash,
+      serde: superjsonSerde<ContractVintageAggregate[]>(),
+      rowCount: (rows) => rows.length,
+      recompute: async () => {
+        // Stage 1 (0 → 70%): four parallel I/O reads. We can't
+        // know which finishes first; emit a single label and let
+        // the bar fill at the merged Promise.all completion.
+        progress.report({
+          stage: "loading",
+          stageLabel: "Loading snapshot + abpReport + deliverySchedule + transferHistory",
+          fractionComplete: 0.05,
+        });
+        const [snapshot, abpReportRows, scheduleRows, transferLookup] =
+          await Promise.all([
+            getOrBuildSystemSnapshot(scopeId),
+            loadDatasetRows(scopeId, abpReportBatchId, srDsAbpReport),
+            loadDatasetRows(scopeId, scheduleBatchId, srDsDeliverySchedule),
+            buildTransferDeliveryLookupForScope(scopeId),
+          ]);
+        progress.report({
+          stage: "loading",
+          stageLabel: "Loaded inputs",
+          fractionComplete: 0.7,
+          current: scheduleRows.length,
+          total: scheduleRows.length,
+          unitLabel: "deliverySchedule rows",
+        });
 
-      // Runtime-validated extraction — `snapshot.systems` is
-      // declared `unknown[]` because `SystemRecord` is typed in
-      // client-land. `extractSnapshotSystems` validates each row
-      // and substitutes `null` / `false` defaults for missing or
-      // wrong-typed fields, so a future change to the snapshot
-      // payload schema can't silently corrupt the aggregate.
-      const systems: SnapshotSystem[] = extractSnapshotSystems(
-        snapshot.systems
-      );
-      const eligibilityMaps = buildPart2EligibilityMaps(
-        abpReportRows,
-        systems
-      );
+        // Stage 2 (70 → 85%): eligibility filter.
+        progress.report({
+          stage: "computing",
+          stageLabel: "Building Part-2 eligibility map",
+          fractionComplete: 0.7,
+        });
+        const systems: SnapshotSystem[] = extractSnapshotSystems(
+          snapshot.systems
+        );
+        const eligibilityMaps = buildPart2EligibilityMaps(
+          abpReportRows,
+          systems
+        );
+        progress.report({
+          stage: "computing",
+          stageLabel: "Eligibility map ready",
+          fractionComplete: 0.85,
+          current: eligibilityMaps.eligibleTrackingIds.size,
+          total: systems.length,
+          unitLabel: "Part-2-eligible systems",
+        });
 
-      return buildContractVintageAggregates({
-        scheduleRows,
-        eligibleTrackingIds: eligibilityMaps.eligibleTrackingIds,
-        recPriceByTrackingId: eligibilityMaps.recPriceByTrackingId,
-        isReportingByTrackingId: eligibilityMaps.isReportingByTrackingId,
-        transferDeliveryLookup: transferLookup,
-      });
-    },
-  });
-
-  return { rows: result, fromCache };
+        // Stage 3 (85 → 100%): the actual aggregate build.
+        progress.report({
+          stage: "computing",
+          stageLabel: "Aggregating contract vintage rows",
+          fractionComplete: 0.9,
+        });
+        const rows = buildContractVintageAggregates({
+          scheduleRows,
+          eligibleTrackingIds: eligibilityMaps.eligibleTrackingIds,
+          recPriceByTrackingId: eligibilityMaps.recPriceByTrackingId,
+          isReportingByTrackingId: eligibilityMaps.isReportingByTrackingId,
+          transferDeliveryLookup: transferLookup,
+        });
+        progress.report({
+          stage: "writing",
+          stageLabel: "Persisting cache",
+          fractionComplete: 0.98,
+          current: rows.length,
+          total: rows.length,
+          unitLabel: "aggregate rows",
+        });
+        return rows;
+      },
+    });
+    progress.finish();
+    return { rows: result, fromCache };
+  } catch (err) {
+    progress.fail(err);
+    throw err;
+  }
 }

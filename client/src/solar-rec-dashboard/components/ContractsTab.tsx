@@ -65,6 +65,8 @@ import type { ContractDeliveryAggregate } from "@/solar-rec-dashboard/state/type
 // (contractId, deliveryStartDate) sort locally. With this PR,
 // ContractsTab no longer reads any raw `datasets[k].rows` arrays.
 import { solarRecTrpc } from "@/solar-rec/solarRecTrpc";
+import { useDashboardAggregatorProgress } from "@/solar-rec-dashboard/hooks/useDashboardAggregatorProgress";
+import { AggregatorProgressOverlay } from "@/solar-rec-dashboard/components/AggregatorProgressOverlay";
 
 // ---------------------------------------------------------------------------
 // Props
@@ -107,6 +109,18 @@ export default memo(function ContractsTab(props: ContractsTabProps) {
         staleTime: 60_000,
       }
     );
+
+  // 2026-05-12 — Phase B2 progress overlay. Polls the server's
+  // in-memory aggregator-progress channel every 500 ms while the
+  // main query is in flight, so the user sees a determinate
+  // progress bar with the current stage label + percent instead
+  // of a generic spinner. Stops polling as soon as the main query
+  // settles. Renders nothing when the cache is warm (query
+  // resolves in <1 s and the server entry never gets created).
+  const aggregatorProgress = useDashboardAggregatorProgress(
+    "contractVintage",
+    { enabled: isActive && contractVintageQuery.isLoading }
+  );
 
   // -------------------------------------------------------------------------
   // Aggregate per (contractId, deliveryStartDate) from the schedule base.
@@ -255,6 +269,9 @@ export default memo(function ContractsTab(props: ContractsTabProps) {
   // -------------------------------------------------------------------------
   return (
     <div className="space-y-4 mt-4">
+      {aggregatorProgress.progress ? (
+        <AggregatorProgressOverlay progress={aggregatorProgress.progress} />
+      ) : null}
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Utility Contract ID Tracking</CardTitle>
