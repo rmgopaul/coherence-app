@@ -6632,6 +6632,11 @@ const aiDataContext = useMemo(() => {
                 <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading REC performance evaluation tab...</div>}>
                   <RecPerformanceEvaluationTabLazy
                     performanceSourceRows={performanceSourceRows}
+                    isLoading={
+                      performanceSourceRowsQuery.isLoading ||
+                      performanceSourceRowsQuery.isFetching
+                    }
+                    isActive={isPerformanceEvalTabActive}
                   />
                 </Suspense>
               </TabErrorBoundary>
