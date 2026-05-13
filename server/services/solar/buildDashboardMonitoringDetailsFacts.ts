@@ -35,7 +35,11 @@
  * tested separately with mocked DB helpers.
  */
 
-import type { DashboardBuildStep } from "./dashboardBuildJobRunner";
+import {
+  type DashboardBuildStep,
+  getDashboardBuildSteps,
+  setDashboardBuildSteps,
+} from "./dashboardBuildJobRunner";
 import {
   getOrBuildOfflineMonitoringAggregates,
   type MonitoringDetailsRecord,
@@ -244,15 +248,8 @@ let registered = false;
  * in `_core/index.ts` (server boot) wires it once and the test
  * suite can opt in selectively without polluting other tests.
  */
-export async function registerMonitoringDetailsBuildStep(): Promise<void> {
+export function registerMonitoringDetailsBuildStep(): void {
   if (registered) return;
-  // Lazy import to avoid a circular dep at module-load time
-  // (the runner depends on db helpers; we depend on the runner;
-  // either order is fine but the lazy import keeps the import
-  // graph simple).
-  const { getDashboardBuildSteps, setDashboardBuildSteps } = await import(
-    "./dashboardBuildJobRunner"
-  );
   const previous = getDashboardBuildSteps();
   if (previous.some(step => step.name === STEP_NAME)) {
     registered = true;

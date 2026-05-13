@@ -22,7 +22,11 @@
  * template.
  */
 
-import type { DashboardBuildStep } from "./dashboardBuildJobRunner";
+import {
+  type DashboardBuildStep,
+  getDashboardBuildSteps,
+  setDashboardBuildSteps,
+} from "./dashboardBuildJobRunner";
 import {
   getOrBuildOverviewSummary,
   type OwnershipOverviewExportRow,
@@ -164,11 +168,8 @@ let registered = false;
  * after `monitoringDetailsFacts` + `changeOwnershipFacts` means
  * ownership runs third; that's fine — they have no dependency.
  */
-export async function registerOwnershipBuildStep(): Promise<void> {
+export function registerOwnershipBuildStep(): void {
   if (registered) return;
-  const { getDashboardBuildSteps, setDashboardBuildSteps } = await import(
-    "./dashboardBuildJobRunner"
-  );
   const previous = getDashboardBuildSteps();
   if (previous.some(step => step.name === STEP_NAME)) {
     registered = true;

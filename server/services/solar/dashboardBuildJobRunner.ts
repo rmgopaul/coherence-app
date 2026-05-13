@@ -268,6 +268,40 @@ export async function runDashboardBuildJob(buildId: string): Promise<void> {
 
   try {
     const totalSteps = DASHBOARD_BUILD_STEPS.length;
+
+    // 2026-05-13 — fail loud on an empty steps array. Pre-fix the
+    // runner happily "succeeded" with 0 steps run, which matched
+    // the legitimate Phase 2 PR-B skeleton state (when no fact
+    // builders were registered yet) but now is always a bug:
+    // production registers 5 steps at server boot. If we observe
+    // 0 here, either the boot-time `register*BuildStep()` calls
+    // failed silently OR a test bled `setDashboardBuildSteps([])`
+    // into a prod build path. Both deserve a loud failure rather
+    // than the user clicking "Rebuild table", seeing "succeeded",
+    // and watching their fact tables stay stale.
+    //
+    // Tests that genuinely want to exercise the 0-step state
+    // (the registry's `setDashboardBuildSteps([])` reset path)
+    // can opt out by not invoking `runDashboardBuildJob` — the
+    // 0-step assertion is now part of the runner's contract.
+    if (totalSteps === 0) {
+      clearInterval(heartbeat);
+      const error =
+        "No build steps registered. The runner cannot make progress; " +
+        "this usually means the boot-time `register*BuildStep()` calls " +
+        "in server/_core/index.ts did not complete before the build " +
+        "kicked off. Restart the server or check the boot logs for " +
+        "import-time errors.";
+      await completeSolarRecDashboardBuildFailure(
+        row.scopeId,
+        buildId,
+        claimId,
+        error
+      );
+      metric.fail(new Error(error));
+      return;
+    }
+
     for (let i = 0; i < totalSteps; i += 1) {
       if (claimLost) break;
       const step = DASHBOARD_BUILD_STEPS[i];

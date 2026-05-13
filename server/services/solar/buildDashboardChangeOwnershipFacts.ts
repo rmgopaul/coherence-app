@@ -25,7 +25,11 @@
  * re-scanning srDs* tables.
  */
 
-import type { DashboardBuildStep } from "./dashboardBuildJobRunner";
+import {
+  type DashboardBuildStep,
+  getDashboardBuildSteps,
+  setDashboardBuildSteps,
+} from "./dashboardBuildJobRunner";
 import {
   getOrBuildChangeOwnership,
   type ChangeOwnershipExportRow,
@@ -181,11 +185,8 @@ let registered = false;
  * after `monitoringDetailsFacts` means changeOwnership runs
  * second; that's fine — they have no dependency.
  */
-export async function registerChangeOwnershipBuildStep(): Promise<void> {
+export function registerChangeOwnershipBuildStep(): void {
   if (registered) return;
-  const { getDashboardBuildSteps, setDashboardBuildSteps } = await import(
-    "./dashboardBuildJobRunner"
-  );
   const previous = getDashboardBuildSteps();
   if (previous.some(step => step.name === STEP_NAME)) {
     registered = true;

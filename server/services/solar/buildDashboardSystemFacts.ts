@@ -28,7 +28,11 @@
  * E-2 template.
  */
 
-import type { DashboardBuildStep } from "./dashboardBuildJobRunner";
+import {
+  type DashboardBuildStep,
+  getDashboardBuildSteps,
+  setDashboardBuildSteps,
+} from "./dashboardBuildJobRunner";
 import { getOrBuildSystemSnapshot } from "./buildSystemSnapshot";
 import { getOrBuildOfflineMonitoringAggregates } from "./buildOfflineMonitoringAggregates";
 import {
@@ -307,11 +311,8 @@ let registered = false;
  * `ownershipFacts` means system runs fourth; that's fine — they
  * have no dependency on each other.
  */
-export async function registerSystemBuildStep(): Promise<void> {
+export function registerSystemBuildStep(): void {
   if (registered) return;
-  const { getDashboardBuildSteps, setDashboardBuildSteps } = await import(
-    "./dashboardBuildJobRunner"
-  );
   const previous = getDashboardBuildSteps();
   if (previous.some(step => step.name === STEP_NAME)) {
     registered = true;

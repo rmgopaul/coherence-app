@@ -139,11 +139,24 @@ async function startServer() {
   // duplicating. Order: monitoringDetails → changeOwnership →
   // ownership → system → performanceRatio (each step writes to
   // a distinct fact table; no dependency between them).
-  void registerMonitoringDetailsBuildStep();
-  void registerChangeOwnershipBuildStep();
-  void registerOwnershipBuildStep();
-  void registerSystemBuildStep();
-  void registerPerformanceRatioBuildStep();
+  //
+  // 2026-05-13 — these are now SYNCHRONOUS calls. Pre-fix the five
+  // `register*BuildStep()` functions were async (each `await
+  // import("./dashboardBuildJobRunner")` before mutating
+  // `DASHBOARD_BUILD_STEPS`) and were fire-and-forgot with `void`.
+  // That opened a race window between server.listen() and the
+  // first `runDashboardBuildJob` call: if a user hit "Rebuild
+  // table" during the cold-start window (typical right after a
+  // Render deploy), the runner saw `DASHBOARD_BUILD_STEPS = []`,
+  // ran the 0-step happy path, and marked the build "succeeded"
+  // without doing any work. Static imports + sync registration
+  // close the race; the runner also gained a guard that fails
+  // loud if it ever sees an empty steps array.
+  registerMonitoringDetailsBuildStep();
+  registerChangeOwnershipBuildStep();
+  registerOwnershipBuildStep();
+  registerSystemBuildStep();
+  registerPerformanceRatioBuildStep();
 
   // Concern #4 PR-2 (per docs/triage/local-dev-prod-mutation-findings.md):
   // schedulers + the orphan-batch cleanup mutate prod state on every
