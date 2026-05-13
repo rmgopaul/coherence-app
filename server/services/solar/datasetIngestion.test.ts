@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -180,6 +182,22 @@ describe("ingestDataset", () => {
       expect(result.status).toBe("failed");
       expect(result.errors[0]?.message).toMatch(/missing required columns/);
       expect(mocks.activateDatasetVersion).not.toHaveBeenCalled();
+    });
+
+    // MED-4 follow-up to PR #570: the validateHeaders failure branch
+    // formats the observed header list with the same shared helper
+    // the 0-row guard uses, so a regression where a future edit
+    // re-inlines `parsed.headers.slice(0, N).join(...)` is caught
+    // by a source-text scan rail.
+    it("migrated validateHeaders failure to formatTruncatedHeaderList", () => {
+      const src = readFileSync(
+        fileURLToPath(new URL("./datasetIngestion.ts", import.meta.url)),
+        "utf8"
+      );
+      expect(src).not.toMatch(/parsed\.headers\.slice\(0,\s*10\)\.join/);
+      expect(src).toMatch(
+        /formatTruncatedHeaderList\(parsed\.headers,\s*10\)/
+      );
     });
 
     it("error message names the file size (UTF-8 bytes) for diagnosability", async () => {
