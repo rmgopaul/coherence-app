@@ -45,6 +45,7 @@ import {
 } from "@/solar-rec-dashboard/lib/dashboardRetryPolicy";
 import { solarRecTrpc } from "@/solar-rec/solarRecTrpc";
 import { useDashboardBuildControl } from "@/solar-rec-dashboard/hooks/useDashboardBuildControl";
+import { DashboardBuildProgressBar } from "@/solar-rec-dashboard/components/DashboardBuildProgressBar";
 import type { SolarRecAppRouter } from "@server/_core/solarRecRouter";
 import type { OwnershipStatus } from "@/solar-rec-dashboard/state/types";
 
@@ -129,7 +130,7 @@ export default memo(function OwnershipTab() {
     return utils.solarRecDashboard.getDashboardOwnershipPage.invalidate();
   }, [resetPaging, utils]);
 
-  const { buildErrorMessage, isBuildRunning, startBuild } =
+  const { buildErrorMessage, isBuildRunning, buildProgress, startBuild } =
     useDashboardBuildControl({
       onSucceeded: handleBuildSucceeded,
     });
@@ -250,6 +251,11 @@ export default memo(function OwnershipTab() {
               </Button>
             </div>
           </div>
+
+          <DashboardBuildProgressBar
+            isBuildRunning={isBuildRunning}
+            progress={buildProgress}
+          />
 
           {buildErrorMessage ? (
             <div className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-900">

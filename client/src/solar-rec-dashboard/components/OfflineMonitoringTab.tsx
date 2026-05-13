@@ -65,6 +65,7 @@ import type {
 } from "@/solar-rec-dashboard/state/types";
 import { solarRecTrpc } from "@/solar-rec/solarRecTrpc";
 import { useDashboardBuildControl } from "@/solar-rec-dashboard/hooks/useDashboardBuildControl";
+import { DashboardBuildProgressBar } from "@/solar-rec-dashboard/components/DashboardBuildProgressBar";
 
 // ---------------------------------------------------------------------------
 // Props
@@ -154,7 +155,7 @@ export default memo(function OfflineMonitoringTab(
     ]).then(() => undefined);
   }, [utils]);
 
-  const { buildErrorMessage, isBuildRunning, startBuild } =
+  const { buildErrorMessage, isBuildRunning, buildProgress, startBuild } =
     useDashboardBuildControl({
       onSucceeded: refreshOfflineMonitoringRows,
     });
@@ -1225,6 +1226,11 @@ export default memo(function OfflineMonitoringTab(
               </Button>
             </div>
           </div>
+
+          <DashboardBuildProgressBar
+            isBuildRunning={isBuildRunning}
+            progress={buildProgress}
+          />
 
           {buildErrorMessage ? (
             <div className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-900">
