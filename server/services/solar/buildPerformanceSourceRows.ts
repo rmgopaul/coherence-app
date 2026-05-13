@@ -63,6 +63,7 @@ import {
   type TransferDeliveryLookupPayload,
 } from "./buildTransferDeliveryLookup";
 import { superjsonSerde, withArtifactCache } from "./withArtifactCache";
+import { startAggregatorProgress } from "./dashboardAggregatorProgress";
 
 // ---------------------------------------------------------------------------
 // Pure aggregator — byte-for-byte mirror of the parent useMemo. Extracted
@@ -364,6 +365,19 @@ export async function getOrBuildPerformanceSourceRows(
     rowsEmitted: 0,
   };
 
+  // 2026-05-12 — B2 progress instrumentation. RecPerformanceEvaluation
+  // Tab + Snapshot Log + createLogEntry all gate on this query, and
+  // on cold cache the recompute can take 5–15 s (snapshot build is
+  // the dominant cost). Mirror the `buildContractVintageAggregates`
+  // pattern: emit progress at each stage boundary so the client
+  // determinate progress bar advances continuously instead of
+  // appearing stuck at 5%.
+  const progress = startAggregatorProgress(
+    scopeId,
+    "performanceSourceRows",
+    "Preparing"
+  );
+  try {
   const { result, fromCache } = await withArtifactCache<PerformanceSourceRow[]>(
     {
       scopeId,
@@ -386,14 +400,74 @@ export async function getOrBuildPerformanceSourceRows(
           eligibleTrackingIdCount: diagnostic.eligibleTrackingIdCount,
         }),
       recompute: async () => {
+        // Stage 1 (5 → 80%): four parallel I/O reads. Each input's
+        // `.then()` ticks the bar as that promise resolves;
+        // weights match cold-cache wall-clock share — snapshot is
+        // the slow one (system-snapshot build is its own cache miss).
+        const STAGE_1_BASE = 0.05;
+        const STAGE_1_CAP = 0.8;
+        const STEP_WEIGHTS = {
+          snapshot: 0.6,
+          schedule: 0.05,
+          abpReport: 0.07,
+          transfer: 0.03,
+        } as const;
+        let stage1Fraction = STAGE_1_BASE;
+        const tickStage1 = (label: string, delta: number): void => {
+          stage1Fraction = Math.min(stage1Fraction + delta, STAGE_1_CAP);
+          progress.report({
+            stage: "loading",
+            stageLabel: label,
+            fractionComplete: stage1Fraction,
+          });
+        };
+        progress.report({
+          stage: "loading",
+          stageLabel: "Loading inputs",
+          fractionComplete: STAGE_1_BASE,
+        });
+        const snapshotPromise = getOrBuildSystemSnapshot(scopeId).then(
+          (value) => {
+            tickStage1("Loaded system snapshot", STEP_WEIGHTS.snapshot);
+            return value;
+          }
+        );
+        const abpReportPromise = loadDatasetRows(
+          scopeId,
+          abpReportBatchId,
+          srDsAbpReport
+        ).then((value) => {
+          tickStage1("Loaded abpReport", STEP_WEIGHTS.abpReport);
+          return value;
+        });
+        const schedulePromise = loadDatasetRows(
+          scopeId,
+          scheduleBatchId,
+          srDsDeliverySchedule
+        ).then((value) => {
+          tickStage1("Loaded deliverySchedule", STEP_WEIGHTS.schedule);
+          return value;
+        });
+        const transferPromise = buildTransferDeliveryLookupForScope(
+          scopeId
+        ).then((value) => {
+          tickStage1("Loaded transferHistory", STEP_WEIGHTS.transfer);
+          return value;
+        });
         const [snapshot, abpReportRows, scheduleRows, transferLookup] =
           await Promise.all([
-            getOrBuildSystemSnapshot(scopeId),
-            loadDatasetRows(scopeId, abpReportBatchId, srDsAbpReport),
-            loadDatasetRows(scopeId, scheduleBatchId, srDsDeliverySchedule),
-            buildTransferDeliveryLookupForScope(scopeId),
+            snapshotPromise,
+            abpReportPromise,
+            schedulePromise,
+            transferPromise,
           ]);
 
+        // Stage 2 (80 → 88%): eligibility map + per-trackingId index.
+        progress.report({
+          stage: "computing",
+          stageLabel: "Building Part-2 eligibility map",
+          fractionComplete: STAGE_1_CAP,
+        });
         const systems: SnapshotSystem[] = extractSnapshotSystems(
           snapshot.systems
         );
@@ -413,7 +487,24 @@ export async function getOrBuildPerformanceSourceRows(
           if (!sys.trackingSystemRefId) continue;
           systemsByTrackingId.set(sys.trackingSystemRefId, sys);
         }
+        progress.report({
+          stage: "computing",
+          stageLabel: "Eligibility map ready",
+          fractionComplete: 0.88,
+          current: eligibleTrackingIds.size,
+          total: systems.length,
+          unitLabel: "Part-2-eligible systems",
+        });
 
+        // Stage 3 (88 → 95%): aggregate build + diagnostic pass.
+        progress.report({
+          stage: "computing",
+          stageLabel: "Aggregating performance source rows",
+          fractionComplete: 0.9,
+          current: scheduleRows.length,
+          total: scheduleRows.length,
+          unitLabel: "deliverySchedule rows",
+        });
         const rows = buildPerformanceSourceRows({
           scheduleRows,
           eligibleTrackingIds,
@@ -445,6 +536,14 @@ export async function getOrBuildPerformanceSourceRows(
           snapshotSystemCount: systems.length,
           rowsEmitted: rows.length,
         };
+        progress.report({
+          stage: "writing",
+          stageLabel: "Persisting cache",
+          fractionComplete: 0.95,
+          current: rows.length,
+          total: rows.length,
+          unitLabel: "performance source rows",
+        });
 
         return rows;
       },
@@ -459,5 +558,10 @@ export async function getOrBuildPerformanceSourceRows(
     diagnostic = { ...diagnostic, rowsEmitted: result.length };
   }
 
-  return { rows: result, fromCache, diagnostic };
+    progress.finish();
+    return { rows: result, fromCache, diagnostic };
+  } catch (err) {
+    progress.fail(err);
+    throw err;
+  }
 }

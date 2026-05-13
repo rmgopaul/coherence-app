@@ -6632,6 +6632,20 @@ const aiDataContext = useMemo(() => {
                 <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading REC performance evaluation tab...</div>}>
                   <RecPerformanceEvaluationTabLazy
                     performanceSourceRows={performanceSourceRows}
+                    // 2026-05-12 — `isLoading` only (NOT `||
+                    // isFetching`). `isLoading` is true on the
+                    // FIRST fetch (no cached data); `isFetching`
+                    // is also true during background
+                    // revalidations (windowFocus / 60s stale). If
+                    // we include the latter, a warm-cache user
+                    // sees the "Loading performance data…" Card
+                    // flash every time the query revalidates,
+                    // even though their tab is fully populated.
+                    // The B2 progress overlay handles the
+                    // "recompute in flight" feedback for ANY
+                    // fetch via its server-side poll.
+                    isLoading={performanceSourceRowsQuery.isLoading}
+                    isActive={isPerformanceEvalTabActive}
                   />
                 </Suspense>
               </TabErrorBoundary>

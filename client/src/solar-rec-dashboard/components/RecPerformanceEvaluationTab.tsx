@@ -59,6 +59,9 @@ import {
   parseNumber,
 } from "@/solar-rec-dashboard/lib/helpers";
 import { REC_PERFORMANCE_RESULTS_PAGE_SIZE } from "@/solar-rec-dashboard/lib/constants";
+import { useDashboardAggregatorProgress } from "@/solar-rec-dashboard/hooks/useDashboardAggregatorProgress";
+import { AggregatorProgressOverlay } from "@/solar-rec-dashboard/components/AggregatorProgressOverlay";
+import { Loader2 } from "lucide-react";
 import type {
   PerformanceSourceRow,
   RecPerformanceContractYearSummaryRow,
@@ -83,6 +86,17 @@ type RecPerfSortKey =
 
 export interface RecPerformanceEvaluationTabProps {
   performanceSourceRows: PerformanceSourceRow[];
+  /**
+   * 2026-05-12 — `getDashboardPerformanceSourceRows` is on a cold
+   * cache 5–15 s. Without this flag the tab would render the
+   * "No Performance Data Available" empty state during loading,
+   * incorrectly telling the user to upload data that's already on
+   * the server but still being aggregated.
+   */
+  isLoading: boolean;
+  /** Whether the parent considers the perf-eval tab active —
+   *  passed through so the B2 progress poll can gate `enabled`. */
+  isActive: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -92,7 +106,18 @@ export interface RecPerformanceEvaluationTabProps {
 export default memo(function RecPerformanceEvaluationTab(
   props: RecPerformanceEvaluationTabProps,
 ) {
-  const { performanceSourceRows } = props;
+  const { performanceSourceRows, isLoading, isActive } = props;
+
+  // 2026-05-12 — B2 progress overlay. Polls the server's in-memory
+  // aggregator-progress channel every 500 ms while the parent's
+  // main query is in flight; shows a determinate progress bar
+  // with stage label + percent instead of the generic spinner.
+  // Stops polling as soon as the main query settles. See
+  // `useDashboardAggregatorProgress` for the hook contract.
+  const aggregatorProgress = useDashboardAggregatorProgress(
+    "performanceSourceRows",
+    { enabled: isActive && isLoading }
+  );
 
   // ── User input state ─────────────────────────────────────────────
   const [performanceContractId, setPerformanceContractId] = useState("");
@@ -552,7 +577,37 @@ export default memo(function RecPerformanceEvaluationTab(
         </CardHeader>
       </Card>
 
-      {performanceContractOptions.length === 0 ? (
+      {/* 2026-05-12 — B2 progress overlay. Renders while the
+          aggregator is recomputing on a cold cache; vanishes once
+          the main query settles. Server-side instrumentation lives
+          in `getOrBuildPerformanceSourceRows`. */}
+      {aggregatorProgress.progress ? (
+        <AggregatorProgressOverlay progress={aggregatorProgress.progress} />
+      ) : null}
+
+      {isLoading && performanceContractOptions.length === 0 ? (
+        // 2026-05-12 — distinguish "loading" from "truly empty".
+        // Previously the empty-state card claimed
+        // "No Performance Data Available" + told the user to
+        // re-upload everything, even when data was on the server
+        // but the aggregator was still running. Now: while
+        // loading, render a generic Loading card; the
+        // AggregatorProgressOverlay above carries the real
+        // percent / stage label.
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Loader2 className="size-4 animate-spin text-sky-700" aria-hidden />
+              Loading performance data…
+            </CardTitle>
+            <CardDescription>
+              Aggregating REC performance source rows from the server. This
+              takes a few seconds the first time you open this tab; subsequent
+              loads are instant from cache.
+            </CardDescription>
+          </CardHeader>
+        </Card>
+      ) : performanceContractOptions.length === 0 ? (
         <Card>
           <CardHeader>
             <CardTitle className="text-base">No Performance Data Available</CardTitle>
