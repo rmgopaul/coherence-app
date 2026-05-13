@@ -124,40 +124,136 @@ export async function loadCommonAggregatorInputs(
     fractionComplete: AGGREGATOR_STAGE_1_BASE,
   });
 
-  const snapshotPromise = getOrBuildSystemSnapshot(scopeId).then((value) => {
-    tickStage1("Loaded system snapshot", AGGREGATOR_STEP_WEIGHTS.snapshot);
-    return value;
-  });
+  // Once any load rejects, suppress further progress ticks. The
+  // ticks themselves are idempotent against the stage-1 cap, but
+  // emitting "Loaded deliverySchedule" *after* we've already
+  // decided to throw is noise on the progress channel that the
+  // client UI will then have to debounce.
+  let firstRejection: unknown = undefined;
+  const tickIfStillRunning = (label: string, weight: number): void => {
+    if (firstRejection !== undefined) return;
+    tickStage1(label, weight);
+  };
+  const captureRejection = (err: unknown): void => {
+    if (firstRejection === undefined) firstRejection = err;
+  };
+
+  const snapshotPromise = getOrBuildSystemSnapshot(scopeId).then(
+    (value) => {
+      tickIfStillRunning(
+        "Loaded system snapshot",
+        AGGREGATOR_STEP_WEIGHTS.snapshot
+      );
+      return value;
+    },
+    (err) => {
+      captureRejection(err);
+      throw err;
+    }
+  );
   const abpReportPromise = loadDatasetRows(
     scopeId,
     abpReportBatchId,
     srDsAbpReport
-  ).then((value) => {
-    tickStage1("Loaded abpReport", AGGREGATOR_STEP_WEIGHTS.abpReport);
-    return value;
-  });
+  ).then(
+    (value) => {
+      tickIfStillRunning("Loaded abpReport", AGGREGATOR_STEP_WEIGHTS.abpReport);
+      return value;
+    },
+    (err) => {
+      captureRejection(err);
+      throw err;
+    }
+  );
   const schedulePromise = loadDatasetRows(
     scopeId,
     scheduleBatchId,
     srDsDeliverySchedule
-  ).then((value) => {
-    tickStage1("Loaded deliverySchedule", AGGREGATOR_STEP_WEIGHTS.schedule);
-    return value;
-  });
+  ).then(
+    (value) => {
+      tickIfStillRunning(
+        "Loaded deliverySchedule",
+        AGGREGATOR_STEP_WEIGHTS.schedule
+      );
+      return value;
+    },
+    (err) => {
+      captureRejection(err);
+      throw err;
+    }
+  );
   const transferPromise = buildTransferDeliveryLookupForScope(scopeId).then(
     (value) => {
-      tickStage1("Loaded transferHistory", AGGREGATOR_STEP_WEIGHTS.transfer);
+      tickIfStillRunning(
+        "Loaded transferHistory",
+        AGGREGATOR_STEP_WEIGHTS.transfer
+      );
       return value;
+    },
+    (err) => {
+      captureRejection(err);
+      throw err;
     }
   );
 
-  const [snapshot, abpReportRows, scheduleRows, transferLookup] =
-    await Promise.all([
-      snapshotPromise,
-      abpReportPromise,
-      schedulePromise,
-      transferPromise,
-    ]);
+  // We wait for all 4 loads to settle before throwing on a rejection.
+  //
+  // Rationale: each load is an in-flight async operation (some heavy
+  // — `getOrBuildSystemSnapshot` is the largest at ~26 MB on prod;
+  // the others read indexed `srDs*` scans). If we used `Promise.all`
+  // and let it reject the moment one load fails, the 3 sibling
+  // promises would orphan: they keep executing in the background,
+  // pinning their intermediate JS heap until they settle, while the
+  // caller already considers `aggregatorInputs` dead and is free to
+  // re-enter or shed load. The progress reporter is safely guarded
+  // by the per-tick `firstRejection` check above (no orphan ticks),
+  // but the underlying heap pressure stays until the orphan loaders
+  // finish. Waiting for `allSettled` keeps the caller's lifecycle
+  // and the loaders' lifecycles aligned: by the time the function
+  // throws, every sibling has released its working memory.
+  //
+  // Tradeoff: this does NOT short-circuit the wasted work — the
+  // siblings still run to completion. The downstream loaders
+  // (`getOrBuildSystemSnapshot`, `loadDatasetRows`,
+  // `buildTransferDeliveryLookupForScope`) do not currently accept
+  // an `AbortSignal`. A future hardening pass that adds cooperative
+  // cancellation to those loaders would let this function abort the
+  // siblings on first rejection; until then the `allSettled` wait
+  // is the correctness-preserving minimum.
+  const settled = await Promise.allSettled([
+    snapshotPromise,
+    abpReportPromise,
+    schedulePromise,
+    transferPromise,
+  ]);
 
-  return { snapshot, abpReportRows, scheduleRows, transferLookup };
+  if (firstRejection !== undefined) {
+    throw firstRejection;
+  }
+
+  // All four resolved — destructure their values. The narrowing
+  // here is safe: the `firstRejection === undefined` check above
+  // guarantees no `rejected` entries in `settled`.
+  const [snapshotSettled, abpReportSettled, scheduleSettled, transferSettled] =
+    settled;
+  if (
+    snapshotSettled.status !== "fulfilled" ||
+    abpReportSettled.status !== "fulfilled" ||
+    scheduleSettled.status !== "fulfilled" ||
+    transferSettled.status !== "fulfilled"
+  ) {
+    // Defensive: should be unreachable given the firstRejection check,
+    // but the type system can't see that, and we'd rather throw a
+    // legible error than fall through to a destructure-of-undefined.
+    throw new Error(
+      "loadCommonAggregatorInputs: internal invariant violated — Promise.allSettled returned a rejected entry with no captured firstRejection"
+    );
+  }
+
+  return {
+    snapshot: snapshotSettled.value,
+    abpReportRows: abpReportSettled.value,
+    scheduleRows: scheduleSettled.value,
+    transferLookup: transferSettled.value,
+  };
 }
