@@ -31,8 +31,14 @@ describe("Forecast aggregate cache key", () => {
     expect(before).not.toBe(after);
   });
 
-  it("uses the runner version bumped for the 2026-05-11 cache-poisoning invalidation", () => {
-    expect(FORECAST_RUNNER_VERSION).toBe("phase-5d-pr2-forecast@5");
+  it("carries a runner version that gets bumped on each cache-invalidation incident", () => {
+    // 2026-05-11 (@5): PR #557 bumped to invalidate poisoned
+    // empty-result cache rows.
+    // 2026-05-13 (@6): bumped again alongside the
+    // `shouldCacheForecastResult` tightening that mirrors PR #567's
+    // perf-source-rows fix. The pattern is now thoroughly
+    // documented in `aggregatorCachePredicates.ts`.
+    expect(FORECAST_RUNNER_VERSION).toBe("phase-5d-pr2-forecast@6");
   });
 });
 
@@ -55,14 +61,22 @@ describe("shouldCacheForecastResult", () => {
     ).toBe(true);
   });
 
-  it("caches genuinely-empty results when no tracking ids are eligible", () => {
+  it("REFUSES to cache when schedule rows exist but eligibility is empty (2026-05-13 tighter, matches perf-source-rows)", () => {
+    // Pre-2026-05-13 the predicate cached this case as "genuine
+    // empty because no eligible IDs". The sibling perf-source-
+    // rows aggregator was tightened in PR #567 after that branch
+    // poisoned the cache on prod; this PR mirrors the change here
+    // (the forecast aggregator carries the same predicate shape
+    // and the same cache-key contract — without symmetry the
+    // forecast tab would be one transient `eligibleTrackingIdCount=0`
+    // recompute away from re-experiencing the 2026-05-11 outage).
     expect(
       shouldCacheForecastResult({
         rowsEmitted: 0,
         scheduleRowsTotal: 24_000,
         eligibleTrackingIdCount: 0,
       })
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it("REFUSES to cache 0-row results when inputs were populated (the bug-fix case)", () => {
