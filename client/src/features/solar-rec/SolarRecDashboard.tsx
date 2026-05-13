@@ -1297,6 +1297,58 @@ function loadPersistedLogs(): DashboardLogEntry[] {
 }
 
 /**
+ * Persist `logEntries` to localStorage so a page reload doesn't
+ * lose user-authored snapshots while cloud sync is paused (the
+ * common case when cloud has a larger orphan-chunk history that
+ * `shouldSkipSnapshotLogSyncForUnsafeShrink` is correctly
+ * refusing to clobber).
+ *
+ * 2026-05-12 — restored after Phase 5c (2026-04-28) deleted both
+ * the "stub" load AND save paths. The load half remained
+ * (`loadPersistedLogs`) but the save half was never replaced,
+ * leaving `loadPersistedLogs()` to read a key nothing wrote.
+ * Net effect: every snapshot the user created lived in React
+ * state only until the next reload. Combined with the shrink
+ * guard pausing cloud sync, snapshots simply vanished — the bug
+ * the user reported on 2026-05-12.
+ *
+ * Mirrors the shape of `loadPersistedLogs`: serialize via the
+ * existing helper (Date round-trip safe), enforce the same
+ * `MAX_LOCAL_LOG_STORAGE_CHARS` cap, fall back to remove on
+ * overflow so a future shrink can re-seed cleanly. `try / catch`
+ * defends against quota-exceeded errors when the user has a
+ * loaded browser with little headroom; the failure mode is
+ * "cloud is still the source of truth on next session", not
+ * data loss inside this session.
+ */
+function persistLogsToStorage(entries: ReadonlyArray<DashboardLogEntry>): void {
+  if (typeof window === "undefined") return;
+  try {
+    if (entries.length === 0) {
+      window.localStorage.removeItem(LOGS_STORAGE_KEY);
+      return;
+    }
+    const serialized = JSON.stringify(
+      entries.map((entry) => ({
+        ...entry,
+        createdAt: entry.createdAt.toISOString(),
+      }))
+    );
+    if (serialized.length > MAX_LOCAL_LOG_STORAGE_CHARS) {
+      // Don't write a truncated copy — better to fall back to
+      // cloud as source of truth on next session than persist a
+      // possibly-misleading partial set.
+      window.localStorage.removeItem(LOGS_STORAGE_KEY);
+      return;
+    }
+    window.localStorage.setItem(LOGS_STORAGE_KEY, serialized);
+  } catch {
+    // Quota exceeded or storage access denied — silently fall
+    // through. Cloud sync remains the durable channel.
+  }
+}
+
+/**
  * Merge local (localStorage) snapshot-log entries with
  * server-recovered ones for DISPLAY ONLY, dedupe by id, sort
  * newest-first.
@@ -2163,6 +2215,19 @@ export default function SolarRecDashboard() {
   datasetsRef.current = datasets;
   const logEntriesRef = useRef(logEntries);
   logEntriesRef.current = logEntries;
+
+  // 2026-05-12 — persist `logEntries` to localStorage on every
+  // change. Phase 5c (2026-04-28) deleted the save half of the
+  // localStorage path while leaving `loadPersistedLogs()` in
+  // place, so snapshots the user created only lived in React
+  // state until the next reload. Combined with the cloud-sync
+  // shrink guard refusing to overwrite a larger cloud history
+  // (Task 5.15 PR-A), the user's "take snapshot" action
+  // appeared to silently fail. See `persistLogsToStorage` for
+  // the size-cap + quota-error contract.
+  useEffect(() => {
+    persistLogsToStorage(logEntries);
+  }, [logEntries]);
 
   // Snapshot-log server-side hydration (read-only).
   //
@@ -5450,7 +5515,42 @@ export default function SolarRecDashboard() {
       recPerformanceContracts2025: recPerformanceContracts,
     };
 
-    setLogEntries((previous) => [entry, ...previous].slice(0, 500));
+    // 2026-05-12 — promote recovered entries into the authoritative
+    // local set on every `createLogEntry`. Background:
+    //
+    //   - Server-recovered entries live in `recoveredSnapshotLogEntries`
+    //     (display-only state) so the cloud-sync `useEffect` doesn't
+    //     silently restore them on tab open — see the "Read-only
+    //     contract" JSDoc on `mergeSnapshotLogEntriesForDisplay`
+    //     (PR #353 / #354 follow-up).
+    //   - But the shrink guard in the cloud-sync effect refuses to
+    //     write when `logEntries.length < server.totalUniqueCount`,
+    //     so a user on a fresh browser with cloud history (the 2026
+    //     production state: 21 recovered entries in `main` key)
+    //     could create a new snapshot but the cloud write was
+    //     silently paused — the snapshot vanished on reload.
+    //   - The "no silent restore on tab open" rule still holds:
+    //     opening the tab populates `recoveredSnapshotLogEntries`
+    //     (separate state) and does NOT trigger the cloud-sync
+    //     effect. Only an explicit user action — this function —
+    //     promotes recovered into `logEntries`. That's the consent
+    //     boundary the original contract was protecting.
+    //
+    // `mergeSnapshotLogEntriesForDisplay` dedupes by id and sorts
+    // newest-first; the new `entry` has `createdAt: new Date()` so
+    // it naturally lands at index 0. Clear the recovered shadow
+    // state after promotion to avoid double-counting in
+    // `visibleSnapshotLogEntries` (the helper would dedup anyway,
+    // but the duplicate state slot is wasteful).
+    setLogEntries((previous) =>
+      mergeSnapshotLogEntriesForDisplay(
+        [entry, ...previous],
+        recoveredSnapshotLogEntries
+      ).slice(0, 500)
+    );
+    if (recoveredSnapshotLogEntries.length > 0) {
+      setRecoveredSnapshotLogEntries([]);
+    }
   };
 
   const clearLogs = () => {
