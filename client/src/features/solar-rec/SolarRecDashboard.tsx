@@ -1968,11 +1968,26 @@ export default function SolarRecDashboard() {
   // `syncCoreDatasetFromStorage` automatically so the dashboard
   // self-heals on next mount.
   //
-  // De-duped by `activeCoreDatasetSyncJobRef` (the same ref the
-  // post-upload re-sync uses), so two effect runs in quick
-  // succession can't queue two ingests for the same key. The
-  // sorted-key list from `pickStorageOnlyDatasetKeys` keeps the
-  // effect deps stable across renders that don't change the set.
+  // De-duped on three axes:
+  //
+  //   1. `activeCoreDatasetSyncJobRef[key]` — an ingest is in
+  //      flight RIGHT NOW for this key. Skip.
+  //   2. `autoHealAttemptedRef.current.has(key)` — we already
+  //      kicked off auto-heal for this key this session. Skip.
+  //      Without this guard, every tab refocus (the summaries
+  //      query has `refetchOnWindowFocus: true`) refires the
+  //      mutation, and a failed or timed-out previous attempt
+  //      gets a fresh 10-min poll loop each time the user comes
+  //      back. Manual recovery: page reload to reset the Set.
+  //   3. `syncJobIssues[key]?.kind` in `failed` or `timeout` —
+  //      a previous attempt already failed; don't keep retrying
+  //      in the background. Surfaces in the existing issues
+  //      banner so the user can act on it.
+  //
+  // The sorted-key list from `pickStorageOnlyDatasetKeys` keeps
+  // the effect deps stable across renders that don't change the
+  // set.
+  const autoHealAttemptedRef = useRef<Set<string>>(new Set());
   const storageOnlyKeysToAutoHeal = useMemo(
     () =>
       pickStorageOnlyDatasetKeys(
@@ -1991,13 +2006,19 @@ export default function SolarRecDashboard() {
       const alreadySyncing =
         activeCoreDatasetSyncJobRef.current[key as DatasetKey];
       if (alreadySyncing) continue;
+      if (autoHealAttemptedRef.current.has(key)) continue;
+      const prevIssue = syncJobIssues[key as DatasetKey];
+      if (prevIssue?.kind === "failed" || prevIssue?.kind === "timeout") {
+        continue;
+      }
+      autoHealAttemptedRef.current.add(key);
       // eslint-disable-next-line no-console
       console.info(
         `[solar-rec] auto-heal: dataset "${key}" is storage-only (cloud blob present, no active batch); triggering syncCoreDatasetFromStorage.`
       );
       triggerCoreDatasetSrDsSync(key, { force: true });
     }
-  }, [storageOnlyKeysToAutoHeal, triggerCoreDatasetSrDsSync]);
+  }, [storageOnlyKeysToAutoHeal, triggerCoreDatasetSrDsSync, syncJobIssues]);
 
   const saveRemoteDashboardStateRef = useRef(saveRemoteDashboardState);
   saveRemoteDashboardStateRef.current = saveRemoteDashboardState;

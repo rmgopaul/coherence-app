@@ -189,4 +189,73 @@ describe("startAggregatorProgress + getAggregatorProgress", () => {
     b.finish();
     c.finish();
   });
+
+  // 2026-05-12 follow-up — code-review fixup #4: concurrent-start race.
+  it("join semantics: second start while first is running returns a no-op reporter", () => {
+    const a = startAggregatorProgress("scope-1", "contractVintage");
+    a.report({
+      stage: "loading",
+      stageLabel: "first owner",
+      fractionComplete: 0.3,
+    });
+
+    // Second concurrent caller — the racy case `withArtifactCache`'s
+    // single-flight is supposed to prevent. The second start
+    // returns a no-op reporter; the first caller's entry stays
+    // authoritative.
+    const b = startAggregatorProgress("scope-1", "contractVintage");
+    b.report({
+      stage: "writing",
+      stageLabel: "JOINED CALLER — should be ignored",
+      fractionComplete: 0.99,
+    });
+
+    expect(
+      getAggregatorProgress("scope-1", "contractVintage")?.stageLabel
+    ).toBe("first owner");
+
+    b.finish();
+    expect(
+      getAggregatorProgress("scope-1", "contractVintage")?.state
+    ).toBe("running");
+
+    b.fail(new Error("ignored"));
+    expect(
+      getAggregatorProgress("scope-1", "contractVintage")?.state
+    ).toBe("running");
+    expect(
+      getAggregatorProgress("scope-1", "contractVintage")?.errorMessage
+    ).toBeNull();
+
+    // First owner can still finish normally.
+    a.finish();
+    expect(
+      getAggregatorProgress("scope-1", "contractVintage")?.state
+    ).toBe("done");
+  });
+
+  it("a NEW start AFTER a previous start finish()'d creates a fresh entry", () => {
+    // The join check is gated on `state === "running"`. Once the
+    // previous entry transitions to `done`, a fresh start in the
+    // linger window should replace it cleanly (not no-op).
+    const first = startAggregatorProgress("scope-1", "contractVintage");
+    first.finish();
+    expect(
+      getAggregatorProgress("scope-1", "contractVintage")?.state
+    ).toBe("done");
+
+    const second = startAggregatorProgress("scope-1", "contractVintage");
+    second.report({
+      stage: "loading",
+      stageLabel: "fresh recompute",
+      fractionComplete: 0.1,
+    });
+    expect(
+      getAggregatorProgress("scope-1", "contractVintage")?.stageLabel
+    ).toBe("fresh recompute");
+    expect(
+      getAggregatorProgress("scope-1", "contractVintage")?.state
+    ).toBe("running");
+    second.finish();
+  });
 });

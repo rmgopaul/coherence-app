@@ -70,6 +70,7 @@ import {
   type TransferDeliveryLookupPayload,
 } from "./buildTransferDeliveryLookup";
 import { superjsonSerde, withArtifactCache } from "./withArtifactCache";
+import { startAggregatorProgress } from "./dashboardAggregatorProgress";
 
 // ---------------------------------------------------------------------------
 // Output type — superset of what either tab consumes. Both tabs receive
@@ -408,11 +409,18 @@ export async function getOrBuildContractVintageAggregates(
   // AnnualReviewTab can render a determinate progress bar while
   // a cold-cache recompute runs (5–15s on prod-scale inputs).
   // The reporter is a no-op when the entry isn't being polled by
-  // any client. `finish()` / `fail()` happen via the
-  // `withArtifactCache` outcome below.
-  const { startAggregatorProgress } = await import(
-    "./dashboardAggregatorProgress"
-  );
+  // any client.
+  //
+  // Per-input weights for the 4 parallel reads in Stage 1 are
+  // tuned to actual cold-cache timing share: snapshot dominates
+  // (~80% of cold-cache wall-clock when the system snapshot's
+  // own cache is also cold), the three smaller reads are
+  // negligible-but-non-zero so the bar visibly ticks as they
+  // resolve. The first revision of this PR had a single
+  // 5% → 70% jump after Promise.all completed; the bar appeared
+  // stuck at 5% for ~60% of the total wait because every input's
+  // completion was hidden inside Promise.all. Now each `.then()`
+  // ticks the bar as that input lands.
   const progress = startAggregatorProgress(
     scopeId,
     "contractVintage",
@@ -428,35 +436,71 @@ export async function getOrBuildContractVintageAggregates(
       serde: superjsonSerde<ContractVintageAggregate[]>(),
       rowCount: (rows) => rows.length,
       recompute: async () => {
-        // Stage 1 (0 → 70%): four parallel I/O reads. We can't
-        // know which finishes first; emit a single label and let
-        // the bar fill at the merged Promise.all completion.
+        // Stage 1 (5 → 80%): four parallel I/O reads, each
+        // tick-reporting on resolution.
+        const STAGE_1_BASE = 0.05;
+        const STAGE_1_CAP = 0.8;
+        const STEP_WEIGHTS = {
+          snapshot: 0.6,
+          schedule: 0.05,
+          abpReport: 0.07,
+          transfer: 0.03,
+        } as const;
+        let stage1Fraction = STAGE_1_BASE;
+        const tickStage1 = (label: string, delta: number): void => {
+          stage1Fraction = Math.min(stage1Fraction + delta, STAGE_1_CAP);
+          progress.report({
+            stage: "loading",
+            stageLabel: label,
+            fractionComplete: stage1Fraction,
+          });
+        };
         progress.report({
           stage: "loading",
-          stageLabel: "Loading snapshot + abpReport + deliverySchedule + transferHistory",
-          fractionComplete: 0.05,
+          stageLabel: "Loading inputs",
+          fractionComplete: STAGE_1_BASE,
+        });
+        const snapshotPromise = getOrBuildSystemSnapshot(scopeId).then(
+          (value) => {
+            tickStage1("Loaded system snapshot", STEP_WEIGHTS.snapshot);
+            return value;
+          }
+        );
+        const abpReportPromise = loadDatasetRows(
+          scopeId,
+          abpReportBatchId,
+          srDsAbpReport
+        ).then((value) => {
+          tickStage1("Loaded abpReport", STEP_WEIGHTS.abpReport);
+          return value;
+        });
+        const schedulePromise = loadDatasetRows(
+          scopeId,
+          scheduleBatchId,
+          srDsDeliverySchedule
+        ).then((value) => {
+          tickStage1("Loaded deliverySchedule", STEP_WEIGHTS.schedule);
+          return value;
+        });
+        const transferPromise = buildTransferDeliveryLookupForScope(
+          scopeId
+        ).then((value) => {
+          tickStage1("Loaded transferHistory", STEP_WEIGHTS.transfer);
+          return value;
         });
         const [snapshot, abpReportRows, scheduleRows, transferLookup] =
           await Promise.all([
-            getOrBuildSystemSnapshot(scopeId),
-            loadDatasetRows(scopeId, abpReportBatchId, srDsAbpReport),
-            loadDatasetRows(scopeId, scheduleBatchId, srDsDeliverySchedule),
-            buildTransferDeliveryLookupForScope(scopeId),
+            snapshotPromise,
+            abpReportPromise,
+            schedulePromise,
+            transferPromise,
           ]);
-        progress.report({
-          stage: "loading",
-          stageLabel: "Loaded inputs",
-          fractionComplete: 0.7,
-          current: scheduleRows.length,
-          total: scheduleRows.length,
-          unitLabel: "deliverySchedule rows",
-        });
 
-        // Stage 2 (70 → 85%): eligibility filter.
+        // Stage 2 (80 → 90%): eligibility filter.
         progress.report({
           stage: "computing",
           stageLabel: "Building Part-2 eligibility map",
-          fractionComplete: 0.7,
+          fractionComplete: STAGE_1_CAP,
         });
         const systems: SnapshotSystem[] = extractSnapshotSystems(
           snapshot.systems
@@ -468,17 +512,22 @@ export async function getOrBuildContractVintageAggregates(
         progress.report({
           stage: "computing",
           stageLabel: "Eligibility map ready",
-          fractionComplete: 0.85,
+          fractionComplete: 0.9,
           current: eligibilityMaps.eligibleTrackingIds.size,
           total: systems.length,
           unitLabel: "Part-2-eligible systems",
         });
 
-        // Stage 3 (85 → 100%): the actual aggregate build.
+        // Stage 3 (90 → 95%): aggregate build. Cap at 95% from
+        // inside `recompute` — the outer `finish()` snaps to 100%
+        // after `withArtifactCache` actually persists the cache.
         progress.report({
           stage: "computing",
           stageLabel: "Aggregating contract vintage rows",
-          fractionComplete: 0.9,
+          fractionComplete: 0.92,
+          current: scheduleRows.length,
+          total: scheduleRows.length,
+          unitLabel: "deliverySchedule rows",
         });
         const rows = buildContractVintageAggregates({
           scheduleRows,
@@ -490,7 +539,7 @@ export async function getOrBuildContractVintageAggregates(
         progress.report({
           stage: "writing",
           stageLabel: "Persisting cache",
-          fractionComplete: 0.98,
+          fractionComplete: 0.95,
           current: rows.length,
           total: rows.length,
           unitLabel: "aggregate rows",

@@ -20,17 +20,27 @@ export function AggregatorProgressOverlay({
 }) {
   const percent = Math.round(progress.fractionComplete * 100);
 
+  // 2026-05-12 followup — Tailwind's JIT can't resolve `/80`
+  // opacity on an INTERPOLATED class name. The source scanner
+  // sees `${tone.label}` as a placeholder, not as the literal
+  // `text-rose-900`, so `text-rose-900/80` never gets generated.
+  // Original revision wrote `text-xs ${tone.label}/80`, which
+  // compiled but rendered at full opacity at runtime. Each tone
+  // now carries an explicit `subText` class that the scanner can
+  // see verbatim in this source file.
   const tone =
     progress.state === "failed"
       ? {
           card: "border-rose-200 bg-rose-50/70",
           label: "text-rose-900",
+          subText: "text-rose-900/80",
           bar: "bg-rose-100",
           icon: <AlertCircle className="size-4 text-rose-700" aria-hidden />,
         }
       : {
           card: "border-sky-200 bg-sky-50/70",
           label: "text-sky-900",
+          subText: "text-sky-900/80",
           bar: "bg-sky-100",
           icon: (
             <Loader2
@@ -54,7 +64,7 @@ export function AggregatorProgressOverlay({
         {progress.current != null &&
         progress.total != null &&
         progress.unitLabel ? (
-          <p className={`text-xs ${tone.label}/80`}>
+          <p className={`text-xs ${tone.subText}`}>
             {progress.current.toLocaleString()} of {progress.total.toLocaleString()}{" "}
             {progress.unitLabel}
           </p>
