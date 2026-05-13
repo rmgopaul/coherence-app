@@ -44,6 +44,7 @@ import {
 } from "./buildSystemSnapshot";
 import { getOrBuildFoundation } from "./foundationRunner";
 import { superjsonSerde, withArtifactCache } from "./withArtifactCache";
+import { shouldCacheAggregatorEmptyResult } from "./aggregatorCachePredicates";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -734,8 +735,28 @@ const CHANGE_OWNERSHIP_DEPS = ["abpReport"] as const;
 // snapshot.
 const ARTIFACT_TYPE = "changeOwnership-v2";
 
+// 2026-05-13 (@2): bump after adding shouldCache gate (HIGH-2
+// follow-up). The aggregator consumes `getOrBuildSystemSnapshot`
+// and shares the poison vector with forecast / perf-source-rows /
+// contract-vintage / overview: a transient snapshot degradation
+// under heap pressure → empty `rows`, and the previous cache path
+// would persist `[]` until the next batch upload bumped the input
+// hash. Bumping forces every scope's @1 cache entry to miss →
+// fresh recompute → new `shouldCache:` gates the write. See
+// PR #567 + PR #568 for the incident pattern.
 export const CHANGE_OWNERSHIP_RUNNER_VERSION =
-  "phase-3.1-changeownership-foundation@1";
+  "phase-3.1-changeownership-foundation@2";
+
+/**
+ * 2026-05-13 — thin alias for the shared
+ * `shouldCacheAggregatorEmptyResult` predicate. For
+ * `changeOwnership` the "rows-to-iterate" input is the Part-2-
+ * verified abpReport row set; the "eligibility" diagnostic is the
+ * system snapshot's system count. See
+ * `aggregatorCachePredicates.ts`.
+ */
+export const shouldCacheChangeOwnershipResult =
+  shouldCacheAggregatorEmptyResult;
 
 async function computeChangeOwnershipInputHash(
   scopeId: string,
@@ -830,6 +851,13 @@ export async function getOrBuildChangeOwnership(
     return { result: EMPTY_CHANGE_OWNERSHIP, fromCache: false };
   }
 
+  // 2026-05-13 — populated in-flight by the recompute closure so the
+  // `shouldCache:` predicate can refuse to poison the cache with a
+  // 0-row result when the inputs that drove it were non-empty.
+  // `abpReportRowsTotal` plays the `scheduleRowsTotal` role;
+  // `snapshotSystemCount` plays the eligibility-diagnostic role.
+  let abpReportRowsTotal = 0;
+  let snapshotSystemCount = 0;
   const { result, fromCache } = await withArtifactCache<ChangeOwnershipAggregate>(
     {
       scopeId,
@@ -837,12 +865,23 @@ export async function getOrBuildChangeOwnership(
       inputVersionHash: hash,
       serde: superjsonSerde<ChangeOwnershipAggregate>(),
       rowCount: (agg) => agg.rows.length,
+      // 2026-05-13 — refuse to poison the cache with a 0-row result
+      // when abpReport rows were present. See
+      // `aggregatorCachePredicates.ts` for the incident history.
+      shouldCache: (agg) =>
+        shouldCacheChangeOwnershipResult({
+          rowsEmitted: agg.rows.length,
+          scheduleRowsTotal: abpReportRowsTotal,
+          eligibleTrackingIdCount: snapshotSystemCount,
+        }),
       recompute: async () => {
         const [foundationResult, snapshot, abpReportRows] = await Promise.all([
           getOrBuildFoundation(scopeId),
           getOrBuildSystemSnapshot(scopeId),
           loadDatasetRows(scopeId, abpReportBatchId, srDsAbpReport),
         ]);
+        abpReportRowsTotal = abpReportRows.length;
+        snapshotSystemCount = snapshot.systems.length;
         return buildChangeOwnershipWithFoundationOverlay(
           foundationResult.payload,
           snapshot.systems,

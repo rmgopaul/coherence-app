@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import { makeFoundationSystem } from "./aggregatorTestFixtures";
 import {
   buildChangeOwnership,
+  CHANGE_OWNERSHIP_RUNNER_VERSION,
   extractSnapshotSystemsForChangeOwnership,
   foundationChangeOwnershipOverlay,
+  shouldCacheChangeOwnershipResult,
   type SnapshotSystemForChangeOwnership,
 } from "./buildChangeOwnershipAggregates";
 
@@ -490,6 +492,72 @@ describe("foundationChangeOwnershipOverlay", () => {
     );
     expect(out.changeOwnershipStatus).toBe(
       "Change of Ownership - Not Transferred and Not Reporting"
+    );
+  });
+});
+
+/**
+ * 2026-05-13 — predicate that decides whether a freshly-computed
+ * change-ownership result should be persisted to the
+ * `solarRecComputedArtifacts` cache. Same heuristic as the sibling
+ * builders. For change-ownership the "schedule rows total" analog
+ * is `abpReportRows.length`; `snapshot.systems.length` plays the
+ * eligibility-diagnostic role.
+ */
+describe("shouldCacheChangeOwnershipResult", () => {
+  it("caches genuinely-empty results when abpReport input was empty", () => {
+    expect(
+      shouldCacheChangeOwnershipResult({
+        rowsEmitted: 0,
+        scheduleRowsTotal: 0,
+        eligibleTrackingIdCount: 0,
+      })
+    ).toBe(true);
+  });
+
+  it("REFUSES to cache when abpReport rows exist but snapshot returned 0 systems", () => {
+    // The poison vector: snapshot degraded under heap pressure →
+    // 0 systems → no change-ownership rows emitted despite a
+    // 28k-row abpReport. Pre-fix this would have cached `rows: []`
+    // and broken the ChangeOwnership tab + the Overview stacked
+    // chart until the next batch upload.
+    expect(
+      shouldCacheChangeOwnershipResult({
+        rowsEmitted: 0,
+        scheduleRowsTotal: 28_000,
+        eligibleTrackingIdCount: 0,
+      })
+    ).toBe(false);
+  });
+
+  it("REFUSES to cache 0-row results when inputs were populated (the bug-fix case)", () => {
+    expect(
+      shouldCacheChangeOwnershipResult({
+        rowsEmitted: 0,
+        scheduleRowsTotal: 28_000,
+        eligibleTrackingIdCount: 4_500,
+      })
+    ).toBe(false);
+  });
+
+  it("caches non-empty results regardless of input shape", () => {
+    expect(
+      shouldCacheChangeOwnershipResult({
+        rowsEmitted: 1_200,
+        scheduleRowsTotal: 28_000,
+        eligibleTrackingIdCount: 4_500,
+      })
+    ).toBe(true);
+  });
+});
+
+describe("change-ownership runner version", () => {
+  it("carries a runner version bundled into the cache hash", () => {
+    // 2026-05-13 (@2): bumped after adding `shouldCache:` gate
+    // (HIGH-2 follow-up). Invalidates @1 cache entries that may
+    // have been poisoned by the pre-fix `rows: []` path.
+    expect(CHANGE_OWNERSHIP_RUNNER_VERSION).toBe(
+      "phase-3.1-changeownership-foundation@2"
     );
   });
 });

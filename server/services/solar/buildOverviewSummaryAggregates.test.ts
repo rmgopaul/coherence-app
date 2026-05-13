@@ -4,6 +4,8 @@ import {
   buildOverviewSummary,
   buildOverviewSummaryWithFoundationOverlay,
   extractSnapshotSystemsForSummary,
+  OVERVIEW_SUMMARY_RUNNER_VERSION,
+  shouldCacheOverviewSummaryResult,
   type SnapshotSystemForSummary,
 } from "./buildOverviewSummaryAggregates";
 
@@ -477,5 +479,70 @@ describe("extractSnapshotSystemsForSummary", () => {
     ]);
     expect(extracted!.latestReportingDate).toBeInstanceOf(Date);
     expect(extracted!.contractedDate?.getUTCFullYear()).toBe(2024);
+  });
+});
+
+/**
+ * 2026-05-13 — predicate that decides whether a freshly-computed
+ * overview-summary result should be persisted to the
+ * `solarRecComputedArtifacts` cache. Same heuristic as the sibling
+ * builders. For overview the "schedule rows total" analog is
+ * `abpReportRows.length` (the primary iterable input);
+ * `snapshot.systems.length` plays the eligibility-diagnostic role.
+ */
+describe("shouldCacheOverviewSummaryResult", () => {
+  it("caches genuinely-empty results when abpReport input was empty", () => {
+    expect(
+      shouldCacheOverviewSummaryResult({
+        rowsEmitted: 0,
+        scheduleRowsTotal: 0,
+        eligibleTrackingIdCount: 0,
+      })
+    ).toBe(true);
+  });
+
+  it("REFUSES to cache when abpReport rows exist but snapshot returned 0 systems", () => {
+    // The poison vector: snapshot degraded under heap pressure →
+    // 0 systems → no ownership rows emitted despite a 28k-row
+    // abpReport. Pre-fix this would have cached `ownershipRows: []`
+    // and broken the Overview tab until the next batch upload.
+    expect(
+      shouldCacheOverviewSummaryResult({
+        rowsEmitted: 0,
+        scheduleRowsTotal: 28_000,
+        eligibleTrackingIdCount: 0,
+      })
+    ).toBe(false);
+  });
+
+  it("REFUSES to cache 0-row results when inputs were populated (the bug-fix case)", () => {
+    expect(
+      shouldCacheOverviewSummaryResult({
+        rowsEmitted: 0,
+        scheduleRowsTotal: 28_000,
+        eligibleTrackingIdCount: 4_500,
+      })
+    ).toBe(false);
+  });
+
+  it("caches non-empty results regardless of input shape", () => {
+    expect(
+      shouldCacheOverviewSummaryResult({
+        rowsEmitted: 4_500,
+        scheduleRowsTotal: 28_000,
+        eligibleTrackingIdCount: 4_500,
+      })
+    ).toBe(true);
+  });
+});
+
+describe("overview-summary runner version", () => {
+  it("carries a runner version bundled into the cache hash", () => {
+    // 2026-05-13 (@3): bumped after adding `shouldCache:` gate
+    // (HIGH-2 follow-up). Invalidates @2 cache entries that may
+    // have been poisoned by the pre-fix `ownershipRows: []` path.
+    expect(OVERVIEW_SUMMARY_RUNNER_VERSION).toBe(
+      "phase-3.1-overview-foundation@3"
+    );
   });
 });

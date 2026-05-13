@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { buildContractVintageAggregates } from "./buildContractVintageAggregates";
+import {
+  buildContractVintageAggregates,
+  CONTRACT_VINTAGE_RUNNER_VERSION,
+  shouldCacheContractVintageResult,
+} from "./buildContractVintageAggregates";
 import { buildTransferDeliveryLookupFixture as lookupFor } from "./aggregatorTestFixtures";
 
 // Server-side fixtures for the per-(contract, deliveryStartDate)
@@ -220,5 +224,77 @@ describe("buildContractVintageAggregates", () => {
     });
     expect(rows[0].reportingProjectCount).toBe(1);
     expect(rows[0].reportingProjectPercent).toBe(50);
+  });
+});
+
+/**
+ * 2026-05-13 — predicate that decides whether a freshly-computed
+ * contract-vintage result should be persisted to the
+ * `solarRecComputedArtifacts` cache. Same heuristic as the sibling
+ * builders (forecast / performance-source-rows): refuse to cache a
+ * zero-row result when the inputs that drove it were non-empty.
+ * Without this gate, a transient `eligibleTrackingIdCount=0`
+ * recompute (snapshot degraded under heap pressure, or a join
+ * missed mid-build) would poison the cache and every subsequent
+ * call would serve the empty payload forever. See
+ * `aggregatorCachePredicates.ts` + PR #567 / PR #568.
+ */
+describe("shouldCacheContractVintageResult", () => {
+  it("caches genuinely-empty results when the schedule input was empty", () => {
+    expect(
+      shouldCacheContractVintageResult({
+        rowsEmitted: 0,
+        scheduleRowsTotal: 0,
+        eligibleTrackingIdCount: 0,
+      })
+    ).toBe(true);
+  });
+
+  it("REFUSES to cache when schedule rows exist but eligibility is empty", () => {
+    // The poison vector: snapshot degraded mid-build →
+    // `eligibleTrackingIdCount=0` despite a 24k-row schedule input
+    // and a populated abpReport. Pre-fix this would have cached
+    // `[]` and broken the Contracts + AnnualReview tabs until the
+    // next batch upload.
+    expect(
+      shouldCacheContractVintageResult({
+        rowsEmitted: 0,
+        scheduleRowsTotal: 24_000,
+        eligibleTrackingIdCount: 0,
+      })
+    ).toBe(false);
+  });
+
+  it("REFUSES to cache 0-row results when inputs were populated (the bug-fix case)", () => {
+    expect(
+      shouldCacheContractVintageResult({
+        rowsEmitted: 0,
+        scheduleRowsTotal: 24_000,
+        eligibleTrackingIdCount: 22_000,
+      })
+    ).toBe(false);
+  });
+
+  it("caches non-empty results regardless of input shape", () => {
+    expect(
+      shouldCacheContractVintageResult({
+        rowsEmitted: 50,
+        scheduleRowsTotal: 24_000,
+        eligibleTrackingIdCount: 22_000,
+      })
+    ).toBe(true);
+  });
+});
+
+describe("contract-vintage runner version", () => {
+  it("carries a runner version bundled into the cache hash", () => {
+    // 2026-05-13 (@3): bumped after adding `shouldCache:` gate
+    // (HIGH-2 follow-up). The previous version was @2 but the
+    // constant was NOT included in the cache hash — adding both
+    // the bump and the inline-hash fix happened in the same PR
+    // so that future cache-invalidation bumps actually invalidate.
+    expect(CONTRACT_VINTAGE_RUNNER_VERSION).toBe(
+      "data-flow-pr5_13_contractvintage@3"
+    );
   });
 });

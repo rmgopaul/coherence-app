@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { buildAppPipelineMonthly } from "./buildAppPipelineMonthly";
+import {
+  APP_PIPELINE_MONTHLY_RUNNER_VERSION,
+  buildAppPipelineMonthly,
+  shouldCacheAppPipelineMonthlyResult,
+} from "./buildAppPipelineMonthly";
 import type { CsvRow, SnapshotSystem } from "./aggregatorHelpers";
 
 // Server-side tests for the monthly pipeline aggregator. The
@@ -243,5 +247,73 @@ describe("buildAppPipelineMonthly", () => {
       "2025-02",
       "2025-03",
     ]);
+  });
+});
+
+/**
+ * 2026-05-13 — predicate that decides whether a freshly-computed
+ * app-pipeline-monthly result should be persisted to the
+ * `solarRecComputedArtifacts` cache. Same heuristic as the sibling
+ * builders. For app-pipeline the "schedule rows total" analog is
+ * the union of `abpReportRows` + `generatorDetailsRows`;
+ * `snapshot.systems.length` plays the eligibility-diagnostic role.
+ */
+describe("shouldCacheAppPipelineMonthlyResult", () => {
+  it("caches genuinely-empty results when both source datasets were empty", () => {
+    expect(
+      shouldCacheAppPipelineMonthlyResult({
+        rowsEmitted: 0,
+        scheduleRowsTotal: 0,
+        eligibleTrackingIdCount: 0,
+      })
+    ).toBe(true);
+  });
+
+  it("REFUSES to cache when source rows exist but snapshot returned 0 systems", () => {
+    // The poison vector: snapshot degraded under heap pressure →
+    // 0 systems → no monthly pipeline rows emitted despite a
+    // populated abpReport + generatorDetails. Pre-fix this would
+    // have cached `[]` and broken the Application Pipeline tab
+    // until the next batch upload.
+    expect(
+      shouldCacheAppPipelineMonthlyResult({
+        rowsEmitted: 0,
+        scheduleRowsTotal: 30_000,
+        eligibleTrackingIdCount: 0,
+      })
+    ).toBe(false);
+  });
+
+  it("REFUSES to cache 0-row results when inputs were populated (the bug-fix case)", () => {
+    expect(
+      shouldCacheAppPipelineMonthlyResult({
+        rowsEmitted: 0,
+        scheduleRowsTotal: 30_000,
+        eligibleTrackingIdCount: 4_500,
+      })
+    ).toBe(false);
+  });
+
+  it("caches non-empty results regardless of input shape", () => {
+    expect(
+      shouldCacheAppPipelineMonthlyResult({
+        rowsEmitted: 36,
+        scheduleRowsTotal: 30_000,
+        eligibleTrackingIdCount: 4_500,
+      })
+    ).toBe(true);
+  });
+});
+
+describe("app-pipeline-monthly runner version", () => {
+  it("carries a runner version bundled into the cache hash", () => {
+    // 2026-05-13 (@2): bumped after adding `shouldCache:` gate
+    // (HIGH-2 follow-up). The previous version was @1 but the
+    // constant was NOT included in the cache hash — adding both
+    // the bump and the inline-hash fix happened in the same PR
+    // so that future cache-invalidation bumps actually invalidate.
+    expect(APP_PIPELINE_MONTHLY_RUNNER_VERSION).toBe(
+      "data-flow-pr5_13_apppipelinemonthly@2"
+    );
   });
 });

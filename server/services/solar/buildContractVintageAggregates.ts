@@ -64,6 +64,7 @@ import {
   loadCommonAggregatorInputs,
   AGGREGATOR_STAGE_1_CAP,
 } from "./aggregatorInputs";
+import { shouldCacheAggregatorEmptyResult } from "./aggregatorCachePredicates";
 
 // ---------------------------------------------------------------------------
 // Output type — superset of what either tab consumes. Both tabs receive
@@ -286,14 +287,39 @@ export function buildPart2EligibilityMaps(
 const CONTRACT_VINTAGE_DEPS = ["abpReport", "deliveryScheduleBase"] as const;
 const ARTIFACT_TYPE = "contractVintage";
 
+// 2026-05-13 (@3): bump after adding shouldCache gate (HIGH-2
+// follow-up). The sibling `shouldCachePerformanceSourceRowsResult`
+// (PR #567) + `shouldCacheForecastResult` (PR #568) refuse to cache
+// empty results when the schedule input is non-empty; this aggregator
+// carried the SAME poison vector (transient `eligibleTrackingIdCount=0`
+// recompute under heap pressure → empty cache → every subsequent
+// call serves the poisoned payload forever). Bumping forces every
+// scope's existing cache entry under @2 to miss → fresh recompute
+// runs → new `shouldCache:` predicate gates the write. This bump
+// also requires `runner:${RUNNER_VERSION}` to be included in the
+// cache hash; the previous version was NOT in the hash, so a future
+// bump would have been a no-op. That defect is fixed inline below.
+// 2026-04-29 (@2): bumped after `getDeliveredForYear`
+// case-sensitivity fix in aggregatorHelpers. Existing cache
+// entries silently returned 0 deliveries on every match in
+// production (lookup keys are lowercase, callers passed raw
+// mixed-case `tracking_system_ref_id`). Cache invalidation
+// forces a recompute against the corrected helper.
 export const CONTRACT_VINTAGE_RUNNER_VERSION =
-  // 2026-04-29 (@2): bumped after `getDeliveredForYear`
-  // case-sensitivity fix in aggregatorHelpers. Existing cache
-  // entries silently returned 0 deliveries on every match in
-  // production (lookup keys are lowercase, callers passed raw
-  // mixed-case `tracking_system_ref_id`). Cache invalidation
-  // forces a recompute against the corrected helper.
-  "data-flow-pr5_13_contractvintage@2";
+  "data-flow-pr5_13_contractvintage@3";
+
+/**
+ * 2026-05-13 — thin alias for the shared
+ * `shouldCacheAggregatorEmptyResult` predicate. The
+ * `contractVintage` aggregator carries the same
+ * `(scheduleRowsTotal, eligibleTrackingIdCount, rowsEmitted)`
+ * shape as forecast / performance-source-rows; this re-export
+ * keeps the call-site naming consistent with the sibling builders
+ * and gives unit tests a stable handle. See
+ * `aggregatorCachePredicates.ts` for the incident history.
+ */
+export const shouldCacheContractVintageResult =
+  shouldCacheAggregatorEmptyResult;
 
 async function computeContractVintageInputHash(
   scopeId: string
@@ -345,6 +371,12 @@ async function computeContractVintageInputHash(
         `schedule:${scheduleBatchId ?? ""}`,
         `transfer:${transferBatchId ?? ""}`,
         `snapshot:${snapshotHash}`,
+        // 2026-05-13 — runner version was previously NOT included in
+        // the cache hash. Bumping the constant did nothing. Adding
+        // it now makes future cache-invalidation bumps actually
+        // invalidate. The HIGH-2 follow-up bump from @2 → @3 is what
+        // first surfaced this defect.
+        `runner:${CONTRACT_VINTAGE_RUNNER_VERSION}`,
       ].join("|")
     )
     .digest("hex")
@@ -419,6 +451,13 @@ export async function getOrBuildContractVintageAggregates(
     "contractVintage",
     "Preparing"
   );
+  // 2026-05-13 — populated in-flight by the recompute closure so the
+  // `shouldCache:` predicate can refuse to poison the cache with a
+  // 0-row result when the inputs that drove it were non-empty. Same
+  // shape as the forecast + performance-source-rows builders. See
+  // `aggregatorCachePredicates.ts` for the incident history.
+  let scheduleRowsTotal = 0;
+  let eligibleTrackingIdCount = 0;
   try {
     const { result, fromCache } = await withArtifactCache<
       ContractVintageAggregate[]
@@ -428,6 +467,19 @@ export async function getOrBuildContractVintageAggregates(
       inputVersionHash: hash,
       serde: superjsonSerde<ContractVintageAggregate[]>(),
       rowCount: (rows) => rows.length,
+      // 2026-05-13 — refuse to poison the cache with a 0-row result
+      // when the schedule input was non-empty. Without this gate, a
+      // recompute that hit mid-flight heap pressure or a degraded
+      // snapshot (returning 0 systems → empty eligibility map →
+      // empty filter output) would write `[]` and every subsequent
+      // call would serve it from cache forever. See PR #567 (perf-
+      // source-rows) + PR #568 (forecast) for the incident pattern.
+      shouldCache: (rows) =>
+        shouldCacheAggregatorEmptyResult({
+          rowsEmitted: rows.length,
+          scheduleRowsTotal,
+          eligibleTrackingIdCount,
+        }),
       recompute: async () => {
         // Stage 1 (5 → 80%): four parallel I/O reads, ticking
         // progress as each resolves. See
@@ -440,6 +492,7 @@ export async function getOrBuildContractVintageAggregates(
             scheduleBatchId,
             progress
           );
+        scheduleRowsTotal = scheduleRows.length;
 
         // Stage 2 (80 → 90%): eligibility filter.
         progress.report({
@@ -454,6 +507,7 @@ export async function getOrBuildContractVintageAggregates(
           abpReportRows,
           systems
         );
+        eligibleTrackingIdCount = eligibilityMaps.eligibleTrackingIds.size;
         progress.report({
           stage: "computing",
           stageLabel: "Eligibility map ready",
