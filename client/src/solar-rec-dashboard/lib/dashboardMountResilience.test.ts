@@ -663,7 +663,7 @@ describe("Solar REC dashboard mount: heavy-query gates", () => {
     expect(code).toMatch(/function\s+mergeSnapshotLogEntriesForDisplay/);
   });
 
-  it("Snapshot Log hydration is READ-ONLY — server entries do NOT enter logEntries (no accidental cloud write-back)", () => {
+  it("Snapshot Log hydration is READ-ONLY — server entries do NOT enter logEntries during the hydration useEffect", () => {
     // PR #354 follow-up — Codex P1 fix. Pre-fix the hydration
     // useEffect called
     //   setLogEntries((prev) => merge(prev, server))
@@ -675,7 +675,13 @@ describe("Solar REC dashboard mount: heavy-query gates", () => {
     //
     // The fix keeps server-recovered entries in a SEPARATE state
     // (`recoveredSnapshotLogEntries`) that the cloud-sync effect
-    // does NOT depend on. This rail enforces the contract.
+    // does NOT depend on. This rail enforces the contract — but
+    // scoped to the HYDRATION effect ONLY. The 2026-05-12 follow-up
+    // (snapshot-save persistence fix) intentionally promotes
+    // recovered entries into `logEntries` inside `createLogEntry`,
+    // an EXPLICIT user action that consents to preserving the
+    // visible history. The contract is "no SILENT write-back on
+    // tab open", not "no write-back ever from any code path".
     expect(code).toMatch(
       /\[\s*recoveredSnapshotLogEntries\s*,\s*setRecoveredSnapshotLogEntries\s*\][^;]*useState/
     );
@@ -684,14 +690,71 @@ describe("Solar REC dashboard mount: heavy-query gates", () => {
     expect(code).toMatch(
       /snapshotLogsServerQuery\.data[\s\S]{0,1200}setRecoveredSnapshotLogEntries\s*\(/
     );
-    // The retired write-back shape must NOT reappear: no
-    // `setLogEntries((prev) => merge...)` anywhere referencing
-    // server-recovered entries.
-    expect(code).not.toMatch(
-      /setLogEntries\s*\(\s*\(\s*prev\s*\)\s*=>\s*mergeServerSnapshotLogsIntoLocal/
+    // Locate the hydration useEffect body and assert it does NOT
+    // call setLogEntries anywhere inside (where the original
+    // silent-restore lived). The effect runs against
+    // `snapshotLogsServerQuery.data`; scan from that token to the
+    // matching `}, [snapshotLogsServerQuery.data])` close.
+    //
+    // **Anchor fragility note.** Both anchor strings
+    // (`"const data = snapshotLogsServerQuery.data;"` and
+    // `"}, [snapshotLogsServerQuery.data]);"`) are unique in the
+    // file as of 2026-05-12, and the deps-array format is single-
+    // line. A future Prettier reformat that wraps the dep array
+    // (`}, [\n  snapshotLogsServerQuery.data,\n]);`) will make
+    // `hydrationEnd === -1`, which the `toBeGreaterThan` guard
+    // below catches as a loud test failure — not a silent skip.
+    const hydrationStart = code.indexOf(
+      "const data = snapshotLogsServerQuery.data;"
     );
-    expect(code).not.toMatch(
-      /setLogEntries\s*\(\s*\(\s*prev\s*\)\s*=>\s*mergeSnapshotLogEntriesForDisplay/
+    expect(hydrationStart).toBeGreaterThan(-1);
+    const hydrationEnd = code.indexOf(
+      "}, [snapshotLogsServerQuery.data]);",
+      hydrationStart
+    );
+    expect(hydrationEnd).toBeGreaterThan(hydrationStart);
+    const hydrationBody = code.slice(hydrationStart, hydrationEnd);
+    expect(hydrationBody).not.toMatch(/setLogEntries\s*\(/);
+    expect(hydrationBody).not.toMatch(/mergeServerSnapshotLogsIntoLocal/);
+    expect(hydrationBody).not.toMatch(/mergeSnapshotLogEntriesForDisplay/);
+  });
+
+  it("createLogEntry MERGES recoveredSnapshotLogEntries into logEntries (2026-05-12 snapshot-save fix)", () => {
+    // The 2026-05-12 snapshot-save bug was the user creating a new
+    // log entry but the cloud sync getting paused by the shrink
+    // guard because local count (1) was less than cloud count
+    // (21 historical orphans). The fix: createLogEntry promotes
+    // visible recovered entries into logEntries on every call,
+    // so the cloud-sync write happens against a count >= server.
+    // This rail pins the merge call so a future refactor can't
+    // silently drop it (re-opening the snapshot-save bug).
+    const createLogEntryStart = code.indexOf("const createLogEntry = () =>");
+    expect(createLogEntryStart).toBeGreaterThan(-1);
+    const createLogEntryEnd = code.indexOf(
+      "\n  };\n",
+      createLogEntryStart
+    );
+    expect(createLogEntryEnd).toBeGreaterThan(createLogEntryStart);
+    const createLogEntryBody = code.slice(createLogEntryStart, createLogEntryEnd);
+    // setLogEntries must call mergeSnapshotLogEntriesForDisplay
+    // with recoveredSnapshotLogEntries as the second arg.
+    expect(createLogEntryBody).toMatch(
+      /setLogEntries\s*\([\s\S]{0,200}mergeSnapshotLogEntriesForDisplay[\s\S]{0,400}recoveredSnapshotLogEntries/
+    );
+  });
+
+  it("logEntries are persisted to localStorage on every change (2026-05-12 snapshot-save fix)", () => {
+    // Phase 5c (2026-04-28) deleted the `saveLogsToStorage` stub
+    // along with `loadLogsFromStorage`, but the load half remained
+    // alive via `loadPersistedLogs()`. The asymmetry meant
+    // localStorage was read on mount but never written, so user-
+    // authored snapshots only lived in React state. This rail
+    // pins the restored save half so a future cleanup pass can't
+    // delete it again without an explicit failure.
+    expect(code).toMatch(/function\s+persistLogsToStorage\s*\(/);
+    // Effect must call the helper with logEntries.
+    expect(code).toMatch(
+      /useEffect\s*\(\s*\(\)\s*=>\s*\{[\s\S]{0,200}persistLogsToStorage\s*\(\s*logEntries\s*\)/
     );
   });
 
