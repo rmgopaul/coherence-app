@@ -897,6 +897,28 @@ html[data-focus="1"] .fp-root {
   text-transform: capitalize;
 }
 
+.fp-command-source__detail {
+  grid-column: 1 / -1;
+  color: var(--fp-ink-2);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.fp-command-source__detail summary {
+  width: max-content;
+  cursor: pointer;
+  color: var(--fp-ink);
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.fp-command-source__detail p {
+  margin: 5px 0 0;
+}
+
 .fp-command-integration__dot {
   width: 9px;
   height: 9px;
