@@ -25,7 +25,6 @@
  */
 import { MoreHorizontal } from "lucide-react";
 import { toast } from "sonner";
-import { useLocation } from "wouter";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import {
@@ -44,6 +43,7 @@ import {
   type SignalRow,
 } from "@/lib/signalActions";
 import { useTodayKey } from "../useTodayKey";
+import { useWorkspaceNotes } from "./useWorkspaceNotes";
 
 interface SignalActionsProps {
   row: SignalRow;
@@ -63,13 +63,7 @@ export function SignalActions({
 }: SignalActionsProps) {
   const utils = trpc.useUtils();
   const todayKey = useTodayKey();
-  const [, setLocation] = useLocation();
-
-  const invalidateNotes = () => {
-    void utils.notes.list.invalidate();
-    void utils.notes.listForExternal.invalidate();
-    void utils.notes.countLinksByExternalIds.invalidate();
-  };
+  const workspaceNotes = useWorkspaceNotes();
 
   const dockAdd = trpc.dock.add.useMutation({
     onSuccess: () => {
@@ -107,36 +101,6 @@ export function SignalActions({
     },
     onError: err => toast.error(err.message),
   });
-
-  const createTodoistWorkspaceNote =
-    trpc.notes.createFromTodoistTask.useMutation({
-      onSuccess: result => {
-        invalidateNotes();
-        toast.success("Workspace note created");
-        setLocation(`/notes?noteId=${encodeURIComponent(result.noteId)}`);
-      },
-      onError: err => toast.error(err.message),
-    });
-
-  const createCalendarWorkspaceNote =
-    trpc.notes.createFromCalendarEvent.useMutation({
-      onSuccess: result => {
-        invalidateNotes();
-        toast.success("Workspace note created");
-        setLocation(`/notes?noteId=${encodeURIComponent(result.noteId)}`);
-      },
-      onError: err => toast.error(err.message),
-    });
-
-  function openWorkspaceNotes() {
-    if (row.kind === "calendar") {
-      setLocation(`/notes?eventId=${encodeURIComponent(row.eventId)}`);
-      return;
-    }
-    if (row.kind === "todoist") {
-      setLocation("/notes?view=linked");
-    }
-  }
 
   function dispatch(action: SignalActionKey) {
     const title = rowTitle(row);
@@ -177,29 +141,18 @@ export function SignalActions({
       return;
     }
     if (action === "create-workspace-note" && row.kind === "todoist") {
-      createTodoistWorkspaceNote.mutate({
-        taskId: row.taskId,
-        taskContent: row.content,
-        taskUrl: row.taskUrl,
-        dueDate: row.dueDate ?? undefined,
-        projectName: row.projectName ?? undefined,
-      });
+      workspaceNotes.createWorkspaceNote(row);
       return;
     }
     if (action === "create-workspace-note" && row.kind === "calendar") {
-      createCalendarWorkspaceNote.mutate({
-        eventId: row.eventId,
-        eventSummary: row.title,
-        eventUrl: row.eventUrl,
-        start: row.start ?? undefined,
-        location: row.location ?? undefined,
-        recurringEventId: row.recurringEventId ?? undefined,
-        iCalUID: row.iCalUID ?? undefined,
-      });
+      workspaceNotes.createWorkspaceNote(row);
       return;
     }
-    if (action === "open-workspace-notes") {
-      openWorkspaceNotes();
+    if (
+      action === "open-workspace-notes" &&
+      (row.kind === "todoist" || row.kind === "calendar")
+    ) {
+      workspaceNotes.openWorkspaceNotes(row);
       return;
     }
   }
@@ -211,8 +164,7 @@ export function SignalActions({
     todoistCreate.isPending ||
     gmailArchive.isPending ||
     todoistDefer.isPending ||
-    createTodoistWorkspaceNote.isPending ||
-    createCalendarWorkspaceNote.isPending;
+    workspaceNotes.isCreatingWorkspaceNote;
 
   return (
     <DropdownMenu>

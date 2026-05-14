@@ -30,6 +30,7 @@ import { SignalActions } from "./SignalActions";
 // Task 10.3 (2026-04-28): "📎 N linked notes" badge for tasks
 // that have notes attached via the Notebook→Todoist forward link.
 import { LinkedNotesBadge } from "./LinkedNotesBadge";
+import type { WorkspaceNoteRow } from "./useWorkspaceNotes";
 
 interface TasksTriageProps {
   tasks: {
@@ -49,6 +50,7 @@ interface BandProps {
    *  so we make ONE batched count query for the whole feed
    *  rather than N separate listForExternal calls. */
   noteCountsByTaskId: Record<string, number>;
+  noteCountsLoading: boolean;
   onPin: (task: TodoistTask) => void;
   pinningTaskId: string | null;
 }
@@ -61,6 +63,7 @@ function Band({
   onComplete,
   busyTaskId,
   noteCountsByTaskId,
+  noteCountsLoading,
   onPin,
   pinningTaskId,
 }: BandProps) {
@@ -69,13 +72,24 @@ function Band({
     <div className="fp-triage-band-group">
       <div className={`fp-triage-band fp-triage-band--${variant}`}>
         <span>{label}</span>
-        {rightLabel && <span className="fp-triage-band__right">{rightLabel}</span>}
+        {rightLabel && (
+          <span className="fp-triage-band__right">{rightLabel}</span>
+        )}
       </div>
       <ol className="fp-triage-list">
-        {items.map((task) => {
+        {items.map(task => {
           const due = dueLabel(task);
           const project = projectLabel(task);
           const isBusy = busyTaskId === task.id;
+          const workspaceRow: WorkspaceNoteRow = {
+            kind: "todoist",
+            taskId: task.id,
+            content: task.content,
+            taskUrl: `https://todoist.com/showTask?id=${encodeURIComponent(task.id)}`,
+            dueDate:
+              task.due?.string ?? task.due?.datetime ?? task.due?.date ?? null,
+            projectName: project,
+          };
           return (
             <li
               key={task.id}
@@ -93,7 +107,9 @@ function Band({
                 {(project || due || variant === "overdue") && (
                   <div className="fp-triage-row__meta mono-label">
                     {project && (
-                      <span className="fp-triage-row__meta-proj">@{project}</span>
+                      <span className="fp-triage-row__meta-proj">
+                        @{project}
+                      </span>
                     )}
                     {due && (
                       <span className="fp-triage-row__meta-due">{due}</span>
@@ -104,7 +120,9 @@ function Band({
                   </div>
                 )}
               </div>
-              <span className={`fp-triage-row__pri fp-triage-row__pri--${priorityLabel(task).toLowerCase()}`}>
+              <span
+                className={`fp-triage-row__pri fp-triage-row__pri--${priorityLabel(task).toLowerCase()}`}
+              >
                 {priorityLabel(task)}
               </span>
               {/* Task 10.3: 📎 N linked notes badge — only renders
@@ -112,7 +130,8 @@ function Band({
               <LinkedNotesBadge
                 linkType="todoist_task"
                 externalId={task.id}
-                count={noteCountsByTaskId[task.id]}
+                count={noteCountsByTaskId[task.id] ?? 0}
+                countLoading={noteCountsLoading}
                 className="fp-triage-row__notes inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
               />
               <button
@@ -120,7 +139,7 @@ function Band({
                 aria-label={`Pin "${task.content}" to dock`}
                 title="Pin to dock"
                 className="fp-triage-row__pin inline-flex h-6 w-6 items-center justify-center rounded-sm text-muted-foreground transition hover:bg-accent hover:text-foreground disabled:opacity-50"
-                onClick={(e) => {
+                onClick={e => {
                   e.preventDefault();
                   e.stopPropagation();
                   onPin(task);
@@ -134,12 +153,7 @@ function Band({
                   keeps "Mark complete" because it's the most-used
                   action and the menu would otherwise add a click. */}
               <SignalActions
-                row={{
-                  kind: "todoist",
-                  taskId: task.id,
-                  content: task.content,
-                  taskUrl: `https://todoist.com/showTask?id=${encodeURIComponent(task.id)}`,
-                }}
+                row={workspaceRow}
                 triggerClassName="fp-triage-row__menu"
                 ariaLabel={`Actions for: ${task.content}`}
               />
@@ -166,7 +180,7 @@ export function TasksTriage({ tasks }: TasksTriageProps) {
       void utils.dock.list.invalidate();
       toast.success("Dropped to dock");
     },
-    onError: (err) => toast.error(err.message),
+    onError: err => toast.error(err.message),
     onSettled: () => setPinningTaskId(null),
   });
 
@@ -188,7 +202,7 @@ export function TasksTriage({ tasks }: TasksTriageProps) {
   // count without N separate listForExternal calls. The dashboard
   // typically has 5-15 tasks; one round-trip handles all of them.
   const taskIds = useMemo(
-    () => tasks.dueToday.map((t) => t.id),
+    () => tasks.dueToday.map(t => t.id),
     [tasks.dueToday]
   );
   const noteCountsQuery = trpc.notes.countLinksByExternalIds.useQuery(
@@ -199,6 +213,7 @@ export function TasksTriage({ tasks }: TasksTriageProps) {
     }
   );
   const noteCountsByTaskId = noteCountsQuery.data?.counts ?? {};
+  const noteCountsLoading = taskIds.length > 0 && noteCountsQuery.isLoading;
 
   const open = tasks.dueToday.length;
   const done = tasks.completedCount;
@@ -244,9 +259,10 @@ export function TasksTriage({ tasks }: TasksTriageProps) {
             label="OVERDUE"
             rightLabel={`${overdue.length} late`}
             items={overdue}
-            onComplete={(taskId) => completeMut.mutate({ taskId })}
+            onComplete={taskId => completeMut.mutate({ taskId })}
             busyTaskId={busyId}
             noteCountsByTaskId={noteCountsByTaskId}
+            noteCountsLoading={noteCountsLoading}
             onPin={handlePin}
             pinningTaskId={pinningTaskId}
           />
@@ -255,9 +271,10 @@ export function TasksTriage({ tasks }: TasksTriageProps) {
             label="TODAY"
             rightLabel={`${today.length} due`}
             items={today}
-            onComplete={(taskId) => completeMut.mutate({ taskId })}
+            onComplete={taskId => completeMut.mutate({ taskId })}
             busyTaskId={busyId}
             noteCountsByTaskId={noteCountsByTaskId}
+            noteCountsLoading={noteCountsLoading}
             onPin={handlePin}
             pinningTaskId={pinningTaskId}
           />
