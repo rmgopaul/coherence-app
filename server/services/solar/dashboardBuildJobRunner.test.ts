@@ -336,4 +336,17 @@ describe("__TEST_ONLY__ surface", () => {
       /^pid-\d+-host-.+-[0-9a-f]{8}$/
     );
   });
+
+  it("keeps PER_STEP_TIMEOUT_MS at >= 60 min to avoid killing legitimate long-running steps", () => {
+    // The constant has been bumped twice now (4 min → 30 min on
+    // 2026-05-08, 30 min → 60 min on 2026-05-13) after legitimate
+    // production failures where the step was making forward
+    // progress but the ceiling fired. Don't lower this without
+    // re-doing the timeout analysis on prod-shape data —
+    // `performanceRatioFacts` legitimately runs ~30-40 min on
+    // scopes whose per-page DB-roundtrip latency dominates.
+    expect(__TEST_ONLY__.PER_STEP_TIMEOUT_MS).toBeGreaterThanOrEqual(
+      60 * 60 * 1000
+    );
+  });
 });
