@@ -19,6 +19,7 @@ import { NewsprintColumns } from "./frontpage/NewsprintColumns";
 import { InboxPanel } from "./frontpage/InboxPanel";
 import { WireFeedsGrid } from "./frontpage/WireFeedsGrid";
 import { CommandCenterPanel } from "./frontpage/CommandCenterPanel";
+import { DailyWorkflowPanel } from "./frontpage/DailyWorkflowPanel";
 // Phase E (2026-04-28): AI Weekly Review card.
 import { WeeklyReviewCard } from "./frontpage/WeeklyReviewCard";
 import { FocusModeRail } from "./frontpage/FocusModeRail";
@@ -111,6 +112,12 @@ export default function FrontPageDashboard() {
       />
 
       <CommandCenterPanel state={data.commandCenter} />
+
+      <DailyWorkflowPanel
+        dateKey={data.todayKey}
+        commandCenter={data.commandCenter.data}
+        state={data.dailyState}
+      />
 
       {!focusMode && <DropDock />}
 

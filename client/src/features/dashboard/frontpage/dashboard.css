@@ -873,6 +873,227 @@ html[data-focus="1"] .fp-root {
   font-weight: 700;
 }
 
+/* --- Daily workflow ------------------------------------------------- */
+
+.fp-daily-workflow {
+  margin-top: 18px;
+  border: 2px solid var(--fp-rule);
+  background: var(--fp-paper);
+  color: var(--fp-ink);
+}
+
+.fp-daily-workflow__head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 12px 16px;
+  border-bottom: 2px solid var(--fp-rule);
+  background: var(--fp-paper-2);
+}
+
+.fp-daily-workflow__title {
+  margin: 2px 0 0;
+  font-family: "Archivo Black", "Inter", sans-serif;
+  font-size: 28px;
+  line-height: 1;
+  letter-spacing: 0;
+}
+
+.fp-daily-workflow__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.fp-daily-workflow__icon-btn,
+.fp-daily-workflow__action-btn,
+.fp-daily-workflow__add-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 34px;
+  border: 1px solid var(--fp-rule);
+  background: var(--fp-paper);
+  color: var(--fp-ink);
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0;
+  text-transform: uppercase;
+  transition:
+    background 140ms ease,
+    transform 140ms ease;
+}
+
+.fp-daily-workflow__icon-btn {
+  width: 34px;
+  padding: 0;
+}
+
+.fp-daily-workflow__icon-btn svg,
+.fp-daily-workflow__action-btn svg,
+.fp-daily-workflow__add-btn svg {
+  width: 15px;
+  height: 15px;
+}
+
+.fp-daily-workflow__action-btn,
+.fp-daily-workflow__add-btn {
+  padding: 0 11px;
+}
+
+.fp-daily-workflow__icon-btn:hover:not(:disabled),
+.fp-daily-workflow__action-btn:hover:not(:disabled),
+.fp-daily-workflow__add-btn:hover:not(:disabled) {
+  background: var(--fp-yellow);
+}
+
+.fp-daily-workflow__icon-btn:disabled,
+.fp-daily-workflow__action-btn:disabled,
+.fp-daily-workflow__add-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.fp-daily-workflow__icon-btn--quiet {
+  border-color: transparent;
+  background: transparent;
+}
+
+.fp-daily-workflow__spin {
+  animation: fp-daily-workflow-spin 800ms linear infinite;
+}
+
+@keyframes fp-daily-workflow-spin {
+  from {
+    transform: rotate(0deg);
+  }
+
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.fp-daily-workflow__error {
+  margin: 12px 16px 0;
+  color: var(--fp-red);
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+.fp-daily-workflow__grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr);
+  gap: 0;
+}
+
+.fp-daily-workflow__block {
+  padding: 16px;
+  border-right: 1px solid var(--fp-rule);
+  border-bottom: 1px solid var(--fp-rule);
+  background: var(--fp-paper);
+}
+
+.fp-daily-workflow__block--wide {
+  grid-row: span 2;
+  background: var(--fp-paper-2);
+}
+
+.fp-daily-workflow__block-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.fp-daily-workflow__block-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.fp-daily-workflow__block-title svg {
+  width: 15px;
+  height: 15px;
+}
+
+.fp-daily-workflow__field {
+  display: grid;
+  gap: 5px;
+  margin-bottom: 10px;
+}
+
+.fp-daily-workflow__field span {
+  color: var(--fp-ink-3);
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.fp-daily-workflow__field input,
+.fp-daily-workflow__field textarea,
+.fp-daily-workflow__select,
+.fp-daily-workflow__row input,
+.fp-daily-workflow__row select {
+  width: 100%;
+  border: 1px solid var(--fp-rule);
+  border-radius: 0;
+  background: var(--fp-paper);
+  color: var(--fp-ink);
+  font-family: "Inter", ui-sans-serif, system-ui, sans-serif;
+  font-size: 14px;
+  letter-spacing: 0;
+}
+
+.fp-daily-workflow__field input,
+.fp-daily-workflow__select,
+.fp-daily-workflow__row input,
+.fp-daily-workflow__row select {
+  min-height: 34px;
+  padding: 0 9px;
+}
+
+.fp-daily-workflow__field textarea {
+  min-height: 82px;
+  resize: vertical;
+  padding: 8px 9px;
+}
+
+.fp-daily-workflow__list {
+  display: grid;
+  gap: 8px;
+}
+
+.fp-daily-workflow__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 34px;
+  gap: 6px;
+  align-items: center;
+}
+
+.fp-daily-workflow__row-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(110px, 0.32fr);
+  gap: 6px;
+}
+
+.fp-daily-workflow__add-btn {
+  margin-top: 10px;
+  width: 100%;
+}
+
 /* --- Tasks Triage (Phase F4) ---
 
    Replaces the old single-list UP NEXT column with priority bands and
@@ -2081,6 +2302,31 @@ a.wire-card--link:focus-visible {
   }
   .fp-command-priority__title {
     font-size: 22px;
+  }
+
+  .fp-daily-workflow__head {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px 12px;
+  }
+  .fp-daily-workflow__title {
+    font-size: 22px;
+  }
+  .fp-daily-workflow__actions {
+    justify-content: flex-start;
+  }
+  .fp-daily-workflow__grid {
+    grid-template-columns: 1fr;
+  }
+  .fp-daily-workflow__block,
+  .fp-daily-workflow__block--wide {
+    grid-row: auto;
+    border-right: 0;
+    padding: 12px;
+  }
+  .fp-daily-workflow__row-fields {
+    grid-template-columns: 1fr;
   }
 
   /* Wire grid — 1 col, tighter gap, less padding in cards. Drop
