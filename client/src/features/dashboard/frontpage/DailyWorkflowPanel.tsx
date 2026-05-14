@@ -23,7 +23,9 @@ import {
   buildOutcomeDrafts,
   buildTodayPlanDraft,
   dailyWorkflowDraftFromState,
+  dateTimeLocalInputFromIso,
   emptyDailyWorkflowDraft,
+  isoFromDateTimeLocalInput,
   normalizeDailyWorkflowDraftForSave,
   type DailyWorkflowDraft,
 } from "./dailyWorkflow.helpers";
@@ -380,6 +382,7 @@ export function DailyWorkflowPanel({
           title="Commitments"
           icon={<ClipboardList aria-hidden="true" />}
           items={draft.commitments}
+          fieldsClassName="fp-daily-workflow__row-fields--commitment"
           onAdd={addCommitment}
           onRemove={(id) =>
             updateDraft((current) => ({
@@ -402,6 +405,7 @@ export function DailyWorkflowPanel({
                   }))
                 }
                 placeholder="Commitment"
+                aria-label="Commitment title"
               />
               <select
                 value={item.status}
@@ -428,6 +432,57 @@ export function DailyWorkflowPanel({
                   </option>
                 ))}
               </select>
+              <input
+                value={item.owner ?? ""}
+                onChange={(event) =>
+                  updateDraft((current) => ({
+                    ...current,
+                    commitments: current.commitments.map((entry) =>
+                      entry.id === item.id
+                        ? { ...entry, owner: event.target.value }
+                        : entry
+                    ),
+                  }))
+                }
+                placeholder="Owner"
+                aria-label="Commitment owner"
+              />
+              <input
+                type="datetime-local"
+                value={dateTimeLocalInputFromIso(item.dueAt)}
+                onChange={(event) =>
+                  updateDraft((current) => ({
+                    ...current,
+                    commitments: current.commitments.map((entry) =>
+                      entry.id === item.id
+                        ? {
+                            ...entry,
+                            dueAt: isoFromDateTimeLocalInput(
+                              event.target.value
+                            ),
+                          }
+                        : entry
+                    ),
+                  }))
+                }
+                aria-label="Commitment due time"
+              />
+              <input
+                className="fp-daily-workflow__row-field--wide"
+                value={item.url ?? ""}
+                onChange={(event) =>
+                  updateDraft((current) => ({
+                    ...current,
+                    commitments: current.commitments.map((entry) =>
+                      entry.id === item.id
+                        ? { ...entry, url: event.target.value }
+                        : entry
+                    ),
+                  }))
+                }
+                placeholder="https://..."
+                aria-label="Commitment URL"
+              />
             </>
           )}
         />
@@ -516,6 +571,7 @@ function EditableList<T extends { id: string }>({
   title,
   icon,
   items,
+  fieldsClassName,
   onAdd,
   onRemove,
   renderItem,
@@ -523,6 +579,7 @@ function EditableList<T extends { id: string }>({
   title: string;
   icon: ReactNode;
   items: T[];
+  fieldsClassName?: string;
   onAdd: () => void;
   onRemove: (id: string) => void;
   renderItem: (item: T) => ReactNode;
@@ -536,7 +593,13 @@ function EditableList<T extends { id: string }>({
         ) : (
           items.map((item) => (
             <div key={item.id} className="fp-daily-workflow__row">
-              <div className="fp-daily-workflow__row-fields">
+              <div
+                className={
+                  fieldsClassName
+                    ? `fp-daily-workflow__row-fields ${fieldsClassName}`
+                    : "fp-daily-workflow__row-fields"
+                }
+              >
                 {renderItem(item)}
               </div>
               <button

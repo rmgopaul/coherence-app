@@ -8,6 +8,7 @@ import type {
   PersonalDashboardTodayPlan,
   PersonalDashboardTodayPlanStatus,
 } from "@shared/personalDashboard";
+import { formatDateInput } from "@shared/dateKey";
 
 export type DailyWorkflowDraft = {
   dailyBriefStatus: PersonalDashboardDailyBriefStatus;
@@ -206,6 +207,8 @@ export function normalizeDailyWorkflowDraftForSave(
         ...item,
         title: item.title.trim(),
         owner: item.owner?.trim() || null,
+        dueAt: normalizeIsoDateTime(item.dueAt),
+        url: normalizeExternalUrl(item.url),
       }))
       .filter((item) => item.title.length > 0)
       .slice(0, 100),
@@ -222,7 +225,30 @@ export function normalizeDailyWorkflowDraftForSave(
   };
 }
 
-function normalizeExternalUrl(value: string | null): string | null {
+export function dateTimeLocalInputFromIso(value: string | null): string {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const hh = String(date.getHours()).padStart(2, "0");
+  const min = String(date.getMinutes()).padStart(2, "0");
+  return `${formatDateInput(date)}T${hh}:${min}`;
+}
+
+export function isoFromDateTimeLocalInput(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const date = new Date(trimmed);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+function normalizeIsoDateTime(value: string | null): string | null {
   if (!value) return null;
-  return /^https?:\/\//i.test(value) ? value : null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+function normalizeExternalUrl(value: string | null): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+  return /^https?:\/\//i.test(trimmed) ? trimmed : null;
 }

@@ -1146,6 +1146,14 @@ html[data-focus="1"] .fp-root {
   gap: 6px;
 }
 
+.fp-daily-workflow__row-fields--commitment {
+  grid-template-columns: minmax(0, 1fr) minmax(110px, 0.32fr);
+}
+
+.fp-daily-workflow__row-field--wide {
+  grid-column: 1 / -1;
+}
+
 .fp-daily-workflow__add-btn {
   margin-top: 10px;
   width: 100%;
