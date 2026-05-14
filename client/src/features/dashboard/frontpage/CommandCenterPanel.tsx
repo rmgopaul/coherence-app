@@ -113,10 +113,17 @@ function IntegrationActionLink({
 }
 
 function SourceRow({ item }: { item: SourceFreshness }) {
+  const detail = item.detail?.trim();
   return (
     <li className="fp-command-source" data-tone={statusTone(item.status)}>
       <span className="fp-command-source__name">{String(item.source)}</span>
       <span className="mono-label">{formatTimestamp(item.fetchedAt)}</span>
+      {detail ? (
+        <details className="fp-command-source__detail">
+          <summary>detail</summary>
+          <p>{detail}</p>
+        </details>
+      ) : null}
     </li>
   );
 }
