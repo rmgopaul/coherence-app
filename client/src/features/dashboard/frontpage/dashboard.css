@@ -883,7 +883,7 @@ html[data-focus="1"] .fp-root {
 }
 
 .fp-command-integration {
-  grid-template-columns: 10px minmax(0, 1fr) auto;
+  grid-template-columns: 10px minmax(0, 1fr) auto auto;
 }
 
 .fp-command-source__name,
@@ -902,6 +902,28 @@ html[data-focus="1"] .fp-root {
   height: 9px;
   border: 1.5px solid var(--fp-rule);
   background: var(--fp-red);
+}
+
+.fp-command-integration__action {
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--fp-rule);
+  color: var(--fp-ink);
+  background: var(--fp-paper);
+  text-decoration: none;
+}
+
+.fp-command-integration__action svg {
+  width: 13px;
+  height: 13px;
+}
+
+.fp-command-integration__action:hover {
+  background: var(--fp-ink);
+  color: var(--fp-paper);
 }
 
 .fp-command-source[data-tone="ok"] .mono-label,
