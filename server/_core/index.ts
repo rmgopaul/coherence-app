@@ -21,6 +21,7 @@ import { registerChangeOwnershipBuildStep } from "../services/solar/buildDashboa
 import { registerOwnershipBuildStep } from "../services/solar/buildDashboardOwnershipFacts";
 import { registerSystemBuildStep } from "../services/solar/buildDashboardSystemFacts";
 import { registerPerformanceRatioBuildStep } from "../services/solar/buildDashboardPerformanceRatioFacts";
+import { safelyRegisterBuildStep } from "./safelyRegister";
 import { registerPinGate } from "./pinGate";
 import { registerSecurityMiddleware } from "./security";
 import {
@@ -152,11 +153,28 @@ async function startServer() {
   // without doing any work. Static imports + sync registration
   // close the race; the runner also gained a guard that fails
   // loud if it ever sees an empty steps array.
-  registerMonitoringDetailsBuildStep();
-  registerChangeOwnershipBuildStep();
-  registerOwnershipBuildStep();
-  registerSystemBuildStep();
-  registerPerformanceRatioBuildStep();
+  //
+  // Each call is wrapped in `safelyRegisterBuildStep` so a single
+  // registration failure logs a structured error and lets boot
+  // continue. The runner's 0-step guard then becomes the
+  // user-visible catch-net on the next user-initiated build —
+  // rather than `startServer().catch(console.error)` swallowing a
+  // throw, never reaching `server.listen()`, and leaving the box
+  // unreachable with a single stderr line for diagnosis.
+  safelyRegisterBuildStep(
+    "monitoringDetailsFacts",
+    registerMonitoringDetailsBuildStep
+  );
+  safelyRegisterBuildStep(
+    "changeOwnershipFacts",
+    registerChangeOwnershipBuildStep
+  );
+  safelyRegisterBuildStep("ownershipFacts", registerOwnershipBuildStep);
+  safelyRegisterBuildStep("systemFacts", registerSystemBuildStep);
+  safelyRegisterBuildStep(
+    "performanceRatioFacts",
+    registerPerformanceRatioBuildStep
+  );
 
   // Concern #4 PR-2 (per docs/triage/local-dev-prod-mutation-findings.md):
   // schedulers + the orphan-batch cleanup mutate prod state on every
