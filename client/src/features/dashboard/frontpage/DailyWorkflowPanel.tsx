@@ -31,6 +31,7 @@ import {
   dailyWorkflowDraftFromState,
   dateTimeLocalInputFromIso,
   emptyDailyWorkflowDraft,
+  hasDailyWorkflowDraftContent,
   isoFromDateTimeLocalInput,
   normalizeDailyWorkflowDraftForSave,
   winActiveOutcomes,
@@ -111,6 +112,7 @@ export function DailyWorkflowPanel({
 
   const canSeed = Boolean(commandCenter);
   const isSaving = saveDailyState.isPending;
+  const canClearDraft = hasDailyWorkflowDraftContent(draft);
   const briefSourceItems = draft.dailyBrief.sourceRefs.map(
     (sourceRef, index) => ({
       id: String(index),
@@ -233,6 +235,16 @@ export function DailyWorkflowPanel({
     setDraft(dailyWorkflowDraftFromState(state.data));
     setDirty(false);
   }, [state.data]);
+
+  function clearDraft() {
+    if (!canClearDraft || isSaving) return;
+    const confirmed = window.confirm(
+      "Clear all daily workflow fields for this day? This will not persist until you press Save."
+    );
+    if (!confirmed) return;
+    setDraft(emptyDailyWorkflowDraft());
+    setDirty(true);
+  }
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
@@ -393,6 +405,16 @@ export function DailyWorkflowPanel({
             aria-label="Seed from command center"
           >
             <Sparkles aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            className="fp-daily-workflow__icon-btn"
+            onClick={clearDraft}
+            disabled={!canClearDraft || isSaving}
+            title="Clear all daily workflow fields"
+            aria-label="Clear daily workflow"
+          >
+            <Trash2 aria-hidden="true" />
           </button>
           <button
             type="button"

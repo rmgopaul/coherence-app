@@ -40,6 +40,21 @@ export function emptyDailyWorkflowDraft(): DailyWorkflowDraft {
   };
 }
 
+export function hasDailyWorkflowDraftContent(
+  draft: DailyWorkflowDraft
+): boolean {
+  return Boolean(
+    draft.dailyBrief.headline.trim() ||
+      draft.dailyBrief.summary?.trim() ||
+      draft.dailyBrief.sourceRefs.length > 0 ||
+      draft.todayPlan.topPriority?.trim() ||
+      draft.todayPlan.notes?.trim() ||
+      draft.todayPlan.blocks.length > 0 ||
+      draft.commitments.length > 0 ||
+      draft.outcomes.length > 0
+  );
+}
+
 export function dailyWorkflowDraftFromState(
   state: PersonalDashboardDailyState | null | undefined
 ): DailyWorkflowDraft {
