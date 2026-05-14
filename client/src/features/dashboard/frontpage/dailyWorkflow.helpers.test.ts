@@ -226,6 +226,55 @@ describe("dailyWorkflow helpers", () => {
     });
   });
 
+  it("normalizes daily brief source refs before save", () => {
+    const draft = dailyWorkflowDraftFromState(null);
+    draft.dailyBriefStatus = "ready";
+    draft.dailyBrief.headline = "  Morning brief  ";
+    draft.dailyBrief.sourceRefs = [
+      {
+        source: "gmail",
+        id: " thread-1 ",
+        label: "  Client thread  ",
+        url: " https://mail.google.com/mail/u/0/#inbox/thread-1 ",
+      },
+      {
+        source: "todoist",
+        id: "ignored",
+        label: "   ",
+        url: "https://todoist.com/app/task/task-1",
+      },
+      {
+        source: "system",
+        id: null,
+        label: "Unsafe URL",
+        url: "javascript:alert(1)",
+      },
+    ];
+
+    expect(
+      normalizeDailyWorkflowDraftForSave(
+        draft,
+        new Date("2026-05-14T14:00:00.000Z")
+      ).dailyBrief
+    ).toMatchObject({
+      headline: "Morning brief",
+      sourceRefs: [
+        {
+          source: "gmail",
+          id: "thread-1",
+          label: "Client thread",
+          url: "https://mail.google.com/mail/u/0/#inbox/thread-1",
+        },
+        {
+          source: "system",
+          id: null,
+          label: "Unsafe URL",
+          url: null,
+        },
+      ],
+    });
+  });
+
   it("preserves normalized commitment detail fields before save", () => {
     const draft = dailyWorkflowDraftFromState(null);
     draft.commitments = [

@@ -24,16 +24,20 @@ export type PersonalDashboardHealthStatus =
   | "rate_limited"
   | "offline";
 
+export const PERSONAL_DASHBOARD_SOURCE_KINDS = [
+  "todoist",
+  "calendar",
+  "gmail",
+  "dock",
+  "daily_brief",
+  "today_plan",
+  "weekly_review",
+  "health",
+  "system",
+] as const;
+
 export type PersonalDashboardSourceKind =
-  | "todoist"
-  | "calendar"
-  | "gmail"
-  | "dock"
-  | "daily_brief"
-  | "today_plan"
-  | "weekly_review"
-  | "health"
-  | "system";
+  (typeof PERSONAL_DASHBOARD_SOURCE_KINDS)[number];
 
 export type PersonalDashboardIntegrationHealth = {
   key: PersonalDashboardIntegrationKey;

@@ -3,6 +3,7 @@ import {
   CalendarClock,
   CheckCircle2,
   ClipboardList,
+  Link2,
   Plus,
   RefreshCw,
   Save,
@@ -13,10 +14,12 @@ import {
 import { toast } from "sonner";
 
 import { trpc } from "@/lib/trpc";
-import type {
-  PersonalDashboardCommitment,
-  PersonalDashboardOutcome,
-  PersonalDashboardPlanBlock,
+import {
+  PERSONAL_DASHBOARD_INTEGRATION_KEYS,
+  PERSONAL_DASHBOARD_SOURCE_KINDS,
+  type PersonalDashboardCommitment,
+  type PersonalDashboardOutcome,
+  type PersonalDashboardPlanBlock,
 } from "@shared/personalDashboard";
 import type { DashboardData } from "../useDashboardData";
 import {
@@ -31,6 +34,16 @@ import {
   normalizeDailyWorkflowDraftForSave,
   type DailyWorkflowDraft,
 } from "./dailyWorkflow.helpers";
+
+type DailyBriefSourceRef =
+  DailyWorkflowDraft["dailyBrief"]["sourceRefs"][number];
+
+const briefSourceOptions: DailyBriefSourceRef["source"][] = Array.from(
+  new Set([
+    ...PERSONAL_DASHBOARD_SOURCE_KINDS,
+    ...PERSONAL_DASHBOARD_INTEGRATION_KEYS,
+  ])
+);
 
 type DailyWorkflowPanelProps = {
   dateKey: string;
@@ -96,12 +109,72 @@ export function DailyWorkflowPanel({
 
   const canSeed = Boolean(commandCenter);
   const isSaving = saveDailyState.isPending;
+  const briefSourceItems = draft.dailyBrief.sourceRefs.map(
+    (sourceRef, index) => ({
+      id: String(index),
+      index,
+      sourceRef,
+    })
+  );
 
   function updateDraft(
     updater: (current: DailyWorkflowDraft) => DailyWorkflowDraft
   ) {
     setDirty(true);
     setDraft(updater);
+  }
+
+  function addBriefSourceRef() {
+    updateDraft((current) => ({
+      ...current,
+      dailyBriefStatus:
+        current.dailyBriefStatus === "not_started"
+          ? "draft"
+          : current.dailyBriefStatus,
+      dailyBrief: {
+        ...current.dailyBrief,
+        sourceRefs: [
+          ...current.dailyBrief.sourceRefs,
+          {
+            source: "system",
+            id: null,
+            label: "",
+            url: null,
+          },
+        ],
+      },
+    }));
+  }
+
+  function updateBriefSourceRef(
+    index: number,
+    patch: Partial<DailyBriefSourceRef>
+  ) {
+    updateDraft((current) => ({
+      ...current,
+      dailyBriefStatus:
+        current.dailyBriefStatus === "not_started"
+          ? "draft"
+          : current.dailyBriefStatus,
+      dailyBrief: {
+        ...current.dailyBrief,
+        sourceRefs: current.dailyBrief.sourceRefs.map((entry, entryIndex) =>
+          entryIndex === index ? { ...entry, ...patch } : entry
+        ),
+      },
+    }));
+  }
+
+  function removeBriefSourceRef(index: number) {
+    updateDraft((current) => ({
+      ...current,
+      dailyBrief: {
+        ...current.dailyBrief,
+        sourceRefs: current.dailyBrief.sourceRefs.filter(
+          (_entry, entryIndex) => entryIndex !== index
+        ),
+      },
+    }));
   }
 
   function seedFromCommandCenter() {
@@ -374,6 +447,61 @@ export function DailyWorkflowPanel({
             <option value="failed">failed</option>
           </select>
         </div>
+
+        <EditableList
+          title="Brief Sources"
+          icon={<Link2 aria-hidden="true" />}
+          items={briefSourceItems}
+          onAdd={addBriefSourceRef}
+          onRemove={(id) => removeBriefSourceRef(Number(id))}
+          renderItem={(item) => (
+            <>
+              <input
+                className="fp-daily-workflow__row-field--wide"
+                value={item.sourceRef.label}
+                onChange={(event) =>
+                  updateBriefSourceRef(item.index, {
+                    label: event.target.value,
+                  })
+                }
+                placeholder="Source label"
+                aria-label="Brief source label"
+              />
+              <select
+                value={item.sourceRef.source}
+                onChange={(event) => {
+                  const source =
+                    event.target.value as DailyBriefSourceRef["source"];
+                  updateBriefSourceRef(item.index, { source });
+                }}
+                aria-label="Brief source type"
+              >
+                {briefSourceOptions.map((source) => (
+                  <option key={source} value={source}>
+                    {source}
+                  </option>
+                ))}
+              </select>
+              <input
+                value={item.sourceRef.id ?? ""}
+                onChange={(event) =>
+                  updateBriefSourceRef(item.index, { id: event.target.value })
+                }
+                placeholder="Source ID"
+                aria-label="Brief source ID"
+              />
+              <input
+                className="fp-daily-workflow__row-field--wide"
+                value={item.sourceRef.url ?? ""}
+                onChange={(event) =>
+                  updateBriefSourceRef(item.index, { url: event.target.value })
+                }
+                placeholder="https://..."
+                aria-label="Brief source URL"
+              />
+            </>
+          )}
+        />
 
         <div className="fp-daily-workflow__block">
           <BlockHeader
