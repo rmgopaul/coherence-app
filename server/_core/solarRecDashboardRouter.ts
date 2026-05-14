@@ -4229,8 +4229,23 @@ export const solarRecDashboardRouter = t.router({
    * (abpCsgSystemMapping, abpIccReport3Rows, abpReport) plus a
    * contract-scan freshness hash so manual override edits invalidate
    * the cached result even though no dashboard dataset changed.
-   * Wire payload is one row per system with financial data and should
-   * stay well below the 200 KB target on populated scopes.
+   *
+   * **Slim wire shape (2026-05-13).** The aggregator still computes
+   * `rows: FinancialsProfitRow[]` internally (the cached artifact
+   * embeds them so the page reader + CSV export job can slice them
+   * without re-running the heavy join), but the proc strips them from
+   * the wire response. The FinancialsTab + Overview tab now read
+   * those rows via `getDashboardFinancialsPage` (paginated, server-
+   * side sort + filter) instead of pulling the full payload through
+   * a single response. Pre-PR ~10 MB on prod (24K rows × ~420 bytes);
+   * post-PR a few hundred bytes (7 scalar KPIs + flaggedCount +
+   * csgIds + debug). The mirrors the PR-D-4 / PR-E-4-supplement
+   * pattern — same rows-strip-at-wire-boundary structural fix.
+   *
+   * `flaggedCount` is computed from the cached rows (cheap reduce)
+   * and shipped on this slim response so the "Needs Review (X)" tile
+   * + the filter dropdown counts in FinancialsTab don't need a
+   * separate page query.
    */
   getDashboardFinancials: dashboardProcedure(
     "solar-rec-dashboard",
@@ -4243,11 +4258,138 @@ export const solarRecDashboardRouter = t.router({
 
     const result = await getOrBuildFinancialsAggregates(ctx.scopeId);
 
+    // Strip `rows` at the wire boundary. The aggregator still returns
+    // them (the cached artifact embeds them; the page reader + CSV
+    // export job consume them in-process), but no client path walks
+    // `result.rows` after this PR. Underscore-prefix on the discarded
+    // binding keeps tsc happy without changing the aggregator's
+    // return type.
+    const { rows: _rows, ...rest } = result;
+
+    // `flaggedCount` is the count of needsReview=true rows. Computed
+    // here (not inside the aggregator) because the aggregator's
+    // existing `systemsWithData` is the unflagged total — adding a
+    // separate flagged tally to the cached payload would force a
+    // cache-key bump on a quantity the client can derive from the
+    // already-materialized rows for free. Cost: one O(n) reduce on
+    // ~24K rows = ~1 ms.
+    const flaggedCount = result.rows.reduce(
+      (a, r) => a + (r.needsReview ? 1 : 0),
+      0
+    );
+
     return {
-      ...result,
+      ...rest,
+      flaggedCount,
       _runnerVersion: FINANCIALS_RUNNER_VERSION,
     };
   }),
+
+  /**
+   * 2026-05-13 — paginated row reader for the Financials tab.
+   * Replaces the per-row `FinancialsProfitRow[]` payload that
+   * `getDashboardFinancials` shipped pre-PR (~10 MB on prod).
+   *
+   * Mirrors the `getDashboardChangeOwnershipPage` /
+   * `getDashboardOwnershipPage` pattern: cursor-based pagination
+   * with optional sort / filter axes that the client maps to local
+   * UI state. The proc reads the SAME cached aggregate the slim
+   * summary derives from — no extra DB roundtrip per page, just an
+   * in-memory slice over rows that were already materialized for the
+   * cache.
+   *
+   * Cursor: integer offset (rows already consumed). End-of-stream is
+   * signaled by `nextCursor: null` AND `hasMore: false`. Offset
+   * cursor was chosen over row-key cursor because sortKey values can
+   * repeat across rows (e.g. multiple `profit: 5000` rows), so a
+   * row-key cursor would need a stable secondary key to break ties
+   * — overkill for a 24K-row table that fits comfortably in memory.
+   *
+   * Wire payload: 100 rows × ~420 bytes = ~42 KB per page (default
+   * limit). Max limit 500 → ~210 KB, still well under the 1 MB
+   * dashboard response budget.
+   *
+   * Default sort: `profit` desc (matches the in-process aggregator's
+   * `rows.sort((a, b) => b.profit - a.profit)` at line ~516 of
+   * `buildFinancialsAggregates.ts`).
+   *
+   * Empty-table behavior: when the required datasets aren't uploaded
+   * (or the financial-csg-id set is empty / no scan results), the
+   * aggregator returns `EMPTY_FINANCIALS` with `rows: []`, and this
+   * proc returns an empty page with `totalCount: 0`. The client
+   * renders the existing "Upload the ABP CSG-System Mapping…" empty-
+   * state card.
+   */
+  getDashboardFinancialsPage: dashboardProcedure(
+    "solar-rec-dashboard",
+    "read"
+  )
+    .input(
+      z.object({
+        // Integer offset cursor. `null`/undefined = start from row 0.
+        // The DB-free in-memory implementation tolerates any non-
+        // negative integer up to the row count; out-of-range cursors
+        // resolve to an empty page (consistent with "end of stream"
+        // UX) rather than throwing.
+        cursor: z.number().int().min(0).nullable().optional(),
+        limit: z.number().int().min(1).max(500).default(100),
+        sortKey: z
+          .enum([
+            "systemName",
+            "grossContractValue",
+            "vendorFeePercent",
+            "vendorFeeAmount",
+            "utilityCollateral",
+            "additionalCollateralPercent",
+            "additionalCollateralAmount",
+            "ccAuth5Percent",
+            "applicationFee",
+            "totalDeductions",
+            "profit",
+            "totalCollateralization",
+          ])
+          .optional(),
+        sortDir: z.enum(["asc", "desc"]).optional(),
+        // Tri-state filter on the needsReview flag. `true` → only
+        // flagged rows; `false` → only unflagged; null/undefined →
+        // all rows. Mirrors the FinancialsTab's "Needs Review" /
+        // "OK" / "All" select.
+        filterNeedsReview: z.boolean().nullable().optional(),
+        // Free-text search across systemName + applicationId + csgId.
+        // Server-side application matches the pre-pagination client
+        // filter so a navigated-away-and-back tab doesn't snap to a
+        // different filtered view.
+        search: z.string().max(200).nullable().optional(),
+      })
+    )
+    .query(async ({ ctx, input }) => {
+      const {
+        getOrBuildFinancialsAggregates,
+        applyFinancialsPage,
+        FINANCIALS_RUNNER_VERSION,
+      } = await import("../services/solar/buildFinancialsAggregates");
+
+      const aggregate = await getOrBuildFinancialsAggregates(ctx.scopeId);
+      const page = applyFinancialsPage(aggregate.rows, {
+        cursor: input.cursor ?? 0,
+        limit: input.limit,
+        sortKey: input.sortKey,
+        sortDir: input.sortDir,
+        filterNeedsReview: input.filterNeedsReview ?? null,
+        search: input.search ?? null,
+      });
+
+      return {
+        _checkpoint: "financials-page-v1",
+        _runnerVersion: FINANCIALS_RUNNER_VERSION,
+        rows: page.rows,
+        nextCursor: page.nextCursor,
+        hasMore: page.hasMore,
+        totalCount: page.totalCount,
+        totalFiltered: page.totalFiltered,
+        flaggedCount: page.flaggedCount,
+      };
+    }),
 
   /**
    * PR #332 follow-up item 8 (2026-05-02) — slim, cache-only KPI

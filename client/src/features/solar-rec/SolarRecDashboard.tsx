@@ -137,7 +137,6 @@ import type {
   PerformanceSourceRow,
   PipelineCashFlowRow,
   PipelineMonthRow,
-  ProfitRow,
   ScheduleYearEntry,
   SizeBucket,
   SystemRecord,
@@ -198,7 +197,6 @@ import {
   parseNumber,
   parseDate,
   formatNumber,
-  roundMoney,
   toPercentValue,
   isStaleUpload,
   resolveContractValueAmount,
@@ -5998,6 +5996,22 @@ const FINANCIAL_PROFIT_EMPTY: FinancialProfitData = {
   kpiDataAvailable: false,
 };
 
+// 2026-05-13 — `getDashboardFinancials` strips `rows` at the wire
+// boundary (10 MB → ~few hundred bytes); FinancialsTab fetches the
+// rows itself via the dedicated `getDashboardFinancialsPage` proc
+// (paginated, server-side sort + filter). The parent's
+// `financialProfitData` collapses to scalar KPI tiles + flagged
+// counters that Overview + FinancialsTab read.
+//
+// Pre-PR this useMemo also recomputed `totalProfit`/etc. from rows
+// transformed by `localOverrides` so the KPI tiles updated
+// optimistically the instant the user saved an override. Post-PR
+// the parent has no rows to apply localOverrides to; the optimistic
+// path moves into FinancialsTab (which applies localOverrides to
+// each fetched page's rows before display). KPI tiles show server-
+// authoritative numbers and reflect the override after the heavy
+// refetch lands (~20s post-mutation, the same window the existing
+// "Saving…" / "background refresh" toast already covers).
 const financialProfitData = useMemo<FinancialProfitData>(() => {
   const data = financialsQuery.data;
   if (!data) {
@@ -6022,78 +6036,25 @@ const financialProfitData = useMemo<FinancialProfitData>(() => {
     return FINANCIAL_PROFIT_EMPTY;
   }
 
-  let rows = data.rows as ProfitRow[];
-
-  if (localOverrides.size > 0) {
-    rows = rows.map((row) => {
-      const localOv = localOverrides.get(row.csgId);
-      if (!localOv) return row;
-
-      const vendorFeePercent = localOv.vfp;
-      const additionalCollateralPercent = localOv.acp;
-      const vendorFeeAmount = roundMoney(
-        row.grossContractValue * (vendorFeePercent / 100)
-      );
-      const additionalCollateralAmount = roundMoney(
-        row.grossContractValue * (additionalCollateralPercent / 100)
-      );
-      const totalDeductions = roundMoney(
-        vendorFeeAmount +
-          row.utilityCollateral +
-          additionalCollateralAmount +
-          row.ccAuth5Percent +
-          row.applicationFee
-      );
-      const totalCollateralization = roundMoney(
-        row.utilityCollateral +
-          additionalCollateralAmount +
-          row.ccAuth5Percent
-      );
-      const collateralPercent =
-        row.grossContractValue > 0
-          ? totalCollateralization / row.grossContractValue
-          : 0;
-      const needsReview = collateralPercent > 0.30;
-
-      return {
-        ...row,
-        vendorFeePercent,
-        vendorFeeAmount,
-        additionalCollateralPercent,
-        additionalCollateralAmount,
-        totalDeductions,
-        profit: vendorFeeAmount,
-        totalCollateralization,
-        needsReview,
-        reviewReason: needsReview
-          ? `Collateral is ${(collateralPercent * 100).toFixed(1)}% of GCV`
-          : "",
-        hasOverride: true,
-      };
-    });
-  }
-
-  const totalProfit = rows.reduce((a, r) => a + r.profit, 0);
-  const totalColl = rows.reduce((a, r) => a + r.totalCollateralization, 0);
-  const totalUtilColl = rows.reduce((a, r) => a + r.utilityCollateral, 0);
-  const totalAddlColl = rows.reduce(
-    (a, r) => a + r.additionalCollateralAmount,
-    0
-  );
-  const totalCcAuthColl = rows.reduce((a, r) => a + r.ccAuth5Percent, 0);
-
   return {
-    rows,
-    totalProfit: roundMoney(totalProfit),
-    avgProfit: rows.length > 0 ? roundMoney(totalProfit / rows.length) : 0,
-    totalCollateralization: roundMoney(totalColl),
-    totalUtilityCollateral: roundMoney(totalUtilColl),
-    totalAdditionalCollateral: roundMoney(totalAddlColl),
-    totalCcAuth: roundMoney(totalCcAuthColl),
-    systemsWithData: rows.length,
+    rows: [], // wire-strip: rows live on `getDashboardFinancialsPage` now
+    totalProfit: data.totalProfit,
+    avgProfit: data.avgProfit,
+    totalCollateralization: data.totalCollateralization,
+    totalUtilityCollateral: data.totalUtilityCollateral,
+    totalAdditionalCollateral: data.totalAdditionalCollateral,
+    totalCcAuth: data.totalCcAuth,
+    systemsWithData: data.systemsWithData,
     kpiDataAvailable: true,
   };
-}, [financialsQuery.data, financialKpiSummaryQuery.data, localOverrides]);
+}, [financialsQuery.data, financialKpiSummaryQuery.data]);
+
+// Slim flagged-count derived from the wire response. Used by
+// OverviewTab + FinancialsTab tiles. Pre-PR FinancialsTab computed
+// this client-side via `financialProfitData.rows.filter((r) =>
+// r.needsReview).length`; the server now ships it alongside the
+// scalars so neither tab has to materialize rows just to count them.
+const financialFlaggedCount = financialsQuery.data?.flaggedCount ?? 0;
 
 // ── Pipeline: Cash Flow by Month (M+1 from Part II verification) ──
 // pipelineCashFlowRows, cashFlowRows3Year, cashFlowRows12Month, cashFlowRows12MonthRef — moved to @/solar-rec-dashboard/components/AppPipelineTab
@@ -6143,12 +6104,20 @@ const aiDataContext = useMemo(() => {
           systemCount: summarySystemCount,
         });
       case "financials":
+        // 2026-05-13 — `financialProfitData.rows` is now empty at the
+        // parent level (rows live on `getDashboardFinancialsPage`,
+        // a paginated reader); FinancialsTab keeps its own
+        // page-walked rows for the in-tab AskAi panel
+        // (`sampleFlaggedRows: filteredFinancialRows.slice(0, 20)`).
+        // The parent-level chat-context for this tab loses the per-
+        // row payload but retains the KPI scalars + flagged counter.
         return JSON.stringify({
           tab: "financials",
-          profitRows: truncate(financialProfitData.rows),
           totalProfit: financialProfitData.totalProfit,
           avgProfit: financialProfitData.avgProfit,
           totalCollateralization: financialProfitData.totalCollateralization,
+          systemsWithData: financialProfitData.systemsWithData,
+          flaggedCount: financialFlaggedCount,
         });
       case "performance-eval":
         return JSON.stringify({
@@ -6200,6 +6169,7 @@ const aiDataContext = useMemo(() => {
 }, [
   activeTab,
   financialProfitData,
+  financialFlaggedCount,
   performanceSourceRows,
   deliveryTrackerData,
   summary,
@@ -6882,8 +6852,10 @@ const aiDataContext = useMemo(() => {
               <TabErrorBoundary tabLabel="Financials">
                 <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading financials tab...</div>}>
                   <FinancialsTabLazy
+                    isActive={activeTab === "financials"}
                     part2EligibleSystems={part2EligibleSystemsForSizeReporting}
                     financialProfitData={financialProfitData}
+                    financialFlaggedCount={financialFlaggedCount}
                     contractScanResults={contractScanResultsQuery.data ?? []}
                     contractScanStatus={contractScanResultsQuery.status}
                     contractScanIsFetching={contractScanResultsQuery.isFetching}

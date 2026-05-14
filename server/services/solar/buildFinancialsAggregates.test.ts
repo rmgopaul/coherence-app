@@ -1,9 +1,36 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyFinancialsPage,
   buildFinancialsAggregates,
   buildFinancialsDebug,
+  type FinancialsProfitRow,
 } from "./buildFinancialsAggregates";
 import type { CsvRow } from "./aggregatorHelpers";
+
+function makeRow(
+  overrides: Partial<FinancialsProfitRow> = {}
+): FinancialsProfitRow {
+  return {
+    systemName: "System X",
+    applicationId: "APP-X",
+    csgId: "CSG-X",
+    grossContractValue: 100000,
+    vendorFeePercent: 5,
+    vendorFeeAmount: 5000,
+    utilityCollateral: 5000,
+    additionalCollateralPercent: 10,
+    additionalCollateralAmount: 10000,
+    ccAuth5Percent: 0,
+    applicationFee: 0,
+    totalDeductions: 20000,
+    profit: 5000,
+    totalCollateralization: 15000,
+    needsReview: false,
+    reviewReason: "",
+    hasOverride: false,
+    ...overrides,
+  };
+}
 
 describe("buildFinancialsAggregates", () => {
   it("joins mapped ABP, ICC, and scan rows into financial profit rows", () => {
@@ -328,5 +355,161 @@ describe("buildFinancialsDebug", () => {
     });
     expect(debug.samples.mappingCsgIds).toHaveLength(5);
     expect(debug.samples.mappingAppIds).toHaveLength(5);
+  });
+});
+
+/**
+ * Page reader (2026-05-13 — wire-shape pagination)
+ *
+ * `applyFinancialsPage` slices an already-loaded `FinancialsProfitRow[]`
+ * into bounded pages with optional sort + filter. The proc layer
+ * (`getDashboardFinancialsPage`) reads the cached aggregate via
+ * `getOrBuildFinancialsAggregates` and delegates the slice to this
+ * pure helper — testing it here avoids spinning up the cache layer.
+ */
+describe("applyFinancialsPage", () => {
+  const rows: FinancialsProfitRow[] = [
+    makeRow({ csgId: "C-A", systemName: "Alpha", profit: 5000, needsReview: false }),
+    makeRow({ csgId: "C-B", systemName: "Bravo", profit: 8000, needsReview: true, reviewReason: "high coll" }),
+    makeRow({ csgId: "C-C", systemName: "Charlie", profit: 3000, needsReview: false }),
+    makeRow({ csgId: "C-D", systemName: "Delta", profit: 9500, needsReview: true, reviewReason: "high coll" }),
+    makeRow({ csgId: "C-E", systemName: "Echo", profit: 2000, needsReview: false }),
+  ];
+
+  it("defaults to profit desc when sortKey/sortDir omitted", () => {
+    const page = applyFinancialsPage(rows, {});
+    expect(page.rows.map((r) => r.profit)).toEqual([9500, 8000, 5000, 3000, 2000]);
+  });
+
+  it("returns totalCount=length of source, regardless of filters", () => {
+    const all = applyFinancialsPage(rows, {});
+    expect(all.totalCount).toBe(5);
+
+    const filtered = applyFinancialsPage(rows, {
+      filterNeedsReview: true,
+    });
+    expect(filtered.totalCount).toBe(5);
+    expect(filtered.totalFiltered).toBe(2);
+  });
+
+  it("filterNeedsReview=true returns only needsReview rows", () => {
+    const page = applyFinancialsPage(rows, { filterNeedsReview: true });
+    expect(page.rows.every((r) => r.needsReview)).toBe(true);
+    expect(page.rows.map((r) => r.csgId).sort()).toEqual(["C-B", "C-D"]);
+  });
+
+  it("filterNeedsReview=false returns only unflagged rows", () => {
+    const page = applyFinancialsPage(rows, { filterNeedsReview: false });
+    expect(page.rows.every((r) => !r.needsReview)).toBe(true);
+    expect(page.rows.map((r) => r.csgId).sort()).toEqual(["C-A", "C-C", "C-E"]);
+  });
+
+  it("filterNeedsReview=null/undefined returns all rows", () => {
+    expect(applyFinancialsPage(rows, { filterNeedsReview: null }).totalFiltered).toBe(5);
+    expect(applyFinancialsPage(rows, {}).totalFiltered).toBe(5);
+  });
+
+  it("free-text search filters across systemName + applicationId + csgId", () => {
+    const page = applyFinancialsPage(rows, { search: "bravo" });
+    expect(page.rows.map((r) => r.csgId)).toEqual(["C-B"]);
+    expect(page.totalFiltered).toBe(1);
+  });
+
+  it("free-text search is case-insensitive", () => {
+    const page = applyFinancialsPage(rows, { search: "ALPHA" });
+    expect(page.rows).toHaveLength(1);
+    expect(page.rows[0].systemName).toBe("Alpha");
+  });
+
+  it("flaggedCount counts ALL needsReview rows (independent of filters)", () => {
+    const page = applyFinancialsPage(rows, { filterNeedsReview: false });
+    expect(page.flaggedCount).toBe(2);
+  });
+
+  it("sort by systemName ascending uses locale-aware numeric comparison", () => {
+    const numbered: FinancialsProfitRow[] = [
+      makeRow({ csgId: "n1", systemName: "Project 2" }),
+      makeRow({ csgId: "n2", systemName: "Project 10" }),
+      makeRow({ csgId: "n3", systemName: "Project 1" }),
+    ];
+    const page = applyFinancialsPage(numbered, {
+      sortKey: "systemName",
+      sortDir: "asc",
+    });
+    expect(page.rows.map((r) => r.systemName)).toEqual([
+      "Project 1",
+      "Project 2",
+      "Project 10",
+    ]);
+  });
+
+  it("paginates with no gaps when walking the cursor chain", () => {
+    const big: FinancialsProfitRow[] = Array.from({ length: 250 }, (_, i) =>
+      makeRow({ csgId: `csg-${i}`, profit: i, systemName: `Sys ${i}` })
+    );
+    const collected: FinancialsProfitRow[] = [];
+    let cursor: number | null = null;
+    let pages = 0;
+    while (pages < 100) {
+      const page: ReturnType<typeof applyFinancialsPage> = applyFinancialsPage(big, {
+        cursor,
+        limit: 100,
+        sortKey: "profit",
+        sortDir: "asc",
+      });
+      collected.push(...page.rows);
+      pages += 1;
+      if (page.nextCursor === null) break;
+      cursor = page.nextCursor;
+    }
+    expect(collected).toHaveLength(250);
+    // Sort by profit asc → profits should be 0..249 in order.
+    expect(collected.map((r) => r.profit)).toEqual(
+      Array.from({ length: 250 }, (_, i) => i)
+    );
+    // No duplicates.
+    expect(new Set(collected.map((r) => r.csgId)).size).toBe(250);
+    // Page count: ceil(250 / 100) = 3.
+    expect(pages).toBe(3);
+  });
+
+  it("nextCursor === null when at end of stream AND hasMore=false", () => {
+    const page = applyFinancialsPage(rows, { cursor: 100, limit: 10 });
+    expect(page.rows).toEqual([]);
+    expect(page.nextCursor).toBeNull();
+    expect(page.hasMore).toBe(false);
+  });
+
+  it("nextCursor matches the next offset when more rows remain", () => {
+    const page = applyFinancialsPage(rows, { cursor: 0, limit: 2 });
+    expect(page.rows).toHaveLength(2);
+    expect(page.nextCursor).toBe(2);
+    expect(page.hasMore).toBe(true);
+  });
+
+  it("clamps limit to [1, 500]", () => {
+    const big: FinancialsProfitRow[] = Array.from({ length: 1500 }, (_, i) =>
+      makeRow({ csgId: `csg-${i}`, profit: i })
+    );
+    // Limit beyond 500 → capped at 500.
+    const overLimit = applyFinancialsPage(big, { limit: 9999 });
+    expect(overLimit.rows.length).toBe(500);
+    // Limit below 1 → capped at 1.
+    const underLimit = applyFinancialsPage(big, { limit: 0 });
+    expect(underLimit.rows.length).toBe(1);
+  });
+
+  it("combining filterNeedsReview + sort + search produces consistent slice", () => {
+    const page = applyFinancialsPage(rows, {
+      filterNeedsReview: true,
+      sortKey: "profit",
+      sortDir: "desc",
+      search: "delta",
+    });
+    expect(page.rows).toHaveLength(1);
+    expect(page.rows[0].csgId).toBe("C-D");
+    expect(page.totalFiltered).toBe(1);
+    expect(page.totalCount).toBe(5);
+    expect(page.flaggedCount).toBe(2);
   });
 });
