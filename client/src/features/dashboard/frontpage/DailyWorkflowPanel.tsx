@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import {
+  CalendarClock,
   CheckCircle2,
   ClipboardList,
   Plus,
@@ -15,6 +16,7 @@ import { trpc } from "@/lib/trpc";
 import type {
   PersonalDashboardCommitment,
   PersonalDashboardOutcome,
+  PersonalDashboardPlanBlock,
 } from "@shared/personalDashboard";
 import type { DashboardData } from "../useDashboardData";
 import {
@@ -48,6 +50,13 @@ const outcomeStatuses: PersonalDashboardOutcome["status"][] = [
   "paused",
   "won",
   "missed",
+];
+
+const planBlockStatuses: PersonalDashboardPlanBlock["status"][] = [
+  "planned",
+  "active",
+  "done",
+  "skipped",
 ];
 
 export function DailyWorkflowPanel({
@@ -172,6 +181,60 @@ export function DailyWorkflowPanel({
           current: null,
         },
       ],
+    }));
+  }
+
+  function addPlanBlock() {
+    updateDraft((current) => ({
+      ...current,
+      todayPlanStatus:
+        current.todayPlanStatus === "not_started"
+          ? "draft"
+          : current.todayPlanStatus,
+      todayPlan: {
+        ...current.todayPlan,
+        blocks: [
+          ...current.todayPlan.blocks,
+          {
+            id: `plan-block:manual:${Date.now()}`,
+            title: "",
+            startIso: null,
+            endIso: null,
+            source: "system",
+            sourceId: null,
+            status: "planned",
+          },
+        ],
+      },
+    }));
+  }
+
+  function updatePlanBlock(
+    id: string,
+    patch: Partial<PersonalDashboardPlanBlock>
+  ) {
+    updateDraft((current) => ({
+      ...current,
+      todayPlanStatus:
+        current.todayPlanStatus === "not_started"
+          ? "draft"
+          : current.todayPlanStatus,
+      todayPlan: {
+        ...current.todayPlan,
+        blocks: current.todayPlan.blocks.map((entry) =>
+          entry.id === id ? { ...entry, ...patch } : entry
+        ),
+      },
+    }));
+  }
+
+  function removePlanBlock(id: string) {
+    updateDraft((current) => ({
+      ...current,
+      todayPlan: {
+        ...current.todayPlan,
+        blocks: current.todayPlan.blocks.filter((item) => item.id !== id),
+      },
     }));
   }
 
@@ -377,6 +440,61 @@ export function DailyWorkflowPanel({
             <option value="completed">completed</option>
           </select>
         </div>
+
+        <EditableList
+          title="Plan Blocks"
+          icon={<CalendarClock aria-hidden="true" />}
+          items={draft.todayPlan.blocks}
+          onAdd={addPlanBlock}
+          onRemove={removePlanBlock}
+          renderItem={(item) => (
+            <>
+              <input
+                value={item.title}
+                onChange={(event) =>
+                  updatePlanBlock(item.id, { title: event.target.value })
+                }
+                placeholder="Plan block"
+                aria-label="Plan block title"
+              />
+              <select
+                value={item.status}
+                onChange={(event) => {
+                  const status =
+                    event.target.value as PersonalDashboardPlanBlock["status"];
+                  updatePlanBlock(item.id, { status });
+                }}
+                aria-label="Plan block status"
+              >
+                {planBlockStatuses.map((status) => (
+                  <option key={status} value={status}>
+                    {status}
+                  </option>
+                ))}
+              </select>
+              <input
+                type="datetime-local"
+                value={dateTimeLocalInputFromIso(item.startIso)}
+                onChange={(event) =>
+                  updatePlanBlock(item.id, {
+                    startIso: isoFromDateTimeLocalInput(event.target.value),
+                  })
+                }
+                aria-label="Plan block start time"
+              />
+              <input
+                type="datetime-local"
+                value={dateTimeLocalInputFromIso(item.endIso)}
+                onChange={(event) =>
+                  updatePlanBlock(item.id, {
+                    endIso: isoFromDateTimeLocalInput(event.target.value),
+                  })
+                }
+                aria-label="Plan block end time"
+              />
+            </>
+          )}
+        />
 
         <EditableList
           title="Commitments"
