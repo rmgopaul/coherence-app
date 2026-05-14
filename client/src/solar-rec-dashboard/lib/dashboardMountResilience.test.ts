@@ -1537,6 +1537,86 @@ describe("Solar REC dashboard: snapshot-readiness gate (PR #337 follow-up item 1
   });
 });
 
+describe("Solar REC dashboard: sync-issues banner Dismiss clears auto-heal gate (post-merge audit of PR #561/#563)", () => {
+  it("Dismiss button handler clears autoHealAttemptedRef BEFORE clearing syncJobIssues[key]", () => {
+    // The auto-heal effect has three gates:
+    //   1. `activeCoreDatasetSyncJobRef.current[key]` — an in-flight
+    //      sync (false after Dismiss).
+    //   2. `autoHealAttemptedRef.current.has(key)` — per-session
+    //      record that auto-heal already fired (TRUE until cleared).
+    //   3. `syncJobIssues[key]?.kind` in `failed` or `timeout` (false
+    //      after Dismiss removes the entry).
+    //
+    // Pre-fix: Dismiss only cleared `syncJobIssues[key]`. The middle
+    // gate stayed TRUE, blocking auto-heal from re-firing on the
+    // next mount/refetch. User locked out until page reload.
+    //
+    // The success path (`finishCoreDatasetSync` with `state === "done"`),
+    // `clearDataset`, and `clearAll` all already call
+    // `autoHealAttemptedRef.current.delete(key)`. Dismiss must mirror
+    // that pattern.
+    const sliced = sliceDismissHandlerBody();
+    expect(sliced).not.toBeNull();
+    const body = sliced!;
+    expect(body).toMatch(/autoHealAttemptedRef\.current\.delete\s*\(\s*key\s*\)/);
+    expect(body).toMatch(/setSyncJobIssues\s*\(/);
+    // Order matters for readability — clear the ref first, then the
+    // banner state — mirroring `clearDataset`'s sequence at the
+    // ref-cleanup site so a future reader sees one consistent shape.
+    const refDeleteIdx = body.search(
+      /autoHealAttemptedRef\.current\.delete\s*\(\s*key\s*\)/
+    );
+    const setIssuesIdx = body.search(/setSyncJobIssues\s*\(/);
+    expect(refDeleteIdx).toBeGreaterThanOrEqual(0);
+    expect(setIssuesIdx).toBeGreaterThanOrEqual(0);
+    expect(refDeleteIdx).toBeLessThan(setIssuesIdx);
+  });
+});
+
+/**
+ * Pull the body of the sync-issues banner Dismiss button's onClick
+ * handler out of the source so a regex can inspect just that
+ * handler. Strategy: locate the `>Dismiss<` text inside the
+ * sync-issues banner Card (right after the
+ * `setSyncJobIssues((previous) => {` pattern, in the variant=ghost
+ * Button alongside the variant=outline "Resume polling" Button), walk
+ * back to the nearest `onClick={() => {`, then walk matching braces
+ * forward to find the close of the arrow-fn body.
+ *
+ * There are two Dismiss buttons in the file — the upload-errors
+ * banner (~6461) and the sync-issues banner (~6528). This helper
+ * targets the second one by anchoring on `variant="ghost"` +
+ * `text-amber-900` (the sync-issues styling).
+ */
+function sliceDismissHandlerBody(): string | null {
+  // Anchor on the ghost-amber Dismiss button to disambiguate from
+  // the upload-errors Dismiss button further up.
+  const anchorRe =
+    /variant=["']ghost["'][\s\S]{0,200}text-amber-900[\s\S]{0,400}onClick=\{\(\)\s*=>\s*\{/;
+  const anchor = SOURCE.match(anchorRe);
+  if (!anchor || anchor.index === undefined) return null;
+  const arrowStart = SOURCE.indexOf("onClick={() =>", anchor.index);
+  if (arrowStart === -1) return null;
+  const bodyStart = SOURCE.indexOf("{", arrowStart + "onClick={".length);
+  if (bodyStart === -1) return null;
+  let depth = 0;
+  for (let i = bodyStart; i < SOURCE.length; i++) {
+    const ch = SOURCE[i];
+    if (ch === "{") depth++;
+    else if (ch === "}") {
+      depth--;
+      if (depth === 0) {
+        const slice = SOURCE.slice(bodyStart, i + 1);
+        // Sanity-check this is the Dismiss handler, not Resume.
+        // The slice should NOT trigger pollCoreDatasetSyncJob.
+        if (/pollCoreDatasetSyncJob/.test(slice)) return null;
+        return slice;
+      }
+    }
+  }
+  return null;
+}
+
 /**
  * Pull the body of `createLogEntry` out of the source so a regex can
  * inspect just that function. The function uses `=> {` so we walk
