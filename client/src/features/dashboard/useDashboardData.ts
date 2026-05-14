@@ -44,6 +44,11 @@ export function useDashboardData() {
     { refetchInterval: ONE_MIN }
   );
 
+  const commandCenterQuery = trpc.personalDashboard.getCommandCenter.useQuery(
+    { dateKey: todayKey, timezoneOffsetMinutes },
+    { staleTime: ONE_MIN, refetchInterval: FIVE_MIN }
+  );
+
   const { data: calendarEvents } = trpc.google.getCalendarEvents.useQuery(
     undefined,
     { refetchInterval: ONE_MIN }
@@ -133,6 +138,12 @@ export function useDashboardData() {
     inbox: gmailMessages ?? [],
     waitingOn: gmailWaitingOn ?? [],
     unreadGmailCount,
+    commandCenter: {
+      data: commandCenterQuery.data ?? null,
+      isLoading: commandCenterQuery.isLoading,
+      isError: commandCenterQuery.isError,
+      errorMessage: commandCenterQuery.error?.message ?? null,
+    },
     health: { whoop: whoopSummary ?? null },
     market: marketData ?? null,
 
