@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildPersonalDashboardDailyProgress,
   buildPersonalDashboardWorkflowSuggestions,
+  buildPersonalDashboardWorkspacePrompts,
 } from "./commandCenter";
 
 describe("buildPersonalDashboardWorkflowSuggestions", () => {
@@ -123,6 +124,111 @@ describe("buildPersonalDashboardWorkflowSuggestions", () => {
       id: "task-outcome:task-empty",
       title: "Outcome 1",
     });
+  });
+});
+
+describe("buildPersonalDashboardWorkspacePrompts", () => {
+  it("surfaces calendar, Todoist, and right-now workspace opportunities without links", () => {
+    const prompts = buildPersonalDashboardWorkspacePrompts({
+      now: new Date("2026-05-14T12:00:00.000Z"),
+      rightNow: {
+        title: "Close proposal",
+        kind: "todoist",
+        sourceId: "task-2",
+        sourceUrl: "https://todoist.com/app/task/task-2",
+        reason: "Highest-priority task due today.",
+      },
+      calendarEvents: [
+        {
+          id: "event-1",
+          summary: "Client prep",
+          htmlLink: "https://calendar.google.com/event?eid=event-1",
+          start: { dateTime: "2026-05-14T13:00:00.000Z" },
+        },
+      ],
+      tasks: [
+        {
+          id: "task-2",
+          content: "Close proposal",
+          priority: 4,
+          url: "https://todoist.com/app/task/task-2",
+        },
+      ],
+      noteCounts: {
+        todoist: {},
+        calendar: {},
+      },
+    });
+
+    expect(prompts).toMatchObject([
+      {
+        kind: "calendar",
+        sourceId: "event-1",
+        actionLabel: "Prep meeting note",
+        href: "/notes?eventId=event-1",
+      },
+      {
+        kind: "todoist",
+        sourceId: "task-2",
+        actionLabel: "Create working note",
+        href: "/notes?taskId=task-2",
+      },
+    ]);
+  });
+
+  it("omits candidates that already have linked notes", () => {
+    const prompts = buildPersonalDashboardWorkspacePrompts({
+      now: new Date("2026-05-14T12:00:00.000Z"),
+      rightNow: null,
+      calendarEvents: [
+        {
+          id: "event-1",
+          summary: "Client prep",
+          start: { dateTime: "2026-05-14T13:00:00.000Z" },
+        },
+      ],
+      tasks: [
+        {
+          id: "task-2",
+          content: "Close proposal",
+          priority: 4,
+        },
+      ],
+      noteCounts: {
+        todoist: { "task-2": 1 },
+        calendar: { "event-1": 2 },
+      },
+    });
+
+    expect(prompts).toEqual([]);
+  });
+
+  it("uses Open workspace for a distinct right-now workspace prompt", () => {
+    const prompts = buildPersonalDashboardWorkspacePrompts({
+      now: new Date("2026-05-14T12:00:00.000Z"),
+      rightNow: {
+        title: "Prep board update",
+        kind: "calendar",
+        sourceId: "event-now",
+        sourceUrl: null,
+        reason: "Next scheduled commitment.",
+      },
+      calendarEvents: [],
+      tasks: [],
+      noteCounts: {
+        todoist: {},
+        calendar: {},
+      },
+    });
+
+    expect(prompts).toMatchObject([
+      {
+        kind: "calendar",
+        sourceId: "event-now",
+        actionLabel: "Open workspace",
+        href: "/notes?eventId=event-now",
+      },
+    ]);
   });
 });
 

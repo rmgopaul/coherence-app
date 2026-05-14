@@ -167,6 +167,17 @@ export type PersonalDashboardDailyProgress = {
   tone: "empty" | "planned" | "attention" | "complete";
 };
 
+export type PersonalDashboardWorkspacePrompt = {
+  id: string;
+  kind: "todoist" | "calendar";
+  sourceId: string;
+  title: string;
+  sourceUrl: string | null;
+  reason: string;
+  actionLabel: "Prep meeting note" | "Create working note" | "Open workspace";
+  href: string;
+};
+
 export type PersonalDashboardCommandCenter = {
   _runnerVersion: typeof PERSONAL_DASHBOARD_RUNNER_VERSION;
   generatedAt: string;
@@ -179,6 +190,7 @@ export type PersonalDashboardCommandCenter = {
     suggestedOutcomes: PersonalDashboardOutcome[];
   };
   dailyProgress: PersonalDashboardDailyProgress;
+  workspacePrompts: PersonalDashboardWorkspacePrompt[];
   integrations: PersonalDashboardIntegrationHealth[];
   dailyBrief: PersonalDashboardFeatureReadiness;
   todayPlan: PersonalDashboardFeatureReadiness;

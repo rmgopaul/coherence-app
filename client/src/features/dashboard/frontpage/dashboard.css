@@ -737,6 +737,7 @@ html[data-focus="1"] .fp-root {
 .fp-command-priority,
 .fp-command-metrics,
 .fp-command-workflow,
+.fp-command-workspaces,
 .fp-command-sources,
 .fp-command-integrations {
   padding: 16px;
@@ -794,6 +795,100 @@ html[data-focus="1"] .fp-root {
 
 .fp-command-workflow[data-tone="bad"] {
   background: color-mix(in oklch, var(--fp-red) 8%, var(--fp-paper));
+}
+
+.fp-command-workspaces {
+  grid-column: 1 / -1;
+  border-right: 0;
+  background: var(--fp-paper-2);
+}
+
+.fp-command-workspaces ol {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.fp-command-workspace {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed color-mix(in oklch, var(--fp-ink) 18%, transparent);
+}
+
+.fp-command-workspace > svg {
+  width: 16px;
+  height: 16px;
+  color: var(--fp-ink-2);
+}
+
+.fp-command-workspace__body {
+  min-width: 0;
+}
+
+.fp-command-workspace__title {
+  display: block;
+  color: var(--fp-ink);
+  font-size: 14px;
+  font-weight: 800;
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-decoration: none;
+}
+
+.fp-command-workspace__title:hover {
+  text-decoration: underline;
+}
+
+.fp-command-workspace__body p {
+  margin: 2px 0 0;
+  color: var(--fp-ink-2);
+  font-size: 12px;
+  line-height: 1.25;
+}
+
+.fp-command-workspace__source,
+.fp-command-workspace__action {
+  border: 1px solid var(--fp-rule);
+  background: var(--fp-paper);
+  color: var(--fp-ink);
+  text-decoration: none;
+}
+
+.fp-command-workspace__source {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+}
+
+.fp-command-workspace__source svg {
+  width: 13px;
+  height: 13px;
+}
+
+.fp-command-workspace__action {
+  padding: 6px 8px;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0;
+  line-height: 1;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.fp-command-workspace__source:hover,
+.fp-command-workspace__action:hover {
+  background: var(--fp-ink);
+  color: var(--fp-paper);
 }
 
 .fp-command-workflow__title {
@@ -2479,6 +2574,7 @@ a.wire-card--link:focus-visible {
   .fp-command-priority,
   .fp-command-metrics,
   .fp-command-workflow,
+  .fp-command-workspaces,
   .fp-command-sources,
   .fp-command-integrations {
     border-right: 0;
@@ -2490,6 +2586,13 @@ a.wire-card--link:focus-visible {
   .fp-command-workflow__statuses,
   .fp-command-workflow__counts {
     grid-template-columns: 1fr;
+  }
+  .fp-command-workspace {
+    grid-template-columns: 18px minmax(0, 1fr) auto;
+  }
+  .fp-command-workspace__action {
+    grid-column: 2 / -1;
+    width: max-content;
   }
 
   .fp-daily-workflow__head {
