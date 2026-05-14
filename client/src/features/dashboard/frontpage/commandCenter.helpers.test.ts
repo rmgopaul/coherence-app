@@ -37,6 +37,16 @@ describe("commandCenter helpers", () => {
     ).toEqual(["Draft today's brief", "Set today's plan"]);
   });
 
+  it("surfaces failed daily brief review before setup prompts", () => {
+    expect(
+      buildWorkflowReviewPrompts({
+        ...baseProgress,
+        dailyBriefStatus: "failed",
+        todayPlanStatus: "not_started",
+      })
+    ).toEqual(["Review failed daily brief", "Set today's plan"]);
+  });
+
   it("summarizes blocked, waiting, and missed review prompts", () => {
     expect(
       buildWorkflowReviewPrompts({

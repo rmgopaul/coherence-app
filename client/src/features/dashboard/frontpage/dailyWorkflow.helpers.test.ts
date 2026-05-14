@@ -8,8 +8,10 @@ import {
   buildTodayPlanDraft,
   buildOutcomeDrafts,
   completeAllCommitments,
+  createManualDailyWorkflowId,
   dailyWorkflowDraftFromState,
   dateTimeLocalInputFromIso,
+  hasDailyBriefDraftContent,
   hasDailyWorkflowDraftContent,
   isoFromDateTimeLocalInput,
   normalizeDailyWorkflowDraftForSave,
@@ -86,6 +88,15 @@ const commandCenter: PersonalDashboardCommandCenter = {
 };
 
 describe("dailyWorkflow helpers", () => {
+  it("creates collision-resistant manual workflow ids", () => {
+    const first = createManualDailyWorkflowId("commitment");
+    const second = createManualDailyWorkflowId("commitment");
+
+    expect(first).toMatch(/^commitment:manual:/);
+    expect(second).toMatch(/^commitment:manual:/);
+    expect(first).not.toBe(second);
+  });
+
   it("detects whether a draft has clearable content", () => {
     const draft = dailyWorkflowDraftFromState(null);
     expect(hasDailyWorkflowDraftContent(draft)).toBe(false);
@@ -293,6 +304,41 @@ describe("dailyWorkflow helpers", () => {
     });
   });
 
+  it("preserves summary and source refs when a brief has no headline", () => {
+    const draft = dailyWorkflowDraftFromState(null);
+    draft.dailyBriefStatus = "ready";
+    draft.dailyBrief.headline = "  ";
+    draft.dailyBrief.summary = "  Client context only  ";
+    draft.dailyBrief.sourceRefs = [
+      {
+        source: "gmail",
+        id: " thread-1 ",
+        label: "  Client thread  ",
+        url: " https://mail.google.com/mail/u/0/#inbox/thread-1 ",
+      },
+    ];
+
+    const normalized = normalizeDailyWorkflowDraftForSave(
+      draft,
+      new Date("2026-05-14T14:00:00.000Z")
+    );
+
+    expect(hasDailyBriefDraftContent(normalized.dailyBrief)).toBe(true);
+    expect(normalized.dailyBriefStatus).toBe("ready");
+    expect(normalized.dailyBrief).toMatchObject({
+      headline: "",
+      summary: "Client context only",
+      sourceRefs: [
+        {
+          source: "gmail",
+          id: "thread-1",
+          label: "Client thread",
+          url: "https://mail.google.com/mail/u/0/#inbox/thread-1",
+        },
+      ],
+    });
+  });
+
   it("applies workflow bulk status actions without mutating terminal rows", () => {
     const draft = dailyWorkflowDraftFromState(null);
     draft.commitments = [
@@ -336,11 +382,12 @@ describe("dailyWorkflow helpers", () => {
       },
     ];
 
-    expect(completeAllCommitments(draft.commitments).map((item) => item.status))
-      .toEqual(["done", "done"]);
-    expect(winActiveOutcomes(draft.outcomes).map((item) => item.status)).toEqual(
-      ["won", "paused"]
-    );
+    expect(
+      completeAllCommitments(draft.commitments).map((item) => item.status)
+    ).toEqual(["done", "done"]);
+    expect(
+      winActiveOutcomes(draft.outcomes).map((item) => item.status)
+    ).toEqual(["won", "paused"]);
   });
 
   it("preserves normalized commitment detail fields before save", () => {

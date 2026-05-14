@@ -44,6 +44,15 @@ function formatOutcomeProgress(
   return `${outcomes.won}/${outcomes.total} won${suffix}`;
 }
 
+function workflowFallbackTitle(
+  progress: CommandCenterData["dailyProgress"]
+): string {
+  if (progress.dailyBriefStatus === "failed") return "Daily brief needs review";
+  if (progress.dailyBriefStatus !== "not_started") return "Daily brief saved";
+  if (progress.tone !== "empty") return "Workflow in progress";
+  return "No workflow saved";
+}
+
 function statusTone(status: string): string {
   switch (status) {
     case "connected":
@@ -171,7 +180,9 @@ export function CommandCenterPanel({ state }: { state: CommandCenterState }) {
   ] as const;
   const progress = commandCenter.dailyProgress;
   const progressTitle =
-    progress.topPriority ?? progress.headline ?? "No workflow saved";
+    progress.topPriority ??
+    progress.headline ??
+    workflowFallbackTitle(progress);
   const workflowReviewPrompts = buildWorkflowReviewPrompts(progress);
 
   return (
