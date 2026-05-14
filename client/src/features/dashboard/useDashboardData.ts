@@ -49,6 +49,11 @@ export function useDashboardData() {
     { staleTime: ONE_MIN, refetchInterval: FIVE_MIN }
   );
 
+  const dailyStateQuery = trpc.personalDashboard.getDailyState.useQuery(
+    { dateKey: todayKey },
+    { staleTime: ONE_MIN, refetchInterval: FIVE_MIN }
+  );
+
   const { data: calendarEvents } = trpc.google.getCalendarEvents.useQuery(
     undefined,
     { refetchInterval: ONE_MIN }
@@ -143,6 +148,12 @@ export function useDashboardData() {
       isLoading: commandCenterQuery.isLoading,
       isError: commandCenterQuery.isError,
       errorMessage: commandCenterQuery.error?.message ?? null,
+    },
+    dailyState: {
+      data: dailyStateQuery.data ?? null,
+      isLoading: dailyStateQuery.isLoading,
+      isError: dailyStateQuery.isError,
+      errorMessage: dailyStateQuery.error?.message ?? null,
     },
     health: { whoop: whoopSummary ?? null },
     market: marketData ?? null,
