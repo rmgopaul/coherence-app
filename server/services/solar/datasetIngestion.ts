@@ -408,7 +408,7 @@ export async function ingestDataset(
 
     // Validate headers
     if (!validateHeaders(parsed.headers, definition)) {
-      const error = `${definition.label} CSV is missing required columns. Headers found: ${parsed.headers.slice(0, 10).join(", ")}`;
+      const error = `${definition.label} CSV is missing required columns. Headers found: ${formatTruncatedHeaderList(parsed.headers, 10)}`;
       await updateImportBatchStatus(batchId, "failed", { error });
       return {
         batchId,
