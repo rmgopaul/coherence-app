@@ -14,6 +14,9 @@ import { useLocation } from "wouter";
 import { toast } from "sonner";
 import { useEffect, useMemo, useState } from "react";
 import type { TodoistTask, TodoistProject } from "@/features/dashboard/types";
+import { LinkedNotesBadge } from "./frontpage/LinkedNotesBadge";
+import { SignalActions } from "./frontpage/SignalActions";
+import type { WorkspaceNoteRow } from "./frontpage/useWorkspaceNotes";
 
 const TODOIST_PAGE_SIZE = 20;
 
@@ -42,6 +45,10 @@ function getViewLabel(viewFilter: ViewFilter, projects?: TodoistProject[]): stri
     return project ? project.name : "Project";
   }
   return "Tasks";
+}
+
+function todoistTaskUrl(taskId: string): string {
+  return `https://todoist.com/showTask?id=${encodeURIComponent(taskId)}`;
 }
 
 export default function TodoistWidget() {
@@ -190,6 +197,20 @@ export default function TodoistWidget() {
   const taskStartIndex = (currentTaskPage - 1) * TODOIST_PAGE_SIZE;
   const taskEndIndex = taskStartIndex + TODOIST_PAGE_SIZE;
   const visibleTasks = filteredTasks.slice(taskStartIndex, taskEndIndex);
+  const visibleTaskIds = useMemo(
+    () => visibleTasks.map((task) => task.id),
+    [visibleTasks]
+  );
+  const noteCountsQuery = trpc.notes.countLinksByExternalIds.useQuery(
+    { linkType: "todoist_task" as const, externalIds: visibleTaskIds },
+    {
+      enabled: !!user && visibleTaskIds.length > 0,
+      staleTime: 60_000,
+    }
+  );
+  const noteCountsByTaskId = noteCountsQuery.data?.counts ?? {};
+  const noteCountsLoading =
+    visibleTaskIds.length > 0 && noteCountsQuery.isLoading;
 
   useEffect(() => {
     setTaskPage(1);
@@ -422,6 +443,14 @@ export default function TodoistWidget() {
             {visibleTasks.map((task) => {
               const project = projectMap.get(task.projectId);
               const priorityColor = priorityColors[task.priority as keyof typeof priorityColors] || "text-slate-600";
+              const workspaceRow: WorkspaceNoteRow = {
+                kind: "todoist",
+                taskId: task.id,
+                content: task.content,
+                taskUrl: todoistTaskUrl(task.id),
+                dueDate: task.due?.string ?? task.due?.datetime ?? task.due?.date ?? null,
+                projectName: project?.name ?? null,
+              };
 
               return (
                 <Card key={task.id} className="hover:shadow-md transition-shadow">
@@ -455,21 +484,33 @@ export default function TodoistWidget() {
                           </span>
                         </div>
                       </div>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => handlePinToDock(task)}
-                        disabled={pinToDock.isPending && pinningTaskId === task.id}
-                        title="Pin to DropDock"
-                        aria-label="Pin task to DropDock"
-                        className="shrink-0"
-                      >
-                        {pinToDock.isPending && pinningTaskId === task.id ? (
-                          <Loader2 className="w-4 h-4 animate-spin" />
-                        ) : (
-                          <Pin className="w-4 h-4" />
-                        )}
-                      </Button>
+                      <div className="flex shrink-0 items-center gap-1">
+                        <LinkedNotesBadge
+                          linkType="todoist_task"
+                          externalId={task.id}
+                          count={noteCountsByTaskId[task.id] ?? 0}
+                          countLoading={noteCountsLoading}
+                        />
+                        <SignalActions
+                          row={workspaceRow}
+                          ariaLabel={`Actions for: ${task.content}`}
+                        />
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => handlePinToDock(task)}
+                          disabled={pinToDock.isPending && pinningTaskId === task.id}
+                          title="Pin to DropDock"
+                          aria-label="Pin task to DropDock"
+                          className="shrink-0"
+                        >
+                          {pinToDock.isPending && pinningTaskId === task.id ? (
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <Pin className="w-4 h-4" />
+                          )}
+                        </Button>
+                      </div>
                     </div>
                   </CardHeader>
                 </Card>
