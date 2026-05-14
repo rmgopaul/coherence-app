@@ -176,6 +176,22 @@ export function buildOutcomeDrafts(
   ];
 }
 
+export function completeAllCommitments(
+  commitments: PersonalDashboardCommitment[]
+): PersonalDashboardCommitment[] {
+  return commitments.map((item) =>
+    item.status === "done" ? item : { ...item, status: "done" }
+  );
+}
+
+export function winActiveOutcomes(
+  outcomes: PersonalDashboardOutcome[]
+): PersonalDashboardOutcome[] {
+  return outcomes.map((item) =>
+    item.status === "active" ? { ...item, status: "won" } : item
+  );
+}
+
 export function normalizeDailyWorkflowDraftForSave(
   draft: DailyWorkflowDraft,
   now: Date

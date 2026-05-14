@@ -27,11 +27,13 @@ import {
   buildDailyBriefDraft,
   buildOutcomeDrafts,
   buildTodayPlanDraft,
+  completeAllCommitments,
   dailyWorkflowDraftFromState,
   dateTimeLocalInputFromIso,
   emptyDailyWorkflowDraft,
   isoFromDateTimeLocalInput,
   normalizeDailyWorkflowDraftForSave,
+  winActiveOutcomes,
   type DailyWorkflowDraft,
 } from "./dailyWorkflow.helpers";
 
@@ -115,6 +117,12 @@ export function DailyWorkflowPanel({
       index,
       sourceRef,
     })
+  );
+  const canCompleteCommitments = draft.commitments.some(
+    (item) => item.status !== "done"
+  );
+  const canWinActiveOutcomes = draft.outcomes.some(
+    (item) => item.status === "active"
   );
 
   function updateDraft(
@@ -254,6 +262,20 @@ export function DailyWorkflowPanel({
           current: null,
         },
       ],
+    }));
+  }
+
+  function markCommitmentsDone() {
+    updateDraft((current) => ({
+      ...current,
+      commitments: completeAllCommitments(current.commitments),
+    }));
+  }
+
+  function markActiveOutcomesWon() {
+    updateDraft((current) => ({
+      ...current,
+      outcomes: winActiveOutcomes(current.outcomes),
     }));
   }
 
@@ -630,6 +652,18 @@ export function DailyWorkflowPanel({
           items={draft.commitments}
           fieldsClassName="fp-daily-workflow__row-fields--commitment"
           onAdd={addCommitment}
+          actions={
+            <button
+              type="button"
+              className="fp-daily-workflow__mini-btn"
+              onClick={markCommitmentsDone}
+              disabled={!canCompleteCommitments || isSaving}
+              title="Mark every non-done commitment as done"
+            >
+              <CheckCircle2 aria-hidden="true" />
+              <span>DONE ALL</span>
+            </button>
+          }
           onRemove={(id) =>
             updateDraft((current) => ({
               ...current,
@@ -739,6 +773,18 @@ export function DailyWorkflowPanel({
           items={draft.outcomes}
           fieldsClassName="fp-daily-workflow__row-fields--outcome"
           onAdd={addOutcome}
+          actions={
+            <button
+              type="button"
+              className="fp-daily-workflow__mini-btn"
+              onClick={markActiveOutcomesWon}
+              disabled={!canWinActiveOutcomes || isSaving}
+              title="Mark every active outcome as won"
+            >
+              <CheckCircle2 aria-hidden="true" />
+              <span>WIN ACTIVE</span>
+            </button>
+          }
           onRemove={(id) =>
             updateDraft((current) => ({
               ...current,
@@ -867,6 +913,7 @@ function EditableList<T extends { id: string }>({
   items,
   fieldsClassName,
   onAdd,
+  actions,
   onRemove,
   renderItem,
 }: {
@@ -875,12 +922,16 @@ function EditableList<T extends { id: string }>({
   items: T[];
   fieldsClassName?: string;
   onAdd: () => void;
+  actions?: ReactNode;
   onRemove: (id: string) => void;
   renderItem: (item: T) => ReactNode;
 }) {
   return (
     <div className="fp-daily-workflow__block">
       <BlockHeader icon={icon} label={title} status={`${items.length}`} />
+      {actions ? (
+        <div className="fp-daily-workflow__list-actions">{actions}</div>
+      ) : null}
       <div className="fp-daily-workflow__list">
         {items.length === 0 ? (
           <p className="fp-empty">none tracked yet.</p>

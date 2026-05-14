@@ -1133,6 +1133,42 @@ html[data-focus="1"] .fp-root {
   gap: 8px;
 }
 
+.fp-daily-workflow__list-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.fp-daily-workflow__mini-btn {
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid var(--fp-rule);
+  border-radius: 0;
+  background: var(--fp-paper);
+  color: var(--fp-ink);
+  padding: 0 8px;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.fp-daily-workflow__mini-btn svg {
+  width: 13px;
+  height: 13px;
+}
+
+.fp-daily-workflow__mini-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
 .fp-daily-workflow__row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 34px;
