@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import {
   CalendarClock,
   CheckCircle2,
@@ -205,7 +205,7 @@ export function DailyWorkflowPanel({
     }));
   }
 
-  async function save() {
+  const save = useCallback(async () => {
     const normalized = normalizeDailyWorkflowDraftForSave(draft, new Date());
     try {
       await saveDailyState.mutateAsync({
@@ -227,7 +227,36 @@ export function DailyWorkflowPanel({
     } catch {
       // Toast is emitted by the mutation's onError handler.
     }
-  }
+  }, [dateKey, draft, saveDailyState]);
+
+  const discardDraft = useCallback(() => {
+    setDraft(dailyWorkflowDraftFromState(state.data));
+    setDirty(false);
+  }, [state.data]);
+
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      const key = event.key.toLowerCase();
+      if ((event.metaKey || event.ctrlKey) && key === "s") {
+        event.preventDefault();
+        if (dirty && !isSaving) void save();
+        return;
+      }
+
+      if (
+        event.key === "Escape" &&
+        dirty &&
+        !isSaving &&
+        !isEditableTarget(event.target)
+      ) {
+        event.preventDefault();
+        discardDraft();
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [dirty, discardDraft, isSaving, save]);
 
   function addCommitment() {
     updateDraft((current) => ({
@@ -368,12 +397,9 @@ export function DailyWorkflowPanel({
           <button
             type="button"
             className="fp-daily-workflow__icon-btn"
-            onClick={() => {
-              setDraft(dailyWorkflowDraftFromState(state.data));
-              setDirty(false);
-            }}
+            onClick={discardDraft}
             disabled={!dirty || isSaving}
-            title="Discard unsaved edits"
+            title="Discard unsaved edits (Escape outside a field)"
             aria-label="Discard unsaved edits"
           >
             <RefreshCw aria-hidden="true" />
@@ -383,6 +409,7 @@ export function DailyWorkflowPanel({
             className="fp-daily-workflow__action-btn"
             onClick={() => void save()}
             disabled={isSaving || !dirty}
+            title="Save daily workflow (Ctrl/Cmd+S)"
           >
             {isSaving ? (
               <RefreshCw
@@ -976,4 +1003,12 @@ function dedupeById<T extends { id: string }>(items: T[]): T[] {
   const byId = new Map<string, T>();
   for (const item of items) byId.set(item.id, item);
   return Array.from(byId.values());
+}
+
+function isEditableTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.isContentEditable) return true;
+  return Boolean(
+    target.closest("input, textarea, select, [contenteditable]")
+  );
 }
