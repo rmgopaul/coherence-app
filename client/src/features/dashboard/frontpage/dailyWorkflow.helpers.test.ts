@@ -36,6 +36,28 @@ const commandCenter: PersonalDashboardCommandCenter = {
     suggestedCommitments: [],
     suggestedOutcomes: [],
   },
+  dailyProgress: {
+    dailyBriefStatus: "not_started",
+    todayPlanStatus: "not_started",
+    headline: null,
+    topPriority: null,
+    updatedAt: null,
+    commitments: {
+      total: 0,
+      open: 0,
+      waiting: 0,
+      blocked: 0,
+      done: 0,
+    },
+    outcomes: {
+      total: 0,
+      active: 0,
+      paused: 0,
+      won: 0,
+      missed: 0,
+    },
+    tone: "empty",
+  },
   integrations: [],
   dailyBrief: {
     status: "server_ready",

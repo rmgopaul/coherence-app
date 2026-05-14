@@ -4,6 +4,7 @@ import {
   makePersonalDashboardIntegrationHealth,
   type PersonalDashboardCommandCenter,
   type PersonalDashboardCommitment,
+  type PersonalDashboardDailyState,
   type PersonalDashboardHealthStatus,
   type PersonalDashboardIntegrationHealth,
   type PersonalDashboardOutcome,
@@ -201,6 +202,7 @@ export async function getPersonalDashboardCommandCenter(
     waitingOn: google.waitingOn,
     now,
   });
+  const dailyProgress = buildPersonalDashboardDailyProgress(dailyState);
 
   return {
     _runnerVersion: PERSONAL_DASHBOARD_RUNNER_VERSION,
@@ -218,6 +220,7 @@ export async function getPersonalDashboardCommandCenter(
     },
     rightNow,
     dailyWorkflow,
+    dailyProgress,
     integrations,
     dailyBrief: {
       status:
@@ -523,6 +526,71 @@ export function buildPersonalDashboardWorkflowSuggestions(input: {
   };
 }
 
+export function buildPersonalDashboardDailyProgress(
+  state: Pick<
+    PersonalDashboardDailyState,
+    | "dailyBriefStatus"
+    | "dailyBrief"
+    | "todayPlanStatus"
+    | "todayPlan"
+    | "commitments"
+    | "outcomes"
+    | "updatedAt"
+  >
+): PersonalDashboardCommandCenter["dailyProgress"] {
+  const commitments = {
+    total: state.commitments.length,
+    open: countByStatus(state.commitments, "open"),
+    waiting: countByStatus(state.commitments, "waiting"),
+    blocked: countByStatus(state.commitments, "blocked"),
+    done: countByStatus(state.commitments, "done"),
+  };
+  const outcomes = {
+    total: state.outcomes.length,
+    active: countByStatus(state.outcomes, "active"),
+    paused: countByStatus(state.outcomes, "paused"),
+    won: countByStatus(state.outcomes, "won"),
+    missed: countByStatus(state.outcomes, "missed"),
+  };
+
+  const hasWorkflow =
+    state.dailyBriefStatus !== "not_started" ||
+    state.todayPlanStatus !== "not_started" ||
+    Boolean(state.dailyBrief?.headline?.trim()) ||
+    Boolean(state.todayPlan?.topPriority?.trim()) ||
+    commitments.total > 0 ||
+    outcomes.total > 0;
+  const hasAttention =
+    state.dailyBriefStatus === "failed" ||
+    commitments.blocked > 0 ||
+    outcomes.missed > 0;
+  const isComplete =
+    hasWorkflow &&
+    state.todayPlanStatus === "completed" &&
+    commitments.open === 0 &&
+    commitments.waiting === 0 &&
+    commitments.blocked === 0 &&
+    outcomes.active === 0 &&
+    outcomes.paused === 0;
+
+  return {
+    dailyBriefStatus: state.dailyBriefStatus,
+    todayPlanStatus: state.todayPlanStatus,
+    headline: normalizeText(state.dailyBrief?.headline),
+    topPriority: normalizeText(state.todayPlan?.topPriority),
+    updatedAt: state.updatedAt,
+    commitments,
+    outcomes,
+    tone: !hasWorkflow
+      ? "empty"
+      : hasAttention
+        ? "attention"
+        : isComplete
+          ? "complete"
+          : "planned",
+  };
+}
+
 async function loadWhoopSlice(userId: number, integration: IntegrationRecord) {
   const fetchedAt = new Date().toISOString();
   if (!integration?.accessToken) {
@@ -667,6 +735,13 @@ function taskTitle(task: TodoistTaskLike, fallback: string): string {
 
 function taskSourceId(task: TodoistTaskLike, fallback: string | number): string {
   return normalizeText(task.id) ?? String(fallback);
+}
+
+function countByStatus<T extends { status: string }>(
+  items: T[],
+  status: T["status"]
+): number {
+  return items.filter((item) => item.status === status).length;
 }
 
 function normalizeText(value: string | number | null | undefined): string | null {

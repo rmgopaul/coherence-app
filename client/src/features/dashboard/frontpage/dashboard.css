@@ -736,6 +736,7 @@ html[data-focus="1"] .fp-root {
 
 .fp-command-priority,
 .fp-command-metrics,
+.fp-command-workflow,
 .fp-command-sources,
 .fp-command-integrations {
   padding: 16px;
@@ -779,6 +780,62 @@ html[data-focus="1"] .fp-root {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
   background: var(--fp-paper-2);
+}
+
+.fp-command-workflow {
+  grid-column: 1 / -1;
+  border-right: 0;
+  background: color-mix(in oklch, var(--fp-yellow) 10%, var(--fp-paper));
+}
+
+.fp-command-workflow[data-tone="ok"] {
+  background: color-mix(in oklch, var(--fp-green) 9%, var(--fp-paper));
+}
+
+.fp-command-workflow[data-tone="bad"] {
+  background: color-mix(in oklch, var(--fp-red) 8%, var(--fp-paper));
+}
+
+.fp-command-workflow__title {
+  margin: 0 0 12px;
+  font-family: "Archivo Black", "Inter", sans-serif;
+  font-size: 22px;
+  line-height: 1.05;
+  letter-spacing: 0;
+  overflow-wrap: anywhere;
+}
+
+.fp-command-workflow__statuses,
+.fp-command-workflow__counts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0;
+}
+
+.fp-command-workflow__counts {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 12px;
+}
+
+.fp-command-workflow__statuses div,
+.fp-command-workflow__counts div {
+  min-width: 0;
+  padding-top: 8px;
+  border-top: 1px dashed color-mix(in oklch, var(--fp-ink) 20%, transparent);
+}
+
+.fp-command-workflow__statuses dt,
+.fp-command-workflow__counts dt {
+  margin-bottom: 3px;
+}
+
+.fp-command-workflow__statuses dd,
+.fp-command-workflow__counts dd {
+  margin: 0;
+  font-weight: 800;
+  color: var(--fp-ink);
+  overflow-wrap: anywhere;
 }
 
 .fp-command-metric {
@@ -2295,6 +2352,7 @@ a.wire-card--link:focus-visible {
   }
   .fp-command-priority,
   .fp-command-metrics,
+  .fp-command-workflow,
   .fp-command-sources,
   .fp-command-integrations {
     border-right: 0;
@@ -2302,6 +2360,10 @@ a.wire-card--link:focus-visible {
   }
   .fp-command-priority__title {
     font-size: 22px;
+  }
+  .fp-command-workflow__statuses,
+  .fp-command-workflow__counts {
+    grid-template-columns: 1fr;
   }
 
   .fp-daily-workflow__head {

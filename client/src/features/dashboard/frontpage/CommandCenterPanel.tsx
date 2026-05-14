@@ -19,16 +19,42 @@ function formatTimestamp(value: string | null | undefined): string {
   });
 }
 
+function formatSavedTimestamp(value: string | null | undefined): string {
+  return value ? formatTimestamp(value) : "not saved";
+}
+
+function formatCommitmentProgress(
+  commitments: CommandCenterData["dailyProgress"]["commitments"]
+): string {
+  if (commitments.total === 0) return "none tracked";
+  const suffix =
+    commitments.blocked > 0 ? ` - ${commitments.blocked} blocked` : "";
+  return `${commitments.done}/${commitments.total} done${suffix}`;
+}
+
+function formatOutcomeProgress(
+  outcomes: CommandCenterData["dailyProgress"]["outcomes"]
+): string {
+  if (outcomes.total === 0) return "none tracked";
+  const suffix = outcomes.missed > 0 ? ` - ${outcomes.missed} missed` : "";
+  return `${outcomes.won}/${outcomes.total} won${suffix}`;
+}
+
 function statusTone(status: string): string {
   switch (status) {
     case "connected":
     case "ready":
     case "server_ready":
+    case "complete":
       return "ok";
     case "stale":
     case "local_only":
     case "not_started":
+    case "empty":
+    case "planned":
       return "warn";
+    case "attention":
+      return "bad";
     default:
       return "bad";
   }
@@ -93,6 +119,9 @@ export function CommandCenterPanel({ state }: { state: CommandCenterState }) {
     ["Waiting", commandCenter.metrics.waitingOnCount],
     ["Dock", commandCenter.metrics.dockReminderCount],
   ] as const;
+  const progress = commandCenter.dailyProgress;
+  const progressTitle =
+    progress.topPriority ?? progress.headline ?? "No workflow saved";
 
   return (
     <section className="fp-command" aria-label="Personal command center">
@@ -139,6 +168,41 @@ export function CommandCenterPanel({ state }: { state: CommandCenterState }) {
             </div>
           ))}
         </dl>
+
+        <div
+          className="fp-command-workflow"
+          data-tone={statusTone(progress.tone)}
+        >
+          <div className="fp-command-block__head">
+            <span className="mono-label">DAILY WORKFLOW</span>
+            <span className="mono-label">{progress.tone}</span>
+          </div>
+          <h3 className="fp-command-workflow__title">{progressTitle}</h3>
+          <dl className="fp-command-workflow__statuses">
+            <div>
+              <dt className="mono-label">Brief</dt>
+              <dd>{progress.dailyBriefStatus.replace("_", " ")}</dd>
+            </div>
+            <div>
+              <dt className="mono-label">Plan</dt>
+              <dd>{progress.todayPlanStatus.replace("_", " ")}</dd>
+            </div>
+            <div>
+              <dt className="mono-label">Updated</dt>
+              <dd>{formatSavedTimestamp(progress.updatedAt)}</dd>
+            </div>
+          </dl>
+          <dl className="fp-command-workflow__counts">
+            <div>
+              <dt className="mono-label">Commitments</dt>
+              <dd>{formatCommitmentProgress(progress.commitments)}</dd>
+            </div>
+            <div>
+              <dt className="mono-label">Outcomes</dt>
+              <dd>{formatOutcomeProgress(progress.outcomes)}</dd>
+            </div>
+          </dl>
+        </div>
 
         <div className="fp-command-sources">
           <div className="fp-command-block__head">
