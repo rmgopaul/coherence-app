@@ -9,6 +9,7 @@ import type {
   PersonalDashboardTodayPlanStatus,
 } from "@shared/personalDashboard";
 import { formatDateInput } from "@shared/dateKey";
+import type { WorkspaceNoteRow } from "./useWorkspaceNotes";
 
 export type DailyWorkflowDraft = {
   dailyBriefStatus: PersonalDashboardDailyBriefStatus;
@@ -20,6 +21,9 @@ export type DailyWorkflowDraft = {
 };
 
 type ManualWorkflowIdKind = "commitment" | "outcome" | "plan-block";
+type WorkspaceCapableDailyWorkflowItem =
+  | PersonalDashboardCommitment
+  | PersonalDashboardTodayPlan["blocks"][number];
 
 export function emptyDailyWorkflowDraft(): DailyWorkflowDraft {
   return {
@@ -225,6 +229,47 @@ export function winActiveOutcomes(
   return outcomes.map((item) =>
     item.status === "active" ? { ...item, status: "won" } : item
   );
+}
+
+export function workspaceNoteRowFromDailyWorkflowItem(
+  item: WorkspaceCapableDailyWorkflowItem
+): WorkspaceNoteRow | null {
+  const sourceId = item.sourceId?.trim();
+  if (!sourceId) return null;
+  const title = item.title.trim() || sourceId;
+
+  if (item.source === "todoist") {
+    return {
+      kind: "todoist",
+      taskId: sourceId,
+      content: title,
+      taskUrl:
+        normalizeExternalUrl("url" in item ? item.url : null) ??
+        `https://todoist.com/showTask?id=${encodeURIComponent(sourceId)}`,
+      dueDate: "dueAt" in item ? item.dueAt : null,
+      projectName: null,
+    };
+  }
+
+  if (item.source === "calendar") {
+    return {
+      kind: "calendar",
+      eventId: sourceId,
+      title,
+      eventUrl:
+        normalizeExternalUrl("url" in item ? item.url : null) ??
+        `https://calendar.google.com/calendar/u/0/r/eventedit/${encodeURIComponent(
+          sourceId
+        )}`,
+      start:
+        "startIso" in item ? item.startIso : "dueAt" in item ? item.dueAt : null,
+      location: null,
+      recurringEventId: null,
+      iCalUID: null,
+    };
+  }
+
+  return null;
 }
 
 export function normalizeDailyWorkflowDraftForSave(

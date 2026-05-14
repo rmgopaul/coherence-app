@@ -1241,6 +1241,19 @@ html[data-focus="1"] .fp-root {
   align-items: center;
 }
 
+.fp-daily-workflow__row--with-workspace {
+  grid-template-columns: minmax(0, 1fr) auto 34px;
+}
+
+.fp-daily-workflow__workspace-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  min-width: 0;
+}
+
 .fp-daily-workflow__row-fields {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(110px, 0.32fr);

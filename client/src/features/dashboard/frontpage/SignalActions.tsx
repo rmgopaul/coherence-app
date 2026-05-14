@@ -56,12 +56,16 @@ interface SignalActionsProps {
    *  for this row"; pass a row-specific label when the parent has
    *  more context (e.g. "Actions for: 401k rebalance"). */
   ariaLabel?: string;
+  /** Optional allow-list for contexts that only want a subset of
+   *  the row's applicable actions. */
+  actionKeys?: SignalActionKey[];
 }
 
 export function SignalActions({
   row,
   triggerClassName,
   ariaLabel = "Actions for this row",
+  actionKeys,
 }: SignalActionsProps) {
   const utils = trpc.useUtils();
   const todayKey = useTodayKey();
@@ -167,7 +171,9 @@ export function SignalActions({
     }
   }
 
-  const actions = applicableActions(row);
+  const actions = actionKeys
+    ? applicableActions(row).filter((action) => actionKeys.includes(action))
+    : applicableActions(row);
   const anyPending =
     dockAdd.isPending ||
     kingPin.isPending ||
