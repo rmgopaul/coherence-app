@@ -3,14 +3,16 @@ import { describe, expect, it } from "vitest";
 import type { PersonalDashboardCommandCenter } from "@shared/personalDashboard";
 import {
   buildCommitmentDraft,
+  buildCommitmentDrafts,
   buildDailyBriefDraft,
   buildTodayPlanDraft,
+  buildOutcomeDrafts,
   dailyWorkflowDraftFromState,
   normalizeDailyWorkflowDraftForSave,
 } from "./dailyWorkflow.helpers";
 
 const commandCenter: PersonalDashboardCommandCenter = {
-  _runnerVersion: "personal-dashboard-command-center-v1",
+  _runnerVersion: "personal-command-center-v1",
   generatedAt: "2026-05-14T12:00:00.000Z",
   dateKey: "2026-05-14",
   userId: 1,
@@ -21,6 +23,7 @@ const commandCenter: PersonalDashboardCommandCenter = {
     inboxToTriage: 4,
     waitingOnCount: 2,
     dockReminderCount: 1,
+    activeDockCount: 1,
   },
   rightNow: {
     title: "Close proposal",
@@ -28,6 +31,10 @@ const commandCenter: PersonalDashboardCommandCenter = {
     sourceId: "task-1",
     sourceUrl: "https://todoist.com/app/task/task-1",
     reason: "Highest-priority task due today.",
+  },
+  dailyWorkflow: {
+    suggestedCommitments: [],
+    suggestedOutcomes: [],
   },
   integrations: [],
   dailyBrief: {
@@ -75,6 +82,44 @@ describe("dailyWorkflow helpers", () => {
       sourceId: "task-1",
       status: "open",
     });
+  });
+
+  it("prefers command-center workflow suggestions when seeding lists", () => {
+    const now = new Date("2026-05-14T13:00:00.000Z");
+    const suggested: PersonalDashboardCommandCenter = {
+      ...commandCenter,
+      dailyWorkflow: {
+        suggestedCommitments: [
+          {
+            id: "waiting-on:thread-1",
+            title: "Follow up: Contract approval",
+            source: "gmail",
+            sourceId: "thread-1",
+            owner: "client@example.com",
+            dueAt: null,
+            status: "waiting",
+            url: "https://mail.google.com/mail/u/0/#inbox/thread-1",
+          },
+        ],
+        suggestedOutcomes: [
+          {
+            id: "task-outcome:task-2",
+            title: "Finish model review",
+            status: "active",
+            metricLabel: "Task",
+            target: "Complete today",
+            current: null,
+          },
+        ],
+      },
+    };
+
+    expect(buildCommitmentDrafts(suggested, now)).toEqual(
+      suggested.dailyWorkflow.suggestedCommitments
+    );
+    expect(buildOutcomeDrafts(suggested, now)).toEqual(
+      suggested.dailyWorkflow.suggestedOutcomes
+    );
   });
 
   it("normalizes empty and whitespace-only draft fields before save", () => {

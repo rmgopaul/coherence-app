@@ -3,8 +3,10 @@ import {
   choosePersonalDashboardRightNow,
   makePersonalDashboardIntegrationHealth,
   type PersonalDashboardCommandCenter,
+  type PersonalDashboardCommitment,
   type PersonalDashboardHealthStatus,
   type PersonalDashboardIntegrationHealth,
+  type PersonalDashboardOutcome,
 } from "@shared/personalDashboard";
 import {
   getIntegrationByProvider,
@@ -46,6 +48,16 @@ type GmailMessageLike = {
   threadId?: string;
   internalDate?: string | number;
   payload?: { headers?: Array<{ name?: string; value?: string }> };
+};
+
+type GmailWaitingOnLike = {
+  id?: string;
+  threadId?: string;
+  subject?: string;
+  from?: string;
+  to?: string;
+  date?: string;
+  url?: string;
 };
 
 type TodoistTaskLike = {
@@ -182,6 +194,13 @@ export async function getPersonalDashboardCommandCenter(
     nextMeeting: nextCalendarEvent(google.calendarEvents, now),
     urgentEmail: topGmailMessage(google.gmailMessages),
   });
+  const dailyWorkflow = buildPersonalDashboardWorkflowSuggestions({
+    dateKey: input.dateKey,
+    rightNow,
+    tasks: todoist.tasks,
+    waitingOn: google.waitingOn,
+    now,
+  });
 
   return {
     _runnerVersion: PERSONAL_DASHBOARD_RUNNER_VERSION,
@@ -198,6 +217,7 @@ export async function getPersonalDashboardCommandCenter(
       activeDockCount: dockItems.length,
     },
     rightNow,
+    dailyWorkflow,
     integrations,
     dailyBrief: {
       status:
@@ -335,7 +355,7 @@ async function loadGoogleSlice(args: {
     reason: "Google is not connected.",
     calendarEvents: [] as CalendarEventLike[],
     gmailMessages: [] as GmailMessageLike[],
-    waitingOn: [] as unknown[],
+    waitingOn: [] as GmailWaitingOnLike[],
     calendarStatus: "missing" as PersonalDashboardHealthStatus,
     calendarReason: "Google is not connected.",
     calendarFetchedAt: null as string | null,
@@ -421,6 +441,88 @@ async function loadGoogleSlice(args: {
   };
 }
 
+export function buildPersonalDashboardWorkflowSuggestions(input: {
+  dateKey: string;
+  rightNow: PersonalDashboardCommandCenter["rightNow"];
+  tasks: TodoistTaskLike[];
+  waitingOn: GmailWaitingOnLike[];
+  now: Date;
+}): PersonalDashboardCommandCenter["dailyWorkflow"] {
+  const waitingCommitments = dedupeById<PersonalDashboardCommitment>(
+    input.waitingOn.map((item, index) => {
+      const sourceId = gmailSourceId(item);
+      const subject = normalizeText(item.subject) ?? "Waiting-on thread";
+      const fallbackUrl = sourceId
+        ? `https://mail.google.com/mail/u/0/#inbox/${sourceId}`
+        : null;
+      return {
+        id: `waiting-on:${sourceId ?? `${input.dateKey}:${index}`}`,
+        title: `Follow up: ${subject}`,
+        source: "gmail" as const,
+        sourceId,
+        owner: normalizePerson(item.to) ?? normalizePerson(item.from),
+        dueAt: null,
+        status: "waiting" as const,
+        url: normalizeUrl(item.url) ?? fallbackUrl,
+      };
+    })
+  ).slice(0, 3);
+
+  const rightNowCommitment: PersonalDashboardCommitment[] = input.rightNow
+    ? [
+        {
+          id: `right-now:${input.rightNow.kind}:${
+            input.rightNow.sourceId ?? input.dateKey
+          }`,
+          title: input.rightNow.title,
+          source: input.rightNow.kind,
+          sourceId: input.rightNow.sourceId,
+          owner: null,
+          dueAt: null,
+          status:
+            input.rightNow.kind === "gmail"
+              ? ("waiting" as const)
+              : ("open" as const),
+          url: normalizeUrl(input.rightNow.sourceUrl),
+        },
+      ]
+    : [];
+
+  const suggestedCommitments = dedupeById([
+    ...waitingCommitments,
+    ...rightNowCommitment,
+  ]).slice(0, 5);
+
+  const suggestedOutcomes = dedupeById<PersonalDashboardOutcome>(
+    sortedTasks(input.tasks)
+      .map((task, index) => ({
+        id: `task-outcome:${taskSourceId(task, index)}`,
+        title: taskTitle(task, `Outcome ${index + 1}`),
+        status: "active" as const,
+        metricLabel: "Task",
+        target: "Complete today",
+        current: null,
+      }))
+  ).slice(0, 3);
+
+  if (suggestedOutcomes.length === 0) {
+    suggestedOutcomes.push({
+      id: `fallback-outcome:${input.dateKey}:${input.now.getTime()}`,
+      title:
+        input.rightNow?.title ?? "Define one meaningful outcome for today",
+      status: "active",
+      metricLabel: "Progress",
+      target: "Done today",
+      current: null,
+    });
+  }
+
+  return {
+    suggestedCommitments,
+    suggestedOutcomes: suggestedOutcomes.slice(0, 5),
+  };
+}
+
 async function loadWhoopSlice(userId: number, integration: IntegrationRecord) {
   const fetchedAt = new Date().toISOString();
   if (!integration?.accessToken) {
@@ -459,20 +561,26 @@ function remainingMeetingCount(events: CalendarEventLike[], now: Date): number {
 }
 
 function topTodoistTask(tasks: TodoistTaskLike[]) {
-  const sorted = [...tasks].sort((a, b) => {
+  const sorted = sortedTasks(tasks);
+  const task = sorted[0];
+  if (!task) return null;
+  const id = taskSourceId(task, "");
+  return {
+    id,
+    title: taskTitle(task, "Untitled task"),
+    url:
+      normalizeUrl(task.url) ??
+      (id ? `https://app.todoist.com/app/task/${id}` : null),
+  };
+}
+
+function sortedTasks(tasks: TodoistTaskLike[]): TodoistTaskLike[] {
+  return [...tasks].sort((a, b) => {
     const aPriority = Number(a.priority ?? 1);
     const bPriority = Number(b.priority ?? 1);
     if (aPriority !== bPriority) return bPriority - aPriority;
     return dueTime(a) - dueTime(b);
   });
-  const task = sorted[0];
-  if (!task) return null;
-  const id = String(task.id ?? "");
-  return {
-    id,
-    title: String(task.content ?? "Untitled task"),
-    url: task.url ?? (id ? `https://app.todoist.com/app/task/${id}` : null),
-  };
 }
 
 function nextCalendarEvent(events: CalendarEventLike[], now: Date) {
@@ -540,4 +648,43 @@ function toIso(value: Date | string | null | undefined): string | null {
   if (!value) return null;
   const date = value instanceof Date ? value : new Date(value);
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+function normalizeUrl(value: string | null | undefined): string | null {
+  const trimmed = normalizeText(value);
+  if (!trimmed) return null;
+  return /^https?:\/\//i.test(trimmed) ? trimmed : null;
+}
+
+function gmailSourceId(item: GmailWaitingOnLike): string | null {
+  const value = normalizeText(item.threadId) ?? normalizeText(item.id);
+  return value ?? null;
+}
+
+function taskTitle(task: TodoistTaskLike, fallback: string): string {
+  return normalizeText(task.content) ?? fallback;
+}
+
+function taskSourceId(task: TodoistTaskLike, fallback: string | number): string {
+  return normalizeText(task.id) ?? String(fallback);
+}
+
+function normalizeText(value: string | number | null | undefined): string | null {
+  const trimmed = String(value ?? "").trim();
+  return trimmed ? trimmed : null;
+}
+
+function normalizePerson(value: string | null | undefined): string | null {
+  const trimmed = String(value ?? "").trim();
+  if (!trimmed) return null;
+  return trimmed.length > 120 ? `${trimmed.slice(0, 117)}...` : trimmed;
+}
+
+function dedupeById<T extends { id: string }>(items: T[]): T[] {
+  const byId = new Map<string, T>();
+  for (const item of items) {
+    if (!item.id || byId.has(item.id)) continue;
+    byId.set(item.id, item);
+  }
+  return Array.from(byId.values());
 }

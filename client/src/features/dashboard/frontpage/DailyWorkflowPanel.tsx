@@ -18,9 +18,9 @@ import type {
 } from "@shared/personalDashboard";
 import type { DashboardData } from "../useDashboardData";
 import {
-  buildCommitmentDraft,
+  buildCommitmentDrafts,
   buildDailyBriefDraft,
-  buildOutcomeDraft,
+  buildOutcomeDrafts,
   buildTodayPlanDraft,
   dailyWorkflowDraftFromState,
   emptyDailyWorkflowDraft,
@@ -96,8 +96,8 @@ export function DailyWorkflowPanel({
   function seedFromCommandCenter() {
     if (!commandCenter) return;
     const now = new Date();
-    const nextCommitment = buildCommitmentDraft(commandCenter, now);
-    const nextOutcome = buildOutcomeDraft(commandCenter, now);
+    const nextCommitments = buildCommitmentDrafts(commandCenter, now);
+    const nextOutcomes = buildOutcomeDrafts(commandCenter, now);
 
     updateDraft((current) => ({
       ...current,
@@ -106,10 +106,10 @@ export function DailyWorkflowPanel({
       todayPlanStatus: "draft",
       todayPlan: buildTodayPlanDraft(commandCenter, now),
       commitments: dedupeById([
-        ...(nextCommitment ? [nextCommitment] : []),
+        ...nextCommitments,
         ...current.commitments,
       ]),
-      outcomes: dedupeById([nextOutcome, ...current.outcomes]),
+      outcomes: dedupeById([...nextOutcomes, ...current.outcomes]),
     }));
   }
 

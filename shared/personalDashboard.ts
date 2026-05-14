@@ -147,6 +147,10 @@ export type PersonalDashboardCommandCenter = {
   userId: number;
   metrics: PersonalDashboardMetricSummary;
   rightNow: PersonalDashboardRightNow | null;
+  dailyWorkflow: {
+    suggestedCommitments: PersonalDashboardCommitment[];
+    suggestedOutcomes: PersonalDashboardOutcome[];
+  };
   integrations: PersonalDashboardIntegrationHealth[];
   dailyBrief: PersonalDashboardFeatureReadiness;
   todayPlan: PersonalDashboardFeatureReadiness;
