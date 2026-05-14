@@ -537,7 +537,17 @@ export const FINANCIALS_RUNNER_VERSION =
   // 2026-04-30 (@2): added `csgIds` + `debug` to the response shape
   // for Phase 5e Followup #4 step 4 PR-B. Cache invalidation forces
   // a recompute against the new return type.
-  "phase-5e-step4b-financials@2";
+  //
+  // 2026-05-13 (@3): wire-shape pagination. `getDashboardFinancials`
+  // now strips `rows` at the wire boundary (10 MB → ~few hundred bytes);
+  // the dedicated `getDashboardFinancialsPage` proc reads pages from
+  // the same cached aggregate. The cached payload still embeds
+  // `rows` (it backs the page reader + the CSV export job in-process),
+  // so the underlying `FinancialsAggregates` shape is unchanged —
+  // but bumping the version invalidates any pre-fix artifact rows so
+  // the next read recomputes against the new contract and the
+  // `_runnerVersion` marker matches what the deployed code emits.
+  "phase-5e-step4b-financials@3";
 
 type FinancialsBatchIds = {
   abpCsgSystemMappingBatchId: string | null;
@@ -1014,4 +1024,152 @@ export async function getCachedFinancialsKpiSummary(
   } catch {
     return { available: false };
   }
+}
+
+// ---------------------------------------------------------------------------
+// Paginated rows reader (2026-05-13 — wire-shape pagination)
+//
+// `getDashboardFinancials` no longer ships its 24K-row payload through tRPC
+// (was ~10 MB on prod, 50× over the 200 KB target). The slim wire payload
+// is the 7 scalar tiles + csgIds + debug + flaggedCount. The
+// `getDashboardFinancialsPage` proc serves bounded pages from the SAME
+// cached `FinancialsAggregates` artifact the slim summary derives from —
+// the in-process aggregator still computes `rows` once, the wire boundary
+// is what changed.
+//
+// Implementation note: this helper does NOT trigger a row materialization.
+// It reads the existing cached aggregate via `getOrBuildFinancialsAggregates`
+// (which is cache-hit unless the freshness signal advanced) and then slices
+// in memory. Callers that need to avoid the build entirely should not call
+// this helper — there is no separate "cache-only" entrypoint for the rows
+// because the heavy aggregator already early-bails to EMPTY_FINANCIALS
+// when the required datasets aren't uploaded.
+// ---------------------------------------------------------------------------
+
+/**
+ * Sort keys exposed by `getDashboardFinancialsPage`. Mirrors the
+ * pre-pagination client-side `FinancialSortKey` union in FinancialsTab
+ * 1:1 so feature parity is preserved — every column the table head can
+ * sort by is reachable through the server-side sort axis.
+ */
+export const FINANCIALS_PAGE_SORT_KEYS = [
+  "systemName",
+  "grossContractValue",
+  "vendorFeePercent",
+  "vendorFeeAmount",
+  "utilityCollateral",
+  "additionalCollateralPercent",
+  "additionalCollateralAmount",
+  "ccAuth5Percent",
+  "applicationFee",
+  "totalDeductions",
+  "profit",
+  "totalCollateralization",
+] as const;
+
+export type FinancialsPageSortKey = (typeof FINANCIALS_PAGE_SORT_KEYS)[number];
+
+export type FinancialsPageInput = {
+  cursor?: number | null;
+  limit?: number;
+  sortKey?: FinancialsPageSortKey;
+  sortDir?: "asc" | "desc";
+  filterNeedsReview?: boolean | null;
+  search?: string | null;
+};
+
+export type FinancialsPageResult = {
+  rows: FinancialsProfitRow[];
+  nextCursor: number | null;
+  hasMore: boolean;
+  totalCount: number;
+  totalFiltered: number;
+  flaggedCount: number;
+};
+
+/**
+ * Pure sort+filter+paginate over an already-loaded `FinancialsProfitRow[]`.
+ * Lives outside `getDashboardFinancialsPage` so the unit tests can exercise
+ * the slicing logic without bringing up the cache layer.
+ *
+ * Cursor semantics: integer page offset (rows already consumed). End-of-
+ * stream is signaled by `nextCursor: null` AND `hasMore: false` — the
+ * two are kept in sync per the convention used by the existing fact-page
+ * procs. We use an offset cursor (not a row key) because the rows are
+ * sorted by `sortKey` which can repeat values across rows, so a row-key
+ * cursor would need a stable secondary key to break ties — overkill for
+ * a 24K-row table that fits comfortably in memory.
+ */
+export function applyFinancialsPage(
+  rows: readonly FinancialsProfitRow[],
+  input: FinancialsPageInput
+): FinancialsPageResult {
+  const totalCount = rows.length;
+  const flaggedCount = rows.reduce(
+    (a, r) => a + (r.needsReview ? 1 : 0),
+    0
+  );
+
+  // Filter axis 1: needsReview gate. Optional + nullable so the
+  // default "all" semantics fall out of `undefined`/`null`.
+  let filtered: FinancialsProfitRow[] = rows.slice();
+  if (input.filterNeedsReview === true) {
+    filtered = filtered.filter((r) => r.needsReview);
+  } else if (input.filterNeedsReview === false) {
+    filtered = filtered.filter((r) => !r.needsReview);
+  }
+
+  // Filter axis 2: free-text search across systemName + applicationId +
+  // csgId. Matches the pre-pagination client filter (FinancialsTab line
+  // ~437) verbatim — `[r.systemName, r.applicationId, r.csgId].join(" ")
+  // .toLowerCase().includes(needle)`. Server-side application is simpler
+  // than streaming pages and re-applying — the cached row array is
+  // already in memory.
+  const needle = (input.search ?? "").trim().toLowerCase();
+  if (needle) {
+    filtered = filtered.filter((r) =>
+      [r.systemName, r.applicationId, r.csgId]
+        .join(" ")
+        .toLowerCase()
+        .includes(needle)
+    );
+  }
+
+  const totalFiltered = filtered.length;
+
+  // Sort. Default is `profit` desc (matches the in-process aggregator's
+  // pre-sort at line ~516, which the FinancialsTab assumed by default).
+  const sortKey = input.sortKey ?? "profit";
+  const sortDir = input.sortDir ?? "desc";
+  const dir = sortDir === "asc" ? 1 : -1;
+  filtered.sort((a, b) => {
+    if (sortKey === "systemName") {
+      return (
+        a.systemName.localeCompare(b.systemName, undefined, {
+          numeric: true,
+          sensitivity: "base",
+        }) * dir
+      );
+    }
+    const av = a[sortKey];
+    const bv = b[sortKey];
+    return (((av as number) - (bv as number)) || 0) * dir;
+  });
+
+  const cursor = Math.max(0, input.cursor ?? 0);
+  const limit = Math.max(1, Math.min(500, input.limit ?? 100));
+
+  const slice = filtered.slice(cursor, cursor + limit);
+  const nextOffset = cursor + slice.length;
+  const hasMore = nextOffset < filtered.length;
+  const nextCursor = hasMore ? nextOffset : null;
+
+  return {
+    rows: slice,
+    nextCursor,
+    hasMore,
+    totalCount,
+    totalFiltered,
+    flaggedCount,
+  };
 }

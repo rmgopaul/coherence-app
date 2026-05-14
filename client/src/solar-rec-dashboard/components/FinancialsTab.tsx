@@ -8,12 +8,23 @@
  *     Actually: 4 filter/sort, editingRow, rescanStatuses,
  *     batchRescanRunning — that's 6 useState + 1 useRef owned here.
  *   - 4 useMemos (part2VerifiedSystems, financialRevenueAtRisk,
- *     financialProfitDebug, filteredFinancialRows, financialFlaggedCount)
+ *     financialProfitDebug, filteredFinancialRows)
  *   - 2 tRPC mutations (updateContractOverride, rescanSingleContract)
  *   - batch rescan loop + edit override dialog
  *
+ * 2026-05-13 — wire-shape pagination. Pre-PR, the parent's
+ * `financialProfitData` carried a full 24K-row array (~10 MB on
+ * prod). Now the parent ships scalars only via the slim
+ * `getDashboardFinancials` proc, and this tab fetches rows itself
+ * via `getDashboardFinancialsPage` (paginated, server-side
+ * sort+filter). Local sort/search/filter state maps to the page
+ * query input; the tab applies `localOverrides` on top of each
+ * fetched page before display so the optimistic-edit UX is
+ * preserved.
+ *
  * The parent still owns:
- *   - `financialProfitData` — shared with Overview tab summary tiles
+ *   - `financialProfitData` (scalars only — KPI tiles)
+ *   - `financialFlaggedCount` (cheap server-shipped scalar)
  *   - `contractScanResultsQuery` — shared with Overview + Pipeline
  *   - `financialCsgIds` — feeds the shared query
  *   - `localOverrides` — shared with Pipeline (cash flow aggregator
@@ -24,7 +35,15 @@
  * runs on other tabs.
  */
 
-import { memo, useCallback, useDeferredValue, useMemo, useRef, useState } from "react";
+import {
+  memo,
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { AskAiPanel } from "@/components/AskAiPanel";
 import { Loader2 } from "lucide-react";
 import { toast } from "sonner";
@@ -70,6 +89,7 @@ import {
 import {
   formatNumber,
   parseNumber,
+  roundMoney,
   toPercentValue,
 } from "@/solar-rec-dashboard/lib/helpers";
 import type {
@@ -163,6 +183,12 @@ function reasonText(reason: unknown): string {
 // ---------------------------------------------------------------------------
 
 export interface FinancialsTabProps {
+  // Tab activation flag. Gates the paginated rows query so we don't
+  // fetch when the user's on a different tab. Mirrors the same gating
+  // the heavy `getDashboardFinancials` summary query already uses in
+  // the parent.
+  isActive: boolean;
+
   // Part-2 eligible systems (parent-owned, paginated). Sourced from
   // `getDashboardSystemsPage({isPart2Eligible: true})`'s
   // `useInfiniteQuery` walk in the parent (Phase 2 PR-F-4-f-2). The
@@ -178,7 +204,17 @@ export interface FinancialsTabProps {
   // Financials profit/collateralization data. Computed by the parent's
   // `financialProfitData` useMemo, which is gated on `isFinancialsTabActive
   // || isOverviewTabActive` and shared with Overview summary tiles.
+  // 2026-05-13: `rows` is always `[]` on this prop now (parent's slim
+  // query strips them); the tab fetches its own rows via the
+  // paginated `getDashboardFinancialsPage` proc below.
   financialProfitData: FinancialProfitData;
+
+  // Server-shipped count of needsReview=true rows. Pre-PR computed
+  // client-side from `financialProfitData.rows.filter(...)`; now
+  // shipped on the slim `getDashboardFinancials` response so the
+  // KPI tile + filter dropdown stay in sync without materializing
+  // rows.
+  financialFlaggedCount: number;
 
   // Contract scan query state. The query itself stays in the parent
   // because it's also gated on Pipeline + Overview, and those tabs
@@ -262,8 +298,10 @@ type EditingFinancialRow = {
 
 export default memo(function FinancialsTab(props: FinancialsTabProps) {
   const {
+    isActive,
     part2EligibleSystems,
     financialProfitData,
+    financialFlaggedCount,
     contractScanResults,
     contractScanStatus,
     contractScanIsFetching,
@@ -278,6 +316,8 @@ export default memo(function FinancialsTab(props: FinancialsTabProps) {
     onSelectSystem,
   } = props;
 
+  const trpcUtils = trpc.useUtils();
+
   // --- Filter + sort state ---
   const [financialSortBy, setFinancialSortBy] = useState<FinancialSortKey>("profit");
   const [financialSortDir, setFinancialSortDir] = useState<"asc" | "desc">("desc");
@@ -289,6 +329,64 @@ export default memo(function FinancialsTab(props: FinancialsTabProps) {
   const [financialFilter, setFinancialFilter] = useState<"all" | "needs-review" | "ok">(
     "all",
   );
+
+  // 2026-05-13 — paginated rows query. Replaces the parent-owned
+  // `financialProfitData.rows` array (~10 MB on prod). Sort + filter
+  // axes flow into the query input so the server returns already-
+  // sorted, already-filtered pages — no need to re-sort client-side
+  // on every keystroke. Page size 100 keeps each response well under
+  // the 1 MB dashboard guard budget (~42 KB at 420 bytes/row).
+  //
+  // Gate: only fire when the tab is active. The parent's heavy
+  // `getDashboardFinancials` summary query is also gated on
+  // `isFinancialsTabActive || isPipelineTabActive`, so by the time
+  // the user sees this tab the underlying cached aggregate is
+  // typically warm — pagination becomes an in-memory slice.
+  const filterNeedsReview =
+    financialFilter === "needs-review"
+      ? true
+      : financialFilter === "ok"
+        ? false
+        : null;
+  const financialsPageQuery =
+    trpc.solarRecDashboard.getDashboardFinancialsPage.useInfiniteQuery(
+      {
+        limit: 100,
+        sortKey: financialSortBy,
+        sortDir: financialSortDir,
+        filterNeedsReview,
+        search: deferredFinancialSearch.trim() || null,
+      },
+      {
+        enabled: isActive,
+        getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
+        staleTime: 60_000,
+      }
+    );
+
+  // Auto-fetch additional pages as they become available — we want
+  // the full filtered set in memory so the existing "Showing X of N"
+  // footer + the row table render against the same paginated walk.
+  // The default page size is 100; for a 24K-row scope the walk
+  // settles after ~240 page fetches × ~42 KB each = ~10 MB total
+  // wire bytes (matches the pre-PR single-payload cost), BUT spread
+  // across small responses that the React rendering pipeline can
+  // interleave. Cancelling a walk = inactive tab unmount.
+  //
+  // For a typical filtered view (e.g. `needs-review` → ~100 rows),
+  // the first page is the only one fetched.
+  useEffect(() => {
+    if (!isActive) return;
+    if (financialsPageQuery.hasNextPage && !financialsPageQuery.isFetchingNextPage) {
+      void financialsPageQuery.fetchNextPage();
+    }
+  }, [
+    isActive,
+    financialsPageQuery,
+    financialsPageQuery.hasNextPage,
+    financialsPageQuery.isFetchingNextPage,
+    financialsPageQuery.data,
+  ]);
 
   // --- Edit override dialog state ---
   const [editingFinancialRow, setEditingFinancialRow] =
@@ -420,51 +518,85 @@ export default memo(function FinancialsTab(props: FinancialsTabProps) {
   ]);
 
   // -------------------------------------------------------------------------
-  // Filtered + sorted view of the profit rows
+  // Flatten + apply localOverrides to fetched pages.
+  //
+  // Sort + filter axes are server-applied by `getDashboardFinancialsPage`
+  // (see input wiring above), so the rows here are ALREADY sorted +
+  // filtered. The only client-side transform is `localOverrides`: a
+  // short-lived optimistic Map keyed by csgId that flips a row's
+  // vendor-fee/collateral percentages until the heavy refetch lands.
+  // Pre-PR the same transform ran in the parent's useMemo over the
+  // full 24K-row array; now it runs on each paginated slice.
+  //
+  // `localOverrides.size === 0` is the steady state for the vast
+  // majority of users (entries are cleared the moment the heavy
+  // refetch lands, ~20s post-mutation). Branch on that to skip the
+  // map().
   // -------------------------------------------------------------------------
-  const filteredFinancialRows = useMemo(() => {
-    let rows: ProfitRow[] = financialProfitData.rows;
-
-    if (financialFilter === "needs-review") {
-      rows = rows.filter((r) => r.needsReview);
-    } else if (financialFilter === "ok") {
-      rows = rows.filter((r) => !r.needsReview);
+  const filteredFinancialRows = useMemo<ProfitRow[]>(() => {
+    const pages = financialsPageQuery.data?.pages ?? [];
+    const flat: ProfitRow[] = [];
+    for (const page of pages) {
+      for (const row of page.rows) flat.push(row as ProfitRow);
     }
 
-    const needle = deferredFinancialSearch.trim().toLowerCase();
-    if (needle) {
-      rows = rows.filter((r) =>
-        [r.systemName, r.applicationId, r.csgId].join(" ").toLowerCase().includes(needle),
+    if (localOverrides.size === 0) return flat;
+
+    return flat.map((row) => {
+      const localOv = localOverrides.get(row.csgId);
+      if (!localOv) return row;
+
+      const vendorFeePercent = localOv.vfp;
+      const additionalCollateralPercent = localOv.acp;
+      const vendorFeeAmount = roundMoney(
+        row.grossContractValue * (vendorFeePercent / 100)
       );
-    }
-
-    const dir = financialSortDir === "asc" ? 1 : -1;
-    rows = [...rows].sort((a, b) => {
-      const key = financialSortBy;
-      if (key === "systemName") {
-        return (
-          a.systemName.localeCompare(b.systemName, undefined, {
-            numeric: true,
-            sensitivity: "base",
-          }) * dir
-        );
-      }
-      return ((a[key] as number) - (b[key] as number)) * dir;
+      const additionalCollateralAmount = roundMoney(
+        row.grossContractValue * (additionalCollateralPercent / 100)
+      );
+      const totalDeductions = roundMoney(
+        vendorFeeAmount +
+          row.utilityCollateral +
+          additionalCollateralAmount +
+          row.ccAuth5Percent +
+          row.applicationFee
+      );
+      const totalCollateralization = roundMoney(
+        row.utilityCollateral +
+          additionalCollateralAmount +
+          row.ccAuth5Percent
+      );
+      const collateralPercent =
+        row.grossContractValue > 0
+          ? totalCollateralization / row.grossContractValue
+          : 0;
+      const needsReview = collateralPercent > 0.3;
+      return {
+        ...row,
+        vendorFeePercent,
+        vendorFeeAmount,
+        additionalCollateralPercent,
+        additionalCollateralAmount,
+        totalDeductions,
+        profit: vendorFeeAmount,
+        totalCollateralization,
+        needsReview,
+        reviewReason: needsReview
+          ? `Collateral is ${(collateralPercent * 100).toFixed(1)}% of GCV`
+          : "",
+        hasOverride: true,
+      };
     });
+  }, [financialsPageQuery.data, localOverrides]);
 
-    return rows;
-  }, [
-    financialProfitData.rows,
-    financialFilter,
-    deferredFinancialSearch,
-    financialSortBy,
-    financialSortDir,
-  ]);
-
-  const financialFlaggedCount = useMemo(
-    () => financialProfitData.rows.filter((r) => r.needsReview).length,
-    [financialProfitData.rows],
-  );
+  // Server-shipped totals. `totalCount` is the unfiltered count;
+  // `totalFiltered` is the filter-applied count (matches what the
+  // page walk yields when complete). When the user hasn't activated
+  // a filter, `totalFiltered === totalCount`.
+  const totalCount =
+    financialsPageQuery.data?.pages[0]?.totalCount ?? 0;
+  const totalFiltered =
+    financialsPageQuery.data?.pages[0]?.totalFiltered ?? 0;
 
   // -------------------------------------------------------------------------
   // Header sort helpers
@@ -728,50 +860,123 @@ export default memo(function FinancialsTab(props: FinancialsTabProps) {
     triggerCsvDownload(`revenue-at-risk-${timestampForCsvFileName()}.csv`, csv);
   }, [financialRevenueAtRisk.systems]);
 
-  const downloadProfitTableCsv = useCallback(() => {
-    const csv = buildCsv(
-      [
-        "system_name",
-        "application_id",
-        "csg_id",
-        "gross_contract_value",
-        "vendor_fee_percent",
-        "vendor_fee_amount",
-        "utility_5pct_collateral",
-        "additional_collateral_percent",
-        "additional_collateral_amount",
-        "cc_auth_5pct",
-        "application_fee",
-        "total_deductions",
-        "profit",
-        "total_collateralization",
-        "needs_review",
-        "review_reason",
-      ],
-      financialProfitData.rows.map((r) => ({
-        system_name: r.systemName,
-        application_id: r.applicationId,
-        csg_id: r.csgId,
-        gross_contract_value: r.grossContractValue,
-        vendor_fee_percent: r.vendorFeePercent,
-        vendor_fee_amount: r.vendorFeeAmount,
-        utility_5pct_collateral: r.utilityCollateral,
-        additional_collateral_percent: r.additionalCollateralPercent,
-        additional_collateral_amount: r.additionalCollateralAmount,
-        cc_auth_5pct: r.ccAuth5Percent,
-        application_fee: r.applicationFee,
-        total_deductions: r.totalDeductions,
-        profit: r.profit,
-        total_collateralization: r.totalCollateralization,
-        needs_review: r.needsReview ? "Yes" : "",
-        review_reason: r.reviewReason,
-      })),
-    );
-    triggerCsvDownload(
-      `profit-collateralization-${timestampForCsvFileName()}.csv`,
-      csv,
-    );
-  }, [financialProfitData.rows]);
+  // 2026-05-13 — CSV export pages through `getDashboardFinancialsPage`
+  // until end-of-stream, then builds the CSV in-memory. Picked over
+  // the background-job pattern (option (a), PR #346) for two reasons:
+  //
+  //   1. The full 24K-row CSV is ~10 MB; for tonight's MVP that's
+  //      acceptable to assemble in the client (the user explicitly
+  //      asked for the CSV — they'll wait a few seconds).
+  //   2. The existing CSV export plumbing (`buildCsv` +
+  //      `triggerCsvDownload`) is synchronous and trivially correct.
+  //      Wiring up the background-job pattern needs a new
+  //      `exportType: "financialsProfitCsv"` branch in the worker +
+  //      a polling round-trip — out of scope for this PR.
+  //
+  // The export respects the user's current filter/search/sort: it
+  // calls `client.solarRecDashboard.getDashboardFinancialsPage` with
+  // the SAME input shape the React Query infinite query uses, then
+  // walks the cursor chain to completion. Progress is reported via
+  // toast updates so a slow walk doesn't look frozen.
+  const [exportingCsv, setExportingCsv] = useState(false);
+  const downloadProfitTableCsv = useCallback(async () => {
+    if (exportingCsv) return;
+    setExportingCsv(true);
+    const toastId = toast.loading("Preparing CSV export…");
+    try {
+      const allRows: ProfitRow[] = [];
+      let cursor: number | null = null;
+      let pages = 0;
+      // Defensive bound — the server caps `limit` at 500 and the
+      // largest scope on prod has ~24K rows → ~48 pages at limit=500.
+      // 200 pages is 100K rows of headroom; trips if the cursor chain
+      // somehow loops.
+      const MAX_PAGES = 200;
+      while (pages < MAX_PAGES) {
+        // eslint-disable-next-line no-await-in-loop
+        const page = await trpcUtils.client.solarRecDashboard.getDashboardFinancialsPage.query(
+          {
+            cursor,
+            limit: 500,
+            sortKey: financialSortBy,
+            sortDir: financialSortDir,
+            filterNeedsReview,
+            search: deferredFinancialSearch.trim() || null,
+          }
+        );
+        allRows.push(...(page.rows as ProfitRow[]));
+        pages += 1;
+        toast.loading(
+          `Preparing CSV export… ${formatNumber(allRows.length)} of ${formatNumber(page.totalFiltered)} rows`,
+          { id: toastId }
+        );
+        if (page.nextCursor === null) break;
+        cursor = page.nextCursor;
+      }
+      const csv = buildCsv(
+        [
+          "system_name",
+          "application_id",
+          "csg_id",
+          "gross_contract_value",
+          "vendor_fee_percent",
+          "vendor_fee_amount",
+          "utility_5pct_collateral",
+          "additional_collateral_percent",
+          "additional_collateral_amount",
+          "cc_auth_5pct",
+          "application_fee",
+          "total_deductions",
+          "profit",
+          "total_collateralization",
+          "needs_review",
+          "review_reason",
+        ],
+        allRows.map((r) => ({
+          system_name: r.systemName,
+          application_id: r.applicationId,
+          csg_id: r.csgId,
+          gross_contract_value: r.grossContractValue,
+          vendor_fee_percent: r.vendorFeePercent,
+          vendor_fee_amount: r.vendorFeeAmount,
+          utility_5pct_collateral: r.utilityCollateral,
+          additional_collateral_percent: r.additionalCollateralPercent,
+          additional_collateral_amount: r.additionalCollateralAmount,
+          cc_auth_5pct: r.ccAuth5Percent,
+          application_fee: r.applicationFee,
+          total_deductions: r.totalDeductions,
+          profit: r.profit,
+          total_collateralization: r.totalCollateralization,
+          needs_review: r.needsReview ? "Yes" : "",
+          review_reason: r.reviewReason,
+        }))
+      );
+      triggerCsvDownload(
+        `profit-collateralization-${timestampForCsvFileName()}.csv`,
+        csv
+      );
+      toast.success(
+        `Exported ${formatNumber(allRows.length)} rows`,
+        { id: toastId }
+      );
+    } catch (err) {
+      toast.error(
+        err instanceof Error
+          ? `CSV export failed: ${err.message}`
+          : "CSV export failed",
+        { id: toastId }
+      );
+    } finally {
+      setExportingCsv(false);
+    }
+  }, [
+    exportingCsv,
+    trpcUtils,
+    financialSortBy,
+    financialSortDir,
+    filterNeedsReview,
+    deferredFinancialSearch,
+  ]);
 
   // -------------------------------------------------------------------------
   // Render system name link (uses parent's sheet opener callback)
@@ -936,7 +1141,7 @@ export default memo(function FinancialsTab(props: FinancialsTabProps) {
         </Card>
       </div>
 
-      {financialProfitData.rows.length === 0 && financialCsgIds.length === 0 && (
+      {totalCount === 0 && financialCsgIds.length === 0 && (
         <Card className="border-amber-200 bg-amber-50/50">
           <CardContent className="py-4">
             <p className="text-sm text-amber-800">
@@ -1144,7 +1349,7 @@ export default memo(function FinancialsTab(props: FinancialsTabProps) {
         </CardContent>
       </Card>
 
-      {financialProfitData.rows.length > 0 && (
+      {totalCount > 0 && (
         <Card>
           <CardHeader>
             <div className="flex items-center justify-between">
@@ -1155,8 +1360,13 @@ export default memo(function FinancialsTab(props: FinancialsTabProps) {
                   of GCV flagged for review.
                 </CardDescription>
               </div>
-              <Button variant="outline" size="sm" onClick={downloadProfitTableCsv}>
-                Export CSV
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={exportingCsv}
+                onClick={downloadProfitTableCsv}
+              >
+                {exportingCsv ? "Exporting…" : "Export CSV"}
               </Button>
             </div>
           </CardHeader>
@@ -1177,27 +1387,41 @@ export default memo(function FinancialsTab(props: FinancialsTabProps) {
                 }
                 className="rounded-sm border bg-background px-2 py-1.5 text-xs"
               >
-                <option value="all">All ({formatNumber(financialProfitData.rows.length)})</option>
+                <option value="all">All ({formatNumber(totalCount)})</option>
                 <option value="needs-review">
                   Needs Review ({formatNumber(financialFlaggedCount)})
                 </option>
                 <option value="ok">
-                  OK ({formatNumber(financialProfitData.rows.length - financialFlaggedCount)})
+                  OK ({formatNumber(totalCount - financialFlaggedCount)})
                 </option>
               </select>
               <span className="text-xs text-muted-foreground">
                 Showing {formatNumber(Math.min(100, filteredFinancialRows.length))} of{" "}
-                {formatNumber(filteredFinancialRows.length)}
+                {formatNumber(totalFiltered)}
+                {financialsPageQuery.isFetching && (
+                  <span className="ml-1 inline-flex items-center gap-1">
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                    loading…
+                  </span>
+                )}
               </span>
               {!batchRescanRunning ? (
                 <Button
                   variant="outline"
                   size="sm"
                   className="text-xs"
-                  disabled={filteredFinancialRows.length === 0}
+                  disabled={
+                    filteredFinancialRows.length === 0 ||
+                    financialsPageQuery.hasNextPage === true
+                  }
+                  title={
+                    financialsPageQuery.hasNextPage === true
+                      ? "Wait for all pages to load before batch rescan"
+                      : undefined
+                  }
                   onClick={handleBatchRescan}
                 >
-                  Re-scan All Filtered ({formatNumber(filteredFinancialRows.length)})
+                  Re-scan All Filtered ({formatNumber(totalFiltered)})
                 </Button>
               ) : (
                 <Button
@@ -1548,9 +1772,9 @@ export default memo(function FinancialsTab(props: FinancialsTabProps) {
                 </TableBody>
               </Table>
             </div>
-            {filteredFinancialRows.length > 100 && (
+            {totalFiltered > 100 && (
               <p className="text-xs text-muted-foreground text-center">
-                Showing 100 of {formatNumber(filteredFinancialRows.length)} systems.
+                Showing 100 of {formatNumber(totalFiltered)} systems.
                 Export CSV for full data.
               </p>
             )}
