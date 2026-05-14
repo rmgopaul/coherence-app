@@ -1,3 +1,6 @@
+import { ExternalLink } from "lucide-react";
+import { Link } from "wouter";
+
 import type { DashboardData } from "../useDashboardData";
 
 type CommandCenterState = DashboardData["commandCenter"];
@@ -66,7 +69,46 @@ function IntegrationRow({ item }: { item: IntegrationHealth }) {
       <span className="fp-command-integration__dot" aria-hidden="true" />
       <span className="fp-command-integration__label">{item.label}</span>
       <span className="mono-label">{item.status.replace("_", " ")}</span>
+      {item.actionHref ? (
+        <IntegrationActionLink href={item.actionHref} label={item.label} />
+      ) : null}
     </li>
+  );
+}
+
+function IntegrationActionLink({
+  href,
+  label,
+}: {
+  href: string;
+  label: string;
+}) {
+  const content = <ExternalLink aria-hidden="true" />;
+  const title = `Open ${label} action`;
+  if (/^https?:\/\//i.test(href)) {
+    return (
+      <a
+        className="fp-command-integration__action"
+        href={href}
+        target="_blank"
+        rel="noreferrer"
+        title={title}
+        aria-label={title}
+      >
+        {content}
+      </a>
+    );
+  }
+
+  return (
+    <Link
+      className="fp-command-integration__action"
+      href={href}
+      title={title}
+      aria-label={title}
+    >
+      {content}
+    </Link>
   );
 }
 
