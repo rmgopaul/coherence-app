@@ -179,6 +179,53 @@ describe("dailyWorkflow helpers", () => {
     });
   });
 
+  it("normalizes today plan blocks before save", () => {
+    const draft = dailyWorkflowDraftFromState(null);
+    draft.todayPlanStatus = "ready";
+    draft.todayPlan.blocks = [
+      {
+        id: "block-1",
+        title: "  Focus block  ",
+        startIso: "2026-05-14T15:00:00.000Z",
+        endIso: "not-a-date",
+        source: "calendar",
+        sourceId: " event-1 ",
+        status: "active",
+      },
+      {
+        id: "block-2",
+        title: "   ",
+        startIso: "2026-05-14T18:00:00.000Z",
+        endIso: "2026-05-14T19:00:00.000Z",
+        source: "system",
+        sourceId: "ignored",
+        status: "planned",
+      },
+    ];
+
+    expect(
+      normalizeDailyWorkflowDraftForSave(
+        draft,
+        new Date("2026-05-14T14:00:00.000Z")
+      )
+    ).toMatchObject({
+      todayPlanStatus: "ready",
+      todayPlan: {
+        blocks: [
+          {
+            id: "block-1",
+            title: "Focus block",
+            startIso: "2026-05-14T15:00:00.000Z",
+            endIso: null,
+            source: "calendar",
+            sourceId: "event-1",
+            status: "active",
+          },
+        ],
+      },
+    });
+  });
+
   it("preserves normalized commitment detail fields before save", () => {
     const draft = dailyWorkflowDraftFromState(null);
     draft.commitments = [
