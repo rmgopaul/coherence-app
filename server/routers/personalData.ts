@@ -80,7 +80,6 @@ import {
   getTopSignalsForUser,
   listNoteLinks,
   listNotes,
-  // Task 10.3 (2026-04-28): reverse-link rendering on the dashboard.
   listNotesForExternal,
   countNoteLinksByExternalIds,
   listProductionReadings,
@@ -1994,14 +1993,13 @@ export const notesRouter = router({
     }),
 
   /**
-   * Task 10.3 (2026-04-28) — reverse-link lookup. Given an external
-   * productivity object, return the notes that link to it.
+   * Reverse-link lookup. Given an external productivity object,
+   * return the notes that link to it.
    *
-   * Powers the dashboard's "📎 N linked notes" badge on Todoist
+   * Powers dashboard linked-note workspace controls on Todoist
    * task rows + Calendar event cards. The forward direction
-   * (note → external) is created by the Notebook→Todoist flow
-   * (Task 4.6) and the equivalent calendar handoff; this proc
-   * closes the loop.
+   * (note → external) is created by workspace note flows and this
+   * proc closes the loop.
    *
    * `seriesId` / `occurrenceStartIso` are optional — when omitted,
    * matches any link with the supplied (linkType, externalId),
@@ -2034,9 +2032,9 @@ export const notesRouter = router({
     }),
 
   /**
-   * Task 10.3 (2026-04-28) — batch reverse-link counts. Returns
-   * `Record<externalId, count>` so the dashboard can render badges
-   * for ~30-50 rows per render in one round-trip.
+   * Batch reverse-link counts. Returns `Record<externalId, count>`
+   * so the dashboard can render badges for ~30-50 rows per render
+   * in one round-trip.
    *
    * Empty `externalIds` → empty result. Caller-supplied IDs are
    * deduped + capped at 500 server-side.
