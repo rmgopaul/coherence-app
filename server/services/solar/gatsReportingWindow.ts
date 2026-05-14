@@ -88,6 +88,15 @@ function daysInMonth(year: number, month: number): number {
  * comparison share the same timezone offset by construction.
  *
  * `month` is 1-12 (the spec convention), NOT 0-11 (JS convention).
+ *
+ * **Holiday handling:** this helper performs M-F skip ONLY. Real-world
+ * GATS may treat federal holidays (Thanksgiving, Christmas Eve, New
+ * Year's Eve) as non-business days and shift the window-open date
+ * accordingly. The codebase spec deliberately opted into M-F-only
+ * skipping (no holiday calendar) — accepting up to one day of drift
+ * vs. observed GATS behavior on those rare calendar boundaries. A
+ * future enhancement could thread a holiday set through if GATS
+ * behavior diverges in practice.
  */
 export function lastBusinessDayOfMonth(year: number, month: number): Date {
   if (!Number.isFinite(year) || !Number.isFinite(month)) {
@@ -204,6 +213,19 @@ export function getReportingWindowForNamedMonth(
  *   "2026-05-16" → "2026-05" (start of next window)
  *
  * Returns `null` if the input is not a valid `yyyy-mm-dd` ISO date.
+ *
+ * **Note — `generationEntry` "1st-of-named-month" carve-out:**
+ * the `Reported for Current Window` tile's `generationEntry` check
+ * (in `buildFoundationArtifact.ts`) does NOT use this function. A
+ * `generationEntry` row dated `"2026-04-01"` belongs to the
+ * **April** Generation Window for that check, NOT the March window
+ * that `windowIdForDate("2026-04-01")` returns (which is correct
+ * per this function's "16th-through-15th window-range" spec). The
+ * two semantics intentionally differ — the `generationEntry`
+ * "1st of the named month" submission convention is a separate
+ * GATS reporting signal from the per-meter-read date range. See
+ * the inline comment at the `inputs.generationEntry` walk site in
+ * `buildFoundationArtifact.ts` for the rationale.
  */
 export function windowIdForDate(isoDate: string): string | null {
   const parsed = parseIsoDate(isoDate);

@@ -1055,7 +1055,12 @@ describe("getOrBuildSlimDashboardSummary", () => {
     // calling clock, so assert the prefix + the structural
     // `|window:<yyyy-mm>` suffix.
     expect(writeArgs.inputVersionHash.startsWith(`${HASH}|window:`)).toBe(true);
-    expect(writeArgs.inputVersionHash).toMatch(/\|window:\d{4}-\d{2}$/);
+    // 2026-05-14 follow-up (PR #608 review nit): tighten the month
+    // segment to `01-12` so a buggy windowId generator that emits e.g.
+    // `"2026-90"` or `"2026-00"` trips this rail at CI time.
+    expect(writeArgs.inputVersionHash).toMatch(
+      /\|window:\d{4}-(0[1-9]|1[012])$/
+    );
     expect(writeArgs.artifactType).toBe(SLIM_DASHBOARD_SUMMARY_RUNNER_VERSION);
   });
 
