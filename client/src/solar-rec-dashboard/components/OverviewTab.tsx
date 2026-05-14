@@ -250,8 +250,13 @@ export default memo(function OverviewTab(props: OverviewTabProps) {
       {/* Row 1: System counts — compact, short values.
           2026-05-14 — added "Reported for Current Window" tile.
           Grid widened from xl:grid-cols-4 to xl:grid-cols-5 so the
-          new tile sits inline with the existing four. */}
-      <div className="grid gap-4 grid-cols-2 xl:grid-cols-5">
+          new tile sits inline with the existing four.
+          2026-05-14 follow-up (PR #608 review SF-1) — added
+          md:grid-cols-3 so mid-width breakpoints (768-1280px)
+          render 3-2 instead of 2-2-1 (which left the 5th tile
+          orphaned on its own half-width row). Layout: sm 2-across,
+          md/lg 3-across (3+2), xl 5-across. */}
+      <div className="grid gap-4 grid-cols-2 md:grid-cols-3 xl:grid-cols-5">
         <Card>
           <CardHeader>
             <CardDescription>Total Systems</CardDescription>
