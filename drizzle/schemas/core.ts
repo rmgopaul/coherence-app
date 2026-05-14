@@ -500,6 +500,56 @@ export const dailyReflections = mysqlTable(
 export type DailyReflection = typeof dailyReflections.$inferSelect;
 export type InsertDailyReflection = typeof dailyReflections.$inferInsert;
 
+// Personal dashboard daily state — user-authored and AI-authored
+// dashboard artifacts for one local day. This complements
+// `dailySnapshots` (system-captured integration data) and
+// `dailyReflections` (nightly qualitative journal entries).
+export const personalDashboardDailyState = mysqlTable(
+  "personalDashboardDailyState",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    userId: int("userId").notNull(),
+    dateKey: varchar("dateKey", { length: 10 }).notNull(),
+    dailyBriefStatus: mysqlEnum("dailyBriefStatus", [
+      "not_started",
+      "draft",
+      "ready",
+      "failed",
+    ])
+      .default("not_started")
+      .notNull(),
+    dailyBriefJson: mediumtext("dailyBriefJson"),
+    todayPlanStatus: mysqlEnum("todayPlanStatus", [
+      "not_started",
+      "draft",
+      "ready",
+      "completed",
+    ])
+      .default("not_started")
+      .notNull(),
+    todayPlanJson: mediumtext("todayPlanJson"),
+    commitmentsJson: mediumtext("commitmentsJson"),
+    outcomesJson: mediumtext("outcomesJson"),
+    createdAt: timestamp("createdAt").defaultNow(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow(),
+  },
+  (table) => ({
+    userDateIdx: uniqueIndex("personal_dashboard_daily_state_user_date_idx").on(
+      table.userId,
+      table.dateKey
+    ),
+    userUpdatedIdx: index("personal_dashboard_daily_state_user_updated_idx").on(
+      table.userId,
+      table.updatedAt
+    ),
+  })
+);
+
+export type PersonalDashboardDailyState =
+  typeof personalDashboardDailyState.$inferSelect;
+export type InsertPersonalDashboardDailyState =
+  typeof personalDashboardDailyState.$inferInsert;
+
 // AI-generated cross-domain insights — Anthropic joins the trailing
 // 90 days of supplements + habits + WHOOP + Samsung + reflections +
 // task completions and returns 3-5 plain-English correlations

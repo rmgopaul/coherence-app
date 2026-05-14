@@ -68,6 +68,78 @@ export type PersonalDashboardFeatureReadiness = {
   reason: string;
 };
 
+export type PersonalDashboardDailyBriefStatus =
+  | "not_started"
+  | "draft"
+  | "ready"
+  | "failed";
+
+export type PersonalDashboardTodayPlanStatus =
+  | "not_started"
+  | "draft"
+  | "ready"
+  | "completed";
+
+export type PersonalDashboardDailyBrief = {
+  headline: string;
+  summary: string | null;
+  generatedAt: string | null;
+  sourceRefs: Array<{
+    source: PersonalDashboardSourceKind | PersonalDashboardIntegrationKey;
+    id: string | null;
+    label: string;
+    url: string | null;
+  }>;
+};
+
+export type PersonalDashboardPlanBlock = {
+  id: string;
+  title: string;
+  startIso: string | null;
+  endIso: string | null;
+  source: PersonalDashboardSourceKind;
+  sourceId: string | null;
+  status: "planned" | "active" | "done" | "skipped";
+};
+
+export type PersonalDashboardTodayPlan = {
+  topPriority: string | null;
+  notes: string | null;
+  blocks: PersonalDashboardPlanBlock[];
+  updatedAt: string | null;
+};
+
+export type PersonalDashboardCommitment = {
+  id: string;
+  title: string;
+  source: PersonalDashboardSourceKind | PersonalDashboardIntegrationKey;
+  sourceId: string | null;
+  owner: string | null;
+  dueAt: string | null;
+  status: "open" | "waiting" | "done" | "blocked";
+  url: string | null;
+};
+
+export type PersonalDashboardOutcome = {
+  id: string;
+  title: string;
+  status: "active" | "won" | "missed" | "paused";
+  metricLabel: string | null;
+  target: string | null;
+  current: string | null;
+};
+
+export type PersonalDashboardDailyState = {
+  dateKey: string;
+  dailyBriefStatus: PersonalDashboardDailyBriefStatus;
+  dailyBrief: PersonalDashboardDailyBrief | null;
+  todayPlanStatus: PersonalDashboardTodayPlanStatus;
+  todayPlan: PersonalDashboardTodayPlan | null;
+  commitments: PersonalDashboardCommitment[];
+  outcomes: PersonalDashboardOutcome[];
+  updatedAt: string | null;
+};
+
 export type PersonalDashboardCommandCenter = {
   _runnerVersion: typeof PERSONAL_DASHBOARD_RUNNER_VERSION;
   generatedAt: string;
