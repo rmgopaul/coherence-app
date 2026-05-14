@@ -149,6 +149,22 @@ export interface OverviewTabProps {
     cumulativeKwAcPart2: number;
     cumulativeKwDcPart2: number | null;
   } | null;
+  /**
+   * "Reported for Current Window" tile data — slim-only fields
+   * lifted from `SlimDashboardSummary.currentGatsWindow` +
+   * `reportedForCurrentWindow`. Passed as a separate prop (not on
+   * `summary`) because the discriminated heavy/slim union strips
+   * slim-only fields when the heavy aggregator lands, and the new
+   * tile is foundation-derived (always available from slim).
+   *
+   * `null` until the slim summary resolves (cold-mount tick before
+   * `dashboardSummaryQuery` returns). The tile renders a "—"
+   * placeholder during that window.
+   */
+  reportedForCurrentWindowTile: {
+    label: string;
+    count: number;
+  } | null;
   onDownloadOwnershipTile: (tile: "reporting" | "notReporting" | "terminated") => void;
   onDownloadChangeOwnershipTile: (status: ChangeOwnershipStatus) => void;
   onJumpToOfflineMonitoring: () => void;
@@ -167,6 +183,7 @@ export default memo(function OverviewTab(props: OverviewTabProps) {
     sizeBreakdownRows,
     ownershipStackedChartRows,
     slimPart2Totals,
+    reportedForCurrentWindowTile,
     onDownloadOwnershipTile,
     onDownloadChangeOwnershipTile,
     onJumpToOfflineMonitoring,
@@ -230,8 +247,11 @@ export default memo(function OverviewTab(props: OverviewTabProps) {
 
   return (
     <div className="space-y-4 mt-4">
-      {/* Row 1: System counts — compact, short values */}
-      <div className="grid gap-4 grid-cols-2 xl:grid-cols-4">
+      {/* Row 1: System counts — compact, short values.
+          2026-05-14 — added "Reported for Current Window" tile.
+          Grid widened from xl:grid-cols-4 to xl:grid-cols-5 so the
+          new tile sits inline with the existing four. */}
+      <div className="grid gap-4 grid-cols-2 xl:grid-cols-5">
         <Card>
           <CardHeader>
             <CardDescription>Total Systems</CardDescription>
@@ -246,6 +266,19 @@ export default memo(function OverviewTab(props: OverviewTabProps) {
               {formatNumber(summary.reportingSystems)}
             </CardTitle>
             <CardDescription>{formatPercent(summary.reportingPercent)}</CardDescription>
+          </CardHeader>
+        </Card>
+        <Card>
+          <CardHeader>
+            <CardDescription>Reported for Current Window</CardDescription>
+            <CardTitle className="text-2xl">
+              {reportedForCurrentWindowTile
+                ? formatNumber(reportedForCurrentWindowTile.count)
+                : "—"}
+            </CardTitle>
+            <CardDescription>
+              {reportedForCurrentWindowTile?.label ?? ""}
+            </CardDescription>
           </CardHeader>
         </Card>
         <Card>

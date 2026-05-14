@@ -1293,3 +1293,200 @@ describe("buildFoundationFromInputs — trackingRef collision (Phase 2.7 follow-
     ).toBeUndefined();
   });
 });
+
+// ============================================================================
+// reportedByWindow — per-window CSG sets for the Overview tile (2026-05-14)
+// ============================================================================
+
+describe("reportedByWindow", () => {
+  it("populates accountSolarGenInWindow from per-row dates that fall in [16th..15th] ranges", () => {
+    // April window covers 4/16–5/15. May window covers 5/16–6/15.
+    // March window covers 3/16–4/15.
+    const payload = buildFoundationFromInputs(
+      makeInputs({
+        solarApplications: [
+          makeSolar("CSG-A", { trackingSystemRefId: "TR-A" }),
+          makeSolar("CSG-B", { trackingSystemRefId: "TR-B" }),
+        ],
+        accountSolarGeneration: [
+          // CSG-A: 2026-04-20 → April window (2026-04).
+          makeAccountSolarGen("TR-A", "2026-04-20", 100),
+          // CSG-A: 2026-05-16 → May window (2026-05).
+          makeAccountSolarGen("TR-A", "2026-05-16", 200),
+          // CSG-B: 2026-04-10 → March window (2026-03, since day <= 15).
+          makeAccountSolarGen("TR-B", "2026-04-10", 50),
+        ],
+      }),
+      FIXED_BUILT_AT
+    );
+    expect(payload.reportedByWindow.accountSolarGenInWindow).toEqual({
+      "2026-03": ["CSG-B"],
+      "2026-04": ["CSG-A"],
+      "2026-05": ["CSG-A"],
+    });
+  });
+
+  it("populates generationEntryOnFirstOfMonth ONLY for rows dated the 1st of the named month", () => {
+    const payload = buildFoundationFromInputs(
+      makeInputs({
+        solarApplications: [
+          makeSolar("CSG-A", { trackingSystemRefId: "TR-A" }),
+          makeSolar("CSG-B", { trackingSystemRefId: "TR-B" }),
+        ],
+        generationEntry: [
+          // CSG-A: 2026-04-01 → April window (1st of month → counts).
+          makeGenerationEntry("TR-A", "2026-04-01", 100),
+          // CSG-A: 2026-05-15 → NOT the 1st → excluded.
+          makeGenerationEntry("TR-A", "2026-05-15", 200),
+          // CSG-B: 2026-03-01 → March window (1st of month → counts).
+          makeGenerationEntry("TR-B", "2026-03-01", 50),
+          // CSG-B: 2026-05-16 → NOT the 1st → excluded.
+          makeGenerationEntry("TR-B", "2026-05-16", 75),
+        ],
+      }),
+      FIXED_BUILT_AT
+    );
+    expect(payload.reportedByWindow.generationEntryOnFirstOfMonth).toEqual({
+      "2026-03": ["CSG-B"],
+      "2026-04": ["CSG-A"],
+    });
+  });
+
+  it("dedupes a CSG that has multiple matching rows in the same window", () => {
+    const payload = buildFoundationFromInputs(
+      makeInputs({
+        solarApplications: [
+          makeSolar("CSG-A", { trackingSystemRefId: "TR-A" }),
+        ],
+        accountSolarGeneration: [
+          makeAccountSolarGen("TR-A", "2026-04-20", 100),
+          makeAccountSolarGen("TR-A", "2026-04-25", 110),
+          makeAccountSolarGen("TR-A", "2026-04-30", 120),
+        ],
+      }),
+      FIXED_BUILT_AT
+    );
+    expect(payload.reportedByWindow.accountSolarGenInWindow).toEqual({
+      "2026-04": ["CSG-A"],
+    });
+  });
+
+  it("does NOT scope to Part II — non-Part-II systems still appear", () => {
+    // The slim summary intersects with `part2EligibleCsgIds` at read
+    // time. The foundation's per-window sets are the unfiltered
+    // universe.
+    const payload = buildFoundationFromInputs(
+      makeInputs({
+        solarApplications: [
+          // No ABP mapping → CSG-A is not Part-II verified, but
+          // should still appear in the per-window set.
+          makeSolar("CSG-A", { trackingSystemRefId: "TR-A" }),
+        ],
+        accountSolarGeneration: [makeAccountSolarGen("TR-A", "2026-04-20", 100)],
+      }),
+      FIXED_BUILT_AT
+    );
+    expect(payload.part2EligibleCsgIds).toEqual([]);
+    expect(payload.reportedByWindow.accountSolarGenInWindow).toEqual({
+      "2026-04": ["CSG-A"],
+    });
+  });
+
+  it("returns empty maps when no generation rows exist", () => {
+    const payload = buildFoundationFromInputs(
+      makeInputs({
+        solarApplications: [
+          makeSolar("CSG-A", { trackingSystemRefId: "TR-A" }),
+        ],
+      }),
+      FIXED_BUILT_AT
+    );
+    expect(payload.reportedByWindow.accountSolarGenInWindow).toEqual({});
+    expect(payload.reportedByWindow.generationEntryOnFirstOfMonth).toEqual({});
+  });
+
+  it("includes rows on the 16th and the 15th edge dates in the correct windows", () => {
+    const payload = buildFoundationFromInputs(
+      makeInputs({
+        solarApplications: [
+          makeSolar("CSG-A", { trackingSystemRefId: "TR-A" }),
+          makeSolar("CSG-B", { trackingSystemRefId: "TR-B" }),
+        ],
+        accountSolarGeneration: [
+          // 4/16 = start of April window.
+          makeAccountSolarGen("TR-A", "2026-04-16", 100),
+          // 5/15 = end of April window.
+          makeAccountSolarGen("TR-A", "2026-05-15", 110),
+          // 5/16 = start of May window.
+          makeAccountSolarGen("TR-B", "2026-05-16", 50),
+        ],
+      }),
+      FIXED_BUILT_AT
+    );
+    expect(payload.reportedByWindow.accountSolarGenInWindow).toEqual({
+      "2026-04": ["CSG-A"],
+      "2026-05": ["CSG-B"],
+    });
+  });
+
+  it("merges per-window CSG sets from the optional reportingWindowsAggregate (production path)", () => {
+    // DB-bound builder pre-aggregates per-window trackingRef sets so
+    // the pure builder can populate per-window CSG maps without
+    // materializing every row.
+    const aggregate = {
+      accountSolarGenTrackingRefsByWindow: new Map<string, Set<string>>([
+        ["2026-04", new Set(["TR-A"])],
+        ["2026-05", new Set(["TR-A", "TR-B"])],
+      ]),
+      generationEntryFirstOfMonthTrackingRefsByWindow: new Map<
+        string,
+        Set<string>
+      >([["2026-03", new Set(["TR-B"])]]),
+    };
+    const payload = buildFoundationFromInputs(
+      makeInputs({
+        solarApplications: [
+          makeSolar("CSG-A", { trackingSystemRefId: "TR-A" }),
+          makeSolar("CSG-B", { trackingSystemRefId: "TR-B" }),
+        ],
+        reportingWindowsAggregate: aggregate,
+      }),
+      FIXED_BUILT_AT
+    );
+    expect(payload.reportedByWindow.accountSolarGenInWindow).toEqual({
+      "2026-04": ["CSG-A"],
+      "2026-05": ["CSG-A", "CSG-B"],
+    });
+    expect(payload.reportedByWindow.generationEntryOnFirstOfMonth).toEqual({
+      "2026-03": ["CSG-B"],
+    });
+  });
+
+  it("skips trackingRefs in the aggregate that don't map to a known CSG", () => {
+    // A trackingRef in the aggregate but missing from
+    // `csgIdByTrackingRef` (e.g., solarApplications row was dropped
+    // or never had a tracking ref) must NOT crash and must NOT
+    // contribute to per-window CSG sets.
+    const aggregate = {
+      accountSolarGenTrackingRefsByWindow: new Map<string, Set<string>>([
+        ["2026-04", new Set(["TR-A", "TR-UNKNOWN"])],
+      ]),
+      generationEntryFirstOfMonthTrackingRefsByWindow: new Map<
+        string,
+        Set<string>
+      >(),
+    };
+    const payload = buildFoundationFromInputs(
+      makeInputs({
+        solarApplications: [
+          makeSolar("CSG-A", { trackingSystemRefId: "TR-A" }),
+        ],
+        reportingWindowsAggregate: aggregate,
+      }),
+      FIXED_BUILT_AT
+    );
+    expect(payload.reportedByWindow.accountSolarGenInWindow).toEqual({
+      "2026-04": ["CSG-A"],
+    });
+  });
+});

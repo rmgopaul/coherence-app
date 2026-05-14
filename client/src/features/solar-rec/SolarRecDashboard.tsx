@@ -6588,6 +6588,14 @@ const aiDataContext = useMemo(() => {
                           }
                         : null
                     }
+                    reportedForCurrentWindowTile={
+                      slimSummary
+                        ? {
+                            label: slimSummary.currentGatsWindow.label,
+                            count: slimSummary.reportedForCurrentWindow,
+                          }
+                        : null
+                    }
                     onDownloadOwnershipTile={downloadOwnershipCountTileCsv}
                     onDownloadChangeOwnershipTile={downloadChangeOwnershipCountTileCsv}
                     onJumpToOfflineMonitoring={() => handleActiveTabChange("offline-monitoring")}

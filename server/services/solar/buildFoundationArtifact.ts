@@ -69,8 +69,10 @@ import {
   type FoundationCanonicalSystem,
   type FoundationIntegrityWarning,
   type FoundationWarningCode,
+  type ReportedByWindow,
   assertFoundationInvariants,
 } from "../../../shared/solarRecFoundation";
+import { windowIdForDate } from "./gatsReportingWindow";
 import { getDb, withDbRetry } from "../../db/_core";
 import { getActiveDatasetVersions } from "../../db/solarRecDatasets";
 import { solarRecImportBatches } from "../../../drizzle/schemas/solar";
@@ -179,6 +181,30 @@ export type FoundationContractedDateInput = {
   contractedDate: string | null;
 };
 
+/**
+ * Pre-aggregated per-window trackingRef sets from the DB-bound
+ * builder's streaming pass. Optional: the pure builder falls back to
+ * computing per-window CSG sets directly from
+ * `accountSolarGeneration` / `generationEntry` rows when this field
+ * is undefined (the test path).
+ *
+ * Production passes this in because the DB-bound builder collapses
+ * raw rows into per-trackingRef latest state (~25 k entries vs
+ * ~400 k raw rows), which would otherwise hide per-window history
+ * from the pure builder. The streaming callback accumulates the
+ * per-window trackingRef sets alongside the existing per-trackingRef
+ * latest state — cheap second accumulator on the same pass.
+ */
+export type FoundationReportingWindowsAggregate = {
+  /** `windowId → Set<trackingRef>` for accountSolarGeneration rows. */
+  accountSolarGenTrackingRefsByWindow: Map<string, Set<string>>;
+  /**
+   * `windowId → Set<trackingRef>` for generationEntry rows dated the
+   * 1st of the named month.
+   */
+  generationEntryFirstOfMonthTrackingRefsByWindow: Map<string, Set<string>>;
+};
+
 export type FoundationBuilderInputs = {
   scopeId: string;
   inputVersions: Record<
@@ -198,6 +224,15 @@ export type FoundationBuilderInputs = {
    */
   transferUnitIds: ReadonlySet<string>;
   contractedDate: FoundationContractedDateInput[];
+  /**
+   * Optional pre-aggregated per-window trackingRef sets. When
+   * supplied, the pure builder uses these to populate
+   * `reportedByWindow` instead of walking `accountSolarGeneration`/
+   * `generationEntry` rows. Production DB-bound builder always
+   * supplies this; tests can leave it undefined and the per-row
+   * fallback computes the same result.
+   */
+  reportingWindowsAggregate?: FoundationReportingWindowsAggregate;
   /**
    * `populatedDatasets` is a function of `inputVersions`: a key is
    * populated when its `rowCount > 0`. The builder derives this; the
@@ -762,13 +797,47 @@ export function buildFoundationFromInputs(
   // Track newest entered read date (anchor + isReporting) and newest
   // meter-read value separately. Zero/null-kWh rows still count as
   // reporting when their read date falls inside the reporting window.
+  //
+  // Also build per-window CSG sets driving the new "Reported for
+  // Current Window" Overview tile. Two maps, keyed by `windowId`
+  // (`"yyyy-mm"` matching the named month of a GATS Generation
+  // Window — see `gatsReportingWindow.ts`):
+  //   - `accountSolarGenCsgsByWindow` — CSGs with at least one
+  //     accountSolarGeneration row whose date falls in
+  //     `[16th of named month, 15th of next month]`.
+  //   - `generationEntryFirstOfMonthCsgsByWindow` — CSGs with at
+  //     least one generationEntry row dated **the 1st of the named
+  //     month** (e.g. 2026-04-01 for the April window).
+  // Not Part-II-scoped — the slim summary intersects with
+  // `part2EligibleCsgIds` at read time. Production passes pre-
+  // aggregated trackingRef sets via `inputs.reportingWindowsAggregate`
+  // to avoid materializing the full row arrays; the row-walk path
+  // below is the test-fixture fallback.
   type GenAccumulator = {
     latestReportingReadDate: string | null;
     latestMeterReadDate: string | null;
     latestMeterReadKwh: number | null;
   };
   const genByCsgId = new Map<string, GenAccumulator>();
+  const accountSolarGenCsgsByWindow = new Map<string, Set<string>>();
+  const generationEntryFirstOfMonthCsgsByWindow = new Map<
+    string,
+    Set<string>
+  >();
   let scopeLatestReportingReadDate: string | null = null;
+
+  function addCsgToWindow(
+    target: Map<string, Set<string>>,
+    windowId: string,
+    csgId: string
+  ): void {
+    let set = target.get(windowId);
+    if (!set) {
+      set = new Set<string>();
+      target.set(windowId, set);
+    }
+    set.add(csgId);
+  }
 
   function isoMaxDate(a: string | null, b: string | null): string | null {
     if (!a) return b;
@@ -820,6 +889,11 @@ export function buildFoundationFromInputs(
       scopeLatestReportingReadDate,
       date
     );
+    // Per-window CSG accumulation (row-walk path; tests).
+    const windowId = windowIdForDate(date);
+    if (windowId) {
+      addCsgToWindow(accountSolarGenCsgsByWindow, windowId, csgId);
+    }
   }
 
   // Generation Entry: kWh comes from rawRow (extracted upstream by the
@@ -838,6 +912,54 @@ export function buildFoundationFromInputs(
     scopeLatestReportingReadDate = isoMaxDate(
       scopeLatestReportingReadDate,
       date
+    );
+    // Per-window CSG accumulation: only if the date IS the 1st of
+    // its month (the spec's "generationEntry row dated the first of
+    // the named month" check). All other dates are skipped — they
+    // belong to the accountSolarGen window-range check instead.
+    // A row dated `yyyy-mm-01` is associated with the `"yyyy-mm"`
+    // window (i.e., the window NAMED after that month) — NOT the
+    // previous-month window that `windowIdForDate("yyyy-mm-01")`
+    // would return for day ≤ 15.
+    const parsed = parseIsoDate(date);
+    if (parsed && parsed.day === 1) {
+      const windowId = `${parsed.year}-${String(parsed.month).padStart(2, "0")}`;
+      addCsgToWindow(
+        generationEntryFirstOfMonthCsgsByWindow,
+        windowId,
+        csgId
+      );
+    }
+  }
+
+  // -------- Step 6b: pre-aggregated per-window trackingRef sets --------
+  // Production DB-bound builder pre-aggregates per-window trackingRef
+  // sets in its streaming pass (the per-row walk above would only see
+  // the latest-date synthesized rows otherwise). Resolve trackingRef
+  // → csgId here and merge into the per-window CSG maps. Test path
+  // skips this block — its row walk above is authoritative.
+  if (inputs.reportingWindowsAggregate) {
+    inputs.reportingWindowsAggregate.accountSolarGenTrackingRefsByWindow.forEach(
+      (trackingRefs, windowId) => {
+        trackingRefs.forEach(trackingRef => {
+          const csgId = csgIdByTrackingRef.get(trackingRef);
+          if (!csgId) return;
+          addCsgToWindow(accountSolarGenCsgsByWindow, windowId, csgId);
+        });
+      }
+    );
+    inputs.reportingWindowsAggregate.generationEntryFirstOfMonthTrackingRefsByWindow.forEach(
+      (trackingRefs, windowId) => {
+        trackingRefs.forEach(trackingRef => {
+          const csgId = csgIdByTrackingRef.get(trackingRef);
+          if (!csgId) return;
+          addCsgToWindow(
+            generationEntryFirstOfMonthCsgsByWindow,
+            windowId,
+            csgId
+          );
+        });
+      }
     );
   }
 
@@ -922,6 +1044,29 @@ export function buildFoundationFromInputs(
 
   const foundationHash = computeFoundationHash(inputs.inputVersions);
 
+  // Freeze per-window CSG maps into the wire-shape Record<windowId,
+  // string[]>. Sort entries for deterministic JSON output (cache key
+  // stability + diffability across builds).
+  function mapToRecord(
+    src: Map<string, Set<string>>
+  ): Record<string, string[]> {
+    const out: Record<string, string[]> = {};
+    Array.from(src.keys())
+      .sort()
+      .forEach(windowId => {
+        const set = src.get(windowId);
+        if (!set) return;
+        out[windowId] = Array.from(set).sort();
+      });
+    return out;
+  }
+  const reportedByWindow: ReportedByWindow = {
+    accountSolarGenInWindow: mapToRecord(accountSolarGenCsgsByWindow),
+    generationEntryOnFirstOfMonth: mapToRecord(
+      generationEntryFirstOfMonthCsgsByWindow
+    ),
+  };
+
   const payload: FoundationArtifactPayload = {
     schemaVersion: 1,
     definitionVersion: FOUNDATION_DEFINITION_VERSION,
@@ -941,6 +1086,7 @@ export function buildFoundationFromInputs(
     },
     integrityWarnings,
     populatedDatasets,
+    reportedByWindow,
   };
 
   // Phase 2.4 deliverable — never let a self-inconsistent payload
@@ -1416,6 +1562,33 @@ export async function buildFoundationArtifact(
     return out;
   }
 
+  // Per-window trackingRef accumulators driving the new "Reported
+  // for Current Window" Overview tile. The DB pre-fold above
+  // collapses raw rows into per-trackingRef latest state, which
+  // hides per-window history from the pure builder's row-walk. To
+  // restore that history without re-materializing every row, we
+  // accumulate per-window trackingRef sets in the same streaming
+  // pass — cheap second accumulator. The pure builder resolves
+  // trackingRef → csgId via `csgIdByTrackingRef` and merges into
+  // its per-window CSG maps.
+  const accountSolarGenTrackingRefsByWindow = new Map<string, Set<string>>();
+  const generationEntryFirstOfMonthTrackingRefsByWindow = new Map<
+    string,
+    Set<string>
+  >();
+  function addTrackingRefToWindow(
+    target: Map<string, Set<string>>,
+    windowId: string,
+    trackingRef: string
+  ): void {
+    let set = target.get(windowId);
+    if (!set) {
+      set = new Set<string>();
+      target.set(windowId, set);
+    }
+    set.add(trackingRef);
+  }
+
   const accountSolarGenStateByGatsGenId = new Map<string, GenStateForKey>();
   if (accountSolarGenBatch) {
     await streamRowsByPage<AccountSolarGenRow>(
@@ -1439,6 +1612,17 @@ export async function buildFoundationArtifact(
         if (!date) return;
         const kWh = parseFoundationKwh(row.lastMeterReadKwh);
         foldGenState(accountSolarGenStateByGatsGenId, key, date, kWh);
+        // Per-window accumulator: every row's date contributes
+        // (range check `[16th of named month, 15th of next month]`
+        // is implicit in `windowIdForDate`).
+        const windowId = windowIdForDate(date);
+        if (windowId) {
+          addTrackingRefToWindow(
+            accountSolarGenTrackingRefsByWindow,
+            windowId,
+            key
+          );
+        }
       }
     );
   }
@@ -1466,6 +1650,21 @@ export async function buildFoundationArtifact(
         if (!date) return;
         const kWh = extractGenerationEntryKwh(row.rawRow);
         foldGenState(generationEntryStateByUnitId, key, date, kWh);
+        // Per-window accumulator: ONLY rows dated the 1st of their
+        // month count (the spec's "generationEntry row dated the
+        // first of the named month" check). A row dated
+        // `yyyy-mm-01` is associated with the `"yyyy-mm"` window
+        // — i.e., the window NAMED after that month — NOT
+        // `windowIdForDate("yyyy-mm-01") === "(prev yyyy-mm)"`.
+        const parsed = parseIsoDate(date);
+        if (parsed && parsed.day === 1) {
+          const windowId = `${parsed.year}-${String(parsed.month).padStart(2, "0")}`;
+          addTrackingRefToWindow(
+            generationEntryFirstOfMonthTrackingRefsByWindow,
+            windowId,
+            key
+          );
+        }
       }
     );
   }
@@ -1537,6 +1736,10 @@ export async function buildFoundationArtifact(
       csgId: row.systemId,
       contractedDate: row.contractedDate,
     })),
+    reportingWindowsAggregate: {
+      accountSolarGenTrackingRefsByWindow,
+      generationEntryFirstOfMonthTrackingRefsByWindow,
+    },
   };
 
   return buildFoundationFromInputs(inputs);
