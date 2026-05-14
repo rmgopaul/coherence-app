@@ -139,8 +139,9 @@ describe("FinancialsTab — wire-shape pagination wiring", () => {
     );
     expect(fnIdx).toBeGreaterThan(-1);
     // Slice the function body + immediate surroundings (the body is
-    // <800 chars today; 2000 gives headroom for future additions).
-    const body = FINANCIALS_TAB_SOURCE.slice(fnIdx, fnIdx + 2000);
+    // <800 chars today; 2500 gives headroom for future additions
+    // and the PR #592 follow-up comment block.
+    const body = FINANCIALS_TAB_SOURCE.slice(fnIdx, fnIdx + 2500);
     expect(body).toMatch(
       /getDashboardFinancialsPage[\s\S]*?\.invalidate\s*\(/
     );
@@ -151,6 +152,38 @@ describe("FinancialsTab — wire-shape pagination wiring", () => {
     expect(body).toMatch(
       /void\s+trpcUtils\.solarRecDashboard\.getDashboardFinancialsPage\.invalidate/
     );
+  });
+
+  it("page-query invalidate fires BEFORE Promise.allSettled (PR #592 follow-up — eliminates RTT flicker)", () => {
+    // PR #592 (the initial SF-1 fix) placed the page-query invalidate
+    // at the BOTTOM of `refreshFinancialsAfterMutation`, after the
+    // `Promise.allSettled([contractScanRefetch(), financialsRefetch()])`
+    // await. That kept a ~1-RTT flicker window: by the time the helper
+    // returned and the caller cleared `setLocalOverrides`, the page-
+    // query refetch was still in flight, so the displayed row showed
+    // stale pre-mutation data for 100-500ms.
+    //
+    // PR #592 follow-up moves the invalidate to the TOP of the helper
+    // so the page refetch runs IN PARALLEL with the slim refetch. By
+    // the time the helper returns, both have settled, and clearing
+    // localOverrides shows the new server data immediately — no
+    // flicker window.
+    //
+    // Regression rail: assert the call's source position is BEFORE the
+    // `Promise.allSettled` await, defending the at-top placement
+    // against a regression that moves it back.
+    const fnIdx = FINANCIALS_TAB_SOURCE.indexOf(
+      "refreshFinancialsAfterMutation = useCallback"
+    );
+    expect(fnIdx).toBeGreaterThan(-1);
+    const body = FINANCIALS_TAB_SOURCE.slice(fnIdx, fnIdx + 2500);
+    const invalidateIdx = body.indexOf(
+      "getDashboardFinancialsPage.invalidate"
+    );
+    const promiseAllIdx = body.indexOf("Promise.allSettled");
+    expect(invalidateIdx).toBeGreaterThan(-1);
+    expect(promiseAllIdx).toBeGreaterThan(-1);
+    expect(invalidateIdx).toBeLessThan(promiseAllIdx);
   });
 });
 
