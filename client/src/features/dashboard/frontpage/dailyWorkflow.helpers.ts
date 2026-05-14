@@ -120,36 +120,59 @@ export function buildCommitmentDraft(
   commandCenter: PersonalDashboardCommandCenter,
   now: Date
 ): PersonalDashboardCommitment | null {
-  if (!commandCenter.rightNow) return null;
+  return buildCommitmentDrafts(commandCenter, now)[0] ?? null;
+}
 
-  return {
-    id: `commitment:${commandCenter.rightNow.kind}:${
-      commandCenter.rightNow.sourceId ?? now.getTime()
-    }`,
-    title: commandCenter.rightNow.title,
-    source: commandCenter.rightNow.kind,
-    sourceId: commandCenter.rightNow.sourceId,
-    owner: null,
-    dueAt: null,
-    status: "open",
-    url: normalizeExternalUrl(commandCenter.rightNow.sourceUrl),
-  };
+export function buildCommitmentDrafts(
+  commandCenter: PersonalDashboardCommandCenter,
+  now: Date
+): PersonalDashboardCommitment[] {
+  const suggestions = commandCenter.dailyWorkflow.suggestedCommitments;
+  if (suggestions.length > 0) return suggestions;
+  if (!commandCenter.rightNow) return [];
+
+  return [
+    {
+      id: `commitment:${commandCenter.rightNow.kind}:${
+        commandCenter.rightNow.sourceId ?? now.getTime()
+      }`,
+      title: commandCenter.rightNow.title,
+      source: commandCenter.rightNow.kind,
+      sourceId: commandCenter.rightNow.sourceId,
+      owner: null,
+      dueAt: null,
+      status: "open",
+      url: normalizeExternalUrl(commandCenter.rightNow.sourceUrl),
+    },
+  ];
 }
 
 export function buildOutcomeDraft(
   commandCenter: PersonalDashboardCommandCenter,
   now: Date
 ): PersonalDashboardOutcome {
-  return {
-    id: `outcome:${commandCenter.dateKey}:${now.getTime()}`,
-    title:
-      commandCenter.rightNow?.title ??
-      "Define one meaningful outcome for today",
-    status: "active",
-    metricLabel: "Progress",
-    target: "Done today",
-    current: null,
-  };
+  return buildOutcomeDrafts(commandCenter, now)[0]!;
+}
+
+export function buildOutcomeDrafts(
+  commandCenter: PersonalDashboardCommandCenter,
+  now: Date
+): PersonalDashboardOutcome[] {
+  const suggestions = commandCenter.dailyWorkflow.suggestedOutcomes;
+  if (suggestions.length > 0) return suggestions;
+
+  return [
+    {
+      id: `outcome:${commandCenter.dateKey}:${now.getTime()}`,
+      title:
+        commandCenter.rightNow?.title ??
+        "Define one meaningful outcome for today",
+      status: "active",
+      metricLabel: "Progress",
+      target: "Done today",
+      current: null,
+    },
+  ];
 }
 
 export function normalizeDailyWorkflowDraftForSave(
