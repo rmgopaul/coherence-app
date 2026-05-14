@@ -259,6 +259,23 @@ describe("buildPersonalDashboardDailyProgress", () => {
 
     expect(
       buildPersonalDashboardDailyProgress({
+        dailyBriefStatus: "not_started",
+        dailyBrief: {
+          headline: "",
+          summary: "Client context only",
+          generatedAt: "2026-05-14T12:00:00.000Z",
+          sourceRefs: [],
+        },
+        todayPlanStatus: "not_started",
+        todayPlan: null,
+        commitments: [],
+        outcomes: [],
+        updatedAt: "2026-05-14T12:10:00.000Z",
+      }).tone
+    ).toBe("planned");
+
+    expect(
+      buildPersonalDashboardDailyProgress({
         dailyBriefStatus: "ready",
         dailyBrief: null,
         todayPlanStatus: "completed",

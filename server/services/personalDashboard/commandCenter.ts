@@ -552,11 +552,16 @@ export function buildPersonalDashboardDailyProgress(
     won: countByStatus(state.outcomes, "won"),
     missed: countByStatus(state.outcomes, "missed"),
   };
+  const hasDailyBriefContent = Boolean(
+    state.dailyBrief?.headline?.trim() ||
+    state.dailyBrief?.summary?.trim() ||
+    (state.dailyBrief?.sourceRefs.length ?? 0) > 0
+  );
 
   const hasWorkflow =
     state.dailyBriefStatus !== "not_started" ||
     state.todayPlanStatus !== "not_started" ||
-    Boolean(state.dailyBrief?.headline?.trim()) ||
+    hasDailyBriefContent ||
     Boolean(state.todayPlan?.topPriority?.trim()) ||
     commitments.total > 0 ||
     outcomes.total > 0;

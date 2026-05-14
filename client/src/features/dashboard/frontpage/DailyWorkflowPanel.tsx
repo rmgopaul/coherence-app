@@ -28,9 +28,11 @@ import {
   buildOutcomeDrafts,
   buildTodayPlanDraft,
   completeAllCommitments,
+  createManualDailyWorkflowId,
   dailyWorkflowDraftFromState,
   dateTimeLocalInputFromIso,
   emptyDailyWorkflowDraft,
+  hasDailyBriefDraftContent,
   hasDailyWorkflowDraftContent,
   isoFromDateTimeLocalInput,
   normalizeDailyWorkflowDraftForSave,
@@ -209,13 +211,12 @@ export function DailyWorkflowPanel({
 
   const save = useCallback(async () => {
     const normalized = normalizeDailyWorkflowDraftForSave(draft, new Date());
+    const hasDailyBrief = hasDailyBriefDraftContent(normalized.dailyBrief);
     try {
       await saveDailyState.mutateAsync({
         dateKey,
         dailyBriefStatus: normalized.dailyBriefStatus,
-        dailyBrief: normalized.dailyBrief.headline
-          ? normalized.dailyBrief
-          : null,
+        dailyBrief: hasDailyBrief ? normalized.dailyBrief : null,
         todayPlanStatus: normalized.todayPlanStatus,
         todayPlan:
           normalized.todayPlan.topPriority ||
@@ -276,7 +277,7 @@ export function DailyWorkflowPanel({
       commitments: [
         ...current.commitments,
         {
-          id: `commitment:manual:${Date.now()}`,
+          id: createManualDailyWorkflowId("commitment"),
           title: "",
           source: "system",
           sourceId: null,
@@ -295,7 +296,7 @@ export function DailyWorkflowPanel({
       outcomes: [
         ...current.outcomes,
         {
-          id: `outcome:manual:${Date.now()}`,
+          id: createManualDailyWorkflowId("outcome"),
           title: "",
           status: "active",
           metricLabel: "Progress",
@@ -332,7 +333,7 @@ export function DailyWorkflowPanel({
         blocks: [
           ...current.todayPlan.blocks,
           {
-            id: `plan-block:manual:${Date.now()}`,
+            id: createManualDailyWorkflowId("plan-block"),
             title: "",
             startIso: null,
             endIso: null,

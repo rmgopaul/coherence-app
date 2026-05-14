@@ -19,6 +19,8 @@ export type DailyWorkflowDraft = {
   outcomes: PersonalDashboardOutcome[];
 };
 
+type ManualWorkflowIdKind = "commitment" | "outcome" | "plan-block";
+
 export function emptyDailyWorkflowDraft(): DailyWorkflowDraft {
   return {
     dailyBriefStatus: "not_started",
@@ -40,18 +42,36 @@ export function emptyDailyWorkflowDraft(): DailyWorkflowDraft {
   };
 }
 
+export function createManualDailyWorkflowId(
+  kind: ManualWorkflowIdKind
+): string {
+  const randomId =
+    typeof globalThis.crypto?.randomUUID === "function"
+      ? globalThis.crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return `${kind}:manual:${randomId}`;
+}
+
+export function hasDailyBriefDraftContent(
+  brief: PersonalDashboardDailyBrief
+): boolean {
+  return Boolean(
+    brief.headline.trim() ||
+    brief.summary?.trim() ||
+    brief.sourceRefs.length > 0
+  );
+}
+
 export function hasDailyWorkflowDraftContent(
   draft: DailyWorkflowDraft
 ): boolean {
   return Boolean(
-    draft.dailyBrief.headline.trim() ||
-      draft.dailyBrief.summary?.trim() ||
-      draft.dailyBrief.sourceRefs.length > 0 ||
-      draft.todayPlan.topPriority?.trim() ||
-      draft.todayPlan.notes?.trim() ||
-      draft.todayPlan.blocks.length > 0 ||
-      draft.commitments.length > 0 ||
-      draft.outcomes.length > 0
+    hasDailyBriefDraftContent(draft.dailyBrief) ||
+    draft.todayPlan.topPriority?.trim() ||
+    draft.todayPlan.notes?.trim() ||
+    draft.todayPlan.blocks.length > 0 ||
+    draft.commitments.length > 0 ||
+    draft.outcomes.length > 0
   );
 }
 
@@ -212,6 +232,7 @@ export function normalizeDailyWorkflowDraftForSave(
   now: Date
 ): DailyWorkflowDraft {
   const headline = draft.dailyBrief.headline.trim();
+  const summary = draft.dailyBrief.summary?.trim() || null;
   const topPriority = draft.todayPlan.topPriority?.trim() || null;
   const notes = draft.todayPlan.notes?.trim() || null;
   const sourceRefs = draft.dailyBrief.sourceRefs
@@ -233,12 +254,19 @@ export function normalizeDailyWorkflowDraftForSave(
     }))
     .filter((item) => item.title.length > 0)
     .slice(0, 40);
+  const hasDailyBriefContent = Boolean(
+    headline || summary || sourceRefs.length
+  );
 
   return {
-    dailyBriefStatus: headline ? draft.dailyBriefStatus : "not_started",
+    dailyBriefStatus: hasDailyBriefContent
+      ? draft.dailyBriefStatus === "not_started"
+        ? "draft"
+        : draft.dailyBriefStatus
+      : "not_started",
     dailyBrief: {
       headline,
-      summary: draft.dailyBrief.summary?.trim() || null,
+      summary,
       generatedAt: draft.dailyBrief.generatedAt ?? now.toISOString(),
       sourceRefs,
     },

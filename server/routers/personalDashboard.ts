@@ -32,7 +32,7 @@ const dashboardSourceSchema = z.enum([
 ]);
 
 const dailyBriefSchema = z.object({
-  headline: z.string().min(1).max(500),
+  headline: z.string().max(500),
   summary: z.string().max(4000).nullable(),
   generatedAt: z.string().datetime().nullable(),
   sourceRefs: z
@@ -45,7 +45,15 @@ const dailyBriefSchema = z.object({
       })
     )
     .max(50),
-});
+}).refine(
+  (brief) =>
+    Boolean(
+      brief.headline.trim() ||
+        brief.summary?.trim() ||
+        brief.sourceRefs.length > 0
+    ),
+  "Daily brief must include a headline, summary, or source reference."
+);
 
 const todayPlanSchema = z.object({
   topPriority: z.string().max(500).nullable(),

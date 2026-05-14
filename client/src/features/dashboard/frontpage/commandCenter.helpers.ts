@@ -5,7 +5,9 @@ export function buildWorkflowReviewPrompts(
 ): string[] {
   const prompts: string[] = [];
 
-  if (progress.dailyBriefStatus === "not_started") {
+  if (progress.dailyBriefStatus === "failed") {
+    prompts.push("Review failed daily brief");
+  } else if (progress.dailyBriefStatus === "not_started") {
     prompts.push("Draft today's brief");
   }
   if (progress.todayPlanStatus === "not_started") {
@@ -32,7 +34,10 @@ export function buildWorkflowReviewPrompts(
       `Review ${formatCountedLabel(progress.outcomes.missed, "missed outcome")}`
     );
   }
-  if (progress.outcomes.active > 0 && progress.todayPlanStatus === "completed") {
+  if (
+    progress.outcomes.active > 0 &&
+    progress.todayPlanStatus === "completed"
+  ) {
     prompts.push(
       `Close ${formatCountedLabel(progress.outcomes.active, "active outcome")}`
     );
