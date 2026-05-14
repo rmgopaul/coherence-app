@@ -1106,184 +1106,145 @@ const transferHistoryRowExists: AppendRowChecker = async (
   return rows.length > 0;
 };
 
-// 2026-05-13 — accountSolarGeneration + transferHistory clone paths
-// MUST page through the source batch the same way the
-// convertedReads cloner already does. The single-shot
-// `INSERT INTO ... SELECT FROM <self>` form below was the pre-fix
-// implementation; on prod scope-user-1, transferHistory's active
-// batch holds ~649k rows and accountSolarGeneration's holds
-// ~25k. The single statement exceeded TiDB's default
-// `txn-total-size-limit` (100 MB) on transferHistory and surfaced
-// to the user as a generic Drizzle `Failed query` with no further
-// context. accountSolarGeneration was below the limit today but is
-// the same shape and will hit the same wall once the upload count
-// grows. The paginated form below mirrors `cloneConvertedReadsBatch`
-// at lines 1249-1327 — id-cursor + LIMIT ${APPEND_PREP_PAGE_SIZE},
-// one txn per page.
+// 2026-05-13 — accountSolarGeneration + transferHistory + convertedReads
+// clone paths all MUST page through the source batch via the same
+// id-cursor + LIMIT idiom. The pre-fix code shipped 3 byte-faithful
+// copies of the same cursor-walk + `INSERT INTO ... SELECT FROM <self>`
+// loop, differing only in (a) table name and (b) typed-column list.
+// `makeBatchCloner` below collapses them into one factory; the 3
+// dataset-specific cloners are now thin call sites. The single-shot
+// `INSERT INTO ... SELECT FROM <self>` form (no cursor, no LIMIT) is
+// banned because on prod scope-user-1 transferHistory's active batch
+// holds ~649k rows — the single statement exceeded TiDB's default
+// `txn-total-size-limit` (100 MB) and surfaced to the user as a
+// generic Drizzle `Failed query` with no further context. The
+// regression rails in `datasetRowPersistence.test.ts` guard the
+// id-cursor invariant against future refactors.
 
-const cloneAccountSolarGenerationBatch: BatchRowCloner = async (
-  scopeId,
-  fromBatchId,
-  toBatchId,
-  options
-) => {
-  const db = await getDb();
-  if (!db) throw new Error("Database not available");
+/**
+ * Build a paginated `BatchRowCloner` that walks the source batch in
+ * `APPEND_PREP_PAGE_SIZE` chunks and issues one `INSERT INTO ...
+ * SELECT FROM <self>` per page, bounded above by an id cursor. The
+ * emitted SQL is byte-for-byte equivalent to the hand-written cloners
+ * the factory replaced.
+ *
+ * @param tableName - The `srDs*` table to clone within.
+ * @param columns   - Typed columns copied verbatim from the source
+ *   row (per-row data, NOT including `id` / `scopeId` / `batchId` /
+ *   `createdAt`, which are generated or parameterized).
+ * @param retryLabel - Human-readable label substring used in the two
+ *   `withDbRetry` call labels (`page <label> clone ids` and
+ *   `clone <label> batch page`). Distinguishes per-dataset failures
+ *   in the retry-log output.
+ */
+function makeBatchCloner({
+  tableName,
+  columns,
+  retryLabel,
+}: {
+  tableName: string;
+  columns: string[];
+  retryLabel: string;
+}): BatchRowCloner {
+  const columnList = columns.join(",\n          ");
+  const table = sql.raw(tableName);
+  const insertColumns = sql.raw(columnList);
+  const selectColumns = sql.raw(columnList);
 
-  let cursor: string | null = null;
-  let cloned = 0;
+  return async (scopeId, fromBatchId, toBatchId, options) => {
+    const db = await getDb();
+    if (!db) throw new Error("Database not available");
 
-  for (;;) {
-    const cursorClause: ReturnType<typeof sql> = cursor
-      ? sql`AND id > ${cursor}`
-      : sql``;
-    const idResult: unknown = await withDbRetry(
-      "page account solar generation clone ids",
-      () =>
-        db.execute(sql`
-        SELECT id
-        FROM srDsAccountSolarGeneration
-        WHERE scopeId = ${scopeId}
-          AND batchId = ${fromBatchId}
-          ${cursorClause}
-        ORDER BY id
-        LIMIT ${APPEND_PREP_PAGE_SIZE}
-      `)
-    );
-    const idRows: Array<{ id: string }> = extractExecuteRows<{ id: string }>(
-      idResult
-    );
-    if (idRows.length === 0) break;
+    let cursor: string | null = null;
+    let cloned = 0;
 
-    const chunkEndId: string = String(idRows[idRows.length - 1]!.id);
-    const lowerBound: ReturnType<typeof sql> = cursor
-      ? sql`AND id > ${cursor}`
-      : sql``;
-    const result = await withDbRetry(
-      "clone account solar generation batch page",
-      () =>
-        db.execute(sql`
-        INSERT INTO srDsAccountSolarGeneration (
-          id,
-          scopeId,
-          batchId,
-          gatsGenId,
-          facilityName,
-          monthOfGeneration,
-          lastMeterReadDate,
-          lastMeterReadKwh,
-          rawRow,
-          createdAt
-        )
-        SELECT
-          REPLACE(UUID(), '-', ''),
-          ${scopeId},
-          ${toBatchId},
-          gatsGenId,
-          facilityName,
-          monthOfGeneration,
-          lastMeterReadDate,
-          lastMeterReadKwh,
-          rawRow,
-          CURRENT_TIMESTAMP
-        FROM srDsAccountSolarGeneration
-        WHERE scopeId = ${scopeId}
-          AND batchId = ${fromBatchId}
-          ${lowerBound}
-          AND id <= ${chunkEndId}
-      `)
-    );
+    for (;;) {
+      const cursorClause: ReturnType<typeof sql> = cursor
+        ? sql`AND id > ${cursor}`
+        : sql``;
+      const idResult: unknown = await withDbRetry(
+        `page ${retryLabel} clone ids`,
+        () =>
+          db.execute(sql`
+          SELECT id
+          FROM ${table}
+          WHERE scopeId = ${scopeId}
+            AND batchId = ${fromBatchId}
+            ${cursorClause}
+          ORDER BY id
+          LIMIT ${APPEND_PREP_PAGE_SIZE}
+        `)
+      );
+      const idRows: Array<{ id: string }> = extractExecuteRows<{ id: string }>(
+        idResult
+      );
+      if (idRows.length === 0) break;
 
-    cloned += getDbExecuteAffectedRows(result);
-    cursor = chunkEndId;
-    await options?.onProgress?.({ processedRows: cloned });
-    if (idRows.length < APPEND_PREP_PAGE_SIZE) break;
-  }
+      const chunkEndId: string = String(idRows[idRows.length - 1]!.id);
+      const lowerBound: ReturnType<typeof sql> = cursor
+        ? sql`AND id > ${cursor}`
+        : sql``;
+      const result = await withDbRetry(
+        `clone ${retryLabel} batch page`,
+        () =>
+          db.execute(sql`
+          INSERT INTO ${table} (
+            id,
+            scopeId,
+            batchId,
+            ${insertColumns},
+            createdAt
+          )
+          SELECT
+            REPLACE(UUID(), '-', ''),
+            ${scopeId},
+            ${toBatchId},
+            ${selectColumns},
+            CURRENT_TIMESTAMP
+          FROM ${table}
+          WHERE scopeId = ${scopeId}
+            AND batchId = ${fromBatchId}
+            ${lowerBound}
+            AND id <= ${chunkEndId}
+        `)
+      );
 
-  return cloned;
-};
+      cloned += getDbExecuteAffectedRows(result);
+      cursor = chunkEndId;
+      await options?.onProgress?.({ processedRows: cloned });
+      if (idRows.length < APPEND_PREP_PAGE_SIZE) break;
+    }
 
-const cloneTransferHistoryBatch: BatchRowCloner = async (
-  scopeId,
-  fromBatchId,
-  toBatchId,
-  options
-) => {
-  const db = await getDb();
-  if (!db) throw new Error("Database not available");
+    return cloned;
+  };
+}
 
-  let cursor: string | null = null;
-  let cloned = 0;
+const cloneAccountSolarGenerationBatch: BatchRowCloner = makeBatchCloner({
+  tableName: "srDsAccountSolarGeneration",
+  columns: [
+    "gatsGenId",
+    "facilityName",
+    "monthOfGeneration",
+    "lastMeterReadDate",
+    "lastMeterReadKwh",
+    "rawRow",
+  ],
+  retryLabel: "account solar generation",
+});
 
-  for (;;) {
-    const cursorClause: ReturnType<typeof sql> = cursor
-      ? sql`AND id > ${cursor}`
-      : sql``;
-    const idResult: unknown = await withDbRetry(
-      "page transfer history clone ids",
-      () =>
-        db.execute(sql`
-        SELECT id
-        FROM srDsTransferHistory
-        WHERE scopeId = ${scopeId}
-          AND batchId = ${fromBatchId}
-          ${cursorClause}
-        ORDER BY id
-        LIMIT ${APPEND_PREP_PAGE_SIZE}
-      `)
-    );
-    const idRows: Array<{ id: string }> = extractExecuteRows<{ id: string }>(
-      idResult
-    );
-    if (idRows.length === 0) break;
-
-    const chunkEndId: string = String(idRows[idRows.length - 1]!.id);
-    const lowerBound: ReturnType<typeof sql> = cursor
-      ? sql`AND id > ${cursor}`
-      : sql``;
-    const result = await withDbRetry("clone transfer history batch page", () =>
-      db.execute(sql`
-        INSERT INTO srDsTransferHistory (
-          id,
-          scopeId,
-          batchId,
-          transactionId,
-          unitId,
-          transferCompletionDate,
-          quantity,
-          transferor,
-          transferee,
-          rawRow,
-          createdAt
-        )
-        SELECT
-          REPLACE(UUID(), '-', ''),
-          ${scopeId},
-          ${toBatchId},
-          transactionId,
-          unitId,
-          transferCompletionDate,
-          quantity,
-          transferor,
-          transferee,
-          rawRow,
-          CURRENT_TIMESTAMP
-        FROM srDsTransferHistory
-        WHERE scopeId = ${scopeId}
-          AND batchId = ${fromBatchId}
-          ${lowerBound}
-          AND id <= ${chunkEndId}
-      `)
-    );
-
-    cloned += getDbExecuteAffectedRows(result);
-    cursor = chunkEndId;
-    await options?.onProgress?.({ processedRows: cloned });
-    if (idRows.length < APPEND_PREP_PAGE_SIZE) break;
-  }
-
-  return cloned;
-};
+const cloneTransferHistoryBatch: BatchRowCloner = makeBatchCloner({
+  tableName: "srDsTransferHistory",
+  columns: [
+    "transactionId",
+    "unitId",
+    "transferCompletionDate",
+    "quantity",
+    "transferor",
+    "transferee",
+    "rawRow",
+  ],
+  retryLabel: "transfer history",
+});
 
 // Task 5.12 PR-10: convertedReads dedup checker. Mirrors the bridge's
 // `convertedReadsRowKey` (`server/solar/convertedReadsBridge.ts:251`)
@@ -1348,85 +1309,18 @@ const convertedReadsRowExists: AppendRowChecker = async (
   return rows.length > 0;
 };
 
-const cloneConvertedReadsBatch: BatchRowCloner = async (
-  scopeId,
-  fromBatchId,
-  toBatchId,
-  options
-) => {
-  const db = await getDb();
-  if (!db) throw new Error("Database not available");
-
-  let cursor: string | null = null;
-  let cloned = 0;
-
-  for (;;) {
-    const cursorClause: ReturnType<typeof sql> = cursor
-      ? sql`AND id > ${cursor}`
-      : sql``;
-    const idResult: unknown = await withDbRetry(
-      "page converted reads clone ids",
-      () =>
-        db.execute(sql`
-        SELECT id
-        FROM srDsConvertedReads
-        WHERE scopeId = ${scopeId}
-          AND batchId = ${fromBatchId}
-          ${cursorClause}
-        ORDER BY id
-        LIMIT ${APPEND_PREP_PAGE_SIZE}
-      `)
-    );
-    const idRows: Array<{ id: string }> = extractExecuteRows<{ id: string }>(
-      idResult
-    );
-    if (idRows.length === 0) break;
-
-    const chunkEndId: string = String(idRows[idRows.length - 1]!.id);
-    const lowerBound: ReturnType<typeof sql> = cursor
-      ? sql`AND id > ${cursor}`
-      : sql``;
-    const result = await withDbRetry("clone converted reads batch page", () =>
-      db.execute(sql`
-        INSERT INTO srDsConvertedReads (
-          id,
-          scopeId,
-          batchId,
-          monitoring,
-          monitoringSystemId,
-          monitoringSystemName,
-          lifetimeMeterReadWh,
-          readDate,
-          rawRow,
-          createdAt
-        )
-        SELECT
-          REPLACE(UUID(), '-', ''),
-          ${scopeId},
-          ${toBatchId},
-          monitoring,
-          monitoringSystemId,
-          monitoringSystemName,
-          lifetimeMeterReadWh,
-          readDate,
-          rawRow,
-          CURRENT_TIMESTAMP
-        FROM srDsConvertedReads
-        WHERE scopeId = ${scopeId}
-          AND batchId = ${fromBatchId}
-          ${lowerBound}
-          AND id <= ${chunkEndId}
-      `)
-    );
-
-    cloned += getDbExecuteAffectedRows(result);
-    cursor = chunkEndId;
-    await options?.onProgress?.({ processedRows: cloned });
-    if (idRows.length < APPEND_PREP_PAGE_SIZE) break;
-  }
-
-  return cloned;
-};
+const cloneConvertedReadsBatch: BatchRowCloner = makeBatchCloner({
+  tableName: "srDsConvertedReads",
+  columns: [
+    "monitoring",
+    "monitoringSystemId",
+    "monitoringSystemName",
+    "lifetimeMeterReadWh",
+    "readDate",
+    "rawRow",
+  ],
+  retryLabel: "converted reads",
+});
 
 const APPEND_ROW_CHECKERS: Record<string, AppendRowChecker> = {
   accountSolarGeneration: accountSolarGenerationRowExists,

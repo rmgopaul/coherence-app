@@ -235,58 +235,98 @@ describe("buildAppendRowKey", () => {
 // and would have hit the same wall. The post-fix transferHistory
 // and accountSolarGen cloners mirror that cursor-paged pattern.
 //
-// These rails assert the source still contains the page-cursor
-// idiom for all three cloners; a future refactor that quietly
-// collapses any cloner back to a single statement will fail here
-// before it can ship.
+// Post the 2026-05-13 `makeBatchCloner` factory extraction the
+// 3 cloners are thin call sites that share one paginated body.
+// These rails assert (a) the factory body itself still emits the
+// id-cursor + LIMIT idiom and (b) every cloner call site routes
+// through the factory with the canonical `tableName` + `retryLabel`
+// — a future refactor that quietly collapses any cloner back to a
+// single statement, or that adds a new bypass cloner, will fail
+// here before it can ship.
 describe("batch-row cloners — pagination rails", () => {
-  it("all three append-mode cloners page through the source batch", () => {
+  it("all three append-mode cloners route through the makeBatchCloner factory", () => {
     const src = readPersistenceSource();
 
-    // Shared by the cursor-paged form on all three cloners.
-    expect(src).toContain("APPEND_PREP_PAGE_SIZE");
+    // The factory itself must exist and be the only producer of
+    // paginated cloners. (A future regression that hand-rolls a
+    // bypass cloner would not appear here.)
+    expect(src).toContain("function makeBatchCloner(");
 
-    // Per-table SELECT-id pagination labels — uniqueness pins each
-    // cloner separately so a deletion of one is loud here.
-    expect(src).toContain("page transfer history clone ids");
-    expect(src).toContain("page account solar generation clone ids");
-    expect(src).toContain("page converted reads clone ids");
+    // Each cloner's tableName must appear as a `tableName:` factory
+    // arg — pins the per-dataset call sites against accidental
+    // deletion.
+    expect(src).toMatch(/tableName:\s*"srDsTransferHistory"/);
+    expect(src).toMatch(/tableName:\s*"srDsAccountSolarGeneration"/);
+    expect(src).toMatch(/tableName:\s*"srDsConvertedReads"/);
 
-    // Per-table INSERT page labels.
-    expect(src).toContain("clone transfer history batch page");
-    expect(src).toContain("clone account solar generation batch page");
-    expect(src).toContain("clone converted reads batch page");
+    // Each cloner's retryLabel substring must appear as a
+    // `retryLabel:` factory arg — together with the factory's
+    // `\`page ${retryLabel} clone ids\`` / `\`clone ${retryLabel}
+    // batch page\`` template literals, this guarantees the compiled
+    // `withDbRetry` label substrings (`page transfer history clone
+    // ids`, etc.) still flow through to retry-log output.
+    expect(src).toMatch(/retryLabel:\s*"transfer history"/);
+    expect(src).toMatch(/retryLabel:\s*"account solar generation"/);
+    expect(src).toMatch(/retryLabel:\s*"converted reads"/);
+
+    // The factory body wires the retryLabel into both retry labels.
+    expect(src).toContain("`page ${retryLabel} clone ids`");
+    expect(src).toContain("`clone ${retryLabel} batch page`");
   });
 
-  it("no append-mode cloner uses an unbounded INSERT...SELECT against its self table", () => {
+  it("makeBatchCloner emits an INSERT...SELECT page-bounded by 'AND id <='", () => {
     const src = readPersistenceSource();
 
-    // The pre-fix shape: an `INSERT INTO <table>` block whose
-    // SELECT body has no `id <=` upper-bound and no `LIMIT`. The
-    // paginated form ALWAYS has the chunkEnd predicate
-    // `AND id <= ${chunkEndId}` inside the SELECT body.
+    // Find the makeBatchCloner function body. Its INSERT block is
+    // the only paginated cloner emitter in this file post-factory
+    // extraction.
+    const factoryStart = src.indexOf("function makeBatchCloner(");
+    expect(
+      factoryStart,
+      "makeBatchCloner factory must exist in datasetRowPersistence.ts"
+    ).toBeGreaterThan(-1);
+
+    // Slice from the factory definition to the next top-level
+    // `const ` declaration (the first factory call site). That
+    // window contains the factory body.
+    const tail = src.slice(factoryStart);
+    const factoryEnd = tail.indexOf("\nconst ");
+    expect(
+      factoryEnd,
+      "expected to find a const declaration after the factory body"
+    ).toBeGreaterThan(-1);
+    const factoryBody = tail.slice(0, factoryEnd);
+
+    // The paginated SELECT must use APPEND_PREP_PAGE_SIZE.
+    expect(factoryBody).toContain("APPEND_PREP_PAGE_SIZE");
+    // The INSERT...SELECT inside the factory body must be page-
+    // bounded — `AND id <= ${chunkEndId}` is the load-bearing
+    // upper bound that keeps each transaction under TiDB's
+    // `txn-total-size-limit`. A future refactor that drops this
+    // predicate would reintroduce the production failure mode.
+    expect(factoryBody).toMatch(/INSERT INTO \$\{table\}/);
+    expect(factoryBody).toMatch(/AND id <= \$\{chunkEndId\}/);
+  });
+
+  it("no append-mode cloner uses a hand-rolled INSERT...SELECT against its self table", () => {
+    const src = readPersistenceSource();
+
+    // The pre-factory shape: a literal `INSERT INTO srDs...` text
+    // (i.e. a hand-rolled SQL string targeting one of the 3
+    // append-mode tables). After the factory extraction the only
+    // INSERTs to these tables come from `INSERT INTO ${table}`
+    // inside `makeBatchCloner`. If a future PR adds a hand-rolled
+    // bypass cloner against one of these tables, this rail catches
+    // it before merge.
     for (const table of [
       "srDsTransferHistory",
       "srDsAccountSolarGeneration",
       "srDsConvertedReads",
     ]) {
-      // Find every INSERT block targeting this table. Each block
-      // is delimited by the next `\`\)` that closes the
-      // `db.execute(sql\`...\`)` call. We assert every such block
-      // contains the `id <=` upper-bound predicate.
-      const insertBlocks = [
-        ...src.matchAll(new RegExp(`INSERT INTO ${table}[\\s\\S]*?\`\\s*\\)`, "g")),
-      ];
       expect(
-        insertBlocks.length,
-        `expected at least one INSERT block for ${table}`
-      ).toBeGreaterThan(0);
-      for (const block of insertBlocks) {
-        expect(
-          block[0],
-          `INSERT block for ${table} must page via 'AND id <=' — found an unbounded INSERT...SELECT`
-        ).toMatch(/AND id <=/);
-      }
+        src,
+        `bare 'INSERT INTO ${table}' string would indicate a hand-rolled bypass cloner — route through makeBatchCloner instead`
+      ).not.toMatch(new RegExp(`INSERT INTO ${table}\\b`));
     }
   });
 });
