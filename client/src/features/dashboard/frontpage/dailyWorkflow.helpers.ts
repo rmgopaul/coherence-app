@@ -183,6 +183,15 @@ export function normalizeDailyWorkflowDraftForSave(
   const headline = draft.dailyBrief.headline.trim();
   const topPriority = draft.todayPlan.topPriority?.trim() || null;
   const notes = draft.todayPlan.notes?.trim() || null;
+  const sourceRefs = draft.dailyBrief.sourceRefs
+    .map((item) => ({
+      ...item,
+      id: item.id?.trim() || null,
+      label: item.label.trim(),
+      url: normalizeExternalUrl(item.url),
+    }))
+    .filter((item) => item.label.length > 0)
+    .slice(0, 50);
   const blocks = draft.todayPlan.blocks
     .map((item) => ({
       ...item,
@@ -200,7 +209,7 @@ export function normalizeDailyWorkflowDraftForSave(
       headline,
       summary: draft.dailyBrief.summary?.trim() || null,
       generatedAt: draft.dailyBrief.generatedAt ?? now.toISOString(),
-      sourceRefs: draft.dailyBrief.sourceRefs.slice(0, 50),
+      sourceRefs,
     },
     todayPlanStatus:
       topPriority || notes || blocks.length > 0
