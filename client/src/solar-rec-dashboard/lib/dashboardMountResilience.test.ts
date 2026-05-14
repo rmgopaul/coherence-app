@@ -644,19 +644,26 @@ describe("Solar REC dashboard mount: heavy-query gates", () => {
     );
   });
 
-  it("Snapshot Log tab hydrates from server (getSnapshotLogs) — local-only history is no longer canonical", () => {
-    // Production scenario: localStorage holds 1 entry; cloud
-    // (`solarRecDashboardStorage` rows) holds the historical 22-
-    // entry log split between the main key and orphaned chunk
-    // rows. Without server hydration the user sees 1 entry; with
-    // the merge below they see all 22.
+  it("Snapshot Log hydrates from server (getSnapshotLogs) on EVERY dashboard mount — not gated on Snapshot Log tab", () => {
+    // Production scenario: localStorage holds 1 entry (or zero
+    // on a fresh browser); cloud (`solarRecDashboardStorage` rows)
+    // holds the historical 22-entry log split between the main key
+    // and orphaned chunk rows. Without server hydration the user
+    // sees 1 entry; with the merge below they see all 22.
     expect(code).toMatch(
       /solarRecTrpc\.solarRecDashboard\.getSnapshotLogs\.useQuery/
     );
-    // Query is gated on the Snapshot Log tab being active so it
-    // doesn't fire on Overview mount (would push the heavy
-    // recovery scan onto every dashboard load).
-    expect(code).toMatch(
+    // 2026-05-14 (PR #614 follow-up to PR #564) — query is NO
+    // LONGER gated on `isSnapshotLogTabActive`. The gate was the
+    // hidden precondition that PR #564's "promote recovered into
+    // logEntries" fix silently depended on: createLogEntry is
+    // reachable from the page header on ANY tab, so a user clicking
+    // Log Snapshot from (say) ChangeOwnership without having first
+    // visited Snapshot Log had `recoveredSnapshotLogEntries = []`,
+    // and the cloud-sync shrink guard refused the write. This rail
+    // asserts the gate is gone — adding it back would silently
+    // re-introduce the snapshot-save vanishes-on-reload regression.
+    expect(code).not.toMatch(
       /getSnapshotLogs\.useQuery\([\s\S]{0,400}enabled\s*:\s*isSnapshotLogTabActive/
     );
     // Merge helper exists.

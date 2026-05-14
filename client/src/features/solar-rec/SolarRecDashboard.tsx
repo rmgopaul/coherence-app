@@ -2294,10 +2294,31 @@ export default function SolarRecDashboard() {
   //
   // Restore/write-back of recovered entries remains a separate
   // explicitly-approved follow-up, not this PR.
+  //
+  // 2026-05-14 (PR #614 follow-up to PR #564) — query fires on
+  // dashboard mount, NOT gated on `isSnapshotLogTabActive`. The
+  // gate was the precondition that PR #564's "promote recovered
+  // into logEntries" fix silently depended on: createLogEntry is
+  // reachable from the page header on ANY tab, so a user clicking
+  // Log Snapshot from (say) ChangeOwnership without having first
+  // visited Snapshot Log had `recoveredSnapshotLogEntries = []`,
+  // the merge produced a single-entry `logEntries`, and the
+  // cloud-sync shrink guard ( `logEntries.length(1) <
+  // cloud.totalUniqueCount(21)` ) refused the write — the snapshot
+  // vanished on reload. Dropping the gate ensures the recovered
+  // shadow state is populated before any createLogEntry call.
+  //
+  // Cost is negligible (limit=100 → ~21 KB on production-shape
+  // scopes). The cloud-sync effect at L5132 watches `logEntries`
+  // only, NOT `recoveredSnapshotLogEntries`, so populating the
+  // recovered shadow state on mount does NOT trigger a cloud write
+  // — the "no silent restore" contract is preserved. Only an
+  // explicit createLogEntry click promotes recovered into
+  // logEntries (the consent boundary).
   const snapshotLogsServerQuery =
     solarRecTrpc.solarRecDashboard.getSnapshotLogs.useQuery(
       { limit: 100 },
-      { enabled: isSnapshotLogTabActive, staleTime: 60_000 }
+      { staleTime: 60_000 }
     );
   useEffect(() => {
     const data = snapshotLogsServerQuery.data;
