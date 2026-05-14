@@ -668,8 +668,32 @@ export default memo(function FinancialsTab(props: FinancialsTabProps) {
       }
     }
 
+    // PR #589 SF-1 (2026-05-13) — Financials rows now live on the
+    // paginated `getDashboardFinancialsPage` infinite-query, not on
+    // the slim `financialsQuery` payload. The slim refetch above
+    // updates totals/counts; the page query has its own React-Query
+    // cache that keeps serving pre-mutation rows for the 60-sec
+    // `staleTime` unless we invalidate it explicitly. Without this
+    // invalidate, `setLocalOverrides.delete(savedCsgId)` in the
+    // save-override flow clears the optimistic mask and the row
+    // snaps back to the pre-edit cached values until staleTime
+    // expires. Fire-and-forget (not awaited) so the caller's
+    // ordering against the slim refetch is unchanged.
+    try {
+      void trpcUtils.solarRecDashboard.getDashboardFinancialsPage.invalidate();
+    } catch (err) {
+      failures.push(
+        `getDashboardFinancialsPage.invalidate: ${reasonText(err)}`
+      );
+    }
+
     return { financialsRefreshed, failures };
-  }, [contractScanRefetch, financialsRefetch, invalidateFinancialKpiSummary]);
+  }, [
+    contractScanRefetch,
+    financialsRefetch,
+    invalidateFinancialKpiSummary,
+    trpcUtils,
+  ]);
 
   // -------------------------------------------------------------------------
   // Batch rescan: walks the current filtered rows, rescans each,
