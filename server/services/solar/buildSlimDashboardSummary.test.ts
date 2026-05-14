@@ -156,6 +156,10 @@ function makeFoundation(
     },
     integrityWarnings: [],
     populatedDatasets: ["solarApplications", "abpReport"],
+    reportedByWindow: {
+      accountSolarGenInWindow: {},
+      generationEntryOnFirstOfMonth: {},
+    },
   };
 }
 
@@ -232,6 +236,12 @@ function abpRowFor(
 
 describe("getOrBuildSlimDashboardSummary", () => {
   it("returns the empty shape when foundation has no systems and no source data", async () => {
+    // Pin the clock so `currentGatsWindow` is deterministic. The
+    // empty-foundation path still produces a real window
+    // descriptor — it's the "no systems reported yet" shape, not
+    // the "no foundation built yet" sentinel from
+    // `EMPTY_SLIM_DASHBOARD_SUMMARY`.
+    vi.setSystemTime(new Date(2026, 4, 14, 12, 0, 0)); // 2026-05-14
     runnerMocks.getOrBuildFoundation.mockResolvedValue({
       payload: makeFoundation([]),
       fromCache: false,
@@ -244,7 +254,17 @@ describe("getOrBuildSlimDashboardSummary", () => {
     expect(result).toEqual({
       ...EMPTY_SLIM_DASHBOARD_SUMMARY,
       reportingAnchorDateIso: "2026-04-01",
+      currentGatsWindow: {
+        id: "2026-04",
+        label: "April Generation Window",
+        generationEntryDateIso: "2026-04-01",
+        windowStartIso: "2026-04-16",
+        windowEndIso: "2026-05-15",
+      },
+      reportedForCurrentWindow: 0,
     });
+
+    vi.useRealTimers();
   });
 
   it("tags the result with kind:'slim'", async () => {
@@ -1015,7 +1035,7 @@ describe("getOrBuildSlimDashboardSummary", () => {
     expect(bytes).toBeLessThan(1024 * 1024);
   });
 
-  it("uses the foundation hash as the cache key", async () => {
+  it("uses the foundation hash + current GATS window id as the cache key", async () => {
     runnerMocks.getOrBuildFoundation.mockResolvedValue({
       payload: makeFoundation([]),
       fromCache: false,
@@ -1029,8 +1049,51 @@ describe("getOrBuildSlimDashboardSummary", () => {
     expect(dbMocks.upsertComputedArtifact).toHaveBeenCalledTimes(1);
     const writeArgs = dbMocks.upsertComputedArtifact.mock.calls[0][0];
     expect(writeArgs.scopeId).toBe(SCOPE);
-    expect(writeArgs.inputVersionHash).toBe(HASH);
+    // v10 (2026-05-14): cache key embeds `|window:<yyyy-mm>` so a
+    // window-handoff (the next last-business-day-of-month crossing)
+    // invalidates the cached entry. The windowId varies per the
+    // calling clock, so assert the prefix + the structural
+    // `|window:<yyyy-mm>` suffix.
+    expect(writeArgs.inputVersionHash.startsWith(`${HASH}|window:`)).toBe(true);
+    expect(writeArgs.inputVersionHash).toMatch(/\|window:\d{4}-\d{2}$/);
     expect(writeArgs.artifactType).toBe(SLIM_DASHBOARD_SUMMARY_RUNNER_VERSION);
+  });
+
+  it("cache key changes when the current GATS window changes (clock-driven invalidation)", async () => {
+    // Spy on Date so we can pivot between two distinct GATS
+    // windows without touching the calling code.
+    runnerMocks.getOrBuildFoundation.mockResolvedValue({
+      payload: makeFoundation([]),
+      fromCache: false,
+      fromInflight: false,
+      inputVersionHash: HASH,
+    });
+    setupStreamMock({});
+
+    // First call: pretend today is 2026-04-29 → March Generation
+    // Window. Pre-cache state means the mock writes the key.
+    vi.setSystemTime(new Date(2026, 3, 29, 12, 0, 0));
+    await getOrBuildSlimDashboardSummary(SCOPE);
+    const firstKey: string =
+      dbMocks.upsertComputedArtifact.mock.calls[0][0].inputVersionHash;
+    expect(firstKey).toBe(`${HASH}|window:2026-03`);
+
+    // Reset write mock + clear in-flight so the second call doesn't
+    // resolve from the single-flight cache.
+    dbMocks.upsertComputedArtifact.mockClear();
+    __clearInFlightForTests();
+
+    // Second call: pretend today is 2026-05-14 → April Generation
+    // Window. The cache key must change so the v10 cache row
+    // doesn't return the v8 (March) value.
+    vi.setSystemTime(new Date(2026, 4, 14, 12, 0, 0));
+    await getOrBuildSlimDashboardSummary(SCOPE);
+    const secondKey: string =
+      dbMocks.upsertComputedArtifact.mock.calls[0][0].inputVersionHash;
+    expect(secondKey).toBe(`${HASH}|window:2026-04`);
+    expect(secondKey).not.toBe(firstKey);
+
+    vi.useRealTimers();
   });
 
   it("does NOT call getOrBuildFoundation on a slim cache hit", async () => {
@@ -1046,9 +1109,9 @@ describe("getOrBuildSlimDashboardSummary", () => {
     expect(foundationMocks.streamRowsByPage).not.toHaveBeenCalled();
   });
 
-  it("uses runner version v9 (rawRow fallback retired)", () => {
+  it("uses runner version v10 (reportedForCurrentWindow + currentGatsWindow added 2026-05-14)", () => {
     expect(SLIM_DASHBOARD_SUMMARY_RUNNER_VERSION).toBe(
-      "slim-dashboard-summary-v9"
+      "slim-dashboard-summary-v10"
     );
   });
 
@@ -1440,6 +1503,138 @@ describe("getOrBuildSlimDashboardSummary", () => {
     expect(
       result.changeOwnership.summary.contractedValueProjectsMissingDataCount
     ).toBe(1);
+  });
+
+  describe("reportedForCurrentWindow + currentGatsWindow (2026-05-14)", () => {
+    it("returns the current GATS window descriptor in the response", async () => {
+      vi.setSystemTime(new Date(2026, 4, 14, 12, 0, 0)); // today = 2026-05-14
+      runnerMocks.getOrBuildFoundation.mockResolvedValue({
+        payload: makeFoundation([]),
+        fromCache: false,
+        fromInflight: false,
+        inputVersionHash: HASH,
+      });
+      setupStreamMock({});
+
+      const { result } = await getOrBuildSlimDashboardSummary(SCOPE);
+      // 2026-05-14 → April Generation Window (April 30 ≤ May 14 <
+      // May 29).
+      expect(result.currentGatsWindow.id).toBe("2026-04");
+      expect(result.currentGatsWindow.label).toBe("April Generation Window");
+      expect(result.currentGatsWindow.generationEntryDateIso).toBe(
+        "2026-04-01"
+      );
+      expect(result.currentGatsWindow.windowStartIso).toBe("2026-04-16");
+      expect(result.currentGatsWindow.windowEndIso).toBe("2026-05-15");
+
+      vi.useRealTimers();
+    });
+
+    it("counts Part-II-eligible CSGs in (accountSolarGen ∪ generationEntry) for the current window", async () => {
+      vi.setSystemTime(new Date(2026, 4, 14, 12, 0, 0)); // April window
+      // 4 systems, all Part-II verified.
+      const systems = [
+        makeCanonicalSystem("CSG-1"),
+        makeCanonicalSystem("CSG-2"),
+        makeCanonicalSystem("CSG-3"),
+        makeCanonicalSystem("CSG-4"),
+      ];
+      const foundation = makeFoundation(systems);
+      // CSG-1 + CSG-2 reported via accountSolarGen during April
+      // window; CSG-3 reported via generationEntry on 4/1; CSG-4
+      // did not report.
+      foundation.reportedByWindow = {
+        accountSolarGenInWindow: { "2026-04": ["CSG-1", "CSG-2"] },
+        generationEntryOnFirstOfMonth: { "2026-04": ["CSG-3"] },
+      };
+      runnerMocks.getOrBuildFoundation.mockResolvedValue({
+        payload: foundation,
+        fromCache: false,
+        fromInflight: false,
+        inputVersionHash: HASH,
+      });
+      setupStreamMock({});
+
+      const { result } = await getOrBuildSlimDashboardSummary(SCOPE);
+      expect(result.reportedForCurrentWindow).toBe(3);
+
+      vi.useRealTimers();
+    });
+
+    it("dedupes a CSG that appears in BOTH source maps", async () => {
+      vi.setSystemTime(new Date(2026, 4, 14, 12, 0, 0));
+      const systems = [makeCanonicalSystem("CSG-1")];
+      const foundation = makeFoundation(systems);
+      foundation.reportedByWindow = {
+        accountSolarGenInWindow: { "2026-04": ["CSG-1"] },
+        generationEntryOnFirstOfMonth: { "2026-04": ["CSG-1"] },
+      };
+      runnerMocks.getOrBuildFoundation.mockResolvedValue({
+        payload: foundation,
+        fromCache: false,
+        fromInflight: false,
+        inputVersionHash: HASH,
+      });
+      setupStreamMock({});
+
+      const { result } = await getOrBuildSlimDashboardSummary(SCOPE);
+      expect(result.reportedForCurrentWindow).toBe(1);
+
+      vi.useRealTimers();
+    });
+
+    it("excludes non-Part-II-eligible CSGs even if they reported", async () => {
+      vi.setSystemTime(new Date(2026, 4, 14, 12, 0, 0));
+      // CSG-1: Part-II verified; CSG-2: not Part-II.
+      const systems = [
+        makeCanonicalSystem("CSG-1"),
+        makeCanonicalSystem("CSG-2", { isPart2Verified: false }),
+      ];
+      const foundation = makeFoundation(systems);
+      foundation.reportedByWindow = {
+        accountSolarGenInWindow: { "2026-04": ["CSG-1", "CSG-2"] },
+        generationEntryOnFirstOfMonth: {},
+      };
+      runnerMocks.getOrBuildFoundation.mockResolvedValue({
+        payload: foundation,
+        fromCache: false,
+        fromInflight: false,
+        inputVersionHash: HASH,
+      });
+      setupStreamMock({});
+
+      const { result } = await getOrBuildSlimDashboardSummary(SCOPE);
+      expect(result.reportedForCurrentWindow).toBe(1); // CSG-1 only
+
+      vi.useRealTimers();
+    });
+
+    it("returns 0 when the foundation has no per-window data for the current window", async () => {
+      vi.setSystemTime(new Date(2026, 4, 14, 12, 0, 0));
+      const systems = [
+        makeCanonicalSystem("CSG-1"),
+        makeCanonicalSystem("CSG-2"),
+      ];
+      const foundation = makeFoundation(systems);
+      // The foundation has windows for OTHER months, but nothing
+      // for "2026-04" — the current window.
+      foundation.reportedByWindow = {
+        accountSolarGenInWindow: { "2026-03": ["CSG-1", "CSG-2"] },
+        generationEntryOnFirstOfMonth: {},
+      };
+      runnerMocks.getOrBuildFoundation.mockResolvedValue({
+        payload: foundation,
+        fromCache: false,
+        fromInflight: false,
+        inputVersionHash: HASH,
+      });
+      setupStreamMock({});
+
+      const { result } = await getOrBuildSlimDashboardSummary(SCOPE);
+      expect(result.reportedForCurrentWindow).toBe(0);
+
+      vi.useRealTimers();
+    });
   });
 });
 

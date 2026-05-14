@@ -115,7 +115,12 @@ describe("foundation constants", () => {
     // ownership transfer, Zillow sale events parse from active Solar
     // Applications headers, and Account Solar Generation recovers
     // old meter reads from rawRow when the typed column is blank.
-    expect(FOUNDATION_DEFINITION_VERSION).toBe(8);
+    // 2026-05-14 bumped to 9 — `reportedByWindow` added to the
+    // artifact (per-window CSG sets driving the new Overview
+    // "Reported for Current Window" tile). v8 artifacts have no
+    // per-window generation map, so the slim summary would compute
+    // `reportedForCurrentWindow` as 0 until a foundation rebuild.
+    expect(FOUNDATION_DEFINITION_VERSION).toBe(9);
   });
 
   it("definition version matches the empty artifact's version", () => {

@@ -97,9 +97,22 @@ import {
   streamRowsByPage,
 } from "./buildFoundationArtifact";
 import { getOrBuildFoundation } from "./foundationRunner";
+import {
+  getCurrentGatsReportingWindow,
+  type GatsReportingWindow,
+} from "./gatsReportingWindow";
 import { jsonSerde, withArtifactCache } from "./withArtifactCache";
 
 /**
+ * v10 (2026-05-14) — Added `reportedForCurrentWindow` +
+ * `currentGatsWindow` for the new Overview "Reported for Current
+ * Window" tile. The cache key now embeds the current GATS
+ * Generation Window id so the cached entry invalidates when the
+ * user crosses the last-business-day-of-month boundary. Cached v9
+ * rows have neither field, so consumers reading the new tile would
+ * see `undefined` until the next foundation rebuild — bumping the
+ * artifactType forces a recompute on first dashboard load.
+ *
  * v9 (2026-05-05) — Retired the rawRow fallback that v7/v8 used to
  * paper over null typed columns on already-ingested
  * `srDsSolarApplications` batches. The active batch's typed
@@ -118,8 +131,8 @@ import { jsonSerde, withArtifactCache } from "./withArtifactCache";
  * tile start at the wrong value until a heavier query replaced it.
  */
 export const SLIM_DASHBOARD_SUMMARY_RUNNER_VERSION =
-  "slim-dashboard-summary-v9" as const;
-const ARTIFACT_TYPE = "slim-dashboard-summary-v9";
+  "slim-dashboard-summary-v10" as const;
+const ARTIFACT_TYPE = "slim-dashboard-summary-v10";
 
 export type SizeBucket = "<=10 kW AC" | ">10 kW AC" | "Unknown";
 
@@ -284,6 +297,39 @@ export interface SlimDashboardSummary {
   part2VerifiedAbpRowsCount: number;
 
   reportingAnchorDateIso: string | null;
+
+  /**
+   * Descriptor of the currently-active GATS Generation Window, used
+   * by the Overview "Reported for Current Window" tile's sub-label.
+   *
+   * Computed at recompute time from `new Date()`. The cache key
+   * embeds `currentGatsWindow.id` so a window-handoff (the next
+   * last-business-day-of-month crossing) invalidates the cached
+   * entry and forces a recompute under the new windowId.
+   */
+  currentGatsWindow: {
+    id: string;
+    label: string;
+    generationEntryDateIso: string;
+    windowStartIso: string;
+    windowEndIso: string;
+  };
+  /**
+   * Count of Part-II-verified CSG systems that have "reported" for
+   * the current GATS window — i.e., either:
+   *   - At least one `accountSolarGeneration` row with
+   *     `lastMeterReadDate` (or its `monthOfGeneration` fallback)
+   *     inside `[currentGatsWindow.windowStartIso,
+   *     currentGatsWindow.windowEndIso]`, OR
+   *   - At least one `generationEntry` row dated
+   *     `currentGatsWindow.generationEntryDateIso` (the 1st of the
+   *     window's named month).
+   *
+   * The per-window CSG sets live on the foundation
+   * (`reportedByWindow`); this number is the intersection with
+   * `foundation.part2EligibleCsgIds`.
+   */
+  reportedForCurrentWindow: number;
 }
 
 const EMPTY_OWNERSHIP_OVERVIEW: SlimOwnershipOverview = {
@@ -356,6 +402,20 @@ const EMPTY_CHANGE_OWNERSHIP: SlimChangeOwnership = {
   ],
 };
 
+/**
+ * Placeholder GATS window descriptor for the empty/null state. Not
+ * a real window — the windowId `"0000-00"` is sentinel-shaped so a
+ * client mistakenly reading the empty value gets an obviously
+ * wrong label rather than a plausible-looking real window.
+ */
+const EMPTY_GATS_WINDOW: SlimDashboardSummary["currentGatsWindow"] = {
+  id: "0000-00",
+  label: "—",
+  generationEntryDateIso: "",
+  windowStartIso: "",
+  windowEndIso: "",
+};
+
 export const EMPTY_SLIM_DASHBOARD_SUMMARY: SlimDashboardSummary = {
   kind: "slim",
   totalSystems: 0,
@@ -382,6 +442,8 @@ export const EMPTY_SLIM_DASHBOARD_SUMMARY: SlimDashboardSummary = {
   abpEligibleTotalSystemsCount: 0,
   part2VerifiedAbpRowsCount: 0,
   reportingAnchorDateIso: null,
+  currentGatsWindow: EMPTY_GATS_WINDOW,
+  reportedForCurrentWindow: 0,
 };
 
 export async function getOrBuildSlimDashboardSummary(
@@ -389,25 +451,57 @@ export async function getOrBuildSlimDashboardSummary(
 ): Promise<{ result: SlimDashboardSummary; fromCache: boolean }> {
   const inputVersions = await loadInputVersions(scopeId);
   const foundationHash = computeFoundationHash(inputVersions);
+  // The current GATS Generation Window changes every ~30 days (at
+  // each month's last business day). Embedding `currentWindow.id`
+  // in the cache key invalidates the cached summary the moment the
+  // window-handoff happens, so the new windowId's
+  // `reportedForCurrentWindow` count surfaces on the next mount.
+  // The plan note "Do NOT take `today` as an input parameter" —
+  // honored: every caller goes through this entry point and the
+  // clock read is internal.
+  const currentWindow = getCurrentGatsReportingWindow(new Date());
+  const inputVersionHash = `${foundationHash}|window:${currentWindow.id}`;
 
   return withArtifactCache<SlimDashboardSummary>({
     scopeId,
     artifactType: ARTIFACT_TYPE,
-    inputVersionHash: foundationHash,
+    inputVersionHash,
     serde: jsonSerde<SlimDashboardSummary>(),
     rowCount: () => 0,
     recompute: async () => {
       const { payload: foundation } = await getOrBuildFoundation(scopeId);
-      return computeSlimDashboardSummary(scopeId, foundation);
+      return computeSlimDashboardSummary(scopeId, foundation, currentWindow);
     },
   });
 }
 
 async function computeSlimDashboardSummary(
   scopeId: string,
-  foundation: FoundationArtifactPayload
+  foundation: FoundationArtifactPayload,
+  currentWindow: GatsReportingWindow
 ): Promise<SlimDashboardSummary> {
   const part2EligibleSet = new Set(foundation.part2EligibleCsgIds);
+
+  // "Reported for Current Window" — intersection of
+  // (Part-II-eligible) ∩ (accountSolarGen-in-window ∪
+  // generationEntry-on-first-of-named-month). Per-window sets come
+  // from the foundation; the slim summary applies the Part-II
+  // filter at read time so a future "show non-Part-II reporting"
+  // toggle won't require a foundation rebuild.
+  const accountSolarGenSet = new Set(
+    foundation.reportedByWindow.accountSolarGenInWindow[currentWindow.id] ?? []
+  );
+  const generationEntrySet = new Set(
+    foundation.reportedByWindow.generationEntryOnFirstOfMonth[
+      currentWindow.id
+    ] ?? []
+  );
+  let reportedForCurrentWindow = 0;
+  for (const csgId of foundation.part2EligibleCsgIds) {
+    if (accountSolarGenSet.has(csgId) || generationEntrySet.has(csgId)) {
+      reportedForCurrentWindow++;
+    }
+  }
 
   // Reverse lookup: ABP applicationId → canonical CSG system(s). One
   // ABP applicationId can map to MULTIPLE CSGs (foundation surfaces
@@ -949,6 +1043,14 @@ async function computeSlimDashboardSummary(
     abpEligibleTotalSystemsCount: abpDedupeKeys.size,
     part2VerifiedAbpRowsCount,
     reportingAnchorDateIso: foundation.reportingAnchorDateIso,
+    currentGatsWindow: {
+      id: currentWindow.id,
+      label: currentWindow.label,
+      generationEntryDateIso: currentWindow.generationEntryDateIso,
+      windowStartIso: currentWindow.windowStartIso,
+      windowEndIso: currentWindow.windowEndIso,
+    },
+    reportedForCurrentWindow,
   };
 }
 

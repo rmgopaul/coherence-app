@@ -109,8 +109,16 @@ export const FOUNDATION_ARTIFACT_TYPE = "foundation-v1" as const;
  * headers such as `Last Meter Read (kWh/Btu)`. Cached v7 artifacts
  * can undercount reporting after append dedupe skips an already-
  * present row that still has a blank typed meter-read value.
+ *
+ * v9 (2026-05-14) — `reportedByWindow` added to the artifact: two
+ * `windowId → csgId[]` maps that drive the new Overview "Reported
+ * for Current Window" tile. Cached v8 artifacts have no per-window
+ * generation map, so the slim summary would compute
+ * `reportedForCurrentWindow` as 0 until the foundation rebuilds —
+ * bumping invalidates them to surface the real count on the first
+ * dashboard load after deploy.
  */
-export const FOUNDATION_DEFINITION_VERSION = 8;
+export const FOUNDATION_DEFINITION_VERSION = 9;
 
 /**
  * `_runnerVersion` shipped on every response that surfaces
@@ -219,6 +227,42 @@ export type FoundationCanonicalSystem = {
   integrityWarningCodes: FoundationWarningCode[];
 };
 
+/**
+ * Per-window CSG sets for the new "Reported for Current Window" tile.
+ *
+ * Each map's key is a `windowId` (`"yyyy-mm"`, matching the named
+ * month of a GATS Generation Window — see
+ * `server/services/solar/gatsReportingWindow.ts`). The value is the
+ * sorted, deduped set of CSG IDs that have at least one matching
+ * generation row in that window.
+ *
+ * Both maps are computed across ALL canonical systems (NOT scoped to
+ * Part-II-eligible). The slim summary aggregator does the Part-II
+ * intersection at read time so a future "show non-Part-II reporting
+ * too" feature does not need a foundation rebuild.
+ *
+ * `Record<string, string[]>` (not `Map`/`Set`) because the artifact
+ * is persisted as plain JSON in `solarRecComputedArtifacts.payload`
+ * — Map/Set aren't directly JSON-serializable. Readers convert to
+ * Set at consumption time.
+ */
+export type ReportedByWindow = {
+  /**
+   * `windowId → Set<csgId>` flattened to a sorted array. A CSG ID
+   * appears when at least one `srDsAccountSolarGeneration` row for
+   * the system has `lastMeterReadDate` (or its `monthOfGeneration`
+   * fallback) inside `[16th of named month, 15th of next month]`.
+   */
+  accountSolarGenInWindow: Record<string, string[]>;
+  /**
+   * `windowId → Set<csgId>` flattened to a sorted array. A CSG ID
+   * appears when at least one `srDsGenerationEntry` row for the
+   * system is dated **the first of the named month** (e.g.
+   * 2026-04-01 for the April window).
+   */
+  generationEntryOnFirstOfMonth: Record<string, string[]>;
+};
+
 // ---------------------------------------------------------------------------
 // Artifact payload (the wire shape)
 // ---------------------------------------------------------------------------
@@ -271,6 +315,14 @@ export type FoundationArtifactPayload = {
   integrityWarnings: FoundationIntegrityWarning[];
   /** Active batch with `rowCount > 0` per `solarRecActiveDatasetVersions` ⋂ `COUNT(*) > 0` in the row table. */
   populatedDatasets: DatasetKey[];
+  /**
+   * Per-window CSG sets for the Overview "Reported for Current
+   * Window" tile. See `ReportedByWindow` above. NOT Part-II-scoped
+   * — slim summary intersects with `part2EligibleCsgIds` at read
+   * time. Empty maps are valid (no generation data yet, or every
+   * row's date didn't match a window).
+   */
+  reportedByWindow: ReportedByWindow;
 };
 
 // ---------------------------------------------------------------------------
@@ -311,6 +363,10 @@ export const EMPTY_FOUNDATION_ARTIFACT: FoundationArtifactPayload =
     },
     integrityWarnings: [],
     populatedDatasets: [],
+    reportedByWindow: {
+      accountSolarGenInWindow: {},
+      generationEntryOnFirstOfMonth: {},
+    },
   });
 
 // ---------------------------------------------------------------------------
