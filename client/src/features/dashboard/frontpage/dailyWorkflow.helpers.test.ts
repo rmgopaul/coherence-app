@@ -10,6 +10,7 @@ import {
   completeAllCommitments,
   dailyWorkflowDraftFromState,
   dateTimeLocalInputFromIso,
+  hasDailyWorkflowDraftContent,
   isoFromDateTimeLocalInput,
   normalizeDailyWorkflowDraftForSave,
   winActiveOutcomes,
@@ -85,6 +86,21 @@ const commandCenter: PersonalDashboardCommandCenter = {
 };
 
 describe("dailyWorkflow helpers", () => {
+  it("detects whether a draft has clearable content", () => {
+    const draft = dailyWorkflowDraftFromState(null);
+    expect(hasDailyWorkflowDraftContent(draft)).toBe(false);
+
+    draft.dailyBrief.sourceRefs = [
+      {
+        source: "system",
+        id: null,
+        label: "Generated from command center",
+        url: null,
+      },
+    ];
+    expect(hasDailyWorkflowDraftContent(draft)).toBe(true);
+  });
+
   it("seeds brief and plan drafts from command-center signals", () => {
     const now = new Date("2026-05-14T13:00:00.000Z");
 
