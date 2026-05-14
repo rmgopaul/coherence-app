@@ -2,6 +2,7 @@ import { ExternalLink } from "lucide-react";
 import { Link } from "wouter";
 
 import type { DashboardData } from "../useDashboardData";
+import { buildWorkflowReviewPrompts } from "./commandCenter.helpers";
 
 type CommandCenterState = DashboardData["commandCenter"];
 type CommandCenterData = NonNullable<CommandCenterState["data"]>;
@@ -171,6 +172,7 @@ export function CommandCenterPanel({ state }: { state: CommandCenterState }) {
   const progress = commandCenter.dailyProgress;
   const progressTitle =
     progress.topPriority ?? progress.headline ?? "No workflow saved";
+  const workflowReviewPrompts = buildWorkflowReviewPrompts(progress);
 
   return (
     <section className="fp-command" aria-label="Personal command center">
@@ -251,6 +253,13 @@ export function CommandCenterPanel({ state }: { state: CommandCenterState }) {
               <dd>{formatOutcomeProgress(progress.outcomes)}</dd>
             </div>
           </dl>
+          {workflowReviewPrompts.length > 0 ? (
+            <ul className="fp-command-workflow__prompts">
+              {workflowReviewPrompts.map((prompt) => (
+                <li key={prompt}>{prompt}</li>
+              ))}
+            </ul>
+          ) : null}
         </div>
 
         <div className="fp-command-sources">

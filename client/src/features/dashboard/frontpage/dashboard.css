@@ -838,6 +838,27 @@ html[data-focus="1"] .fp-root {
   overflow-wrap: anywhere;
 }
 
+.fp-command-workflow__prompts {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.fp-command-workflow__prompts li {
+  border: 1px solid color-mix(in oklch, var(--fp-ink) 24%, transparent);
+  background: color-mix(in oklch, var(--fp-paper) 74%, white);
+  padding: 5px 7px;
+  color: var(--fp-ink);
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
 .fp-command-metric {
   min-width: 0;
 }
