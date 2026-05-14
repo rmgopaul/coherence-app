@@ -140,6 +140,29 @@ export type PersonalDashboardDailyState = {
   updatedAt: string | null;
 };
 
+export type PersonalDashboardDailyProgress = {
+  dailyBriefStatus: PersonalDashboardDailyBriefStatus;
+  todayPlanStatus: PersonalDashboardTodayPlanStatus;
+  headline: string | null;
+  topPriority: string | null;
+  updatedAt: string | null;
+  commitments: {
+    total: number;
+    open: number;
+    waiting: number;
+    blocked: number;
+    done: number;
+  };
+  outcomes: {
+    total: number;
+    active: number;
+    paused: number;
+    won: number;
+    missed: number;
+  };
+  tone: "empty" | "planned" | "attention" | "complete";
+};
+
 export type PersonalDashboardCommandCenter = {
   _runnerVersion: typeof PERSONAL_DASHBOARD_RUNNER_VERSION;
   generatedAt: string;
@@ -151,6 +174,7 @@ export type PersonalDashboardCommandCenter = {
     suggestedCommitments: PersonalDashboardCommitment[];
     suggestedOutcomes: PersonalDashboardOutcome[];
   };
+  dailyProgress: PersonalDashboardDailyProgress;
   integrations: PersonalDashboardIntegrationHealth[];
   dailyBrief: PersonalDashboardFeatureReadiness;
   todayPlan: PersonalDashboardFeatureReadiness;

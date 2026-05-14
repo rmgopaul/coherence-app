@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { buildPersonalDashboardWorkflowSuggestions } from "./commandCenter";
+import {
+  buildPersonalDashboardDailyProgress,
+  buildPersonalDashboardWorkflowSuggestions,
+} from "./commandCenter";
 
 describe("buildPersonalDashboardWorkflowSuggestions", () => {
   it("builds waiting commitments and top task outcomes from source signals", () => {
@@ -120,5 +123,170 @@ describe("buildPersonalDashboardWorkflowSuggestions", () => {
       id: "task-outcome:task-empty",
       title: "Outcome 1",
     });
+  });
+});
+
+describe("buildPersonalDashboardDailyProgress", () => {
+  it("summarizes saved daily workflow counts and labels", () => {
+    expect(
+      buildPersonalDashboardDailyProgress({
+        dailyBriefStatus: "ready",
+        dailyBrief: {
+          headline: "Protect client delivery",
+          summary: null,
+          generatedAt: "2026-05-14T12:00:00.000Z",
+          sourceRefs: [],
+        },
+        todayPlanStatus: "ready",
+        todayPlan: {
+          topPriority: "Close proposal",
+          notes: null,
+          blocks: [],
+          updatedAt: "2026-05-14T12:05:00.000Z",
+        },
+        commitments: [
+          {
+            id: "commitment-1",
+            title: "Client follow-up",
+            source: "gmail",
+            sourceId: "thread-1",
+            owner: "client@example.com",
+            dueAt: null,
+            status: "waiting",
+            url: null,
+          },
+          {
+            id: "commitment-2",
+            title: "Review scope",
+            source: "system",
+            sourceId: null,
+            owner: null,
+            dueAt: null,
+            status: "done",
+            url: null,
+          },
+        ],
+        outcomes: [
+          {
+            id: "outcome-1",
+            title: "Proposal sent",
+            status: "active",
+            metricLabel: "Progress",
+            target: "Done today",
+            current: null,
+          },
+          {
+            id: "outcome-2",
+            title: "Draft reviewed",
+            status: "won",
+            metricLabel: "Progress",
+            target: "Done today",
+            current: "Done",
+          },
+        ],
+        updatedAt: "2026-05-14T12:10:00.000Z",
+      })
+    ).toMatchObject({
+      dailyBriefStatus: "ready",
+      todayPlanStatus: "ready",
+      headline: "Protect client delivery",
+      topPriority: "Close proposal",
+      updatedAt: "2026-05-14T12:10:00.000Z",
+      commitments: {
+        total: 2,
+        open: 0,
+        waiting: 1,
+        blocked: 0,
+        done: 1,
+      },
+      outcomes: {
+        total: 2,
+        active: 1,
+        paused: 0,
+        won: 1,
+        missed: 0,
+      },
+      tone: "planned",
+    });
+  });
+
+  it("marks failed, blocked, or missed workflow state as attention", () => {
+    expect(
+      buildPersonalDashboardDailyProgress({
+        dailyBriefStatus: "failed",
+        dailyBrief: null,
+        todayPlanStatus: "draft",
+        todayPlan: null,
+        commitments: [
+          {
+            id: "commitment-1",
+            title: "Blocked item",
+            source: "system",
+            sourceId: null,
+            owner: null,
+            dueAt: null,
+            status: "blocked",
+            url: null,
+          },
+        ],
+        outcomes: [
+          {
+            id: "outcome-1",
+            title: "Missed outcome",
+            status: "missed",
+            metricLabel: null,
+            target: null,
+            current: null,
+          },
+        ],
+        updatedAt: null,
+      }).tone
+    ).toBe("attention");
+  });
+
+  it("distinguishes empty and completed workflow state", () => {
+    expect(
+      buildPersonalDashboardDailyProgress({
+        dailyBriefStatus: "not_started",
+        dailyBrief: null,
+        todayPlanStatus: "not_started",
+        todayPlan: null,
+        commitments: [],
+        outcomes: [],
+        updatedAt: null,
+      }).tone
+    ).toBe("empty");
+
+    expect(
+      buildPersonalDashboardDailyProgress({
+        dailyBriefStatus: "ready",
+        dailyBrief: null,
+        todayPlanStatus: "completed",
+        todayPlan: null,
+        commitments: [
+          {
+            id: "commitment-1",
+            title: "Done item",
+            source: "system",
+            sourceId: null,
+            owner: null,
+            dueAt: null,
+            status: "done",
+            url: null,
+          },
+        ],
+        outcomes: [
+          {
+            id: "outcome-1",
+            title: "Won item",
+            status: "won",
+            metricLabel: null,
+            target: null,
+            current: null,
+          },
+        ],
+        updatedAt: "2026-05-14T17:00:00.000Z",
+      }).tone
+    ).toBe("complete");
   });
 });
