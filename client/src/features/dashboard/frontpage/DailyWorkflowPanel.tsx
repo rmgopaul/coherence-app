@@ -491,6 +491,7 @@ export function DailyWorkflowPanel({
           title="Outcomes"
           icon={<Target aria-hidden="true" />}
           items={draft.outcomes}
+          fieldsClassName="fp-daily-workflow__row-fields--outcome"
           onAdd={addOutcome}
           onRemove={(id) =>
             updateDraft((current) => ({
@@ -513,6 +514,7 @@ export function DailyWorkflowPanel({
                   }))
                 }
                 placeholder="Outcome"
+                aria-label="Outcome title"
               />
               <select
                 value={item.status}
@@ -539,6 +541,52 @@ export function DailyWorkflowPanel({
                   </option>
                 ))}
               </select>
+              <input
+                value={item.metricLabel ?? ""}
+                onChange={(event) =>
+                  updateDraft((current) => ({
+                    ...current,
+                    outcomes: current.outcomes.map((entry) =>
+                      entry.id === item.id
+                        ? { ...entry, metricLabel: event.target.value }
+                        : entry
+                    ),
+                  }))
+                }
+                placeholder="Metric"
+                aria-label="Outcome metric label"
+              />
+              <input
+                value={item.target ?? ""}
+                onChange={(event) =>
+                  updateDraft((current) => ({
+                    ...current,
+                    outcomes: current.outcomes.map((entry) =>
+                      entry.id === item.id
+                        ? { ...entry, target: event.target.value }
+                        : entry
+                    ),
+                  }))
+                }
+                placeholder="Target"
+                aria-label="Outcome target"
+              />
+              <input
+                className="fp-daily-workflow__row-field--wide"
+                value={item.current ?? ""}
+                onChange={(event) =>
+                  updateDraft((current) => ({
+                    ...current,
+                    outcomes: current.outcomes.map((entry) =>
+                      entry.id === item.id
+                        ? { ...entry, current: event.target.value }
+                        : entry
+                    ),
+                  }))
+                }
+                placeholder="Current value"
+                aria-label="Outcome current value"
+              />
             </>
           )}
         />

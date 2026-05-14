@@ -207,6 +207,44 @@ describe("dailyWorkflow helpers", () => {
     });
   });
 
+  it("normalizes outcome metric fields before save", () => {
+    const draft = dailyWorkflowDraftFromState(null);
+    draft.outcomes = [
+      {
+        id: "outcome-1",
+        title: "  Send proposal  ",
+        status: "active",
+        metricLabel: " Progress ",
+        target: " Sent today ",
+        current: " Drafted ",
+      },
+      {
+        id: "outcome-2",
+        title: "   ",
+        status: "paused",
+        metricLabel: "Ignored",
+        target: "Ignored",
+        current: "Ignored",
+      },
+    ];
+
+    expect(
+      normalizeDailyWorkflowDraftForSave(
+        draft,
+        new Date("2026-05-14T14:00:00.000Z")
+      ).outcomes
+    ).toEqual([
+      {
+        id: "outcome-1",
+        title: "Send proposal",
+        status: "active",
+        metricLabel: "Progress",
+        target: "Sent today",
+        current: "Drafted",
+      },
+    ]);
+  });
+
   it("round-trips local datetime inputs through ISO strings", () => {
     const iso = isoFromDateTimeLocalInput("2026-05-14T09:15");
 

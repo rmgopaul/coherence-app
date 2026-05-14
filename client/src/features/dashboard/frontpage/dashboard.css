@@ -1150,6 +1150,10 @@ html[data-focus="1"] .fp-root {
   grid-template-columns: minmax(0, 1fr) minmax(110px, 0.32fr);
 }
 
+.fp-daily-workflow__row-fields--outcome {
+  grid-template-columns: minmax(0, 1fr) minmax(110px, 0.32fr);
+}
+
 .fp-daily-workflow__row-field--wide {
   grid-column: 1 / -1;
 }
