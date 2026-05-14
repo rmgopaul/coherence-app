@@ -112,7 +112,20 @@ export interface PerformanceRatioFactsAggregates {
  * `succeeded` while no rows were written would silently corrupt
  * the data plane.
  *
- * Chunked at 200 rows / INSERT for TiDB parameter-limit headroom.
+ * Chunked at 500 rows / INSERT for TiDB parameter-limit headroom.
+ *
+ * 2026-05-13 — bumped from 200 → 500 as part of the throughput
+ * tuning that motivated the 5_000-row streaming page size in
+ * `loadPerformanceRatioInput.ts`. The prior 200 was conservative;
+ * 500 still leaves ~5× headroom relative to typical TiDB limits
+ * (each fact row carries ~25 columns → 500 × 25 = 12,500 bind
+ * parameters per INSERT, well under TiDB's `max_allowed_packet`
+ * budget, which is sized in millions of params). At 500 rows /
+ * chunk a typical 300-540-row per-page drain becomes a single
+ * roundtrip instead of 2-3 — ~2.5× write-roundtrip reduction for
+ * the build runner. See the page-size constant comment for the
+ * `bld-2ebd9c6cdcdd3e41495edb6725e80238` timeout failure that
+ * motivated this combined change.
  */
 export async function upsertPerformanceRatioFacts(
   rows: InsertSolarRecDashboardPerformanceRatioFact[]
@@ -122,7 +135,7 @@ export async function upsertPerformanceRatioFacts(
   if (!db) {
     throw new Error("upsertPerformanceRatioFacts: DB unavailable");
   }
-  const CHUNK_SIZE = 200;
+  const CHUNK_SIZE = 500;
   for (let i = 0; i < rows.length; i += CHUNK_SIZE) {
     const slice = rows.slice(i, i + CHUNK_SIZE);
     await withDbRetry(
