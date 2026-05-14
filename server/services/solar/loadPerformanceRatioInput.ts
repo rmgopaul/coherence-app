@@ -787,14 +787,30 @@ export type PerformanceRatioStaticInput = Omit<
   accountSolarGenerationStats?: AccountSolarGenerationStats;
 };
 
-// 2026-05-08 step-4 hardening — was 5_000. See STREAM_PAGE_SIZE_DEFAULT
-// above for the failure mode this addresses. Each page allocates one
-// projected `PerformanceRatioConvertedReadRow` array + one matched-
-// rows buffer in the accumulator; halving the page caps both at half
-// peak. The drain frequency doubles (smaller batches per upsert) but
-// the upsert chunk size is independent of page size — the work just
-// fits more pages between heartbeats, which is fine.
-export const PERFORMANCE_RATIO_CONVERTED_READS_PAGE_SIZE = 2_500;
+// 2026-05-13 throughput tuning — bumped 2_500 → 5_000 after build
+// `bld-2ebd9c6cdcdd3e41495edb6725e80238` hit the 30-min per-step
+// timeout on `performanceRatioFacts` while streaming page 449 of
+// ~632 (1.58M total convertedReads rows). Profile: heap stable at
+// 400-500 MB the entire run (no memory pressure); per-page latency
+// was DB-roundtrip dominated (~200-300 ms each for the SELECT plus
+// 2-3 upsert chunks per drain).
+//
+// The 2026-05-08 cut from 5_000 → 2_500 was motivated by a worker
+// OOM on a much heavier prod-shape scope (~13M convertedReads). On
+// today's smaller 1.58M-row scopes the per-page allocation peak at
+// 5_000 rows is ~2× smaller than what blew up; heap budget is
+// comfortable (the 2 GB Phase H rejection threshold gives ~5×
+// headroom on the streaming pass). The 2026-05-08 note explicitly
+// called the page-size halving "the biggest dial we have without
+// restructuring the aggregator" — this is the dial.
+//
+// At 5_000 rows/page the step processes ~316 pages instead of ~632,
+// halving total DB roundtrips for both reads (the streaming SELECT)
+// and writes (the per-page drain to `upsertPerformanceRatioFacts`,
+// independently sized below). Combined with the chunk-size bump on
+// the upsert side, the step is expected to finish in ~15 min on the
+// same scope, well inside the 30-min budget.
+export const PERFORMANCE_RATIO_CONVERTED_READS_PAGE_SIZE = 5_000;
 
 export function projectPerformanceRatioConvertedRead(
   row: CsvRow

@@ -240,16 +240,29 @@ describe("upsertPerformanceRatioFacts", () => {
     expect(Object.keys(set)).not.toContain("createdAt");
   });
 
-  it("chunks rows at 200 per INSERT", async () => {
+  it("chunks rows at 500 per INSERT (Math.ceil(N / 500) call count)", async () => {
+    // 2026-05-13 — CHUNK_SIZE bumped 200 → 500 for write-roundtrip
+    // throughput. 1_100 rows → 3 chunks (500 + 500 + 100).
     const stub = makeDbStub({});
     mocks.getDb.mockResolvedValue(stub);
-    const rows = Array.from({ length: 450 }, (_, i) => makeRow(String(i)));
+    const rows = Array.from({ length: 1_100 }, (_, i) => makeRow(String(i)));
     await upsertPerformanceRatioFacts(rows as never);
     const insertCalls = stub.calls.filter((c) => c.kind === "insert");
+    expect(insertCalls).toHaveLength(Math.ceil(1_100 / 500));
     expect(insertCalls).toHaveLength(3);
-    expect(insertCalls[0].insertValues?.length).toBe(200);
-    expect(insertCalls[1].insertValues?.length).toBe(200);
-    expect(insertCalls[2].insertValues?.length).toBe(50);
+    expect(insertCalls[0].insertValues?.length).toBe(500);
+    expect(insertCalls[1].insertValues?.length).toBe(500);
+    expect(insertCalls[2].insertValues?.length).toBe(100);
+  });
+
+  it("a 500-row input lands in exactly one INSERT (chunk-size boundary rail)", async () => {
+    const stub = makeDbStub({});
+    mocks.getDb.mockResolvedValue(stub);
+    const rows = Array.from({ length: 500 }, (_, i) => makeRow(String(i)));
+    await upsertPerformanceRatioFacts(rows as never);
+    const insertCalls = stub.calls.filter((c) => c.kind === "insert");
+    expect(insertCalls).toHaveLength(1);
+    expect(insertCalls[0].insertValues?.length).toBe(500);
   });
 
   it("throws when the DB is unavailable (write is mandatory)", async () => {
