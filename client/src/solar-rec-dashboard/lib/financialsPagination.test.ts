@@ -121,6 +121,37 @@ describe("FinancialsTab — wire-shape pagination wiring", () => {
     expect(queryBlock![0]).toMatch(/filterNeedsReview/);
     expect(queryBlock![0]).toMatch(/search:/);
   });
+
+  it("refreshFinancialsAfterMutation invalidates getDashboardFinancialsPage (PR #589 SF-1)", () => {
+    // Pre-fix: the helper invalidated the slim `financialsQuery` +
+    // `getDashboardFinancialKpiSummary` but NOT the new
+    // `getDashboardFinancialsPage` infinite-query. After a save-
+    // override / batch-rescan completes, the optimistic
+    // `localOverrides` mask is cleared; without this invalidate the
+    // page query keeps serving pre-mutation rows for the 60-sec
+    // staleTime and the row snaps back to pre-edit values.
+    //
+    // Regression rail: the invalidate call MUST live inside the
+    // `refreshFinancialsAfterMutation` useCallback body so every
+    // mutation path that funnels through this helper picks it up.
+    const fnIdx = FINANCIALS_TAB_SOURCE.indexOf(
+      "refreshFinancialsAfterMutation = useCallback"
+    );
+    expect(fnIdx).toBeGreaterThan(-1);
+    // Slice the function body + immediate surroundings (the body is
+    // <800 chars today; 2000 gives headroom for future additions).
+    const body = FINANCIALS_TAB_SOURCE.slice(fnIdx, fnIdx + 2000);
+    expect(body).toMatch(
+      /getDashboardFinancialsPage[\s\S]*?\.invalidate\s*\(/
+    );
+    // Defense against an "await invalidate" change that would re-
+    // order the helper's promise resolution — keep it fire-and-
+    // forget so the caller's `await refreshFinancialsAfterMutation`
+    // semantics stay unchanged.
+    expect(body).toMatch(
+      /void\s+trpcUtils\.solarRecDashboard\.getDashboardFinancialsPage\.invalidate/
+    );
+  });
 });
 
 describe("SolarRecDashboard parent — slim financials wiring", () => {
