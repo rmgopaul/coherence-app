@@ -11,6 +11,7 @@ import {
   getLatestSamsungSyncPayload,
   getLatestUserInsight,
   getLatestWeeklyReview,
+  getPersonalDashboardDailyState,
   listDockItems,
   listUpcomingDockItems,
 } from "../../db";
@@ -77,6 +78,7 @@ export async function getPersonalDashboardCommandCenter(
     weeklyReview,
     latestInsight,
     samsungPayload,
+    dailyState,
   ] = await Promise.all([
     getIntegrationByProvider(input.userId, "google"),
     getIntegrationByProvider(input.userId, "todoist"),
@@ -92,6 +94,7 @@ export async function getPersonalDashboardCommandCenter(
     getLatestWeeklyReview(input.userId),
     getLatestUserInsight(input.userId),
     getLatestSamsungSyncPayload(input.userId),
+    getPersonalDashboardDailyState(input.userId, input.dateKey),
   ]);
 
   const [todoist, google, whoop] = await Promise.all([
@@ -197,12 +200,24 @@ export async function getPersonalDashboardCommandCenter(
     rightNow,
     integrations,
     dailyBrief: {
-      status: "not_started",
-      reason: "Daily Brief generation is not server-backed yet.",
+      status:
+        dailyState.dailyBriefStatus === "ready" ? "ready" : "server_ready",
+      reason:
+        dailyState.dailyBriefStatus === "ready"
+          ? "Daily Brief is saved for today."
+          : "Daily Brief can now persist on the server; none is saved for today.",
     },
     todayPlan: {
-      status: "local_only",
-      reason: "Today's Plan overrides still persist in browser storage.",
+      status:
+        dailyState.todayPlanStatus === "ready" ||
+        dailyState.todayPlanStatus === "completed"
+          ? "ready"
+          : "server_ready",
+      reason:
+        dailyState.todayPlanStatus === "ready" ||
+        dailyState.todayPlanStatus === "completed"
+          ? "Today Plan is saved for today."
+          : "Today Plan can now persist on the server; none is saved for today.",
     },
     weeklyReview: {
       headline: weeklyReview?.headline ?? null,

@@ -463,6 +463,13 @@
       "when": 1778280471987,
       "tag": "0069_perf_ratio_compliant_facts",
       "breakpoints": true
+    },
+    {
+      "idx": 70,
+      "version": "5",
+      "when": 1778723184168,
+      "tag": "0070_add_personal_dashboard_daily_state",
+      "breakpoints": true
     }
   ]
 }
