@@ -66,6 +66,7 @@ import { reflectionsRouter } from "./routers/reflections";
 // Cross-domain Insights (2026-04-28) — Anthropic over the trailing
 // 90 days of biology + behavior. See routers/insights.ts.
 import { insightsRouter } from "./routers/insights";
+import { personalDashboardRouter } from "./routers/personalDashboard";
 
 // ---------------------------------------------------------------------------
 // App Router — thin composition of all sub-routers
@@ -124,6 +125,7 @@ export const appRouter = router({
   weeklyReview: weeklyReviewRouter,
   reflections: reflectionsRouter,
   insights: insightsRouter,
+  personalDashboard: personalDashboardRouter,
 });
 
 export type AppRouter = typeof appRouter;
