@@ -7,10 +7,12 @@ import {
   buildDailyBriefDraft,
   buildTodayPlanDraft,
   buildOutcomeDrafts,
+  completeAllCommitments,
   dailyWorkflowDraftFromState,
   dateTimeLocalInputFromIso,
   isoFromDateTimeLocalInput,
   normalizeDailyWorkflowDraftForSave,
+  winActiveOutcomes,
 } from "./dailyWorkflow.helpers";
 
 const commandCenter: PersonalDashboardCommandCenter = {
@@ -273,6 +275,56 @@ describe("dailyWorkflow helpers", () => {
         },
       ],
     });
+  });
+
+  it("applies workflow bulk status actions without mutating terminal rows", () => {
+    const draft = dailyWorkflowDraftFromState(null);
+    draft.commitments = [
+      {
+        id: "commitment-1",
+        title: "Follow up",
+        source: "gmail",
+        sourceId: "thread-1",
+        owner: null,
+        dueAt: null,
+        status: "open",
+        url: null,
+      },
+      {
+        id: "commitment-2",
+        title: "Already done",
+        source: "system",
+        sourceId: null,
+        owner: null,
+        dueAt: null,
+        status: "done",
+        url: null,
+      },
+    ];
+    draft.outcomes = [
+      {
+        id: "outcome-1",
+        title: "Send proposal",
+        status: "active",
+        metricLabel: "Progress",
+        target: null,
+        current: null,
+      },
+      {
+        id: "outcome-2",
+        title: "Paused outcome",
+        status: "paused",
+        metricLabel: null,
+        target: null,
+        current: null,
+      },
+    ];
+
+    expect(completeAllCommitments(draft.commitments).map((item) => item.status))
+      .toEqual(["done", "done"]);
+    expect(winActiveOutcomes(draft.outcomes).map((item) => item.status)).toEqual(
+      ["won", "paused"]
+    );
   });
 
   it("preserves normalized commitment detail fields before save", () => {
