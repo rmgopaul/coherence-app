@@ -12,16 +12,23 @@ import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import type { CalendarEvent } from "@/features/dashboard/types";
 import { Bar, BarChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { LinkedNotesBadge } from "./frontpage/LinkedNotesBadge";
+import { SignalActions } from "./frontpage/SignalActions";
+import type { WorkspaceNoteRow } from "./frontpage/useWorkspaceNotes";
 
 type RangePreset = "7d" | "14d" | "30d" | "custom";
 type EventTypeFilter = "all" | "timed" | "all_day";
 
 type CalendarEventRow = {
   id: string;
+  hasStableId: boolean;
   summary: string;
   description: string;
   location: string;
   htmlLink: string;
+  startIso: string;
+  recurringEventId: string | null;
+  iCalUID: string | null;
   startMs: number;
   endMs: number;
   allDay: boolean;
@@ -52,13 +59,21 @@ function parseCalendarEvent(event: CalendarEvent): CalendarEventRow | null {
   const summary = String(event?.summary || "Untitled Event");
   const description = String(event?.description || "");
   const location = String(event?.location || "");
+  const stableId = String(event?.id || "").trim();
 
   return {
-    id: String(event?.id || `${summary}-${startMs}`),
+    id: stableId || `${summary}-${startMs}`,
+    hasStableId: stableId.length > 0,
     summary,
     description,
     location,
     htmlLink: String(event?.htmlLink || ""),
+    startIso: startRaw,
+    recurringEventId:
+      typeof event?.recurringEventId === "string"
+        ? event.recurringEventId
+        : null,
+    iCalUID: typeof event?.iCalUID === "string" ? event.iCalUID : null,
     startMs,
     endMs,
     allDay,
@@ -214,6 +229,23 @@ export default function GoogleCalendarWidget() {
   const pageStart = (currentPage - 1) * CALENDAR_PAGE_SIZE;
   const pageEnd = pageStart + CALENDAR_PAGE_SIZE;
   const visibleEvents = filteredEvents.slice(pageStart, pageEnd);
+  const visibleEventIds = useMemo(
+    () =>
+      visibleEvents
+        .filter((event) => event.hasStableId)
+        .map((event) => event.id),
+    [visibleEvents]
+  );
+  const noteCountsQuery = trpc.notes.countLinksByExternalIds.useQuery(
+    { linkType: "google_calendar_event" as const, externalIds: visibleEventIds },
+    {
+      enabled: !!user && visibleEventIds.length > 0,
+      staleTime: 60_000,
+    }
+  );
+  const noteCountsByEventId = noteCountsQuery.data?.counts ?? {};
+  const noteCountsLoading =
+    visibleEventIds.length > 0 && noteCountsQuery.isLoading;
 
   useEffect(() => {
     setPage(1);
@@ -370,41 +402,74 @@ export default function GoogleCalendarWidget() {
         </Card>
       ) : (
         <div className="space-y-3">
-          {visibleEvents.map((event) => (
-            <Card key={event.id} className="hover:shadow-sm transition-shadow">
-              <CardHeader>
-                <div className="flex items-start justify-between gap-3">
-                  <div className="flex-1">
-                    <CardTitle className="text-base">{event.summary}</CardTitle>
-                    <CardDescription className="mt-1">{formatEventRange(event)}</CardDescription>
-                    <div className="mt-2 text-sm text-muted-foreground space-y-1">
-                      {event.location ? (
-                        <p>
-                          <span className="font-medium">Location:</span> {event.location}
-                        </p>
+          {visibleEvents.map((event) => {
+            const eventUrl =
+              event.htmlLink || "https://calendar.google.com/calendar/u/0/r";
+            const workspaceRow: WorkspaceNoteRow | null = event.hasStableId
+              ? {
+                  kind: "calendar",
+                  eventId: event.id,
+                  title: event.summary,
+                  eventUrl,
+                  start: event.startIso,
+                  location: event.location || null,
+                  recurringEventId: event.recurringEventId,
+                  iCalUID: event.iCalUID,
+                }
+              : null;
+
+            return (
+              <Card key={event.id} className="hover:shadow-sm transition-shadow">
+                <CardHeader>
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex-1">
+                      <CardTitle className="text-base">{event.summary}</CardTitle>
+                      <CardDescription className="mt-1">{formatEventRange(event)}</CardDescription>
+                      <div className="mt-2 text-sm text-muted-foreground space-y-1">
+                        {event.location ? (
+                          <p>
+                            <span className="font-medium">Location:</span> {event.location}
+                          </p>
+                        ) : null}
+                        {event.description ? (
+                          <p className="line-clamp-2">
+                            <span className="font-medium">Details:</span> {event.description}
+                          </p>
+                        ) : null}
+                      </div>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-1">
+                      {workspaceRow ? (
+                        <>
+                          <LinkedNotesBadge
+                            linkType="google_calendar_event"
+                            externalId={event.id}
+                            count={noteCountsByEventId[event.id] ?? 0}
+                            countLoading={noteCountsLoading}
+                          />
+                          <SignalActions
+                            row={workspaceRow}
+                            ariaLabel={`Actions for: ${event.summary}`}
+                          />
+                        </>
                       ) : null}
-                      {event.description ? (
-                        <p className="line-clamp-2">
-                          <span className="font-medium">Details:</span> {event.description}
-                        </p>
+                      {event.htmlLink ? (
+                        <a
+                          href={event.htmlLink}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-primary hover:text-primary/80"
+                          aria-label={`Open ${event.summary} in Google Calendar`}
+                        >
+                          <ExternalLink className="w-4 h-4" />
+                        </a>
                       ) : null}
                     </div>
                   </div>
-                  {event.htmlLink ? (
-                    <a
-                      href={event.htmlLink}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-primary hover:text-primary/80"
-                      aria-label={`Open ${event.summary} in Google Calendar`}
-                    >
-                      <ExternalLink className="w-4 h-4" />
-                    </a>
-                  ) : null}
-                </div>
-              </CardHeader>
-            </Card>
-          ))}
+                </CardHeader>
+              </Card>
+            );
+          })}
 
           <div className="flex items-center justify-between text-sm text-muted-foreground">
             <span>
