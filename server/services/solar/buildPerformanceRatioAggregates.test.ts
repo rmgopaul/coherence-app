@@ -3,6 +3,8 @@ import {
   buildCrossSourceDedupKey,
   buildPerformanceRatioAggregates,
   createPerformanceRatioAccumulator,
+  PERFORMANCE_RATIO_RUNNER_VERSION,
+  shouldCachePerformanceRatioResult,
   type PerformanceRatioConvertedReadRow,
   type PerformanceRatioInputSystem,
 } from "./buildPerformanceRatioAggregates";
@@ -751,5 +753,72 @@ describe("buildCrossSourceDedupKey (extracted helper)", () => {
         readDateRaw: "garbled-date",
       })
     ).toBe("x|y|1|garbled-date");
+  });
+});
+
+/**
+ * 2026-05-13 — predicate that decides whether a freshly-computed
+ * performance-ratio result should be persisted to the
+ * `solarRecComputedArtifacts` cache. Same heuristic as the sibling
+ * builders: refuse to cache a zero-row result when the inputs that
+ * drove it were non-empty. For perf-ratio the "schedule rows total"
+ * analog is `convertedReadCount` (the streaming-iterable input
+ * size); `matchedConvertedReads` plays the diagnostic role of
+ * `eligibleTrackingIdCount`. See `aggregatorCachePredicates.ts`.
+ */
+describe("shouldCachePerformanceRatioResult", () => {
+  it("caches genuinely-empty results when convertedReads was empty", () => {
+    expect(
+      shouldCachePerformanceRatioResult({
+        rowsEmitted: 0,
+        scheduleRowsTotal: 0,
+        eligibleTrackingIdCount: 0,
+      })
+    ).toBe(true);
+  });
+
+  it("REFUSES to cache when convertedReads exists but matches are empty", () => {
+    // The poison vector: snapshot degraded mid-build → empty match
+    // index → 0 matched reads despite a 24k convertedReads input.
+    // Pre-fix this would have cached the empty `rows` and broken
+    // the PerformanceRatio tab until the next batch upload.
+    expect(
+      shouldCachePerformanceRatioResult({
+        rowsEmitted: 0,
+        scheduleRowsTotal: 24_000,
+        eligibleTrackingIdCount: 0,
+      })
+    ).toBe(false);
+  });
+
+  it("REFUSES to cache 0-row results when inputs were populated (the bug-fix case)", () => {
+    expect(
+      shouldCachePerformanceRatioResult({
+        rowsEmitted: 0,
+        scheduleRowsTotal: 24_000,
+        eligibleTrackingIdCount: 22_000,
+      })
+    ).toBe(false);
+  });
+
+  it("caches non-empty results regardless of input shape", () => {
+    expect(
+      shouldCachePerformanceRatioResult({
+        rowsEmitted: 50,
+        scheduleRowsTotal: 24_000,
+        eligibleTrackingIdCount: 22_000,
+      })
+    ).toBe(true);
+  });
+});
+
+describe("performance-ratio runner version", () => {
+  it("carries a runner version bundled into the cache hash", () => {
+    // 2026-05-13 (@4): bumped after adding `shouldCache:` gate
+    // (HIGH-2 follow-up). Invalidates @3 cache entries that may
+    // have been poisoned by the pre-fix `rows: []` path.
+    expect(PERFORMANCE_RATIO_RUNNER_VERSION).toBe(
+      "phase-5d-pr1-performance-ratio@4"
+    );
   });
 });

@@ -55,6 +55,7 @@ import {
   loadDatasetRows,
 } from "./buildSystemSnapshot";
 import { jsonSerde, withArtifactCache } from "./withArtifactCache";
+import { shouldCacheAggregatorEmptyResult } from "./aggregatorCachePredicates";
 
 // ---------------------------------------------------------------------------
 // Output type — structurally identical to `PipelineMonthRow` in
@@ -246,8 +247,32 @@ export function buildAppPipelineMonthly(input: {
 const APP_PIPELINE_MONTHLY_DEPS = ["abpReport", "generatorDetails"] as const;
 const ARTIFACT_TYPE = "appPipelineMonthly";
 
+// 2026-05-13 (@2): bump after adding shouldCache gate (HIGH-2
+// follow-up). The aggregator consumes `getOrBuildSystemSnapshot`
+// and the same poison vector applies: a transient snapshot
+// degradation under heap pressure → empty result, and the
+// previous cache path would persist `[]` until the next batch
+// upload bumped the input hash. Bumping forces every scope's @1
+// cache entry to miss → fresh recompute → new `shouldCache:`
+// gates the write. This bump also requires
+// `runner:${RUNNER_VERSION}` to land in the cache hash; the
+// previous version was NOT in the hash, so a future bump would
+// have been a no-op. That defect is fixed inline below.
+// See PR #567 + PR #568 for the incident pattern.
 export const APP_PIPELINE_MONTHLY_RUNNER_VERSION =
-  "data-flow-pr5_13_apppipelinemonthly@1";
+  "data-flow-pr5_13_apppipelinemonthly@2";
+
+/**
+ * 2026-05-13 — thin alias for the shared
+ * `shouldCacheAggregatorEmptyResult` predicate. For
+ * `appPipelineMonthly` the "rows-to-iterate" input is the union
+ * of `abpReportRows` + `generatorDetailsRows` (the two
+ * concurrently-loaded source datasets); the "eligibility"
+ * diagnostic is the system snapshot's system count. See
+ * `aggregatorCachePredicates.ts`.
+ */
+export const shouldCacheAppPipelineMonthlyResult =
+  shouldCacheAggregatorEmptyResult;
 
 async function computeAppPipelineMonthlyInputHash(scopeId: string): Promise<{
   hash: string;
@@ -274,6 +299,12 @@ async function computeAppPipelineMonthlyInputHash(scopeId: string): Promise<{
         `abp:${abpReportBatchId ?? ""}`,
         `genDetails:${generatorDetailsBatchId ?? ""}`,
         `snapshot:${snapshotHash}`,
+        // 2026-05-13 — runner version was previously NOT included in
+        // the cache hash. Bumping the constant did nothing. Adding
+        // it now makes future cache-invalidation bumps actually
+        // invalidate. The HIGH-2 follow-up bump from @1 → @2 is what
+        // first surfaced this defect.
+        `runner:${APP_PIPELINE_MONTHLY_RUNNER_VERSION}`,
       ].join("|")
     )
     .digest("hex")
@@ -294,12 +325,29 @@ export async function getOrBuildAppPipelineMonthly(
     return { rows: [], fromCache: false };
   }
 
+  // 2026-05-13 — populated in-flight by the recompute closure so the
+  // `shouldCache:` predicate can refuse to poison the cache with a
+  // 0-row result when the inputs that drove it were non-empty.
+  // `iterableInputRowsTotal` plays the `scheduleRowsTotal` role
+  // (combined size of the two source datasets); `snapshotSystem
+  // Count` plays the eligibility-diagnostic role.
+  let iterableInputRowsTotal = 0;
+  let snapshotSystemCount = 0;
   const { result, fromCache } = await withArtifactCache<PipelineMonthRow[]>({
     scopeId,
     artifactType: ARTIFACT_TYPE,
     inputVersionHash: hash,
     serde: jsonSerde<PipelineMonthRow[]>(),
     rowCount: (rows) => rows.length,
+    // 2026-05-13 — refuse to poison the cache with a 0-row result
+    // when the union of the two source datasets was non-empty. See
+    // `aggregatorCachePredicates.ts` for the incident history.
+    shouldCache: (rows) =>
+      shouldCacheAppPipelineMonthlyResult({
+        rowsEmitted: rows.length,
+        scheduleRowsTotal: iterableInputRowsTotal,
+        eligibleTrackingIdCount: snapshotSystemCount,
+      }),
     recompute: async () => {
       const [snapshot, abpReportRows, generatorDetailsRows] = await Promise.all([
         getOrBuildSystemSnapshot(scopeId),
@@ -314,6 +362,8 @@ export async function getOrBuildAppPipelineMonthly(
             )
           : Promise.resolve([] as CsvRow[]),
       ]);
+      iterableInputRowsTotal = abpReportRows.length + generatorDetailsRows.length;
+      snapshotSystemCount = snapshot.systems.length;
 
       const systems = extractSnapshotSystems(snapshot.systems);
       return buildAppPipelineMonthly({

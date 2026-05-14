@@ -502,9 +502,19 @@ import {
   type PerformanceRatioInputBatchIds,
 } from "./loadPerformanceRatioInput";
 import { superjsonSerde, withArtifactCache } from "./withArtifactCache";
+import { shouldCacheAggregatorEmptyResult } from "./aggregatorCachePredicates";
 
 const PERFORMANCE_RATIO_ARTIFACT_TYPE = "performanceRatio";
 
+// 2026-05-13 (@4): bump after adding shouldCache gate (HIGH-2
+// follow-up). The aggregator carries the same poison vector as
+// forecast / performance-source-rows / contract-vintage: a transient
+// snapshot degradation under heap pressure can produce 0 matches
+// even when convertedReads is non-empty, and the previous cache
+// path would persist the `rows: []` payload until the next batch
+// upload bumped the input hash. Bumping forces every scope's @3
+// cache entry to miss → fresh recompute runs → new `shouldCache:`
+// gates the write. See PR #567 + PR #568 for the incident pattern.
 // 2026-05-09 — bumped from `@2` to `@3` for the cross-source dedup
 // fix (Bug #5 from the 2026-05-09 prod QA walk). Old `@2` cache rows
 // hold pre-dedup `rows` arrays and lack the new
@@ -512,7 +522,19 @@ const PERFORMANCE_RATIO_ARTIFACT_TYPE = "performanceRatio";
 // next access. `withArtifactCache` rolls forward by the version
 // suffix in the cache key.
 export const PERFORMANCE_RATIO_RUNNER_VERSION =
-  "phase-5d-pr1-performance-ratio@3";
+  "phase-5d-pr1-performance-ratio@4";
+
+/**
+ * 2026-05-13 — thin alias for the shared
+ * `shouldCacheAggregatorEmptyResult` predicate. The
+ * `performanceRatio` aggregator's "scheduleRowsTotal" analog is
+ * `convertedReadCount` (the streaming-iterable input size); a
+ * 0-row result with non-zero convertedReads indicates either a
+ * snapshot degradation or a match-index miss, neither of which
+ * should be cached. See `aggregatorCachePredicates.ts`.
+ */
+export const shouldCachePerformanceRatioResult =
+  shouldCacheAggregatorEmptyResult;
 
 function computePerformanceRatioInputHash(
   batchIds: PerformanceRatioInputBatchIds
@@ -574,6 +596,18 @@ export async function getOrBuildPerformanceRatio(
     inputVersionHash,
     serde: superjsonSerde<PerformanceRatioAggregates>(),
     rowCount: (data) => data.rows.length,
+    // 2026-05-13 — refuse to poison the cache with a 0-row result
+    // when convertedReads was non-empty. `convertedReadCount` is the
+    // streaming-iterable input size analog to `scheduleRowsTotal`
+    // in the sibling builders; `matchedConvertedReads` plays the
+    // diagnostic role of `eligibleTrackingIdCount`. See
+    // `aggregatorCachePredicates.ts` for the incident history.
+    shouldCache: (data) =>
+      shouldCachePerformanceRatioResult({
+        rowsEmitted: data.rows.length,
+        scheduleRowsTotal: data.convertedReadCount,
+        eligibleTrackingIdCount: data.matchedConvertedReads,
+      }),
     recompute: async () => {
       const input = await loadPerformanceRatioStaticInput(scopeId, batchIds);
       const accumulator = createPerformanceRatioAccumulator(input);

@@ -39,6 +39,7 @@ import {
 } from "./buildSystemSnapshot";
 import { getOrBuildFoundation } from "./foundationRunner";
 import { superjsonSerde, withArtifactCache } from "./withArtifactCache";
+import { shouldCacheAggregatorEmptyResult } from "./aggregatorCachePredicates";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -585,8 +586,28 @@ const OVERVIEW_SUMMARY_DEPS = ["abpReport"] as const;
 // legacy `today − 3 months` reporting math.
 const ARTIFACT_TYPE = "overviewSummary-v2";
 
+// 2026-05-13 (@3): bump after adding shouldCache gate (HIGH-2
+// follow-up). The aggregator consumes `getOrBuildSystemSnapshot`
+// and the same poison vector applies: a transient snapshot
+// degradation under heap pressure → 0 systems → empty
+// `ownershipRows`, and the previous cache path would persist
+// `[]` until the next batch upload bumped the input hash. Bumping
+// forces every scope's @2 cache entry to miss → fresh recompute
+// runs → new `shouldCache:` gates the write. See PR #567 +
+// PR #568 for the incident pattern.
 export const OVERVIEW_SUMMARY_RUNNER_VERSION =
-  "phase-3.1-overview-foundation@2";
+  "phase-3.1-overview-foundation@3";
+
+/**
+ * 2026-05-13 — thin alias for the shared
+ * `shouldCacheAggregatorEmptyResult` predicate. For
+ * `overviewSummary` the "rows-to-iterate" input is the
+ * Part-2-verified abpReport row set; the "eligibility" diagnostic
+ * is the system snapshot's system count. See
+ * `aggregatorCachePredicates.ts`.
+ */
+export const shouldCacheOverviewSummaryResult =
+  shouldCacheAggregatorEmptyResult;
 
 async function computeOverviewSummaryInputHash(
   scopeId: string,
@@ -688,6 +709,14 @@ export async function getOrBuildOverviewSummary(
     return { result: EMPTY_SUMMARY, fromCache: false };
   }
 
+  // 2026-05-13 — populated in-flight by the recompute closure so the
+  // `shouldCache:` predicate can refuse to poison the cache with a
+  // 0-row result when the inputs that drove it were non-empty.
+  // Same shape as the sibling builders. `abpReportRowsTotal` plays
+  // the `scheduleRowsTotal` role (primary iterable input);
+  // `snapshotSystemCount` plays the eligibility-diagnostic role.
+  let abpReportRowsTotal = 0;
+  let snapshotSystemCount = 0;
   const { result, fromCache } = await withArtifactCache<OverviewSummaryAggregate>(
     {
       scopeId,
@@ -695,12 +724,23 @@ export async function getOrBuildOverviewSummary(
       inputVersionHash: hash,
       serde: superjsonSerde<OverviewSummaryAggregate>(),
       rowCount: (agg) => agg.ownershipRows.length,
+      // 2026-05-13 — refuse to poison the cache with a 0-row result
+      // when abpReport rows were present. See
+      // `aggregatorCachePredicates.ts` for the incident history.
+      shouldCache: (agg) =>
+        shouldCacheOverviewSummaryResult({
+          rowsEmitted: agg.ownershipRows.length,
+          scheduleRowsTotal: abpReportRowsTotal,
+          eligibleTrackingIdCount: snapshotSystemCount,
+        }),
       recompute: async () => {
         const [foundationResult, snapshot, abpReportRows] = await Promise.all([
           getOrBuildFoundation(scopeId),
           getOrBuildSystemSnapshot(scopeId),
           loadDatasetRows(scopeId, abpReportBatchId, srDsAbpReport),
         ]);
+        abpReportRowsTotal = abpReportRows.length;
+        snapshotSystemCount = snapshot.systems.length;
         return buildOverviewSummaryWithFoundationOverlay(
           foundationResult.payload,
           snapshot.systems,
