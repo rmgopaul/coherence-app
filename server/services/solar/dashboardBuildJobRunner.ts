@@ -95,8 +95,26 @@ const HEARTBEAT_INTERVAL_MS = 60 * 1000; // 60 seconds (5× margin)
  * while still bounding worst-case runaway. The streaming
  * accumulator design ensures memory stays bounded regardless of
  * how long the step runs.
+ *
+ * 2026-05-13 bumped from 30 min to 60 min — build
+ * `bld-2ebd9c6cdcdd3e41495edb6725e80238` failed today after
+ * exactly 30:00.491 with `performanceRatioFacts: aborted
+ * mid-stream`. The structured metric (page 449 of ~632, 248k
+ * facts written, heap stable at 400 MB — well under the 2 GB
+ * Phase H rejection threshold) confirms the streaming was
+ * making genuine progress; the per-step timeout itself fired.
+ * The "~10-15 min on prod" claim above holds for the 13M-row
+ * baseline shape but not for scopes whose per-page DB-roundtrip
+ * latency dominates over per-row CPU work, where the step
+ * legitimately runs ~30-40 min. The 30-min ceiling started
+ * killing legitimate work on those shapes. 60 min gives wide
+ * headroom while still bounding worst-case runaway: a build
+ * still can't run more than 5 steps × 60 min = 5 hours, well
+ * within reason. The structural fix (bigger pages + bigger
+ * upsert chunks) ships separately as a companion PR; this
+ * value is the operational unblock so builds succeed today.
  */
-const PER_STEP_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
+const PER_STEP_TIMEOUT_MS = 60 * 60 * 1000; // 60 minutes
 
 // ────────────────────────────────────────────────────────────────────
 // Step registry — the seam Phase 2 PR-C+ will plug into
