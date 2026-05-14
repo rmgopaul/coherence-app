@@ -8,6 +8,8 @@ import {
   buildTodayPlanDraft,
   buildOutcomeDrafts,
   dailyWorkflowDraftFromState,
+  dateTimeLocalInputFromIso,
+  isoFromDateTimeLocalInput,
   normalizeDailyWorkflowDraftForSave,
 } from "./dailyWorkflow.helpers";
 
@@ -157,9 +159,9 @@ describe("dailyWorkflow helpers", () => {
         source: "system",
         sourceId: null,
         owner: "  ",
-        dueAt: null,
+        dueAt: "not-a-date",
         status: "open",
-        url: null,
+        url: "javascript:alert(1)",
       },
     ];
 
@@ -171,7 +173,46 @@ describe("dailyWorkflow helpers", () => {
     ).toMatchObject({
       dailyBriefStatus: "not_started",
       todayPlanStatus: "not_started",
-      commitments: [{ title: "Client follow-up", owner: null }],
+      commitments: [
+        { title: "Client follow-up", owner: null, dueAt: null, url: null },
+      ],
     });
+  });
+
+  it("preserves normalized commitment detail fields before save", () => {
+    const draft = dailyWorkflowDraftFromState(null);
+    draft.commitments = [
+      {
+        id: "commitment-1",
+        title: " Client follow-up ",
+        source: "gmail",
+        sourceId: "thread-1",
+        owner: " client@example.com ",
+        dueAt: "2026-05-14T15:30:00.000Z",
+        status: "waiting",
+        url: " https://mail.google.com/mail/u/0/#inbox/thread-1 ",
+      },
+    ];
+
+    expect(
+      normalizeDailyWorkflowDraftForSave(
+        draft,
+        new Date("2026-05-14T14:00:00.000Z")
+      ).commitments[0]
+    ).toMatchObject({
+      title: "Client follow-up",
+      owner: "client@example.com",
+      dueAt: "2026-05-14T15:30:00.000Z",
+      url: "https://mail.google.com/mail/u/0/#inbox/thread-1",
+    });
+  });
+
+  it("round-trips local datetime inputs through ISO strings", () => {
+    const iso = isoFromDateTimeLocalInput("2026-05-14T09:15");
+
+    expect(iso).toMatch(/^2026-05-14T/);
+    expect(dateTimeLocalInputFromIso(iso)).toBe("2026-05-14T09:15");
+    expect(isoFromDateTimeLocalInput(" ")).toBeNull();
+    expect(dateTimeLocalInputFromIso("not-a-date")).toBe("");
   });
 });
