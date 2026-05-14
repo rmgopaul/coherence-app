@@ -167,6 +167,8 @@ describe("listNotesForExternal", () => {
             noteId: "note-1",
             seriesId: "series-X",
             occurrenceStartIso: "2026-04-28T10:00:00Z",
+            sourceTitle: "Stand-up",
+            sourceUrl: "https://calendar.google.com/event",
           },
         ],
         [
@@ -186,6 +188,8 @@ describe("listNotesForExternal", () => {
     );
     expect(result[0].seriesId).toBe("series-X");
     expect(result[0].occurrenceStartIso).toBe("2026-04-28T10:00:00Z");
+    expect(result[0].sourceTitle).toBe("Stand-up");
+    expect(result[0].sourceUrl).toBe("https://calendar.google.com/event");
   });
 });
 

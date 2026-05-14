@@ -9,16 +9,16 @@
  *      mode. Self-fetches via `notes.listForExternal`. Useful when
  *      the parent doesn't have an N-row roll-up.
  *
- *   2. **`<LinkedNotesBadge linkType externalId count />`** — count-
- *      only mode. Caller passes the count from a batched
+ *   2. **`<LinkedNotesBadge linkType externalId count />`** — batch
+ *      count mode. Caller passes the count from a batched
  *      `notes.countLinksByExternalIds` query. Saves N round-trips
  *      when the parent renders a list of rows.
  *
- * Click to see the linked note titles in a popover. Each title
- * is a link to the note in the Notebook.
+ * When `onCreateNote` is supplied, a zero-count row can still render
+ * a compact "Create note" workspace affordance.
  */
 import { trpc } from "@/lib/trpc";
-import { Paperclip } from "lucide-react";
+import { FileText, Paperclip, Plus } from "lucide-react";
 import {
   Popover,
   PopoverContent,
@@ -37,6 +37,14 @@ interface BaseProps {
   /** Class for the trigger button. Feed cells size the badge
    *  differently to fit their density. */
   className?: string;
+  /** Render the text label next to the icon instead of the count.
+   *  Useful when the control is the primary "Open workspace" CTA. */
+  showLabel?: boolean;
+  /** Optional create callback. When present and the count is zero,
+   *  the component renders a compact create-note affordance. */
+  onCreateNote?: () => void;
+  createLabel?: string;
+  openLabel?: string;
 }
 
 export function LinkedNotesBadge({
@@ -44,6 +52,10 @@ export function LinkedNotesBadge({
   externalId,
   count,
   className,
+  showLabel = false,
+  onCreateNote,
+  createLabel = "Create note",
+  openLabel = "Open workspace",
 }: BaseProps) {
   // Self-fetch when caller didn't pre-resolve a count. Cheap when
   // most rows have zero notes — the empty-result short-circuit in
@@ -57,40 +69,66 @@ export function LinkedNotesBadge({
   );
 
   const inferredCount =
-    count !== undefined
-      ? count
-      : (listQuery.data?.notes.length ?? 0);
+    count !== undefined ? count : (listQuery.data?.notes.length ?? 0);
 
-  if (inferredCount === 0) return null;
+  const triggerClassName =
+    className ??
+    "inline-flex items-center gap-1 rounded text-xs text-muted-foreground hover:text-foreground";
+
+  if (count === undefined && (listQuery.isLoading || listQuery.error)) {
+    return null;
+  }
+
+  if (inferredCount === 0) {
+    if (!onCreateNote) return null;
+    return (
+      <button
+        type="button"
+        className={triggerClassName}
+        aria-label={createLabel}
+        onClick={e => {
+          e.preventDefault();
+          e.stopPropagation();
+          onCreateNote();
+        }}
+      >
+        <Plus className="h-3 w-3" />
+        <span>{createLabel}</span>
+      </button>
+    );
+  }
 
   return (
     <Popover>
       <PopoverTrigger asChild>
         <button
           type="button"
-          className={
-            className ??
-            "inline-flex items-center gap-1 rounded text-xs text-muted-foreground hover:text-foreground"
-          }
-          aria-label={`${inferredCount} linked notes`}
-          onClick={(e) => {
+          className={triggerClassName}
+          aria-label={`${openLabel}: ${inferredCount} linked notes`}
+          onClick={e => {
             // Don't bubble to a row-level <a>/<li onClick>.
             e.preventDefault();
             e.stopPropagation();
           }}
         >
-          <Paperclip className="h-3 w-3" />
-          <span>{inferredCount}</span>
+          {showLabel ? (
+            <FileText className="h-3 w-3" />
+          ) : (
+            <Paperclip className="h-3 w-3" />
+          )}
+          <span>{showLabel ? openLabel : inferredCount}</span>
         </button>
       </PopoverTrigger>
       <PopoverContent
         align="end"
         className="w-72 p-2"
-        onClick={(e) => e.stopPropagation()}
+        onClick={e => e.stopPropagation()}
       >
         <LinkedNotesPopover
           linkType={linkType}
           externalId={externalId}
+          onCreateNote={onCreateNote}
+          createLabel={createLabel}
           // When the badge was rendered with a count, the popover
           // does its own fetch on open — same query, served from
           // cache if the badge already triggered it.
@@ -103,9 +141,13 @@ export function LinkedNotesBadge({
 function LinkedNotesPopover({
   linkType,
   externalId,
+  onCreateNote,
+  createLabel,
 }: {
   linkType: LinkType;
   externalId: string;
+  onCreateNote?: () => void;
+  createLabel: string;
 }) {
   const detailQuery = trpc.notes.listForExternal.useQuery(
     { linkType, externalId },
@@ -117,35 +159,53 @@ function LinkedNotesPopover({
   }
   if (detailQuery.error) {
     return (
-      <p className="text-xs text-destructive">
-        {detailQuery.error.message}
-      </p>
+      <p className="text-xs text-destructive">{detailQuery.error.message}</p>
     );
   }
   const notes = detailQuery.data?.notes ?? [];
   if (notes.length === 0) {
-    return <p className="text-xs text-muted-foreground">No linked notes.</p>;
+    return (
+      <div className="space-y-2">
+        <p className="text-xs text-muted-foreground">No linked notes.</p>
+        {onCreateNote ? (
+          <button
+            type="button"
+            className="inline-flex items-center gap-1 rounded text-xs font-medium text-foreground hover:underline"
+            onClick={e => {
+              e.preventDefault();
+              e.stopPropagation();
+              onCreateNote();
+            }}
+          >
+            <Plus className="h-3 w-3" />
+            {createLabel}
+          </button>
+        ) : null}
+      </div>
+    );
   }
   return (
     <div className="space-y-2">
       <p className="text-[10px] uppercase tracking-wide text-muted-foreground">
-        Linked notes
+        Workspace notes
       </p>
       <ul className="space-y-1">
-        {notes.map((note) => (
+        {notes.map(note => (
           <li key={note.id}>
             <a
-              href={`/notebook?noteId=${encodeURIComponent(note.id)}`}
+              href={`/notes?noteId=${encodeURIComponent(note.id)}`}
               className="block text-xs hover:underline"
               title={note.title ?? "(untitled)"}
             >
               <span className="font-medium">
                 {note.title?.trim() || "(untitled)"}
               </span>
-              <span className="text-muted-foreground">
-                {" "}
-                · {note.notebook}
-              </span>
+              <span className="text-muted-foreground"> · {note.notebook}</span>
+              {note.sourceTitle ? (
+                <span className="block truncate text-[11px] text-muted-foreground">
+                  Linked to {note.sourceTitle}
+                </span>
+              ) : null}
             </a>
           </li>
         ))}
