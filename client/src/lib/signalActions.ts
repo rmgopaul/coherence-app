@@ -1,15 +1,14 @@
 /**
- * Task 10.1 (2026-04-28) — pure helpers for the dashboard's
- * uniform signal-row action menu. Lives in `lib/` so the existing
- * vitest `client/src/lib` glob picks up the tests without
- * expanding the include list.
+ * Pure helpers for the dashboard's uniform signal-row action menu.
+ * Lives in `lib/` so the existing vitest `client/src/lib` glob
+ * picks up the tests without expanding the include list.
  *
  * The dashboard's frontpage exposes several feed cells that
  * contain row-level signals (Gmail messages in InboxPanel,
  * Todoist tasks in TasksTriage, calendar events in upcoming
  * cells). Each row historically had its own per-feed action
- * surface — done in InboxPanel, complete in TasksTriage. Phase
- * 10's `SignalActions` menu unifies cross-cutting actions:
+ * surface — done in InboxPanel, complete in TasksTriage. The
+ * `SignalActions` menu unifies cross-cutting actions:
  *
  *   1. Drop to Dock — pin to the DropDock for later
  *   2. Pin as King — set as today's King of the Day

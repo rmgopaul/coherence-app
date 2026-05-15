@@ -3,6 +3,7 @@ import { useLocation } from "wouter";
 
 import { trpc } from "@/lib/trpc";
 import type { SignalRow } from "@/lib/signalActions";
+import { invalidateWorkspaceNoteQueries } from "@/lib/workspaceNoteQueries";
 
 export type WorkspaceNoteRow = Extract<
   SignalRow,
@@ -63,14 +64,6 @@ export function noteLinkInputForWorkspaceRow(
       iCalUID: row.iCalUID ?? null,
     },
   };
-}
-
-export function invalidateWorkspaceNoteQueries(
-  utils: ReturnType<typeof trpc.useUtils>
-) {
-  void utils.notes.list.invalidate();
-  void utils.notes.listForExternal.invalidate();
-  void utils.notes.countLinksByExternalIds.invalidate();
 }
 
 export function useWorkspaceNotes() {

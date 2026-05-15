@@ -205,8 +205,7 @@ export function SignalActions({
           {actions.map(action => (
             <DropdownMenuItem
               key={action}
-              onSelect={e => {
-                e.preventDefault();
+              onSelect={() => {
                 dispatch(action);
               }}
               className="text-xs"

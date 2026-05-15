@@ -12,8 +12,8 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { trpc } from "@/lib/trpc";
+import { invalidateWorkspaceNoteQueries } from "@/lib/workspaceNoteQueries";
 import {
-  invalidateWorkspaceNoteQueries,
   noteLinkInputForWorkspaceRow,
   type WorkspaceNoteRow,
 } from "./useWorkspaceNotes";

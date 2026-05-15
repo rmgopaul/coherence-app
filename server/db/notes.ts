@@ -276,16 +276,20 @@ export async function listNotesForExternal(
       .where(and(eq(notes.userId, userId), inArray(notes.id, noteIds)))
   );
 
-  // Preserve the link order (newest link first), and attach the
-  // link's seriesId/occurrence so the UI can disambiguate a note
-  // that's linked to multiple occurrences of the same event.
+  // Preserve newest-link order while returning distinct notes. The
+  // count helper also dedupes by noteId, so the popover and badge
+  // count stay aligned when one note is linked to both a calendar
+  // series and a specific occurrence.
   const noteById = new Map<string, (typeof noteRows)[number]>();
   for (const note of noteRows) noteById.set(note.id, note);
 
   const out: NoteForExternal[] = [];
+  const seenNoteIds = new Set<string>();
   for (const link of linkRows) {
+    if (seenNoteIds.has(link.noteId)) continue;
     const note = noteById.get(link.noteId);
     if (!note) continue;
+    seenNoteIds.add(link.noteId);
     out.push({
       id: note.id,
       title: note.title,

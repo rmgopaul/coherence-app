@@ -41,6 +41,7 @@ import { AskAiPanel } from "@/components/AskAiPanel";
 import { extractTextPreview, normalizeContentForEditor } from "@/lib/noteContent";
 import { NoteSaveController, type NoteDraftSnapshot } from "@/lib/noteSaveController";
 import { trpc } from "@/lib/trpc";
+import { invalidateWorkspaceNoteQueries } from "@/lib/workspaceNoteQueries";
 import {
   AlertTriangle,
   ArrowLeft,
@@ -739,7 +740,7 @@ export default function Notebook() {
 
     try {
       await deleteNoteMutation.mutateAsync({ noteId });
-      await trpcUtils.notes.list.invalidate();
+      invalidateWorkspaceNoteQueries(trpcUtils);
       toast.success("Note deleted.");
 
       if (fallback) {
@@ -753,20 +754,20 @@ export default function Notebook() {
     } finally {
       setIsDeleteDialogOpen(false);
     }
-  }, [deleteNoteMutation, hydrateFromServerNote, selectedNotebook, trpcUtils.notes.list, visibleNotes]);
+  }, [deleteNoteMutation, hydrateFromServerNote, selectedNotebook, trpcUtils, visibleNotes]);
 
   const removeLink = useCallback(
     async (linkId: string) => {
       if (!linkId) return;
       try {
         await removeNoteLinkMutation.mutateAsync({ linkId });
-        await trpcUtils.notes.list.invalidate();
+        invalidateWorkspaceNoteQueries(trpcUtils);
         toast.success("Link removed.");
       } catch (error) {
         toast.error(`Could not remove link: ${error instanceof Error ? error.message : "Unknown error"}`);
       }
     },
-    [removeNoteLinkMutation, trpcUtils.notes.list]
+    [removeNoteLinkMutation, trpcUtils]
   );
 
   const openTodoistTaskDialog = useCallback(

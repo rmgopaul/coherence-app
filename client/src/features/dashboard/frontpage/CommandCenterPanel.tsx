@@ -2,7 +2,11 @@ import { ExternalLink, FileText } from "lucide-react";
 import { Link } from "wouter";
 
 import type { DashboardData } from "../useDashboardData";
-import { buildWorkflowReviewPrompts } from "./commandCenter.helpers";
+import {
+  buildWorkflowReviewPrompts,
+  workspacePromptToWorkspaceNoteRow,
+} from "./commandCenter.helpers";
+import { useWorkspaceNotes } from "./useWorkspaceNotes";
 
 type CommandCenterState = DashboardData["commandCenter"];
 type CommandCenterData = NonNullable<CommandCenterState["data"]>;
@@ -139,14 +143,29 @@ function SourceRow({ item }: { item: SourceFreshness }) {
   );
 }
 
-function WorkspacePromptRow({ item }: { item: WorkspacePrompt }) {
+function WorkspacePromptRow({
+  item,
+  createWorkspaceNote,
+  disabled,
+}: {
+  item: WorkspacePrompt;
+  createWorkspaceNote: (item: WorkspacePrompt) => void;
+  disabled: boolean;
+}) {
+  const createLabel = `${item.actionLabel}: ${item.title}`;
   return (
     <li className="fp-command-workspace">
       <FileText aria-hidden="true" />
       <div className="fp-command-workspace__body">
-        <Link className="fp-command-workspace__title" href={item.href}>
+        <button
+          type="button"
+          className="fp-command-workspace__title"
+          onClick={() => createWorkspaceNote(item)}
+          disabled={disabled}
+          aria-label={createLabel}
+        >
           {item.title}
-        </Link>
+        </button>
         <p>{item.reason}</p>
       </div>
       {item.sourceUrl ? (
@@ -161,14 +180,22 @@ function WorkspacePromptRow({ item }: { item: WorkspacePrompt }) {
           <ExternalLink aria-hidden="true" />
         </a>
       ) : null}
-      <Link className="fp-command-workspace__action" href={item.href}>
+      <button
+        type="button"
+        className="fp-command-workspace__action"
+        onClick={() => createWorkspaceNote(item)}
+        disabled={disabled}
+        aria-label={createLabel}
+      >
         {item.actionLabel}
-      </Link>
+      </button>
     </li>
   );
 }
 
 export function CommandCenterPanel({ state }: { state: CommandCenterState }) {
+  const workspaceNotes = useWorkspaceNotes();
+
   if (state.isLoading && !state.data) {
     return (
       <section className="fp-command" aria-label="Personal command center">
@@ -215,6 +242,9 @@ export function CommandCenterPanel({ state }: { state: CommandCenterState }) {
     workflowFallbackTitle(progress);
   const workflowReviewPrompts = buildWorkflowReviewPrompts(progress);
   const workspacePrompts = commandCenter.workspacePrompts ?? [];
+  const createWorkspaceNote = (item: WorkspacePrompt) => {
+    workspaceNotes.createWorkspaceNote(workspacePromptToWorkspaceNoteRow(item));
+  };
 
   return (
     <section className="fp-command" aria-label="Personal command center">
@@ -312,7 +342,12 @@ export function CommandCenterPanel({ state }: { state: CommandCenterState }) {
             </div>
             <ol>
               {workspacePrompts.map((item) => (
-                <WorkspacePromptRow key={item.id} item={item} />
+                <WorkspacePromptRow
+                  key={item.id}
+                  item={item}
+                  createWorkspaceNote={createWorkspaceNote}
+                  disabled={workspaceNotes.isCreatingWorkspaceNote}
+                />
               ))}
             </ol>
           </div>
