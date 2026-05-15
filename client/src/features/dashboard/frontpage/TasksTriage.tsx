@@ -25,10 +25,8 @@ import {
   projectLabel,
   splitTriageBands,
 } from "./triage.helpers";
-// Task 10.1 (2026-04-28): cross-cutting per-row action menu.
 import { SignalActions } from "./SignalActions";
-// Task 10.3 (2026-04-28): "📎 N linked notes" badge for tasks
-// that have notes attached via the Notebook→Todoist forward link.
+// Workspace linked-note badge for source-backed Todoist task rows.
 import { LinkedNotesBadge } from "./LinkedNotesBadge";
 import type { WorkspaceNoteRow } from "./useWorkspaceNotes";
 
@@ -46,9 +44,9 @@ interface BandProps {
   items: TodoistTask[];
   onComplete: (taskId: string) => void;
   busyTaskId: string | null;
-  /** Task 10.3: per-row note count, threaded down from the parent
-   *  so we make ONE batched count query for the whole feed
-   *  rather than N separate listForExternal calls. */
+  /** Per-row note count, threaded down from the parent so we make
+   *  one batched count query for the whole feed rather than N
+   *  separate listForExternal calls. */
   noteCountsByTaskId: Record<string, number>;
   noteCountsLoading: boolean;
   onPin: (task: TodoistTask) => void;
@@ -125,7 +123,7 @@ function Band({
               >
                 {priorityLabel(task)}
               </span>
-              {/* Task 10.3: 📎 N linked notes badge — only renders
+              {/* Linked-note badge — only renders
                   when the count is > 0, so most rows are unaffected. */}
               <LinkedNotesBadge
                 linkType="todoist_task"
@@ -148,10 +146,9 @@ function Band({
               >
                 <Pin className="h-3.5 w-3.5" />
               </button>
-              {/* Task 10.1: cross-cutting actions (Drop to Dock /
-                  Pin as King / Defer to tomorrow). The bx button
-                  keeps "Mark complete" because it's the most-used
-                  action and the menu would otherwise add a click. */}
+              {/* Cross-cutting actions. The bx button keeps
+                  "Mark complete" because it's the most-used action
+                  and the menu would otherwise add a click. */}
               <SignalActions
                 row={workspaceRow}
                 triggerClassName="fp-triage-row__menu"
@@ -198,7 +195,7 @@ export function TasksTriage({ tasks }: TasksTriageProps) {
     [tasks.dueToday]
   );
 
-  // Task 10.3: batched note-count query so the 📎 badge gets its
+  // Batched note-count query so the linked-note badge gets its
   // count without N separate listForExternal calls. The dashboard
   // typically has 5-15 tasks; one round-trip handles all of them.
   const taskIds = useMemo(

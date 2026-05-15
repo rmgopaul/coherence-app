@@ -1,4 +1,8 @@
-import type { PersonalDashboardDailyProgress } from "@shared/personalDashboard";
+import type {
+  PersonalDashboardDailyProgress,
+  PersonalDashboardWorkspacePrompt,
+} from "@shared/personalDashboard";
+import type { WorkspaceNoteRow } from "./useWorkspaceNotes";
 
 export function buildWorkflowReviewPrompts(
   progress: PersonalDashboardDailyProgress
@@ -47,6 +51,34 @@ export function buildWorkflowReviewPrompts(
   }
 
   return prompts.slice(0, 3);
+}
+
+export function workspacePromptToWorkspaceNoteRow(
+  prompt: PersonalDashboardWorkspacePrompt
+): WorkspaceNoteRow {
+  if (prompt.kind === "todoist") {
+    return {
+      kind: "todoist",
+      taskId: prompt.sourceId,
+      content: prompt.title,
+      taskUrl:
+        prompt.sourceUrl ??
+        `https://app.todoist.com/app/task/${encodeURIComponent(prompt.sourceId)}`,
+      dueDate: null,
+      projectName: null,
+    };
+  }
+
+  return {
+    kind: "calendar",
+    eventId: prompt.sourceId,
+    title: prompt.title,
+    eventUrl: prompt.sourceUrl ?? "",
+    start: null,
+    location: null,
+    recurringEventId: null,
+    iCalUID: null,
+  };
 }
 
 function formatCountedLabel(count: number, label: string): string {

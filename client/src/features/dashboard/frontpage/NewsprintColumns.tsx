@@ -11,8 +11,7 @@
  * Spec: handoff/web-spec.md §"NewsprintColumns.tsx"
  */
 import type { CalendarEvent, TodoistTask, GmailWaitingOnItem } from "../types";
-// Task 10.3 (2026-04-28): "📎 N linked notes" badge for calendar
-// events that have notes attached via the Notebook→Calendar handoff.
+// Workspace linked-note badge for source-backed calendar event rows.
 import { LinkedNotesBadge } from "./LinkedNotesBadge";
 import { trpc } from "@/lib/trpc";
 import { useMemo } from "react";
@@ -49,7 +48,7 @@ function TodayColumn({ events }: { events: CalendarEvent[] }) {
     })
     .slice(0, 6);
 
-  // Task 10.3: batched note-count query so the 📎 badge renders
+  // Batched note-count query so the linked-note badge renders
   // without N separate listForExternal calls per event in the
   // column. One round-trip serves the whole list.
   const eventIds = useMemo(
@@ -110,7 +109,7 @@ function TodayColumn({ events }: { events: CalendarEvent[] }) {
                   {i === 0 ? <mark className="hl">{title}</mark> : title}
                 </span>
                 {loc && <span className="fp-row__meta mono-label">{loc}</span>}
-                {/* Task 10.3: 📎 N linked notes badge — only renders
+                {/* Linked-note badge — only renders
                     when the count is > 0 and the event has a stable
                     id (synthetic-id rows skip the lookup). */}
                 {event.id && (

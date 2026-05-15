@@ -1,7 +1,7 @@
 /**
- * Task 10.3 (2026-04-28) — tests for the reverse note-link helpers
- * `listNotesForExternal` + `countNoteLinksByExternalIds`. Mocks
- * `_core` getDb + withDbRetry per the established pattern.
+ * Tests for the reverse note-link helpers `listNotesForExternal` +
+ * `countNoteLinksByExternalIds`. Mocks `_core` getDb + withDbRetry
+ * per the established pattern.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -190,6 +190,48 @@ describe("listNotesForExternal", () => {
     expect(result[0].occurrenceStartIso).toBe("2026-04-28T10:00:00Z");
     expect(result[0].sourceTitle).toBe("Stand-up");
     expect(result[0].sourceUrl).toBe("https://calendar.google.com/event");
+  });
+
+  it("dedupes duplicate note rows while preserving the newest link metadata", async () => {
+    mocks.getDb.mockResolvedValue(
+      makeDbStub([
+        [
+          {
+            noteId: "note-1",
+            seriesId: "series-X",
+            occurrenceStartIso: "",
+            sourceTitle: "Series",
+            sourceUrl: "https://calendar.google.com/series",
+          },
+          {
+            noteId: "note-1",
+            seriesId: "series-X",
+            occurrenceStartIso: "2026-04-28T10:00:00Z",
+            sourceTitle: "Occurrence",
+            sourceUrl: "https://calendar.google.com/occurrence",
+          },
+        ],
+        [
+          {
+            id: "note-1",
+            title: "Stand-up notes",
+            notebook: "Meetings",
+            updatedAt: new Date(),
+          },
+        ],
+      ])
+    );
+
+    const result = await listNotesForExternal(
+      1,
+      "google_calendar_event",
+      "evt-1"
+    );
+
+    expect(result).toHaveLength(1);
+    expect(result[0].seriesId).toBe("series-X");
+    expect(result[0].sourceTitle).toBe("Series");
+    expect(result[0].sourceUrl).toBe("https://calendar.google.com/series");
   });
 });
 

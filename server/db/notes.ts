@@ -176,15 +176,13 @@ export async function addNoteLink(entry: InsertNoteLink) {
 }
 
 /**
- * Task 10.3 (2026-04-28) — reverse-link lookup: given an external
- * productivity object (Todoist task / Calendar event), return the
- * notes that link TO it.
+ * Reverse-link lookup: given an external productivity object
+ * (Todoist task / Calendar event), return the notes that link TO it.
  *
  * The forward direction (note → external) is created by the
- * Notebook→Todoist / Notebook→Calendar features (Task 4.6 and
- * earlier). This helper closes the loop so the dashboard's
- * row-based feeds can show "📎 N linked notes" badges next to
- * tasks and events that have notes attached.
+ * workspace note flows for Todoist and Calendar. This helper closes
+ * the loop so the dashboard's row-based feeds can show linked-note
+ * badges next to tasks and events that have notes attached.
  *
  * Result includes the note's `id`, `title`, `notebook`, and
  * `updatedAt` plus the link's stored source metadata so the badge
@@ -278,16 +276,20 @@ export async function listNotesForExternal(
       .where(and(eq(notes.userId, userId), inArray(notes.id, noteIds)))
   );
 
-  // Preserve the link order (newest link first), and attach the
-  // link's seriesId/occurrence so the UI can disambiguate a note
-  // that's linked to multiple occurrences of the same event.
+  // Preserve newest-link order while returning distinct notes. The
+  // count helper also dedupes by noteId, so the popover and badge
+  // count stay aligned when one note is linked to both a calendar
+  // series and a specific occurrence.
   const noteById = new Map<string, (typeof noteRows)[number]>();
   for (const note of noteRows) noteById.set(note.id, note);
 
   const out: NoteForExternal[] = [];
+  const seenNoteIds = new Set<string>();
   for (const link of linkRows) {
+    if (seenNoteIds.has(link.noteId)) continue;
     const note = noteById.get(link.noteId);
     if (!note) continue;
+    seenNoteIds.add(link.noteId);
     out.push({
       id: note.id,
       title: note.title,
@@ -303,10 +305,10 @@ export async function listNotesForExternal(
 }
 
 /**
- * Task 10.3 (2026-04-28) — batch variant of `listNotesForExternal`
- * for dashboard feeds that need counts across many rows at once.
+ * Batch variant of `listNotesForExternal` for dashboard feeds that
+ * need counts across many rows at once.
  * Returns `Record<externalId, count>` so the caller can render
- * "📎 N linked notes" badges in O(1) per row after one round-trip.
+ * linked-note badges in O(1) per row after one round-trip.
  *
  * Empty input → empty result. `linkType` is required because
  * different external systems can collide on ID (a Todoist task

@@ -1,6 +1,4 @@
 /**
- * Task 10.1 (2026-04-28) — uniform signal-row action menu.
- *
  * `<SignalActions row={...} />` exposes cross-cutting actions
  * for any row in the dashboard's frontpage feeds:
  *
@@ -124,9 +122,9 @@ export function SignalActions({
       kingPin.mutate({
         dateKey: todayKey,
         title,
-        // taskId / eventId optional — when the row IS the
+        // taskId / eventId optional — when the row is the
         // canonical Todoist or Calendar item, pass the ID through
-        // so the King chip becomes a deep link (Task 10.4).
+        // so the King chip becomes a deep link.
         ...(row.kind === "todoist" ? { taskId: row.taskId } : {}),
         ...(row.kind === "calendar" ? { eventId: row.eventId } : {}),
       });
@@ -207,8 +205,7 @@ export function SignalActions({
           {actions.map(action => (
             <DropdownMenuItem
               key={action}
-              onSelect={e => {
-                e.preventDefault();
+              onSelect={() => {
                 dispatch(action);
               }}
               className="text-xs"

@@ -1,7 +1,7 @@
 /**
- * Task 10.3 (2026-04-28) — "📎 N linked notes" badge that appears
+ * Workspace linked-note badge that appears
  * on row-based feed cells (Todoist tasks, Calendar events) when the
- * row has notes linked TO it via the Notebook→external handoff.
+ * row has workspace notes linked to it.
  *
  * Two variants:
  *
@@ -15,7 +15,7 @@
  *      when the parent renders a list of rows.
  *
  * When `onCreateNote` is supplied, a zero-count row can still render
- * a compact "Create note" workspace affordance.
+ * a compact "Create workspace note" affordance.
  */
 import { trpc } from "@/lib/trpc";
 import { FileText, Paperclip, Plus } from "lucide-react";
@@ -58,7 +58,7 @@ export function LinkedNotesBadge({
   className,
   showLabel = false,
   onCreateNote,
-  createLabel = "Create note",
+  createLabel = "Create workspace note",
   openLabel = "Open workspace",
 }: BaseProps) {
   // Self-fetch when caller didn't pre-resolve a count. Cheap when

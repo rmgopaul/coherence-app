@@ -1,6 +1,6 @@
 /**
- * Task 10.1 (2026-04-28) — tests for the SignalActions
- * applicability matrix + supporting pure helpers.
+ * Tests for the SignalActions applicability matrix + supporting
+ * pure helpers.
  */
 import { describe, expect, it } from "vitest";
 import {
