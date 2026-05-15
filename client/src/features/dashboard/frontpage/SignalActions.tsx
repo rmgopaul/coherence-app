@@ -1,7 +1,7 @@
 /**
  * Task 10.1 (2026-04-28) — uniform signal-row action menu.
  *
- * `<SignalActions row={...} />` exposes 5 cross-cutting actions
+ * `<SignalActions row={...} />` exposes cross-cutting actions
  * for any row in the dashboard's frontpage feeds:
  *
  *   1. Drop to Dock — pin to the DropDock for later
@@ -9,6 +9,7 @@
  *   3. Create Todoist Task — convert non-Todoist rows to a task
  *   4. Archive (Gmail) — Gmail-only
  *   5. Defer to tomorrow (Todoist) — Todoist-only
+ *   6. Create/Open workspace note — Todoist + Calendar only
  *
  * Applicability per row kind is encoded in `applicableActions`
  * (`@/lib/signalActions`); the component only renders entries
@@ -24,10 +25,9 @@
  */
 import { MoreHorizontal } from "lucide-react";
 import { toast } from "sonner";
+import { useLocation } from "wouter";
 import { trpc } from "@/lib/trpc";
-import {
-  Button,
-} from "@/components/ui/button";
+import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -63,13 +63,20 @@ export function SignalActions({
 }: SignalActionsProps) {
   const utils = trpc.useUtils();
   const todayKey = useTodayKey();
+  const [, setLocation] = useLocation();
+
+  const invalidateNotes = () => {
+    void utils.notes.list.invalidate();
+    void utils.notes.listForExternal.invalidate();
+    void utils.notes.countLinksByExternalIds.invalidate();
+  };
 
   const dockAdd = trpc.dock.add.useMutation({
     onSuccess: () => {
       void utils.dock.list.invalidate();
       toast.success("Dropped to dock");
     },
-    onError: (err) => toast.error(err.message),
+    onError: err => toast.error(err.message),
   });
 
   const kingPin = trpc.kingOfDay.pin.useMutation({
@@ -77,12 +84,12 @@ export function SignalActions({
       void utils.kingOfDay.get.invalidate();
       toast.success("Pinned as King of the Day");
     },
-    onError: (err) => toast.error(err.message),
+    onError: err => toast.error(err.message),
   });
 
   const todoistCreate = trpc.todoist.createTask.useMutation({
     onSuccess: () => toast.success("Todoist task created"),
-    onError: (err) => toast.error(err.message),
+    onError: err => toast.error(err.message),
   });
 
   const gmailArchive = trpc.google.archiveGmail.useMutation({
@@ -90,7 +97,7 @@ export function SignalActions({
       void utils.google.getGmailMessages.invalidate();
       toast.success("Archived");
     },
-    onError: (err) => toast.error(err.message),
+    onError: err => toast.error(err.message),
   });
 
   const todoistDefer = trpc.todoist.deferTask.useMutation({
@@ -98,8 +105,38 @@ export function SignalActions({
       void utils.todoist.getTasks.invalidate();
       toast.success("Deferred to tomorrow");
     },
-    onError: (err) => toast.error(err.message),
+    onError: err => toast.error(err.message),
   });
+
+  const createTodoistWorkspaceNote =
+    trpc.notes.createFromTodoistTask.useMutation({
+      onSuccess: result => {
+        invalidateNotes();
+        toast.success("Workspace note created");
+        setLocation(`/notes?noteId=${encodeURIComponent(result.noteId)}`);
+      },
+      onError: err => toast.error(err.message),
+    });
+
+  const createCalendarWorkspaceNote =
+    trpc.notes.createFromCalendarEvent.useMutation({
+      onSuccess: result => {
+        invalidateNotes();
+        toast.success("Workspace note created");
+        setLocation(`/notes?noteId=${encodeURIComponent(result.noteId)}`);
+      },
+      onError: err => toast.error(err.message),
+    });
+
+  function openWorkspaceNotes() {
+    if (row.kind === "calendar") {
+      setLocation(`/notes?eventId=${encodeURIComponent(row.eventId)}`);
+      return;
+    }
+    if (row.kind === "todoist") {
+      setLocation("/notes?view=linked");
+    }
+  }
 
   function dispatch(action: SignalActionKey) {
     const title = rowTitle(row);
@@ -139,6 +176,32 @@ export function SignalActions({
       todoistDefer.mutate({ taskId: row.taskId, dueString: "tomorrow" });
       return;
     }
+    if (action === "create-workspace-note" && row.kind === "todoist") {
+      createTodoistWorkspaceNote.mutate({
+        taskId: row.taskId,
+        taskContent: row.content,
+        taskUrl: row.taskUrl,
+        dueDate: row.dueDate ?? undefined,
+        projectName: row.projectName ?? undefined,
+      });
+      return;
+    }
+    if (action === "create-workspace-note" && row.kind === "calendar") {
+      createCalendarWorkspaceNote.mutate({
+        eventId: row.eventId,
+        eventSummary: row.title,
+        eventUrl: row.eventUrl,
+        start: row.start ?? undefined,
+        location: row.location ?? undefined,
+        recurringEventId: row.recurringEventId ?? undefined,
+        iCalUID: row.iCalUID ?? undefined,
+      });
+      return;
+    }
+    if (action === "open-workspace-notes") {
+      openWorkspaceNotes();
+      return;
+    }
   }
 
   const actions = applicableActions(row);
@@ -147,7 +210,9 @@ export function SignalActions({
     kingPin.isPending ||
     todoistCreate.isPending ||
     gmailArchive.isPending ||
-    todoistDefer.isPending;
+    todoistDefer.isPending ||
+    createTodoistWorkspaceNote.isPending ||
+    createCalendarWorkspaceNote.isPending;
 
   return (
     <DropdownMenu>
@@ -158,7 +223,7 @@ export function SignalActions({
           className={triggerClassName ?? "h-6 w-6 p-0"}
           aria-label={ariaLabel}
           disabled={anyPending}
-          onClick={(e) => {
+          onClick={e => {
             // Stop the click from bubbling up to a parent <a> /
             // <li onClick> that might navigate elsewhere. Every
             // feed cell wraps its rows in some kind of anchor.
@@ -170,10 +235,10 @@ export function SignalActions({
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-48">
-        {actions.map((action) => (
+        {actions.map(action => (
           <DropdownMenuItem
             key={action}
-            onSelect={(e) => {
+            onSelect={e => {
               e.preventDefault();
               dispatch(action);
             }}

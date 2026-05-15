@@ -9,13 +9,14 @@
  * Todoist tasks in TasksTriage, calendar events in upcoming
  * cells). Each row historically had its own per-feed action
  * surface — done in InboxPanel, complete in TasksTriage. Phase
- * 10's `SignalActions` menu unifies five cross-cutting actions:
+ * 10's `SignalActions` menu unifies cross-cutting actions:
  *
  *   1. Drop to Dock — pin to the DropDock for later
  *   2. Pin as King — set as today's King of the Day
  *   3. Create Todoist Task — convert a non-Todoist row to a task
  *   4. Archive (Gmail) — Gmail-only
  *   5. Defer (Todoist) — Todoist-only
+ *   6. Create/Open workspace note — Todoist + Calendar only
  *
  * Not every action applies to every row. This module owns the
  * applicability matrix as a pure function so the menu component
@@ -25,7 +26,7 @@
 
 /** Discriminated union covering the row kinds the menu surfaces.
  *  Each variant carries the minimum identity + display fields the
- *  five actions need. Add a variant + its action mapping when a
+ *  actions need. Add a variant + its action mapping when a
  *  new feed gains the menu. */
 export type SignalRow =
   | {
@@ -44,12 +45,18 @@ export type SignalRow =
       taskId: string;
       content: string;
       taskUrl: string;
+      dueDate?: string | null;
+      projectName?: string | null;
     }
   | {
       kind: "calendar";
       eventId: string;
       title: string;
       eventUrl: string;
+      start?: string | null;
+      location?: string | null;
+      recurringEventId?: string | null;
+      iCalUID?: string | null;
     }
   | {
       kind: "generic";
@@ -62,6 +69,8 @@ export type SignalActionKey =
   | "drop-to-dock"
   | "pin-as-king"
   | "create-todoist-task"
+  | "create-workspace-note"
+  | "open-workspace-notes"
   | "archive-gmail"
   | "defer-todoist";
 
@@ -71,6 +80,8 @@ export const SIGNAL_ACTION_LABELS: Record<SignalActionKey, string> = {
   "drop-to-dock": "Drop to Dock",
   "pin-as-king": "Pin as King",
   "create-todoist-task": "Create Todoist Task",
+  "create-workspace-note": "Create workspace note",
+  "open-workspace-notes": "Open workspace",
   "archive-gmail": "Archive",
   "defer-todoist": "Defer to tomorrow",
 };
@@ -85,6 +96,8 @@ export const SIGNAL_ACTION_LABELS: Record<SignalActionKey, string> = {
  *   - **Drop to Dock** + **Pin as King** apply to every row.
  *   - **Create Todoist Task** applies to every kind EXCEPT
  *     `todoist` (no point converting a task into itself).
+ *   - **Create/Open workspace note** applies to Todoist +
+ *     Calendar rows because those are canonical work objects.
  *   - **Archive** is `gmail`-only.
  *   - **Defer to tomorrow** is `todoist`-only.
  *
@@ -94,6 +107,9 @@ export function applicableActions(row: SignalRow): SignalActionKey[] {
   const actions: SignalActionKey[] = ["drop-to-dock", "pin-as-king"];
   if (row.kind !== "todoist") {
     actions.push("create-todoist-task");
+  }
+  if (row.kind === "todoist" || row.kind === "calendar") {
+    actions.push("create-workspace-note", "open-workspace-notes");
   }
   if (row.kind === "gmail") {
     actions.push("archive-gmail");

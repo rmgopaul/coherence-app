@@ -73,6 +73,18 @@ describe("applicableActions", () => {
     expect(applicableActions(genericRow)).not.toContain("defer-todoist");
   });
 
+  it("includes workspace note actions only for todoist and calendar rows", () => {
+    for (const action of [
+      "create-workspace-note",
+      "open-workspace-notes",
+    ] as const) {
+      expect(applicableActions(todoistRow)).toContain(action);
+      expect(applicableActions(calendarRow)).toContain(action);
+      expect(applicableActions(gmailRow)).not.toContain(action);
+      expect(applicableActions(genericRow)).not.toContain(action);
+    }
+  });
+
   it("orders generic actions before kind-specific ones", () => {
     const gmail = applicableActions(gmailRow);
     expect(gmail.indexOf("drop-to-dock")).toBeLessThan(
@@ -86,6 +98,9 @@ describe("applicableActions", () => {
     );
     const todoist = applicableActions(todoistRow);
     expect(todoist.indexOf("drop-to-dock")).toBeLessThan(
+      todoist.indexOf("defer-todoist")
+    );
+    expect(todoist.indexOf("create-workspace-note")).toBeLessThan(
       todoist.indexOf("defer-todoist")
     );
   });
@@ -112,9 +127,7 @@ describe("rowTitle / rowUrl", () => {
     expect(rowUrl(gmailRow)).toBe(
       "https://mail.google.com/mail/u/0/#inbox/abc"
     );
-    expect(rowUrl(todoistRow)).toBe(
-      "https://todoist.com/showTask?id=task-1"
-    );
+    expect(rowUrl(todoistRow)).toBe("https://todoist.com/showTask?id=task-1");
     expect(rowUrl(calendarRow)).toBe(
       "https://calendar.google.com/calendar/u/0/r/eventedit/abc"
     );
