@@ -71,6 +71,7 @@ type NoteLinkRow = {
   linkType?: string;
   externalId?: string;
   seriesId?: string;
+  occurrenceStartIso?: string;
   sourceTitle?: string | null;
   sourceUrl?: string | null;
   metadata?: string | Record<string, unknown> | null;
@@ -200,6 +201,83 @@ function linkLabel(linkType: string | undefined): string {
   if (value === "google_drive_file") return "Drive";
   if (value === "note_link") return "Note";
   return "Link";
+}
+
+function metadataText(
+  metadata: Record<string, unknown>,
+  key: string
+): string | null {
+  const value = metadata[key];
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed || null;
+}
+
+function linkMetadataRows(link: NoteLinkRow): Array<{ label: string; value: string }> {
+  const metadata = parseLinkMetadata(link.metadata);
+  const rows: Array<{ label: string; value: string }> = [];
+  const externalId = String(link.externalId || "").trim();
+
+  if (link.linkType === "todoist_task") {
+    const projectName = metadataText(metadata, "projectName");
+    const dueDate = metadataText(metadata, "dueDate");
+    if (projectName) rows.push({ label: "Project", value: projectName });
+    if (dueDate) rows.push({ label: "Due", value: dueDate });
+  } else if (link.linkType === "google_calendar_event") {
+    const start = String(link.occurrenceStartIso || "").trim();
+    const location = metadataText(metadata, "location");
+    const recurringEventId = metadataText(metadata, "recurringEventId");
+    const iCalUID = metadataText(metadata, "iCalUID");
+    if (start) rows.push({ label: "Start", value: start });
+    if (location) rows.push({ label: "Location", value: location });
+    if (recurringEventId) rows.push({ label: "Series", value: recurringEventId });
+    if (iCalUID) rows.push({ label: "iCalUID", value: iCalUID });
+  } else if (link.linkType === "google_drive_file") {
+    if (externalId) rows.push({ label: "File ID", value: externalId });
+  } else if (link.linkType === "note_link") {
+    if (externalId) rows.push({ label: "Note ID", value: externalId });
+  }
+
+  return rows;
+}
+
+const LINK_GROUP_ORDER = [
+  "todoist_task",
+  "google_calendar_event",
+  "google_drive_file",
+  "note_link",
+] as const;
+
+type NoteLinkGroup = {
+  linkType: string;
+  label: string;
+  links: NoteLinkRow[];
+};
+
+function groupNoteLinks(links: NoteLinkRow[]): NoteLinkGroup[] {
+  const knownGroups: NoteLinkGroup[] = LINK_GROUP_ORDER.map((linkType) => ({
+    linkType,
+    label: linkLabel(linkType),
+    links: links.filter((link) => link.linkType === linkType),
+  })).filter((group) => group.links.length > 0);
+  const unknownGroups = new Map<string, NoteLinkGroup>();
+
+  for (const link of links) {
+    const linkType = String(link.linkType || "unknown");
+    if (LINK_GROUP_ORDER.some((knownType) => knownType === linkType)) continue;
+    const group = unknownGroups.get(linkType);
+    if (group) {
+      group.links.push(link);
+    } else {
+      unknownGroups.set(linkType, {
+        linkType,
+        label: linkLabel(linkType),
+        links: [link],
+      });
+    }
+  }
+
+  return [...knownGroups, ...Array.from(unknownGroups.values())];
 }
 
 function saveStateLabel(state: SaveState, lastSavedAt: Date | null): string {
@@ -421,6 +499,10 @@ export default function Notebook() {
     if (!selectedNoteFromQuery) return [];
     return Array.isArray(selectedNoteFromQuery.links) ? selectedNoteFromQuery.links : [];
   }, [selectedNoteFromQuery]);
+  const selectedNoteLinkGroups = useMemo(
+    () => groupNoteLinks(selectedNoteLinks),
+    [selectedNoteLinks]
+  );
 
   const clearAutosaveTimers = useCallback(() => {
     if (autosaveTimerRef.current !== null) {
@@ -1410,9 +1492,10 @@ export default function Notebook() {
                     />
                   </div>
                   <div className="border-b border-slate-200 px-4 py-3">
-                    <p className="text-sm font-semibold text-slate-900">Linked Items</p>
+                    <p className="text-sm font-semibold text-slate-900">Linked Work</p>
                     <p className="mt-0.5 text-xs text-slate-500">
-                      Existing links for this page. Manage or remove links from here.
+                      Work objects connected to this page. Metadata is stored
+                      with the note link.
                     </p>
                   </div>
                   <div className="min-h-0 flex-1 overflow-y-auto p-3">
@@ -1421,41 +1504,67 @@ export default function Notebook() {
                         No links on this note.
                       </div>
                     ) : (
-                      <div className="space-y-2">
-                        {selectedNoteLinks.map((link) => (
-                          <div key={link.id} className="rounded-lg border border-slate-200 bg-white p-3">
-                            <div className="flex items-start justify-between gap-2">
-                              <div>
-                                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                                  {linkLabel(link.linkType)}
-                                </p>
-                                <p className="mt-1 line-clamp-2 text-sm font-medium text-slate-900">
-                                  {link.sourceTitle || link.externalId || "Linked item"}
-                                </p>
-                                <p className="mt-1 text-xs text-slate-500">Added {formatDateTime(link.createdAt)}</p>
-                              </div>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-7 w-7 text-rose-600 hover:bg-rose-50"
-                                onClick={() => void removeLink(link.id)}
-                                title="Remove link"
-                              >
-                                <Trash2 className="h-3.5 w-3.5" />
-                              </Button>
+                      <div className="space-y-4">
+                        {selectedNoteLinkGroups.map((group) => (
+                          <section key={group.linkType} className="space-y-2">
+                            <div className="flex items-center justify-between">
+                              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                                {group.label}
+                              </p>
+                              <Badge variant="secondary" className="h-5 text-[10px]">
+                                {group.links.length}
+                              </Badge>
                             </div>
-                            {link.sourceUrl ? (
-                              <a
-                                href={String(link.sourceUrl)}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="mt-2 inline-flex max-w-full items-center gap-1 text-xs text-blue-700 underline-offset-2 hover:underline"
-                              >
-                                <Link2 className="h-3 w-3" />
-                                <span className="truncate">Open source</span>
-                              </a>
-                            ) : null}
-                          </div>
+                            {group.links.map((link) => {
+                              const metadataRows = linkMetadataRows(link);
+                              return (
+                                <div key={link.id} className="rounded-lg border border-slate-200 bg-white p-3">
+                                  <div className="flex items-start justify-between gap-2">
+                                    <div className="min-w-0">
+                                      <p className="line-clamp-2 text-sm font-medium text-slate-900">
+                                        {link.sourceTitle || link.externalId || "Linked item"}
+                                      </p>
+                                      <p className="mt-1 text-xs text-slate-500">
+                                        Added {formatDateTime(link.createdAt)}
+                                      </p>
+                                    </div>
+                                    <Button
+                                      variant="ghost"
+                                      size="icon"
+                                      className="h-7 w-7 shrink-0 text-rose-600 hover:bg-rose-50"
+                                      onClick={() => void removeLink(link.id)}
+                                      title="Remove link"
+                                    >
+                                      <Trash2 className="h-3.5 w-3.5" />
+                                    </Button>
+                                  </div>
+                                  {metadataRows.length > 0 ? (
+                                    <dl className="mt-2 space-y-1 text-xs">
+                                      {metadataRows.map((row) => (
+                                        <div key={`${row.label}:${row.value}`} className="grid grid-cols-[64px,1fr] gap-2">
+                                          <dt className="text-slate-500">{row.label}</dt>
+                                          <dd className="truncate text-slate-800" title={row.value}>
+                                            {row.value}
+                                          </dd>
+                                        </div>
+                                      ))}
+                                    </dl>
+                                  ) : null}
+                                  {link.sourceUrl ? (
+                                    <a
+                                      href={String(link.sourceUrl)}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      className="mt-2 inline-flex max-w-full items-center gap-1 text-xs text-blue-700 underline-offset-2 hover:underline"
+                                    >
+                                      <Link2 className="h-3 w-3" />
+                                      <span className="truncate">Open source</span>
+                                    </a>
+                                  ) : null}
+                                </div>
+                              );
+                            })}
+                          </section>
                         ))}
                       </div>
                     )}
