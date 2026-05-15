@@ -16,6 +16,7 @@ import {
   isoFromDateTimeLocalInput,
   normalizeDailyWorkflowDraftForSave,
   winActiveOutcomes,
+  workspaceNoteRowFromDailyWorkflowItem,
 } from "./dailyWorkflow.helpers";
 
 const commandCenter: PersonalDashboardCommandCenter = {
@@ -388,6 +389,76 @@ describe("dailyWorkflow helpers", () => {
     expect(
       winActiveOutcomes(draft.outcomes).map((item) => item.status)
     ).toEqual(["won", "paused"]);
+  });
+
+  it("builds workspace rows only for source-backed Todoist and Calendar items", () => {
+    expect(
+      workspaceNoteRowFromDailyWorkflowItem({
+        id: "commitment-1",
+        title: "Close proposal",
+        source: "todoist",
+        sourceId: " task-1 ",
+        owner: null,
+        dueAt: "2026-05-14T16:00:00.000Z",
+        status: "open",
+        url: null,
+      })
+    ).toMatchObject({
+      kind: "todoist",
+      taskId: "task-1",
+      content: "Close proposal",
+      dueDate: "2026-05-14T16:00:00.000Z",
+      projectName: null,
+    });
+
+    expect(
+      workspaceNoteRowFromDailyWorkflowItem({
+        id: "block-1",
+        title: "Prep call",
+        source: "calendar",
+        sourceId: "event-1",
+        startIso: "2026-05-14T18:00:00.000Z",
+        endIso: null,
+        status: "planned",
+      })
+    ).toMatchObject({
+      kind: "calendar",
+      eventId: "event-1",
+      title: "Prep call",
+      start: "2026-05-14T18:00:00.000Z",
+      location: null,
+    });
+
+    expect(
+      workspaceNoteRowFromDailyWorkflowItem({
+        id: "commitment-2",
+        title: "Manual follow-up",
+        source: "system",
+        sourceId: null,
+        owner: null,
+        dueAt: null,
+        status: "open",
+        url: null,
+      })
+    ).toBeNull();
+  });
+
+  it("uses the source ID as a workspace title fallback while a draft title is empty", () => {
+    expect(
+      workspaceNoteRowFromDailyWorkflowItem({
+        id: "commitment-1",
+        title: "   ",
+        source: "todoist",
+        sourceId: "task-1",
+        owner: null,
+        dueAt: null,
+        status: "open",
+        url: null,
+      })
+    ).toMatchObject({
+      kind: "todoist",
+      content: "task-1",
+    });
   });
 
   it("preserves normalized commitment detail fields before save", () => {

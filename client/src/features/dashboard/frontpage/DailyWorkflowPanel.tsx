@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react";
 import {
   CalendarClock,
   CheckCircle2,
@@ -37,8 +43,12 @@ import {
   isoFromDateTimeLocalInput,
   normalizeDailyWorkflowDraftForSave,
   winActiveOutcomes,
+  workspaceNoteRowFromDailyWorkflowItem,
   type DailyWorkflowDraft,
 } from "./dailyWorkflow.helpers";
+import { LinkedNotesBadge } from "./LinkedNotesBadge";
+import { SignalActions } from "./SignalActions";
+import { useWorkspaceNotes, type WorkspaceNoteRow } from "./useWorkspaceNotes";
 
 type DailyBriefSourceRef =
   DailyWorkflowDraft["dailyBrief"]["sourceRefs"][number];
@@ -87,6 +97,7 @@ export function DailyWorkflowPanel({
     emptyDailyWorkflowDraft()
   );
   const [dirty, setDirty] = useState(false);
+  const workspaceNotes = useWorkspaceNotes();
 
   const saveDailyState = trpc.personalDashboard.saveDailyState.useMutation({
     onSuccess: async (saved) => {
@@ -128,6 +139,104 @@ export function DailyWorkflowPanel({
   const canWinActiveOutcomes = draft.outcomes.some(
     (item) => item.status === "active"
   );
+  const commitmentWorkspaceRows = useMemo(
+    () =>
+      draft.commitments
+        .map(workspaceNoteRowFromDailyWorkflowItem)
+        .filter(isWorkspaceNoteRow),
+    [draft.commitments]
+  );
+  const planBlockWorkspaceRows = useMemo(
+    () =>
+      draft.todayPlan.blocks
+        .map(workspaceNoteRowFromDailyWorkflowItem)
+        .filter(isWorkspaceNoteRow),
+    [draft.todayPlan.blocks]
+  );
+  const workspaceRows = useMemo(
+    () => [...commitmentWorkspaceRows, ...planBlockWorkspaceRows],
+    [commitmentWorkspaceRows, planBlockWorkspaceRows]
+  );
+  const todoistWorkspaceIds = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          workspaceRows
+            .filter((row) => row.kind === "todoist")
+            .map((row) => row.taskId)
+        )
+      ),
+    [workspaceRows]
+  );
+  const calendarWorkspaceIds = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          workspaceRows
+            .filter((row) => row.kind === "calendar")
+            .map((row) => row.eventId)
+        )
+      ),
+    [workspaceRows]
+  );
+  const todoistNoteCountsQuery = trpc.notes.countLinksByExternalIds.useQuery(
+    { linkType: "todoist_task", externalIds: todoistWorkspaceIds },
+    {
+      enabled: todoistWorkspaceIds.length > 0,
+      staleTime: 60_000,
+    }
+  );
+  const calendarNoteCountsQuery = trpc.notes.countLinksByExternalIds.useQuery(
+    { linkType: "google_calendar_event", externalIds: calendarWorkspaceIds },
+    {
+      enabled: calendarWorkspaceIds.length > 0,
+      staleTime: 60_000,
+    }
+  );
+
+  function linkedNoteCount(row: WorkspaceNoteRow): number {
+    if (row.kind === "todoist") {
+      return todoistNoteCountsQuery.data?.counts[row.taskId] ?? 0;
+    }
+    return calendarNoteCountsQuery.data?.counts[row.eventId] ?? 0;
+  }
+
+  function linkedNoteCountLoading(row: WorkspaceNoteRow): boolean {
+    return row.kind === "todoist"
+      ? todoistNoteCountsQuery.isLoading
+      : calendarNoteCountsQuery.isLoading;
+  }
+
+  function renderWorkspaceActions(row: WorkspaceNoteRow | null) {
+    if (!row) return null;
+    const linkType =
+      row.kind === "todoist" ? "todoist_task" : "google_calendar_event";
+    const externalId = row.kind === "todoist" ? row.taskId : row.eventId;
+    return (
+      <div className="fp-daily-workflow__workspace-actions">
+        <LinkedNotesBadge
+          linkType={linkType}
+          externalId={externalId}
+          count={linkedNoteCount(row)}
+          countLoading={linkedNoteCountLoading(row)}
+          onCreateNote={() => workspaceNotes.createWorkspaceNote(row)}
+          createLabel="Create workspace note"
+          openLabel="Open workspace"
+          className="fp-daily-workflow__mini-btn"
+        />
+        <SignalActions
+          row={row}
+          actionKeys={[
+            "create-workspace-note",
+            "open-workspace-notes",
+            "attach-existing-note",
+          ]}
+          triggerClassName="fp-daily-workflow__icon-btn fp-daily-workflow__icon-btn--quiet"
+          ariaLabel={`Workspace actions for ${row.kind === "todoist" ? row.content : row.title}`}
+        />
+      </div>
+    );
+  }
 
   function updateDraft(
     updater: (current: DailyWorkflowDraft) => DailyWorkflowDraft
@@ -694,6 +803,9 @@ export function DailyWorkflowPanel({
               />
             </>
           )}
+          renderRowActions={(item) =>
+            renderWorkspaceActions(workspaceNoteRowFromDailyWorkflowItem(item))
+          }
         />
 
         <EditableList
@@ -815,6 +927,9 @@ export function DailyWorkflowPanel({
               />
             </>
           )}
+          renderRowActions={(item) =>
+            renderWorkspaceActions(workspaceNoteRowFromDailyWorkflowItem(item))
+          }
         />
 
         <EditableList
@@ -966,6 +1081,7 @@ function EditableList<T extends { id: string }>({
   actions,
   onRemove,
   renderItem,
+  renderRowActions,
 }: {
   title: string;
   icon: ReactNode;
@@ -975,6 +1091,7 @@ function EditableList<T extends { id: string }>({
   actions?: ReactNode;
   onRemove: (id: string) => void;
   renderItem: (item: T) => ReactNode;
+  renderRowActions?: (item: T) => ReactNode;
 }) {
   return (
     <div className="fp-daily-workflow__block">
@@ -987,7 +1104,14 @@ function EditableList<T extends { id: string }>({
           <p className="fp-empty">none tracked yet.</p>
         ) : (
           items.map((item) => (
-            <div key={item.id} className="fp-daily-workflow__row">
+            <div
+              key={item.id}
+              className={
+                renderRowActions
+                  ? "fp-daily-workflow__row fp-daily-workflow__row--with-workspace"
+                  : "fp-daily-workflow__row"
+              }
+            >
               <div
                 className={
                   fieldsClassName
@@ -997,6 +1121,7 @@ function EditableList<T extends { id: string }>({
               >
                 {renderItem(item)}
               </div>
+              {renderRowActions ? renderRowActions(item) : null}
               <button
                 type="button"
                 className="fp-daily-workflow__icon-btn fp-daily-workflow__icon-btn--quiet"
@@ -1026,6 +1151,10 @@ function dedupeById<T extends { id: string }>(items: T[]): T[] {
   const byId = new Map<string, T>();
   for (const item of items) byId.set(item.id, item);
   return Array.from(byId.values());
+}
+
+function isWorkspaceNoteRow(row: WorkspaceNoteRow | null): row is WorkspaceNoteRow {
+  return row !== null;
 }
 
 function isEditableTarget(target: EventTarget | null): boolean {
