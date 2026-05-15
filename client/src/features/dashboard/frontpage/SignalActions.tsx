@@ -9,7 +9,7 @@
  *   3. Create Todoist Task — convert non-Todoist rows to a task
  *   4. Archive (Gmail) — Gmail-only
  *   5. Defer to tomorrow (Todoist) — Todoist-only
- *   6. Create/Open workspace note — Todoist + Calendar only
+ *   6. Create/Open/Attach workspace note — Todoist + Calendar only
  *
  * Applicability per row kind is encoded in `applicableActions`
  * (`@/lib/signalActions`); the component only renders entries
@@ -23,6 +23,7 @@
  * Trigger: a small ⋯ button. Designed to fit the dense newsprint
  * row aesthetic — no border, ghost on hover, mono label.
  */
+import { useState } from "react";
 import { MoreHorizontal } from "lucide-react";
 import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
@@ -43,6 +44,7 @@ import {
   type SignalRow,
 } from "@/lib/signalActions";
 import { useTodayKey } from "../useTodayKey";
+import { AttachExistingNoteDialog } from "./AttachExistingNoteDialog";
 import { useWorkspaceNotes } from "./useWorkspaceNotes";
 
 interface SignalActionsProps {
@@ -64,6 +66,7 @@ export function SignalActions({
   const utils = trpc.useUtils();
   const todayKey = useTodayKey();
   const workspaceNotes = useWorkspaceNotes();
+  const [attachDialogOpen, setAttachDialogOpen] = useState(false);
 
   const dockAdd = trpc.dock.add.useMutation({
     onSuccess: () => {
@@ -155,6 +158,13 @@ export function SignalActions({
       workspaceNotes.openWorkspaceNotes(row);
       return;
     }
+    if (
+      action === "attach-existing-note" &&
+      (row.kind === "todoist" || row.kind === "calendar")
+    ) {
+      setAttachDialogOpen(true);
+      return;
+    }
   }
 
   const actions = applicableActions(row);
@@ -167,39 +177,48 @@ export function SignalActions({
     workspaceNotes.isCreatingWorkspaceNote;
 
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button
-          variant="ghost"
-          size="sm"
-          className={triggerClassName ?? "h-6 w-6 p-0"}
-          aria-label={ariaLabel}
-          disabled={anyPending}
-          onClick={e => {
-            // Stop the click from bubbling up to a parent <a> /
-            // <li onClick> that might navigate elsewhere. Every
-            // feed cell wraps its rows in some kind of anchor.
-            e.preventDefault();
-            e.stopPropagation();
-          }}
-        >
-          <MoreHorizontal className="h-3.5 w-3.5" />
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-48">
-        {actions.map(action => (
-          <DropdownMenuItem
-            key={action}
-            onSelect={e => {
+    <>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button
+            variant="ghost"
+            size="sm"
+            className={triggerClassName ?? "h-6 w-6 p-0"}
+            aria-label={ariaLabel}
+            disabled={anyPending}
+            onClick={e => {
+              // Stop the click from bubbling up to a parent <a> /
+              // <li onClick> that might navigate elsewhere. Every
+              // feed cell wraps its rows in some kind of anchor.
               e.preventDefault();
-              dispatch(action);
+              e.stopPropagation();
             }}
-            className="text-xs"
           >
-            {SIGNAL_ACTION_LABELS[action]}
-          </DropdownMenuItem>
-        ))}
-      </DropdownMenuContent>
-    </DropdownMenu>
+            <MoreHorizontal className="h-3.5 w-3.5" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="w-48">
+          {actions.map(action => (
+            <DropdownMenuItem
+              key={action}
+              onSelect={e => {
+                e.preventDefault();
+                dispatch(action);
+              }}
+              className="text-xs"
+            >
+              {SIGNAL_ACTION_LABELS[action]}
+            </DropdownMenuItem>
+          ))}
+        </DropdownMenuContent>
+      </DropdownMenu>
+      {row.kind === "todoist" || row.kind === "calendar" ? (
+        <AttachExistingNoteDialog
+          row={row}
+          open={attachDialogOpen}
+          onOpenChange={setAttachDialogOpen}
+        />
+      ) : null}
+    </>
   );
 }

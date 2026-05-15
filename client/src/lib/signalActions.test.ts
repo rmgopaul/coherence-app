@@ -77,6 +77,7 @@ describe("applicableActions", () => {
     for (const action of [
       "create-workspace-note",
       "open-workspace-notes",
+      "attach-existing-note",
     ] as const) {
       expect(applicableActions(todoistRow)).toContain(action);
       expect(applicableActions(calendarRow)).toContain(action);

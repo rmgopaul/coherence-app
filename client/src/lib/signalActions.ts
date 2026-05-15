@@ -16,7 +16,7 @@
  *   3. Create Todoist Task — convert a non-Todoist row to a task
  *   4. Archive (Gmail) — Gmail-only
  *   5. Defer (Todoist) — Todoist-only
- *   6. Create/Open workspace note — Todoist + Calendar only
+ *   6. Create/Open/Attach workspace note — Todoist + Calendar only
  *
  * Not every action applies to every row. This module owns the
  * applicability matrix as a pure function so the menu component
@@ -71,6 +71,7 @@ export type SignalActionKey =
   | "create-todoist-task"
   | "create-workspace-note"
   | "open-workspace-notes"
+  | "attach-existing-note"
   | "archive-gmail"
   | "defer-todoist";
 
@@ -82,6 +83,7 @@ export const SIGNAL_ACTION_LABELS: Record<SignalActionKey, string> = {
   "create-todoist-task": "Create Todoist Task",
   "create-workspace-note": "Create workspace note",
   "open-workspace-notes": "Open workspace",
+  "attach-existing-note": "Attach existing note",
   "archive-gmail": "Archive",
   "defer-todoist": "Defer to tomorrow",
 };
@@ -96,7 +98,7 @@ export const SIGNAL_ACTION_LABELS: Record<SignalActionKey, string> = {
  *   - **Drop to Dock** + **Pin as King** apply to every row.
  *   - **Create Todoist Task** applies to every kind EXCEPT
  *     `todoist` (no point converting a task into itself).
- *   - **Create/Open workspace note** applies to Todoist +
+ *   - **Create/Open/Attach workspace note** applies to Todoist +
  *     Calendar rows because those are canonical work objects.
  *   - **Archive** is `gmail`-only.
  *   - **Defer to tomorrow** is `todoist`-only.
@@ -109,7 +111,11 @@ export function applicableActions(row: SignalRow): SignalActionKey[] {
     actions.push("create-todoist-task");
   }
   if (row.kind === "todoist" || row.kind === "calendar") {
-    actions.push("create-workspace-note", "open-workspace-notes");
+    actions.push(
+      "create-workspace-note",
+      "open-workspace-notes",
+      "attach-existing-note"
+    );
   }
   if (row.kind === "gmail") {
     actions.push("archive-gmail");
