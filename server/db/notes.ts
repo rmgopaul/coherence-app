@@ -187,10 +187,10 @@ export async function addNoteLink(entry: InsertNoteLink) {
  * tasks and events that have notes attached.
  *
  * Result includes the note's `id`, `title`, `notebook`, and
- * `updatedAt` so the badge popover can list them without a
- * follow-up query. Capped at `limit` (default 50) — typical UX
- * has a handful of notes per task; the cap is defense against
- * pathological data.
+ * `updatedAt` plus the link's stored source metadata so the badge
+ * popover can list them without a follow-up query. Capped at
+ * `limit` (default 50) — typical UX has a handful of notes per
+ * task; the cap is defense against pathological data.
  *
  * `seriesId` and `occurrenceStartIso` are optional. When omitted,
  * the query matches any link with the supplied (linkType,
@@ -208,6 +208,10 @@ export interface NoteForExternal {
   seriesId: string;
   /** The link's occurrenceStartIso. */
   occurrenceStartIso: string;
+  /** The external object's title captured when the link was made. */
+  sourceTitle: string | null;
+  /** The external object's URL captured when the link was made. */
+  sourceUrl: string | null;
 }
 
 export async function listNotesForExternal(
@@ -250,6 +254,8 @@ export async function listNotesForExternal(
         noteId: noteLinks.noteId,
         seriesId: noteLinks.seriesId,
         occurrenceStartIso: noteLinks.occurrenceStartIso,
+        sourceTitle: noteLinks.sourceTitle,
+        sourceUrl: noteLinks.sourceUrl,
       })
       .from(noteLinks)
       .where(and(...linkConditions))
@@ -289,6 +295,8 @@ export async function listNotesForExternal(
       updatedAt: note.updatedAt,
       seriesId: link.seriesId,
       occurrenceStartIso: link.occurrenceStartIso,
+      sourceTitle: link.sourceTitle,
+      sourceUrl: link.sourceUrl,
     });
   }
   return out;
