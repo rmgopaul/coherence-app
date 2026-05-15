@@ -34,6 +34,9 @@ interface BaseProps {
    *  count for the badge label. The popover still self-fetches
    *  detail when opened. */
   count?: number;
+  /** Set by batched parents while the count query is still loading.
+   *  Prevents the zero-count create affordance from flashing early. */
+  countLoading?: boolean;
   /** Class for the trigger button. Feed cells size the badge
    *  differently to fit their density. */
   className?: string;
@@ -51,6 +54,7 @@ export function LinkedNotesBadge({
   linkType,
   externalId,
   count,
+  countLoading = false,
   className,
   showLabel = false,
   onCreateNote,
@@ -75,7 +79,10 @@ export function LinkedNotesBadge({
     className ??
     "inline-flex items-center gap-1 rounded text-xs text-muted-foreground hover:text-foreground";
 
-  if (count === undefined && (listQuery.isLoading || listQuery.error)) {
+  if (
+    (count === undefined && (listQuery.isLoading || listQuery.error)) ||
+    (count !== undefined && countLoading)
+  ) {
     return null;
   }
 

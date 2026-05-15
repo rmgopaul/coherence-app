@@ -158,15 +158,24 @@ function parseLinkMetadata(metadata: unknown): Record<string, unknown> {
   }
 }
 
-function noteMatchesEventFilter(note: NoteRow, eventFilterKey: string): boolean {
-  if (!eventFilterKey) return true;
+function noteMatchesExternalFilter(
+  note: NoteRow,
+  externalFilterKey: string
+): boolean {
+  if (!externalFilterKey) return true;
   const links = Array.isArray(note.links) ? note.links : [];
 
   return links.some((link) => {
+    if (externalFilterKey.startsWith("task:")) {
+      if (link.linkType !== "todoist_task") return false;
+      const target = externalFilterKey.slice("task:".length).trim();
+      return Boolean(target) && String(link.externalId || "").trim() === target;
+    }
+
     if (link.linkType !== "google_calendar_event") return false;
 
-    if (eventFilterKey.startsWith("series:")) {
-      const target = eventFilterKey.slice("series:".length).trim();
+    if (externalFilterKey.startsWith("series:")) {
+      const target = externalFilterKey.slice("series:".length).trim();
       if (!target) return false;
 
       const metadata = parseLinkMetadata(link.metadata);
@@ -180,7 +189,7 @@ function noteMatchesEventFilter(note: NoteRow, eventFilterKey: string): boolean 
     }
 
     const externalId = String(link.externalId || "").trim();
-    return `event:${externalId}` === eventFilterKey;
+    return `event:${externalId}` === externalFilterKey;
   });
 }
 
@@ -210,7 +219,7 @@ export default function Notebook() {
   const [selectedNotebook, setSelectedNotebook] = useState<string>("All Notebooks");
   const [viewFilter, setViewFilter] = useState<ViewFilter>("all");
   const [searchQuery, setSearchQuery] = useState("");
-  const [eventFilterKey, setEventFilterKey] = useState("");
+  const [externalFilterKey, setExternalFilterKey] = useState("");
   const [notesFetchLimit, setNotesFetchLimit] = useState(500);
   const [notesPage, setNotesPage] = useState(1);
 
@@ -363,8 +372,10 @@ export default function Notebook() {
       rows = rows.filter((note) => (note.links?.length ?? 0) > 0);
     }
 
-    if (eventFilterKey) {
-      rows = rows.filter((note) => noteMatchesEventFilter(note, eventFilterKey));
+    if (externalFilterKey) {
+      rows = rows.filter((note) =>
+        noteMatchesExternalFilter(note, externalFilterKey)
+      );
     }
 
     const query = searchQuery.trim().toLowerCase();
@@ -388,7 +399,7 @@ export default function Notebook() {
     });
 
     return rows;
-  }, [notes, selectedNotebook, viewFilter, eventFilterKey, searchQuery]);
+  }, [notes, selectedNotebook, viewFilter, externalFilterKey, searchQuery]);
 
   const pagesTotal = Math.max(1, Math.ceil(visibleNotes.length / NOTES_PAGE_SIZE));
   const pagesCurrent = Math.min(notesPage, pagesTotal);
@@ -753,6 +764,7 @@ export default function Notebook() {
     const routeNotebook = params.get("notebook");
     const routeView = params.get("view")?.trim().toLowerCase();
     const routeNoteId = params.get("noteId");
+    const routeTaskId = params.get("taskId");
     const routeEventId = params.get("eventId");
     const routeSeriesId = params.get("seriesId");
     const routeNew = params.get("new") === "1";
@@ -772,9 +784,11 @@ export default function Notebook() {
     }
 
     if (routeSeriesId && routeSeriesId.trim()) {
-      setEventFilterKey(`series:${routeSeriesId.trim()}`);
+      setExternalFilterKey(`series:${routeSeriesId.trim()}`);
     } else if (routeEventId && routeEventId.trim()) {
-      setEventFilterKey(`event:${routeEventId.trim()}`);
+      setExternalFilterKey(`event:${routeEventId.trim()}`);
+    } else if (routeTaskId && routeTaskId.trim()) {
+      setExternalFilterKey(`task:${routeTaskId.trim()}`);
     }
 
     if (routeNoteId && routeNoteId.trim()) {
@@ -794,7 +808,7 @@ export default function Notebook() {
 
   useEffect(() => {
     setNotesPage(1);
-  }, [selectedNotebook, viewFilter, eventFilterKey, searchQuery]);
+  }, [selectedNotebook, viewFilter, externalFilterKey, searchQuery]);
 
   useEffect(() => {
     if (notesLoading) return;
@@ -1066,14 +1080,16 @@ export default function Notebook() {
           <span>{viewFilter === "all" ? "All" : viewFilter === "pinned" ? "Pinned" : "Linked"}</span>
         </div>
 
-        {eventFilterKey ? (
+        {externalFilterKey ? (
           <div className="flex items-center justify-between rounded-md border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-xs text-amber-900">
-            <span className="truncate">Calendar filter active: {eventFilterKey}</span>
+            <span className="truncate">
+              Linked work filter active: {externalFilterKey}
+            </span>
             <button
               type="button"
               className="ml-2 rounded p-0.5 hover:bg-amber-100"
-              onClick={() => setEventFilterKey("")}
-              aria-label="Clear calendar filter"
+              onClick={() => setExternalFilterKey("")}
+              aria-label="Clear linked work filter"
             >
               <X className="h-3.5 w-3.5" />
             </button>

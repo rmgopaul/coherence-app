@@ -23,6 +23,8 @@ import {
   formatEventTime,
 } from "./newsprint.helpers";
 import { TasksTriage } from "./TasksTriage";
+import { SignalActions } from "./SignalActions";
+import type { WorkspaceNoteRow } from "./useWorkspaceNotes";
 
 interface NewsprintColumnsProps {
   calendar: CalendarEvent[];
@@ -39,7 +41,7 @@ interface NewsprintColumnsProps {
 
 function TodayColumn({ events }: { events: CalendarEvent[] }) {
   const upcoming = events
-    .filter((e) => {
+    .filter(e => {
       const startIso = e.start?.dateTime ?? e.start?.date ?? null;
       if (!startIso) return false;
       const startMs = new Date(startIso).getTime();
@@ -51,7 +53,7 @@ function TodayColumn({ events }: { events: CalendarEvent[] }) {
   // without N separate listForExternal calls per event in the
   // column. One round-trip serves the whole list.
   const eventIds = useMemo(
-    () => upcoming.map((e) => e.id ?? "").filter(Boolean),
+    () => upcoming.map(e => e.id ?? "").filter(Boolean),
     [upcoming]
   );
   const noteCountsQuery = trpc.notes.countLinksByExternalIds.useQuery(
@@ -59,6 +61,7 @@ function TodayColumn({ events }: { events: CalendarEvent[] }) {
     { enabled: eventIds.length > 0, staleTime: 60_000 }
   );
   const noteCountsByEventId = noteCountsQuery.data?.counts ?? {};
+  const noteCountsLoading = eventIds.length > 0 && noteCountsQuery.isLoading;
 
   return (
     <section className="fp-col">
@@ -73,6 +76,26 @@ function TodayColumn({ events }: { events: CalendarEvent[] }) {
             const startIso = event.start?.dateTime ?? event.start?.date ?? null;
             const loc = eventLocationLabel(event);
             const title = event.summary ?? "(untitled)";
+            const eventUrl =
+              typeof event.htmlLink === "string" && event.htmlLink
+                ? event.htmlLink
+                : "https://calendar.google.com/calendar/u/0/r";
+            const workspaceRow: WorkspaceNoteRow | null = event.id
+              ? {
+                  kind: "calendar",
+                  eventId: event.id,
+                  title,
+                  eventUrl,
+                  start: startIso,
+                  location: loc,
+                  recurringEventId:
+                    typeof event.recurringEventId === "string"
+                      ? event.recurringEventId
+                      : null,
+                  iCalUID:
+                    typeof event.iCalUID === "string" ? event.iCalUID : null,
+                }
+              : null;
             return (
               <li
                 key={event.id ?? `${startIso}-${i}`}
@@ -86,9 +109,7 @@ function TodayColumn({ events }: { events: CalendarEvent[] }) {
                 <span className="fp-row__title">
                   {i === 0 ? <mark className="hl">{title}</mark> : title}
                 </span>
-                {loc && (
-                  <span className="fp-row__meta mono-label">{loc}</span>
-                )}
+                {loc && <span className="fp-row__meta mono-label">{loc}</span>}
                 {/* Task 10.3: 📎 N linked notes badge — only renders
                     when the count is > 0 and the event has a stable
                     id (synthetic-id rows skip the lookup). */}
@@ -96,9 +117,17 @@ function TodayColumn({ events }: { events: CalendarEvent[] }) {
                   <LinkedNotesBadge
                     linkType="google_calendar_event"
                     externalId={event.id}
-                    count={noteCountsByEventId[event.id]}
+                    count={noteCountsByEventId[event.id] ?? 0}
+                    countLoading={noteCountsLoading}
                   />
                 )}
+                {workspaceRow ? (
+                  <SignalActions
+                    row={workspaceRow}
+                    triggerClassName="inline-flex h-6 w-6 items-center justify-center rounded-sm p-0 text-muted-foreground transition hover:bg-accent hover:text-foreground"
+                    ariaLabel={`Actions for: ${title}`}
+                  />
+                ) : null}
               </li>
             );
           })}
@@ -129,15 +158,12 @@ function WaitingOnColumn({ items }: { items: GmailWaitingOnItem[] }) {
         <p className="fp-empty">nothing waiting.</p>
       ) : (
         <ol className="fp-col__list">
-          {top.map((item) => {
+          {top.map(item => {
             const name = extractName(item.to || item.from || "");
             const subject = item.subject || "(no subject)";
             return (
               <li key={item.id} className="fp-row">
-                <span
-                  className="fp-row__time mono-label"
-                  title={name}
-                >
+                <span className="fp-row__time mono-label" title={name}>
                   {name.toUpperCase()}
                 </span>
                 <span className="fp-row__rule" aria-hidden="true" />
