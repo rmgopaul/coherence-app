@@ -66,6 +66,7 @@ const commandCenter: PersonalDashboardCommandCenter = {
     },
     tone: "empty",
   },
+  workspacePrompts: [],
   integrations: [],
   dailyBrief: {
     status: "server_ready",

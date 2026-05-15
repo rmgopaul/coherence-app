@@ -1,4 +1,4 @@
-import { ExternalLink } from "lucide-react";
+import { ExternalLink, FileText } from "lucide-react";
 import { Link } from "wouter";
 
 import type { DashboardData } from "../useDashboardData";
@@ -8,6 +8,7 @@ type CommandCenterState = DashboardData["commandCenter"];
 type CommandCenterData = NonNullable<CommandCenterState["data"]>;
 type IntegrationHealth = CommandCenterData["integrations"][number];
 type SourceFreshness = CommandCenterData["sourceFreshness"][number];
+type WorkspacePrompt = CommandCenterData["workspacePrompts"][number];
 
 function formatCount(value: number): string {
   return new Intl.NumberFormat("en-US").format(value);
@@ -138,6 +139,35 @@ function SourceRow({ item }: { item: SourceFreshness }) {
   );
 }
 
+function WorkspacePromptRow({ item }: { item: WorkspacePrompt }) {
+  return (
+    <li className="fp-command-workspace">
+      <FileText aria-hidden="true" />
+      <div className="fp-command-workspace__body">
+        <Link className="fp-command-workspace__title" href={item.href}>
+          {item.title}
+        </Link>
+        <p>{item.reason}</p>
+      </div>
+      {item.sourceUrl ? (
+        <a
+          className="fp-command-workspace__source"
+          href={item.sourceUrl}
+          target="_blank"
+          rel="noreferrer"
+          aria-label={`Open source for ${item.title}`}
+          title={`Open source for ${item.title}`}
+        >
+          <ExternalLink aria-hidden="true" />
+        </a>
+      ) : null}
+      <Link className="fp-command-workspace__action" href={item.href}>
+        {item.actionLabel}
+      </Link>
+    </li>
+  );
+}
+
 export function CommandCenterPanel({ state }: { state: CommandCenterState }) {
   if (state.isLoading && !state.data) {
     return (
@@ -184,6 +214,7 @@ export function CommandCenterPanel({ state }: { state: CommandCenterState }) {
     progress.headline ??
     workflowFallbackTitle(progress);
   const workflowReviewPrompts = buildWorkflowReviewPrompts(progress);
+  const workspacePrompts = commandCenter.workspacePrompts ?? [];
 
   return (
     <section className="fp-command" aria-label="Personal command center">
@@ -272,6 +303,20 @@ export function CommandCenterPanel({ state }: { state: CommandCenterState }) {
             </ul>
           ) : null}
         </div>
+
+        {workspacePrompts.length > 0 ? (
+          <div className="fp-command-workspaces">
+            <div className="fp-command-block__head">
+              <span className="mono-label">WORKSPACES</span>
+              <span className="mono-label">{workspacePrompts.length}</span>
+            </div>
+            <ol>
+              {workspacePrompts.map((item) => (
+                <WorkspacePromptRow key={item.id} item={item} />
+              ))}
+            </ol>
+          </div>
+        ) : null}
 
         <div className="fp-command-sources">
           <div className="fp-command-block__head">

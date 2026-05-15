@@ -8,7 +8,9 @@ import {
   type PersonalDashboardHealthStatus,
   type PersonalDashboardIntegrationHealth,
   type PersonalDashboardOutcome,
+  type PersonalDashboardWorkspacePrompt,
 } from "@shared/personalDashboard";
+import { countNoteLinksByExternalIds } from "../../db/notes";
 import {
   getIntegrationByProvider,
   getLatestSamsungSyncPayload,
@@ -67,6 +69,11 @@ type TodoistTaskLike = {
   url?: string | null;
   priority?: number;
   due?: { date?: string; datetime?: string } | null;
+};
+
+type WorkspacePromptCounts = {
+  todoist: Record<string, number>;
+  calendar: Record<string, number>;
 };
 
 export type GetPersonalDashboardCommandCenterInput = {
@@ -202,6 +209,35 @@ export async function getPersonalDashboardCommandCenter(
     waitingOn: google.waitingOn,
     now,
   });
+  const workspacePromptCandidates = buildWorkspacePromptCandidates({
+    rightNow,
+    tasks: todoist.tasks,
+    calendarEvents: google.calendarEvents,
+    now,
+  });
+  const [todoistWorkspaceCounts, calendarWorkspaceCounts] = await Promise.all([
+    countNoteLinksByExternalIds(
+      input.userId,
+      "todoist_task",
+      workspacePromptCandidates
+        .filter((prompt) => prompt.kind === "todoist")
+        .map((prompt) => prompt.sourceId)
+    ),
+    countNoteLinksByExternalIds(
+      input.userId,
+      "google_calendar_event",
+      workspacePromptCandidates
+        .filter((prompt) => prompt.kind === "calendar")
+        .map((prompt) => prompt.sourceId)
+    ),
+  ]);
+  const workspacePrompts = filterWorkspacePromptsWithoutNotes(
+    workspacePromptCandidates,
+    {
+      todoist: todoistWorkspaceCounts,
+      calendar: calendarWorkspaceCounts,
+    }
+  );
   const dailyProgress = buildPersonalDashboardDailyProgress(dailyState);
 
   return {
@@ -221,6 +257,7 @@ export async function getPersonalDashboardCommandCenter(
     rightNow,
     dailyWorkflow,
     dailyProgress,
+    workspacePrompts,
     integrations,
     dailyBrief: {
       status:
@@ -526,6 +563,86 @@ export function buildPersonalDashboardWorkflowSuggestions(input: {
   };
 }
 
+export function buildPersonalDashboardWorkspacePrompts(input: {
+  rightNow: PersonalDashboardCommandCenter["rightNow"];
+  tasks: TodoistTaskLike[];
+  calendarEvents: CalendarEventLike[];
+  now: Date;
+  noteCounts: WorkspacePromptCounts;
+}): PersonalDashboardWorkspacePrompt[] {
+  return filterWorkspacePromptsWithoutNotes(
+    buildWorkspacePromptCandidates(input),
+    input.noteCounts
+  );
+}
+
+function buildWorkspacePromptCandidates(input: {
+  rightNow: PersonalDashboardCommandCenter["rightNow"];
+  tasks: TodoistTaskLike[];
+  calendarEvents: CalendarEventLike[];
+  now: Date;
+}): PersonalDashboardWorkspacePrompt[] {
+  const candidates: PersonalDashboardWorkspacePrompt[] = [];
+  const event = nextCalendarEvent(input.calendarEvents, input.now);
+  if (event?.id) {
+    candidates.push({
+      id: `workspace:calendar:${event.id}`,
+      kind: "calendar",
+      sourceId: event.id,
+      title: event.title,
+      sourceUrl: event.url,
+      reason: "Upcoming calendar event has no linked workspace note.",
+      actionLabel: "Prep meeting note",
+      href: workspacePromptHref("calendar", event.id),
+    });
+  }
+
+  const task = highPriorityTodoistTask(input.tasks);
+  if (task?.id) {
+    candidates.push({
+      id: `workspace:todoist:${task.id}`,
+      kind: "todoist",
+      sourceId: task.id,
+      title: task.title,
+      sourceUrl: task.url,
+      reason: "High-priority Todoist task has no linked workspace note.",
+      actionLabel: "Create working note",
+      href: workspacePromptHref("todoist", task.id),
+    });
+  }
+
+  if (
+    input.rightNow?.sourceId &&
+    (input.rightNow.kind === "todoist" || input.rightNow.kind === "calendar")
+  ) {
+    candidates.push({
+      id: `workspace:right-now:${input.rightNow.kind}:${input.rightNow.sourceId}`,
+      kind: input.rightNow.kind,
+      sourceId: input.rightNow.sourceId,
+      title: input.rightNow.title,
+      sourceUrl: normalizeUrl(input.rightNow.sourceUrl),
+      reason: "Right-now item has no linked workspace note.",
+      actionLabel: "Open workspace",
+      href: workspacePromptHref(input.rightNow.kind, input.rightNow.sourceId),
+    });
+  }
+
+  return dedupeByWorkspaceTarget(candidates).slice(0, 3);
+}
+
+function filterWorkspacePromptsWithoutNotes(
+  candidates: PersonalDashboardWorkspacePrompt[],
+  noteCounts: WorkspacePromptCounts
+): PersonalDashboardWorkspacePrompt[] {
+  return candidates.filter((candidate) => {
+    const count =
+      candidate.kind === "todoist"
+        ? noteCounts.todoist[candidate.sourceId]
+        : noteCounts.calendar[candidate.sourceId];
+    return !count;
+  });
+}
+
 export function buildPersonalDashboardDailyProgress(
   state: Pick<
     PersonalDashboardDailyState,
@@ -647,6 +764,22 @@ function topTodoistTask(tasks: TodoistTaskLike[]) {
   };
 }
 
+function highPriorityTodoistTask(tasks: TodoistTaskLike[]) {
+  const sorted = sortedTasks(tasks);
+  const task =
+    sorted.find((item) => Number(item.priority ?? 1) >= 3) ?? sorted[0];
+  if (!task) return null;
+  const id = taskSourceId(task, "");
+  if (!id) return null;
+  return {
+    id,
+    title: taskTitle(task, "Untitled task"),
+    url:
+      normalizeUrl(task.url) ??
+      `https://app.todoist.com/app/task/${encodeURIComponent(id)}`,
+  };
+}
+
 function sortedTasks(tasks: TodoistTaskLike[]): TodoistTaskLike[] {
   return [...tasks].sort((a, b) => {
     const aPriority = Number(a.priority ?? 1);
@@ -669,8 +802,10 @@ function nextCalendarEvent(events: CalendarEventLike[], now: Date) {
     .sort((a, b) => a.startMs - b.startMs);
   const event = sorted[0]?.event;
   if (!event) return null;
+  const id = normalizeText(event.id);
+  if (!id) return null;
   return {
-    id: String(event.id ?? ""),
+    id,
     title: String(event.summary ?? "Untitled event"),
     url: event.htmlLink ?? null,
   };
@@ -740,6 +875,22 @@ function taskTitle(task: TodoistTaskLike, fallback: string): string {
 
 function taskSourceId(task: TodoistTaskLike, fallback: string | number): string {
   return normalizeText(task.id) ?? String(fallback);
+}
+
+function workspacePromptHref(kind: "todoist" | "calendar", sourceId: string) {
+  const key = kind === "todoist" ? "taskId" : "eventId";
+  return `/notes?${key}=${encodeURIComponent(sourceId)}`;
+}
+
+function dedupeByWorkspaceTarget(
+  items: PersonalDashboardWorkspacePrompt[]
+): PersonalDashboardWorkspacePrompt[] {
+  const byTarget = new Map<string, PersonalDashboardWorkspacePrompt>();
+  for (const item of items) {
+    const key = `${item.kind}:${item.sourceId}`;
+    if (!byTarget.has(key)) byTarget.set(key, item);
+  }
+  return Array.from(byTarget.values());
 }
 
 function countByStatus<T extends { status: string }>(
