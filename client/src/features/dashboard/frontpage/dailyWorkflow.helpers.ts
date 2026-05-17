@@ -20,6 +20,33 @@ export type DailyWorkflowDraft = {
   outcomes: PersonalDashboardOutcome[];
 };
 
+export type EndOfDayReviewSummary = {
+  commitmentCounts: {
+    total: number;
+    done: number;
+    open: number;
+    waiting: number;
+    blocked: number;
+  };
+  outcomeCounts: {
+    total: number;
+    won: number;
+    active: number;
+    paused: number;
+    missed: number;
+  };
+  planBlockCounts: {
+    total: number;
+    done: number;
+    planned: number;
+    active: number;
+    skipped: number;
+  };
+  needsAttention: string[];
+  tone: "empty" | "clear" | "attention";
+  summary: string;
+};
+
 type ManualWorkflowIdKind = "commitment" | "outcome" | "plan-block";
 type WorkspaceCapableDailyWorkflowItem =
   | PersonalDashboardCommitment
@@ -287,6 +314,87 @@ export function winActiveOutcomes(
   return outcomes.map((item) =>
     item.status === "active" ? { ...item, status: "won" } : item
   );
+}
+
+function countLabel(count: number, singular: string, plural = `${singular}s`) {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+export function buildEndOfDayReviewSummary(
+  draft: DailyWorkflowDraft
+): EndOfDayReviewSummary {
+  const commitmentCounts = draft.commitments.reduce(
+    (counts, item) => ({
+      ...counts,
+      total: counts.total + 1,
+      [item.status]: counts[item.status] + 1,
+    }),
+    { total: 0, done: 0, open: 0, waiting: 0, blocked: 0 }
+  );
+  const outcomeCounts = draft.outcomes.reduce(
+    (counts, item) => ({
+      ...counts,
+      total: counts.total + 1,
+      [item.status]: counts[item.status] + 1,
+    }),
+    { total: 0, won: 0, active: 0, paused: 0, missed: 0 }
+  );
+  const planBlockCounts = draft.todayPlan.blocks.reduce(
+    (counts, item) => ({
+      ...counts,
+      total: counts.total + 1,
+      [item.status]: counts[item.status] + 1,
+    }),
+    { total: 0, done: 0, planned: 0, active: 0, skipped: 0 }
+  );
+
+  const needsAttention = [
+    commitmentCounts.open > 0
+      ? countLabel(commitmentCounts.open, "open commitment")
+      : null,
+    commitmentCounts.waiting > 0
+      ? countLabel(commitmentCounts.waiting, "waiting commitment")
+      : null,
+    commitmentCounts.blocked > 0
+      ? countLabel(commitmentCounts.blocked, "blocked commitment")
+      : null,
+    outcomeCounts.active > 0
+      ? countLabel(outcomeCounts.active, "active outcome")
+      : null,
+    outcomeCounts.paused > 0
+      ? countLabel(outcomeCounts.paused, "paused outcome")
+      : null,
+    planBlockCounts.planned > 0
+      ? countLabel(planBlockCounts.planned, "planned block")
+      : null,
+    planBlockCounts.active > 0
+      ? countLabel(planBlockCounts.active, "active block")
+      : null,
+  ].filter((item): item is string => Boolean(item));
+
+  const trackedCount =
+    commitmentCounts.total + outcomeCounts.total + planBlockCounts.total;
+  const tone =
+    trackedCount === 0
+      ? "empty"
+      : needsAttention.length === 0
+        ? "clear"
+        : "attention";
+  const summary =
+    tone === "empty"
+      ? "No commitments, outcomes, or plan blocks are tracked yet."
+      : tone === "clear"
+        ? "Everything tracked for today has a terminal status."
+        : `Review before closing: ${needsAttention.join("; ")}.`;
+
+  return {
+    commitmentCounts,
+    outcomeCounts,
+    planBlockCounts,
+    needsAttention,
+    tone,
+    summary,
+  };
 }
 
 export function workspaceNoteRowFromDailyWorkflowItem(
