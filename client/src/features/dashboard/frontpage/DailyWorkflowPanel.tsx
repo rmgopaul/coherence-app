@@ -52,6 +52,7 @@ import {
   winActiveOutcomes,
   workspaceNoteRowFromBriefSourceRef,
   workspaceNoteRowFromDailyWorkflowItem,
+  workspaceNoteRowsFromDailyWorkflowDraft,
   type DailyWorkflowDraft,
 } from "./dailyWorkflow.helpers";
 import { LinkedNotesBadge } from "./LinkedNotesBadge";
@@ -176,23 +177,9 @@ export function DailyWorkflowPanel({
     [dateKey]
   );
   const canCarryForward = endOfDayReview.needsAttention.length > 0;
-  const commitmentWorkspaceRows = useMemo(
-    () =>
-      draft.commitments
-        .map(workspaceNoteRowFromDailyWorkflowItem)
-        .filter(isWorkspaceNoteRow),
-    [draft.commitments]
-  );
-  const planBlockWorkspaceRows = useMemo(
-    () =>
-      draft.todayPlan.blocks
-        .map(workspaceNoteRowFromDailyWorkflowItem)
-        .filter(isWorkspaceNoteRow),
-    [draft.todayPlan.blocks]
-  );
   const workspaceRows = useMemo(
-    () => [...commitmentWorkspaceRows, ...planBlockWorkspaceRows],
-    [commitmentWorkspaceRows, planBlockWorkspaceRows]
+    () => workspaceNoteRowsFromDailyWorkflowDraft(draft),
+    [draft]
   );
   const todoistWorkspaceIds = useMemo(
     () =>
@@ -1357,10 +1344,6 @@ function dedupeById<T extends { id: string }>(items: T[]): T[] {
   const byId = new Map<string, T>();
   for (const item of items) byId.set(item.id, item);
   return Array.from(byId.values());
-}
-
-function isWorkspaceNoteRow(row: WorkspaceNoteRow | null): row is WorkspaceNoteRow {
-  return row !== null;
 }
 
 function isEditableTarget(target: EventTarget | null): boolean {
