@@ -869,3 +869,133 @@ export type PerformanceRatioAggregates = {
    */
   dedupedConvertedReads: number;
 };
+
+// ---------------------------------------------------------------------------
+// REC drawdown allocation (canonical)
+// ---------------------------------------------------------------------------
+
+export type ContractDrawdownSystemInput = {
+  /**
+   * `rollingAverage − expectedRecs` for the system. Positive = the
+   * system over-delivered (surplus); negative = under-delivered
+   * (deficit).
+   */
+  surplusShortfall: number;
+  /**
+   * Per-system REC price used to value the uncovered shortfall.
+   * `null` is treated as `Number.POSITIVE_INFINITY` for the
+   * cheapest-first deficit sort (a price-less system is allocated
+   * pool last) and as `0` for the payment itself (no price → no
+   * billable drawdown).
+   */
+  price: number | null;
+  /**
+   * Stable tiebreaker for the cheapest-price-first deficit ordering
+   * (applicationId today). Two deficits at the same price allocate
+   * the shared pool in this key's natural-numeric order so the
+   * result is deterministic.
+   */
+  sortKey: string;
+};
+
+export type ContractDrawdownResult = {
+  /** Σ max(0, surplusShortfall) across the input systems. */
+  surplusBeforeAllocation: number;
+  /** Σ RECs drawn from the pool to cover deficits. */
+  totalAllocatedRecs: number;
+  /**
+   * Σ |negative drawdown payments| — the dollar amount actually
+   * billed for this report after surplus offsetting.
+   */
+  drawdownThisReport: number;
+  /**
+   * Per-system allocation result, aligned 1:1 to the input array's
+   * order (NOT the internal cheapest-first sort order).
+   */
+  perSystem: ReadonlyArray<{
+    allocatedRecs: number;
+    drawdownPayment: number;
+  }>;
+};
+
+/**
+ * Canonical REC drawdown allocation. Surplus RECs (from
+ * over-delivering systems) plus an optional carried-in
+ * `previousSurplus` form one pool that offsets deficit systems'
+ * shortfalls, cheapest `price` first. Only the shortfall left
+ * UNCOVERED after allocation generates a drawdown payment, valued at
+ * that system's own price.
+ *
+ * Extracted 2026-05-15. Before extraction, the REC Performance Eval
+ * detail view applied this surplus-netting model, but the
+ * per-contract summary table + the aggregate KPI tile summed each
+ * system's raw `max(0, shortfall) × price` with NO surplus netting —
+ * overstating drawdown for every contract that had any
+ * over-delivering system, both per-contract and in aggregate. Both
+ * call sites now route through this one function so they cannot
+ * diverge again. The summary/aggregate pass `previousSurplus = 0`
+ * per contract (the manual previous-surplus carry-in is a
+ * single-contract detail-view input that does not generalize across
+ * a cross-contract summary).
+ *
+ * Pure: no I/O, deterministic. Mirrors the pre-extraction detail-view
+ * allocation exactly — `Number(x.toFixed(2))` rounding on each
+ * payment is preserved so existing detail-view figures are
+ * byte-identical post-refactor.
+ */
+export function allocateContractDrawdown(
+  systems: ReadonlyArray<ContractDrawdownSystemInput>,
+  previousSurplus = 0
+): ContractDrawdownResult {
+  const perSystem = systems.map(() => ({
+    allocatedRecs: 0,
+    drawdownPayment: 0,
+  }));
+
+  const surplusBeforeAllocation = systems.reduce(
+    (sum, s) => sum + Math.max(0, s.surplusShortfall),
+    0
+  );
+  let remainingPool = previousSurplus + surplusBeforeAllocation;
+
+  const deficitIndexes = systems
+    .map((row, index) => ({ row, index }))
+    .filter((entry) => entry.row.surplusShortfall < 0)
+    .sort((a, b) => {
+      const aPrice = a.row.price ?? Number.POSITIVE_INFINITY;
+      const bPrice = b.row.price ?? Number.POSITIVE_INFINITY;
+      if (aPrice !== bPrice) return aPrice - bPrice;
+      return a.row.sortKey.localeCompare(b.row.sortKey, undefined, {
+        numeric: true,
+        sensitivity: "base",
+      });
+    });
+
+  for (const { row, index } of deficitIndexes) {
+    const shortfall = Math.abs(row.surplusShortfall);
+    const allocated = Math.min(shortfall, remainingPool);
+    remainingPool -= allocated;
+    const remainingShortfall = shortfall - allocated;
+    const drawdown = -remainingShortfall * (row.price ?? 0);
+    perSystem[index] = {
+      allocatedRecs: allocated,
+      drawdownPayment: Number(drawdown.toFixed(2)),
+    };
+  }
+
+  const totalAllocatedRecs = perSystem.reduce(
+    (sum, s) => sum + s.allocatedRecs,
+    0
+  );
+  const drawdownThisReport = perSystem.reduce(
+    (sum, s) => sum + Math.abs(Math.min(s.drawdownPayment, 0)),
+    0
+  );
+
+  return {
+    surplusBeforeAllocation,
+    totalAllocatedRecs,
+    drawdownThisReport,
+    perSystem,
+  };
+}

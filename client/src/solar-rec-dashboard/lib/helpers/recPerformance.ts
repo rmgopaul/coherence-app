@@ -24,7 +24,14 @@
 
 import { formatDate } from "@/solar-rec-dashboard/lib/helpers/formatting";
 
-export { deriveRecPerformanceThreeYearValues } from "@shared/solarRecPerformanceRatio";
+export {
+  deriveRecPerformanceThreeYearValues,
+  allocateContractDrawdown,
+} from "@shared/solarRecPerformanceRatio";
+export type {
+  ContractDrawdownSystemInput,
+  ContractDrawdownResult,
+} from "@shared/solarRecPerformanceRatio";
 
 /**
  * Render a Schedule B delivery-year entry as the canonical

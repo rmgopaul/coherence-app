@@ -52,6 +52,8 @@ import {
   triggerCsvDownload,
 } from "@/solar-rec-dashboard/lib/csvIo";
 import {
+  allocateContractDrawdown,
+  type ContractDrawdownSystemInput,
   buildRecReviewDeliveryYearLabel,
   deriveRecPerformanceThreeYearValues,
   formatNumber,
@@ -301,48 +303,33 @@ export default memo(function RecPerformanceEvaluationTab(
         }),
       );
 
-    const surplusBeforeAllocation = baseRows.reduce(
-      (sum, row) => sum + Math.max(0, row.surplusShortfall),
-      0,
+    // 2026-05-15 — surplus-allocation drawdown now lives in the
+    // shared `allocateContractDrawdown` helper so the detail view
+    // (here) and the per-contract summary / aggregate KPI cannot
+    // diverge. This call is byte-identical to the prior inline
+    // block: same pool (previousSurplus + Σ positive surplus), same
+    // cheapest-contractPrice-first deficit sort with applicationId
+    // tiebreak, same `Number(x.toFixed(2))` rounding per payment.
+    const allocation = allocateContractDrawdown(
+      baseRows.map((row) => ({
+        surplusShortfall: row.surplusShortfall,
+        price: row.contractPrice,
+        sortKey: row.applicationId,
+      })),
+      performancePreviousSurplus,
     );
-    let remainingPool = performancePreviousSurplus + surplusBeforeAllocation;
-
-    const deficitIndexes = baseRows
-      .map((row, index) => ({ row, index }))
-      .filter((entry) => entry.row.surplusShortfall < 0)
-      .sort((a, b) => {
-        const aPrice = a.row.contractPrice ?? Number.POSITIVE_INFINITY;
-        const bPrice = b.row.contractPrice ?? Number.POSITIVE_INFINITY;
-        if (aPrice !== bPrice) return aPrice - bPrice;
-        return a.row.applicationId.localeCompare(b.row.applicationId, undefined, {
-          numeric: true,
-          sensitivity: "base",
-        });
-      });
-
-    deficitIndexes.forEach(({ index }) => {
+    allocation.perSystem.forEach((result, index) => {
       const row = baseRows[index]!;
-      const shortfall = Math.abs(row.surplusShortfall);
-      const allocated = Math.min(shortfall, remainingPool);
-      remainingPool -= allocated;
-      const remainingShortfall = shortfall - allocated;
-      const drawdown = -remainingShortfall * (row.contractPrice ?? 0);
-
       baseRows[index] = {
         ...row,
-        allocatedRecs: allocated,
-        drawdownPayment: Number(drawdown.toFixed(2)),
+        allocatedRecs: result.allocatedRecs,
+        drawdownPayment: result.drawdownPayment,
       };
     });
 
-    const totalAllocatedRecs = baseRows.reduce(
-      (sum, row) => sum + row.allocatedRecs,
-      0,
-    );
-    const drawdownThisReport = baseRows.reduce(
-      (sum, row) => sum + Math.abs(Math.min(row.drawdownPayment, 0)),
-      0,
-    );
+    const surplusBeforeAllocation = allocation.surplusBeforeAllocation;
+    const totalAllocatedRecs = allocation.totalAllocatedRecs;
+    const drawdownThisReport = allocation.drawdownThisReport;
     const unallocatedShortfallRecs = baseRows.reduce(
       (sum, row) =>
         sum +
@@ -384,7 +371,20 @@ export default memo(function RecPerformanceEvaluationTab(
         totalRecDeliveryObligation: number;
         totalDeliveriesFromThreeYearReview: number;
         recDelta: number;
-        totalDrawdownAmount: number;
+        // 2026-05-15 — per-contract drawdown inputs collected here
+        // and resolved through `allocateContractDrawdown` AFTER all
+        // systems are gathered. Pre-fix this summed each system's
+        // raw `max(0, shortfall) × price` with NO surplus netting,
+        // overstating drawdown for every contract that had any
+        // over-delivering system (and the aggregate KPI too, since
+        // it's the Σ of these per-contract values). Now each
+        // contract pools its own positive surplus to offset its own
+        // deficits — cheapest-recPrice-first, identical model to the
+        // detail-view evaluation — before billing the uncovered
+        // remainder. previousSurplus is 0 here: the manual carry-in
+        // is a single-contract detail-view input that does not
+        // generalize across a cross-contract summary.
+        drawdownInputs: ContractDrawdownSystemInput[];
       };
 
       const summaryByContract = new Map<string, Builder>();
@@ -398,7 +398,7 @@ export default memo(function RecPerformanceEvaluationTab(
           totalRecDeliveryObligation: 0,
           totalDeliveriesFromThreeYearReview: 0,
           recDelta: 0,
-          totalDrawdownAmount: 0,
+          drawdownInputs: [],
         };
         summaryByContract.set(contractId, next);
         return next;
@@ -420,24 +420,38 @@ export default memo(function RecPerformanceEvaluationTab(
         if (!recWindow) return;
 
         const recDelta = recWindow.rollingAverage - recWindow.expectedRecs;
-        const shortfall = Math.max(
-          0,
-          recWindow.expectedRecs - recWindow.rollingAverage,
-        );
-        const drawdownAmount = shortfall * (row.recPrice ?? 0);
 
         const summary = getOrCreate(contractId);
         summary.systemsInThreeYearReview += 1;
         summary.totalRecDeliveryObligation += recWindow.expectedRecs;
         summary.totalDeliveriesFromThreeYearReview += recWindow.rollingAverage;
         summary.recDelta += recDelta;
-        summary.totalDrawdownAmount += drawdownAmount;
+        // `surplusShortfall = rollingAverage − expectedRecs` and
+        // `sortKey = systemId ?? "N/A"` mirror the detail view's
+        // baseRows construction exactly so the per-contract
+        // cheapest-first allocation order is identical to what the
+        // single-contract evaluation produces.
+        summary.drawdownInputs.push({
+          surplusShortfall: recDelta,
+          price: row.recPrice,
+          sortKey: row.systemId ?? "N/A",
+        });
       });
 
       return Array.from(summaryByContract.values())
         .map((row) => ({
-          ...row,
-          totalDrawdownAmount: Number(row.totalDrawdownAmount.toFixed(2)),
+          contractId: row.contractId,
+          systemsInThreeYearReview: row.systemsInThreeYearReview,
+          totalRecDeliveryObligation: row.totalRecDeliveryObligation,
+          totalDeliveriesFromThreeYearReview:
+            row.totalDeliveriesFromThreeYearReview,
+          recDelta: row.recDelta,
+          totalDrawdownAmount: Number(
+            allocateContractDrawdown(
+              row.drawdownInputs,
+              0,
+            ).drawdownThisReport.toFixed(2),
+          ),
         }))
         .sort((a, b) =>
           a.contractId.localeCompare(b.contractId, undefined, {
