@@ -610,6 +610,22 @@ export function workspaceNoteRowFromBriefSourceRef(
   return null;
 }
 
+function isWorkspaceNoteRow(
+  row: WorkspaceNoteRow | null
+): row is WorkspaceNoteRow {
+  return row !== null;
+}
+
+export function workspaceNoteRowsFromDailyWorkflowDraft(
+  draft: DailyWorkflowDraft
+): WorkspaceNoteRow[] {
+  return [
+    ...draft.dailyBrief.sourceRefs.map(workspaceNoteRowFromBriefSourceRef),
+    ...draft.commitments.map(workspaceNoteRowFromDailyWorkflowItem),
+    ...draft.todayPlan.blocks.map(workspaceNoteRowFromDailyWorkflowItem),
+  ].filter(isWorkspaceNoteRow);
+}
+
 export function normalizeDailyWorkflowDraftForSave(
   draft: DailyWorkflowDraft,
   now: Date

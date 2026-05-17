@@ -23,6 +23,7 @@ import {
   winActiveOutcomes,
   workspaceNoteRowFromBriefSourceRef,
   workspaceNoteRowFromDailyWorkflowItem,
+  workspaceNoteRowsFromDailyWorkflowDraft,
 } from "./dailyWorkflow.helpers";
 
 const commandCenter: PersonalDashboardCommandCenter = {
@@ -779,6 +780,62 @@ describe("dailyWorkflow helpers", () => {
       title: "Design review",
       eventUrl: "https://calendar.google.com/event",
     });
+  });
+
+  it("collects every workspace-capable daily workflow row for batched counts", () => {
+    const draft = dailyWorkflowDraftFromState(null);
+    draft.dailyBrief.sourceRefs = [
+      {
+        source: "calendar",
+        id: "event-1",
+        label: "Design review",
+        url: "https://calendar.google.com/event",
+      },
+      {
+        source: "gmail",
+        id: "thread-1",
+        label: "Client thread",
+        url: "https://mail.google.com/mail/u/0/#inbox/thread-1",
+      },
+    ];
+    draft.commitments = [
+      {
+        id: "commitment-1",
+        title: "Close proposal",
+        source: "todoist",
+        sourceId: "task-1",
+        owner: null,
+        dueAt: null,
+        status: "open",
+        url: "https://todoist.com/app/task/task-1",
+      },
+    ];
+    draft.todayPlan.blocks = [
+      {
+        id: "block-1",
+        title: "Focus block",
+        startIso: null,
+        endIso: null,
+        source: "system",
+        sourceId: null,
+        status: "planned",
+      },
+      {
+        id: "block-2",
+        title: "Meeting",
+        startIso: "2026-05-14T15:00:00.000Z",
+        endIso: null,
+        source: "calendar",
+        sourceId: "event-2",
+        status: "planned",
+      },
+    ];
+
+    expect(workspaceNoteRowsFromDailyWorkflowDraft(draft)).toMatchObject([
+      { kind: "calendar", eventId: "event-1" },
+      { kind: "todoist", taskId: "task-1" },
+      { kind: "calendar", eventId: "event-2" },
+    ]);
   });
 
   it("opens explicit brief-source URLs before deriving Todoist URLs", () => {
