@@ -15,7 +15,9 @@ import {
   hasDailyWorkflowDraftContent,
   isoFromDateTimeLocalInput,
   normalizeDailyWorkflowDraftForSave,
+  sourceUrlForBriefSourceRef,
   winActiveOutcomes,
+  workspaceNoteRowFromBriefSourceRef,
   workspaceNoteRowFromDailyWorkflowItem,
 } from "./dailyWorkflow.helpers";
 
@@ -460,6 +462,65 @@ describe("dailyWorkflow helpers", () => {
       kind: "todoist",
       content: "task-1",
     });
+  });
+
+  it("turns Todoist and Calendar brief sources into workspace rows", () => {
+    expect(
+      workspaceNoteRowFromBriefSourceRef({
+        source: "todoist",
+        id: " task-1 ",
+        label: " Highest-priority task ",
+        url: null,
+      })
+    ).toMatchObject({
+      kind: "todoist",
+      taskId: "task-1",
+      content: "Highest-priority task",
+      taskUrl: "https://app.todoist.com/app/task/task-1",
+    });
+
+    expect(
+      workspaceNoteRowFromBriefSourceRef({
+        source: "calendar",
+        id: "event-1",
+        label: "Design review",
+        url: " https://calendar.google.com/event ",
+      })
+    ).toMatchObject({
+      kind: "calendar",
+      eventId: "event-1",
+      title: "Design review",
+      eventUrl: "https://calendar.google.com/event",
+    });
+  });
+
+  it("opens explicit brief-source URLs before deriving Todoist URLs", () => {
+    expect(
+      sourceUrlForBriefSourceRef({
+        source: "todoist",
+        id: "task-1",
+        label: "Task",
+        url: " https://todoist.com/showTask?id=task-1 ",
+      })
+    ).toBe("https://todoist.com/showTask?id=task-1");
+
+    expect(
+      sourceUrlForBriefSourceRef({
+        source: "todoist",
+        id: "task 1",
+        label: "Task",
+        url: null,
+      })
+    ).toBe("https://app.todoist.com/app/task/task%201");
+
+    expect(
+      sourceUrlForBriefSourceRef({
+        source: "calendar",
+        id: "event-1",
+        label: "Event",
+        url: null,
+      })
+    ).toBeNull();
   });
 
   it("preserves normalized commitment detail fields before save", () => {

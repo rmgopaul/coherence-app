@@ -24,6 +24,7 @@ type ManualWorkflowIdKind = "commitment" | "outcome" | "plan-block";
 type WorkspaceCapableDailyWorkflowItem =
   | PersonalDashboardCommitment
   | PersonalDashboardTodayPlan["blocks"][number];
+type DailyBriefSourceRef = PersonalDashboardDailyBrief["sourceRefs"][number];
 
 export function emptyDailyWorkflowDraft(): DailyWorkflowDraft {
   return {
@@ -263,6 +264,56 @@ export function workspaceNoteRowFromDailyWorkflowItem(
         )}`,
       start:
         "startIso" in item ? item.startIso : "dueAt" in item ? item.dueAt : null,
+      location: null,
+      recurringEventId: null,
+      iCalUID: null,
+    };
+  }
+
+  return null;
+}
+
+export function sourceUrlForBriefSourceRef(
+  sourceRef: DailyBriefSourceRef
+): string | null {
+  const explicitUrl = normalizeExternalUrl(sourceRef.url);
+  if (explicitUrl) return explicitUrl;
+  if (sourceRef.source === "todoist" && sourceRef.id?.trim()) {
+    return `https://app.todoist.com/app/task/${encodeURIComponent(
+      sourceRef.id.trim()
+    )}`;
+  }
+  return null;
+}
+
+export function workspaceNoteRowFromBriefSourceRef(
+  sourceRef: DailyBriefSourceRef
+): WorkspaceNoteRow | null {
+  const sourceId = sourceRef.id?.trim();
+  if (!sourceId) return null;
+  const title = sourceRef.label.trim() || sourceId;
+  const sourceUrl = sourceUrlForBriefSourceRef(sourceRef);
+
+  if (sourceRef.source === "todoist") {
+    return {
+      kind: "todoist",
+      taskId: sourceId,
+      content: title,
+      taskUrl:
+        sourceUrl ??
+        `https://app.todoist.com/app/task/${encodeURIComponent(sourceId)}`,
+      dueDate: null,
+      projectName: null,
+    };
+  }
+
+  if (sourceRef.source === "calendar") {
+    return {
+      kind: "calendar",
+      eventId: sourceId,
+      title,
+      eventUrl: sourceUrl ?? "",
+      start: null,
       location: null,
       recurringEventId: null,
       iCalUID: null,
