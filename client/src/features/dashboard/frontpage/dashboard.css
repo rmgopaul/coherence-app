@@ -1323,6 +1323,7 @@ html[data-focus="1"] .fp-root {
   font-weight: 800;
   letter-spacing: 0;
   text-transform: uppercase;
+  text-decoration: none;
   cursor: pointer;
 }
 
@@ -1354,6 +1355,19 @@ html[data-focus="1"] .fp-root {
   justify-content: flex-end;
   gap: 4px;
   min-width: 0;
+}
+
+.fp-daily-workflow__source-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  min-width: 0;
+}
+
+.fp-daily-workflow__source-actions .fp-daily-workflow__workspace-actions {
+  display: contents;
 }
 
 .fp-daily-workflow__row-fields {

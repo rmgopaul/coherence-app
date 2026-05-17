@@ -9,6 +9,7 @@ import {
   CalendarClock,
   CheckCircle2,
   ClipboardList,
+  ExternalLink,
   Link2,
   Plus,
   RefreshCw,
@@ -42,7 +43,9 @@ import {
   hasDailyWorkflowDraftContent,
   isoFromDateTimeLocalInput,
   normalizeDailyWorkflowDraftForSave,
+  sourceUrlForBriefSourceRef,
   winActiveOutcomes,
+  workspaceNoteRowFromBriefSourceRef,
   workspaceNoteRowFromDailyWorkflowItem,
   type DailyWorkflowDraft,
 } from "./dailyWorkflow.helpers";
@@ -234,6 +237,31 @@ export function DailyWorkflowPanel({
           triggerClassName="fp-daily-workflow__icon-btn fp-daily-workflow__icon-btn--quiet"
           ariaLabel={`Workspace actions for ${row.kind === "todoist" ? row.content : row.title}`}
         />
+      </div>
+    );
+  }
+
+  function renderBriefSourceActions(sourceRef: DailyBriefSourceRef) {
+    const sourceUrl = sourceUrlForBriefSourceRef(sourceRef);
+    const workspaceRow = workspaceNoteRowFromBriefSourceRef(sourceRef);
+    if (!sourceUrl && !workspaceRow) return null;
+
+    return (
+      <div className="fp-daily-workflow__source-actions">
+        {sourceUrl ? (
+          <a
+            className="fp-daily-workflow__mini-btn"
+            href={sourceUrl}
+            target="_blank"
+            rel="noreferrer"
+            title="Open brief source"
+            aria-label={`Open brief source: ${sourceRef.label || sourceRef.id || sourceRef.source}`}
+          >
+            <ExternalLink aria-hidden="true" />
+            <span>OPEN</span>
+          </a>
+        ) : null}
+        {workspaceRow ? renderWorkspaceActions(workspaceRow) : null}
       </div>
     );
   }
@@ -635,6 +663,9 @@ export function DailyWorkflowPanel({
           items={briefSourceItems}
           onAdd={addBriefSourceRef}
           onRemove={(id) => removeBriefSourceRef(Number(id))}
+          renderRowActions={(item) =>
+            renderBriefSourceActions(item.sourceRef)
+          }
           renderItem={(item) => (
             <>
               <input
@@ -1103,36 +1134,39 @@ function EditableList<T extends { id: string }>({
         {items.length === 0 ? (
           <p className="fp-empty">none tracked yet.</p>
         ) : (
-          items.map((item) => (
-            <div
-              key={item.id}
-              className={
-                renderRowActions
-                  ? "fp-daily-workflow__row fp-daily-workflow__row--with-workspace"
-                  : "fp-daily-workflow__row"
-              }
-            >
+          items.map((item) => {
+            const rowActions = renderRowActions?.(item);
+            return (
               <div
+                key={item.id}
                 className={
-                  fieldsClassName
-                    ? `fp-daily-workflow__row-fields ${fieldsClassName}`
-                    : "fp-daily-workflow__row-fields"
+                  rowActions
+                    ? "fp-daily-workflow__row fp-daily-workflow__row--with-workspace"
+                    : "fp-daily-workflow__row"
                 }
               >
-                {renderItem(item)}
+                <div
+                  className={
+                    fieldsClassName
+                      ? `fp-daily-workflow__row-fields ${fieldsClassName}`
+                      : "fp-daily-workflow__row-fields"
+                  }
+                >
+                  {renderItem(item)}
+                </div>
+                {rowActions}
+                <button
+                  type="button"
+                  className="fp-daily-workflow__icon-btn fp-daily-workflow__icon-btn--quiet"
+                  onClick={() => onRemove(item.id)}
+                  aria-label={`Remove ${title.slice(0, -1).toLowerCase()}`}
+                  title="Remove"
+                >
+                  <Trash2 aria-hidden="true" />
+                </button>
               </div>
-              {renderRowActions ? renderRowActions(item) : null}
-              <button
-                type="button"
-                className="fp-daily-workflow__icon-btn fp-daily-workflow__icon-btn--quiet"
-                onClick={() => onRemove(item.id)}
-                aria-label={`Remove ${title.slice(0, -1).toLowerCase()}`}
-                title="Remove"
-              >
-                <Trash2 aria-hidden="true" />
-              </button>
-            </div>
-          ))
+            );
+          })
         )}
       </div>
       <button
