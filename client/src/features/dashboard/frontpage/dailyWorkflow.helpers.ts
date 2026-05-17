@@ -47,6 +47,14 @@ export type EndOfDayReviewSummary = {
   summary: string;
 };
 
+export type CarryForwardDailyWorkflowPatch = {
+  commitments: PersonalDashboardCommitment[];
+  outcomes: PersonalDashboardOutcome[];
+  todayPlanStatus?: PersonalDashboardTodayPlanStatus;
+  todayPlan?: PersonalDashboardTodayPlan;
+  carryForwardCount: number;
+};
+
 type ManualWorkflowIdKind = "commitment" | "outcome" | "plan-block";
 type WorkspaceCapableDailyWorkflowItem =
   | PersonalDashboardCommitment
@@ -394,6 +402,120 @@ export function buildEndOfDayReviewSummary(
     needsAttention,
     tone,
     summary,
+  };
+}
+
+export function nextDailyWorkflowDateKey(dateKey: string): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateKey);
+  if (!match) {
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    return formatDateInput(tomorrow);
+  }
+
+  const date = new Date(
+    Number(match[1]),
+    Number(match[2]) - 1,
+    Number(match[3])
+  );
+  date.setDate(date.getDate() + 1);
+  return formatDateInput(date);
+}
+
+function carriedId(
+  targetDateKey: string,
+  kind: "commitment" | "outcome" | "plan-block",
+  sourceId: string
+): string {
+  return `carry:${targetDateKey}:${kind}:${sourceId}`;
+}
+
+function mergeById<T extends { id: string }>(existing: T[], incoming: T[]): T[] {
+  const existingIds = new Set(existing.map((item) => item.id));
+  return [
+    ...existing,
+    ...incoming.filter((item) => !existingIds.has(item.id)),
+  ];
+}
+
+export function buildCarryForwardDailyWorkflowPatch(
+  draft: DailyWorkflowDraft,
+  targetState: PersonalDashboardDailyState | null | undefined,
+  sourceDateKey: string,
+  targetDateKey: string,
+  now: Date
+): CarryForwardDailyWorkflowPatch {
+  const existingCommitments = targetState?.commitments ?? [];
+  const existingOutcomes = targetState?.outcomes ?? [];
+  const existingPlan = targetState?.todayPlan ?? {
+    topPriority: null,
+    notes: null,
+    blocks: [],
+    updatedAt: null,
+  };
+
+  const carriedCommitments = draft.commitments
+    .filter((item) => item.status !== "done")
+    .map((item) => ({
+      ...item,
+      id: carriedId(targetDateKey, "commitment", item.id),
+      dueAt: null,
+    }));
+  const carriedOutcomes = draft.outcomes
+    .filter((item) => item.status === "active" || item.status === "paused")
+    .map((item) => ({
+      ...item,
+      id: carriedId(targetDateKey, "outcome", item.id),
+    }));
+  const carriedPlanBlocks = draft.todayPlan.blocks
+    .filter((item) => item.status === "planned" || item.status === "active")
+    .map((item) => ({
+      ...item,
+      id: carriedId(targetDateKey, "plan-block", item.id),
+      startIso: null,
+      endIso: null,
+      status: "planned" as const,
+    }));
+
+  const commitments = mergeById(existingCommitments, carriedCommitments);
+  const outcomes = mergeById(existingOutcomes, carriedOutcomes);
+  const blocks = mergeById(existingPlan.blocks, carriedPlanBlocks);
+  const carryForwardCount =
+    commitments.length -
+    existingCommitments.length +
+    outcomes.length -
+    existingOutcomes.length +
+    blocks.length -
+    existingPlan.blocks.length;
+
+  const todayPlan =
+    carriedPlanBlocks.length > 0
+      ? {
+          ...existingPlan,
+          topPriority:
+            existingPlan.topPriority ??
+            carriedCommitments[0]?.title ??
+            carriedOutcomes[0]?.title ??
+            draft.todayPlan.topPriority,
+          notes:
+            existingPlan.notes ??
+            `Carried forward from ${sourceDateKey}.`,
+          blocks,
+          updatedAt: now.toISOString(),
+        }
+      : undefined;
+
+  return {
+    commitments,
+    outcomes,
+    todayPlanStatus: todayPlan
+      ? targetState?.todayPlanStatus === "not_started" ||
+        !targetState?.todayPlanStatus
+        ? "draft"
+        : targetState.todayPlanStatus
+      : undefined,
+    todayPlan,
+    carryForwardCount,
   };
 }
 

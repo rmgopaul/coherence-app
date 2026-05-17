@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { PersonalDashboardCommandCenter } from "@shared/personalDashboard";
 import {
   buildCommitmentDraft,
+  buildCarryForwardDailyWorkflowPatch,
   buildCommitmentDrafts,
   buildDailyBriefDraft,
   buildEndOfDayReviewSummary,
@@ -16,6 +17,7 @@ import {
   hasDailyWorkflowDraftContent,
   isoFromDateTimeLocalInput,
   normalizeDailyWorkflowDraftForSave,
+  nextDailyWorkflowDateKey,
   refreshDailyBriefDraftFromSources,
   sourceUrlForBriefSourceRef,
   winActiveOutcomes,
@@ -564,6 +566,119 @@ describe("dailyWorkflow helpers", () => {
       tone: "clear",
       summary: "Everything tracked for today has a terminal status.",
     });
+  });
+
+  it("builds a deduped carry-forward patch for tomorrow", () => {
+    const draft = dailyWorkflowDraftFromState(null);
+    draft.commitments = [
+      {
+        id: "commitment-1",
+        title: "Open commitment",
+        source: "todoist",
+        sourceId: "task-1",
+        owner: null,
+        dueAt: "2026-05-14T20:00:00.000Z",
+        status: "open",
+        url: "https://todoist.com/app/task/task-1",
+      },
+      {
+        id: "commitment-2",
+        title: "Done commitment",
+        source: "system",
+        sourceId: null,
+        owner: null,
+        dueAt: null,
+        status: "done",
+        url: null,
+      },
+    ];
+    draft.outcomes = [
+      {
+        id: "outcome-1",
+        title: "Active outcome",
+        status: "active",
+        metricLabel: "Progress",
+        target: null,
+        current: "Started",
+      },
+      {
+        id: "outcome-2",
+        title: "Won outcome",
+        status: "won",
+        metricLabel: null,
+        target: null,
+        current: null,
+      },
+    ];
+    draft.todayPlan.blocks = [
+      {
+        id: "block-1",
+        title: "Planned block",
+        startIso: "2026-05-14T20:00:00.000Z",
+        endIso: "2026-05-14T21:00:00.000Z",
+        source: "calendar",
+        sourceId: "event-1",
+        status: "planned",
+      },
+    ];
+
+    const patch = buildCarryForwardDailyWorkflowPatch(
+      draft,
+      {
+        dateKey: "2026-05-15",
+        dailyBriefStatus: "not_started",
+        dailyBrief: null,
+        todayPlanStatus: "not_started",
+        todayPlan: null,
+        commitments: [
+          {
+            id: "carry:2026-05-15:commitment:commitment-1",
+            title: "Existing carried commitment",
+            source: "todoist",
+            sourceId: "task-1",
+            owner: null,
+            dueAt: null,
+            status: "open",
+            url: null,
+          },
+        ],
+        outcomes: [],
+        updatedAt: null,
+      },
+      "2026-05-14",
+      "2026-05-15",
+      new Date("2026-05-14T22:00:00.000Z")
+    );
+
+    expect(patch.carryForwardCount).toBe(2);
+    expect(patch.commitments).toHaveLength(1);
+    expect(patch.outcomes).toMatchObject([
+      {
+        id: "carry:2026-05-15:outcome:outcome-1",
+        title: "Active outcome",
+        status: "active",
+      },
+    ]);
+    expect(patch.todayPlanStatus).toBe("draft");
+    expect(patch.todayPlan).toMatchObject({
+      topPriority: "Open commitment",
+      notes: "Carried forward from 2026-05-14.",
+      blocks: [
+        {
+          id: "carry:2026-05-15:plan-block:block-1",
+          title: "Planned block",
+          startIso: null,
+          endIso: null,
+          status: "planned",
+        },
+      ],
+      updatedAt: "2026-05-14T22:00:00.000Z",
+    });
+  });
+
+  it("computes the next daily workflow date key", () => {
+    expect(nextDailyWorkflowDateKey("2026-05-14")).toBe("2026-05-15");
+    expect(nextDailyWorkflowDateKey("2026-12-31")).toBe("2027-01-01");
   });
 
   it("builds workspace rows only for source-backed Todoist and Calendar items", () => {
