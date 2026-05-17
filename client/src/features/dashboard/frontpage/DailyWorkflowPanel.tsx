@@ -32,6 +32,7 @@ import type { DashboardData } from "../useDashboardData";
 import {
   buildCommitmentDrafts,
   buildDailyBriefDraft,
+  buildEndOfDayReviewSummary,
   buildOutcomeDrafts,
   buildTodayPlanDraft,
   completeAllCommitments,
@@ -147,6 +148,10 @@ export function DailyWorkflowPanel({
   );
   const canWinActiveOutcomes = draft.outcomes.some(
     (item) => item.status === "active"
+  );
+  const endOfDayReview = useMemo(
+    () => buildEndOfDayReviewSummary(draft),
+    [draft]
   );
   const commitmentWorkspaceRows = useMemo(
     () =>
@@ -1110,8 +1115,61 @@ export function DailyWorkflowPanel({
             </>
           )}
         />
+
+        <div className="fp-daily-workflow__block fp-daily-workflow__block--wide">
+          <BlockHeader
+            icon={<CheckCircle2 aria-hidden="true" />}
+            label="End-of-Day Review"
+            status={endOfDayReview.tone}
+          />
+          <p className="fp-daily-workflow__review-summary">
+            {endOfDayReview.summary}
+          </p>
+          <div className="fp-daily-workflow__review-grid">
+            <ReviewMetric
+              label="Commitments"
+              primary={`${endOfDayReview.commitmentCounts.done}/${endOfDayReview.commitmentCounts.total}`}
+              secondary={`${endOfDayReview.commitmentCounts.open} open | ${endOfDayReview.commitmentCounts.waiting} waiting | ${endOfDayReview.commitmentCounts.blocked} blocked`}
+            />
+            <ReviewMetric
+              label="Outcomes"
+              primary={`${endOfDayReview.outcomeCounts.won + endOfDayReview.outcomeCounts.missed}/${endOfDayReview.outcomeCounts.total}`}
+              secondary={`${endOfDayReview.outcomeCounts.active} active | ${endOfDayReview.outcomeCounts.paused} paused | ${endOfDayReview.outcomeCounts.missed} missed`}
+            />
+            <ReviewMetric
+              label="Plan Blocks"
+              primary={`${endOfDayReview.planBlockCounts.done + endOfDayReview.planBlockCounts.skipped}/${endOfDayReview.planBlockCounts.total}`}
+              secondary={`${endOfDayReview.planBlockCounts.planned} planned | ${endOfDayReview.planBlockCounts.active} active | ${endOfDayReview.planBlockCounts.skipped} skipped`}
+            />
+          </div>
+          {endOfDayReview.needsAttention.length > 0 ? (
+            <ul className="fp-daily-workflow__review-list">
+              {endOfDayReview.needsAttention.map((item) => (
+                <li key={item}>{item}</li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
       </div>
     </section>
+  );
+}
+
+function ReviewMetric({
+  label,
+  primary,
+  secondary,
+}: {
+  label: string;
+  primary: string;
+  secondary: string;
+}) {
+  return (
+    <div className="fp-daily-workflow__review-metric">
+      <span>{label}</span>
+      <strong>{primary}</strong>
+      <small>{secondary}</small>
+    </div>
   );
 }
 

@@ -5,6 +5,7 @@ import {
   buildCommitmentDraft,
   buildCommitmentDrafts,
   buildDailyBriefDraft,
+  buildEndOfDayReviewSummary,
   buildTodayPlanDraft,
   buildOutcomeDrafts,
   completeAllCommitments,
@@ -452,6 +453,117 @@ describe("dailyWorkflow helpers", () => {
     expect(
       winActiveOutcomes(draft.outcomes).map((item) => item.status)
     ).toEqual(["won", "paused"]);
+  });
+
+  it("summarizes end-of-day review status and attention items", () => {
+    const draft = dailyWorkflowDraftFromState(null);
+    draft.commitments = [
+      {
+        id: "commitment-1",
+        title: "Send proposal",
+        source: "todoist",
+        sourceId: "task-1",
+        owner: null,
+        dueAt: null,
+        status: "done",
+        url: null,
+      },
+      {
+        id: "commitment-2",
+        title: "Client response",
+        source: "gmail",
+        sourceId: "thread-1",
+        owner: null,
+        dueAt: null,
+        status: "waiting",
+        url: null,
+      },
+    ];
+    draft.outcomes = [
+      {
+        id: "outcome-1",
+        title: "Proposal shipped",
+        status: "active",
+        metricLabel: "Progress",
+        target: "Sent",
+        current: null,
+      },
+    ];
+    draft.todayPlan.blocks = [
+      {
+        id: "block-1",
+        title: "Proposal block",
+        startIso: null,
+        endIso: null,
+        source: "system",
+        sourceId: null,
+        status: "done",
+      },
+      {
+        id: "block-2",
+        title: "Review block",
+        startIso: null,
+        endIso: null,
+        source: "system",
+        sourceId: null,
+        status: "planned",
+      },
+    ];
+
+    expect(buildEndOfDayReviewSummary(draft)).toMatchObject({
+      commitmentCounts: { total: 2, done: 1, waiting: 1 },
+      outcomeCounts: { total: 1, active: 1 },
+      planBlockCounts: { total: 2, done: 1, planned: 1 },
+      needsAttention: [
+        "1 waiting commitment",
+        "1 active outcome",
+        "1 planned block",
+      ],
+      tone: "attention",
+    });
+  });
+
+  it("marks end-of-day review clear when tracked items are terminal", () => {
+    const draft = dailyWorkflowDraftFromState(null);
+    draft.commitments = [
+      {
+        id: "commitment-1",
+        title: "Done",
+        source: "system",
+        sourceId: null,
+        owner: null,
+        dueAt: null,
+        status: "done",
+        url: null,
+      },
+    ];
+    draft.outcomes = [
+      {
+        id: "outcome-1",
+        title: "Won",
+        status: "won",
+        metricLabel: "Progress",
+        target: null,
+        current: null,
+      },
+    ];
+    draft.todayPlan.blocks = [
+      {
+        id: "block-1",
+        title: "Skipped",
+        startIso: null,
+        endIso: null,
+        source: "system",
+        sourceId: null,
+        status: "skipped",
+      },
+    ];
+
+    expect(buildEndOfDayReviewSummary(draft)).toMatchObject({
+      needsAttention: [],
+      tone: "clear",
+      summary: "Everything tracked for today has a terminal status.",
+    });
   });
 
   it("builds workspace rows only for source-backed Todoist and Calendar items", () => {
