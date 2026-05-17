@@ -6,6 +6,7 @@ import {
   type ReactNode,
 } from "react";
 import {
+  ArrowRight,
   CalendarClock,
   CheckCircle2,
   ClipboardList,
@@ -31,6 +32,7 @@ import {
 import type { DashboardData } from "../useDashboardData";
 import {
   buildCommitmentDrafts,
+  buildCarryForwardDailyWorkflowPatch,
   buildDailyBriefDraft,
   buildEndOfDayReviewSummary,
   buildOutcomeDrafts,
@@ -44,6 +46,7 @@ import {
   hasDailyWorkflowDraftContent,
   isoFromDateTimeLocalInput,
   normalizeDailyWorkflowDraftForSave,
+  nextDailyWorkflowDateKey,
   refreshDailyBriefDraftFromSources,
   sourceUrlForBriefSourceRef,
   winActiveOutcomes,
@@ -118,6 +121,21 @@ export function DailyWorkflowPanel({
       toast.error(error.message || "Could not save daily workflow");
     },
   });
+  const carryForwardDailyState =
+    trpc.personalDashboard.saveDailyState.useMutation({
+      onSuccess: async (_saved, variables) => {
+        await Promise.all([
+          utils.personalDashboard.getDailyState.invalidate({
+            dateKey: variables.dateKey,
+          }),
+          utils.personalDashboard.getCommandCenter.invalidate(),
+        ]);
+        toast.success("Carried forward to tomorrow");
+      },
+      onError: (error) => {
+        toast.error(error.message || "Could not carry forward tomorrow");
+      },
+    });
 
   const loadedKey = `${state.data?.dateKey ?? dateKey}:${
     state.data?.updatedAt ?? "empty"
@@ -153,6 +171,11 @@ export function DailyWorkflowPanel({
     () => buildEndOfDayReviewSummary(draft),
     [draft]
   );
+  const tomorrowDateKey = useMemo(
+    () => nextDailyWorkflowDateKey(dateKey),
+    [dateKey]
+  );
+  const canCarryForward = endOfDayReview.needsAttention.length > 0;
   const commitmentWorkspaceRows = useMemo(
     () =>
       draft.commitments
@@ -407,6 +430,48 @@ export function DailyWorkflowPanel({
     if (!confirmed) return;
     setDraft(emptyDailyWorkflowDraft());
     setDirty(true);
+  }
+
+  async function carryForwardTomorrow() {
+    if (!canCarryForward || carryForwardDailyState.isPending) return;
+    let patch: ReturnType<typeof buildCarryForwardDailyWorkflowPatch>;
+    try {
+      const tomorrowState =
+        await utils.personalDashboard.getDailyState.fetch({
+          dateKey: tomorrowDateKey,
+        });
+      patch = buildCarryForwardDailyWorkflowPatch(
+        draft,
+        tomorrowState,
+        dateKey,
+        tomorrowDateKey,
+        new Date()
+      );
+    } catch (error) {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "Could not load tomorrow's workflow"
+      );
+      return;
+    }
+
+    if (patch.carryForwardCount === 0) {
+      toast.info("Tomorrow already has those carried-forward items");
+      return;
+    }
+
+    try {
+      await carryForwardDailyState.mutateAsync({
+        dateKey: tomorrowDateKey,
+        commitments: patch.commitments,
+        outcomes: patch.outcomes,
+        todayPlanStatus: patch.todayPlanStatus,
+        todayPlan: patch.todayPlan,
+      });
+    } catch {
+      // Toast is emitted by the mutation's onError handler.
+    }
   }
 
   useEffect(() => {
@@ -1121,6 +1186,18 @@ export function DailyWorkflowPanel({
             icon={<CheckCircle2 aria-hidden="true" />}
             label="End-of-Day Review"
             status={endOfDayReview.tone}
+            actions={
+              <button
+                type="button"
+                className="fp-daily-workflow__icon-btn fp-daily-workflow__icon-btn--quiet"
+                onClick={() => void carryForwardTomorrow()}
+                disabled={!canCarryForward || carryForwardDailyState.isPending}
+                title={`Carry unresolved work to ${tomorrowDateKey}`}
+                aria-label={`Carry unresolved work to ${tomorrowDateKey}`}
+              >
+                <ArrowRight aria-hidden="true" />
+              </button>
+            }
           />
           <p className="fp-daily-workflow__review-summary">
             {endOfDayReview.summary}
