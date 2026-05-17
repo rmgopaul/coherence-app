@@ -15,6 +15,7 @@ import {
   hasDailyWorkflowDraftContent,
   isoFromDateTimeLocalInput,
   normalizeDailyWorkflowDraftForSave,
+  refreshDailyBriefDraftFromSources,
   sourceUrlForBriefSourceRef,
   winActiveOutcomes,
   workspaceNoteRowFromBriefSourceRef,
@@ -177,6 +178,65 @@ describe("dailyWorkflow helpers", () => {
     expect(buildOutcomeDrafts(suggested, now)).toEqual(
       suggested.dailyWorkflow.suggestedOutcomes
     );
+  });
+
+  it("refreshes a daily brief from source labels and current dashboard signals", () => {
+    const refreshed = refreshDailyBriefDraftFromSources(
+      {
+        headline: "Old headline",
+        summary: null,
+        generatedAt: "2026-05-14T12:00:00.000Z",
+        sourceRefs: [
+          {
+            source: "calendar",
+            id: "event-1",
+            label: "Design review",
+            url: "https://calendar.google.com/event",
+          },
+          {
+            source: "todoist",
+            id: "task-1",
+            label: "Close proposal",
+            url: "https://todoist.com/app/task/task-1",
+          },
+        ],
+      },
+      commandCenter,
+      new Date("2026-05-14T15:00:00.000Z")
+    );
+
+    expect(refreshed).toMatchObject({
+      headline: "Design review",
+      generatedAt: "2026-05-14T15:00:00.000Z",
+      sourceRefs: [
+        { source: "calendar", id: "event-1", label: "Design review" },
+        { source: "todoist", id: "task-1", label: "Close proposal" },
+      ],
+    });
+    expect(refreshed.summary).toContain(
+      "Brief sources: 2 sources: Design review; Close proposal."
+    );
+    expect(refreshed.summary).toContain(
+      "Current signals: 3 tasks due today; 2 meetings remaining"
+    );
+    expect(refreshed.summary).toContain("Right now: Close proposal");
+  });
+
+  it("falls back to the command-center priority when refreshing without source labels", () => {
+    const refreshed = refreshDailyBriefDraftFromSources(
+      {
+        headline: " ",
+        summary: "  Existing context  ",
+        generatedAt: null,
+        sourceRefs: [],
+      },
+      commandCenter,
+      new Date("2026-05-14T15:00:00.000Z")
+    );
+
+    expect(refreshed.headline).toBe("Close proposal");
+    expect(refreshed.summary).toContain("Current signals:");
+    expect(refreshed.generatedAt).toBe("2026-05-14T15:00:00.000Z");
   });
 
   it("normalizes empty and whitespace-only draft fields before save", () => {
