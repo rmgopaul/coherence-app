@@ -1251,6 +1251,14 @@ html[data-focus="1"] .fp-root {
   height: 15px;
 }
 
+.fp-daily-workflow__block-head-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  min-width: 0;
+}
+
 .fp-daily-workflow__field {
   display: grid;
   gap: 5px;

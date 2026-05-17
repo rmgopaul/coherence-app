@@ -43,6 +43,7 @@ import {
   hasDailyWorkflowDraftContent,
   isoFromDateTimeLocalInput,
   normalizeDailyWorkflowDraftForSave,
+  refreshDailyBriefDraftFromSources,
   sourceUrlForBriefSourceRef,
   winActiveOutcomes,
   workspaceNoteRowFromBriefSourceRef,
@@ -129,6 +130,11 @@ export function DailyWorkflowPanel({
   const canSeed = Boolean(commandCenter);
   const isSaving = saveDailyState.isPending;
   const canClearDraft = hasDailyWorkflowDraftContent(draft);
+  const canRefreshBrief = Boolean(
+    draft.dailyBrief.sourceRefs.some(
+      (sourceRef) => sourceRef.label.trim().length > 0
+    ) || commandCenter
+  );
   const briefSourceItems = draft.dailyBrief.sourceRefs.map(
     (sourceRef, index) => ({
       id: String(index),
@@ -343,6 +349,20 @@ export function DailyWorkflowPanel({
         ...current.commitments,
       ]),
       outcomes: dedupeById([...nextOutcomes, ...current.outcomes]),
+    }));
+  }
+
+  function refreshBriefFromSources() {
+    if (!canRefreshBrief) return;
+    updateDraft((current) => ({
+      ...current,
+      dailyBriefStatus:
+        current.dailyBriefStatus === "ready" ? "ready" : "draft",
+      dailyBrief: refreshDailyBriefDraftFromSources(
+        current.dailyBrief,
+        commandCenter,
+        new Date()
+      ),
     }));
   }
 
@@ -596,6 +616,18 @@ export function DailyWorkflowPanel({
             icon={<ClipboardList aria-hidden="true" />}
             label="Daily Brief"
             status={draft.dailyBriefStatus.replace("_", " ")}
+            actions={
+              <button
+                type="button"
+                className="fp-daily-workflow__icon-btn fp-daily-workflow__icon-btn--quiet"
+                onClick={refreshBriefFromSources}
+                disabled={!canRefreshBrief || isSaving}
+                title="Refresh Daily Brief from Brief Sources"
+                aria-label="Refresh Daily Brief from Brief Sources"
+              >
+                <RefreshCw aria-hidden="true" />
+              </button>
+            }
           />
           <label className="fp-daily-workflow__field">
             <span>Headline</span>
@@ -1087,10 +1119,12 @@ function BlockHeader({
   icon,
   label,
   status,
+  actions,
 }: {
   icon: ReactNode;
   label: string;
   status: string;
+  actions?: ReactNode;
 }) {
   return (
     <header className="fp-daily-workflow__block-head">
@@ -1098,7 +1132,10 @@ function BlockHeader({
         {icon}
         {label}
       </span>
-      <span className="mono-label">{status}</span>
+      <span className="fp-daily-workflow__block-head-actions">
+        {actions}
+        <span className="mono-label">{status}</span>
+      </span>
     </header>
   );
 }

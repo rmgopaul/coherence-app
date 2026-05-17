@@ -131,6 +131,63 @@ export function buildDailyBriefDraft(
   };
 }
 
+function summarizeBriefSourceRefs(
+  sourceRefs: PersonalDashboardDailyBrief["sourceRefs"]
+): string | null {
+  const labels = sourceRefs
+    .map((sourceRef) => sourceRef.label.trim())
+    .filter((label) => label.length > 0);
+  if (labels.length === 0) return null;
+
+  const visibleLabels = labels.slice(0, 5).join("; ");
+  const overflowCount = labels.length - 5;
+  const suffix = overflowCount > 0 ? `; +${overflowCount} more` : "";
+  return `${labels.length} ${labels.length === 1 ? "source" : "sources"}: ${visibleLabels}${suffix}`;
+}
+
+export function refreshDailyBriefDraftFromSources(
+  brief: PersonalDashboardDailyBrief,
+  commandCenter: PersonalDashboardCommandCenter | null | undefined,
+  now: Date
+): PersonalDashboardDailyBrief {
+  const sourceSummary = summarizeBriefSourceRefs(brief.sourceRefs);
+  const rightNowTitle = commandCenter?.rightNow?.title.trim() || null;
+  const firstSourceLabel =
+    brief.sourceRefs.find((sourceRef) => sourceRef.label.trim().length > 0)
+      ?.label.trim() ?? null;
+  const headline =
+    firstSourceLabel ||
+    rightNowTitle ||
+    brief.headline.trim() ||
+    "Daily brief refreshed";
+
+  const metricSummary = commandCenter
+    ? [
+        `${commandCenter.metrics.tasksDueToday} tasks due today`,
+        `${commandCenter.metrics.meetingsRemaining} meetings remaining`,
+        `${commandCenter.metrics.inboxToTriage} inbox items to triage`,
+        `${commandCenter.metrics.waitingOnCount} waiting-on threads`,
+      ].join("; ")
+    : null;
+  const rightNowSummary = commandCenter?.rightNow
+    ? `Right now: ${commandCenter.rightNow.title.trim()} (${commandCenter.rightNow.reason.trim()}).`
+    : null;
+  const summary = [
+    sourceSummary ? `Brief sources: ${sourceSummary}.` : null,
+    metricSummary ? `Current signals: ${metricSummary}.` : null,
+    rightNowSummary,
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  return {
+    ...brief,
+    headline,
+    summary: summary || brief.summary?.trim() || null,
+    generatedAt: now.toISOString(),
+  };
+}
+
 export function buildTodayPlanDraft(
   commandCenter: PersonalDashboardCommandCenter,
   now: Date
