@@ -117,6 +117,7 @@ export default function FrontPageDashboard() {
         dateKey={data.todayKey}
         commandCenter={data.commandCenter.data}
         state={data.dailyState}
+        todoistTasksDueToday={data.tasks.dueToday}
       />
 
       {!focusMode && <DropDock />}

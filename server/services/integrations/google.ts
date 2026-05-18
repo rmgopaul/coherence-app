@@ -67,18 +67,30 @@ export async function getGoogleCalendarEvents(
   return data.items || [];
 }
 
-export async function getGmailMessages(accessToken: string, maxResults = 50): Promise<any[]> {
-  // Strictly fetch Important + Unread messages.
-  const query = encodeURIComponent("is:important is:unread");
+async function getGmailMetadataMessages(
+  accessToken: string,
+  {
+    maxResults,
+    query,
+    labelIds = [],
+  }: {
+    maxResults: number;
+    query?: string;
+    labelIds?: string[];
+  }
+): Promise<Record<string, unknown>[]> {
   const cappedTotal = Math.max(1, Math.min(maxResults, 800));
   const messageIds: Array<{ id: string }> = [];
   let pageToken: string | undefined;
 
   while (messageIds.length < cappedTotal) {
     const pageSize = Math.min(500, cappedTotal - messageIds.length);
-    const pageTokenParam = pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : "";
+    const params = new URLSearchParams({ maxResults: String(pageSize) });
+    if (query) params.set("q", query);
+    for (const labelId of labelIds) params.append("labelIds", labelId);
+    if (pageToken) params.set("pageToken", pageToken);
     const response = await makeGoogleApiCall(
-      `https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=${pageSize}&labelIds=IMPORTANT&labelIds=UNREAD&q=${query}${pageTokenParam}`,
+      `https://gmail.googleapis.com/gmail/v1/users/me/messages?${params.toString()}`,
       accessToken
     );
 
@@ -119,12 +131,31 @@ export async function getGmailMessages(accessToken: string, maxResults = 50): Pr
   }
 
   return messages
+    .sort((a, b) => Number(b.internalDate || 0) - Number(a.internalDate || 0))
+    .slice(0, cappedTotal);
+}
+
+export async function getGmailMessages(accessToken: string, maxResults = 50): Promise<any[]> {
+  // Strictly fetch Important + Unread messages.
+  const messages = await getGmailMetadataMessages(accessToken, {
+    maxResults,
+    query: "is:important is:unread",
+    labelIds: ["IMPORTANT", "UNREAD"],
+  });
+
+  return messages
     .filter((message) => {
       const labels = new Set<string>(Array.isArray(message.labelIds) ? message.labelIds : []);
       return labels.has("IMPORTANT") && labels.has("UNREAD");
     })
-    .sort((a, b) => Number(b.internalDate || 0) - Number(a.internalDate || 0))
-    .slice(0, cappedTotal);
+    .slice(0, Math.max(1, Math.min(maxResults, 800)));
+}
+
+export async function getRecentGmailMessages(accessToken: string, maxResults = 100): Promise<any[]> {
+  return getGmailMetadataMessages(accessToken, {
+    maxResults,
+    query: "-in:spam -in:trash",
+  });
 }
 
 type GmailHeader = { name?: string; value?: string };

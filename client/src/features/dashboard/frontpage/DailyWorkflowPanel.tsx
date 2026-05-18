@@ -31,6 +31,13 @@ import {
 } from "@shared/personalDashboard";
 import type { DashboardData } from "../useDashboardData";
 import {
+  calendarBriefSourceOptions,
+  gmailBriefSourceOptions,
+  sourceRefPatchFromPickerOption,
+  todoistBriefSourceOptions,
+  type BriefSourcePickerOption,
+} from "./briefSourcePicker.helpers";
+import {
   buildCommitmentDrafts,
   buildCarryForwardDailyWorkflowPatch,
   buildDailyBriefDraft,
@@ -61,6 +68,11 @@ import { useWorkspaceNotes, type WorkspaceNoteRow } from "./useWorkspaceNotes";
 
 type DailyBriefSourceRef =
   DailyWorkflowDraft["dailyBrief"]["sourceRefs"][number];
+type BriefSourceListItem = {
+  id: string;
+  index: number;
+  sourceRef: DailyBriefSourceRef;
+};
 
 const briefSourceOptions: DailyBriefSourceRef["source"][] = Array.from(
   new Set([
@@ -73,6 +85,7 @@ type DailyWorkflowPanelProps = {
   dateKey: string;
   commandCenter: DashboardData["commandCenter"]["data"];
   state: DashboardData["dailyState"];
+  todoistTasksDueToday: DashboardData["tasks"]["dueToday"];
 };
 
 const commitmentStatuses: PersonalDashboardCommitment["status"][] = [
@@ -100,6 +113,7 @@ export function DailyWorkflowPanel({
   dateKey,
   commandCenter,
   state,
+  todoistTasksDueToday,
 }: DailyWorkflowPanelProps) {
   const utils = trpc.useUtils();
   const [draft, setDraft] = useState<DailyWorkflowDraft>(() =>
@@ -155,12 +169,41 @@ export function DailyWorkflowPanel({
       (sourceRef) => sourceRef.label.trim().length > 0
     ) || commandCenter
   );
-  const briefSourceItems = draft.dailyBrief.sourceRefs.map(
-    (sourceRef, index) => ({
+  const briefSourceItems: BriefSourceListItem[] =
+    draft.dailyBrief.sourceRefs.map((sourceRef, index) => ({
       id: String(index),
       index,
       sourceRef,
-    })
+    }));
+  const hasGmailBriefSource = draft.dailyBrief.sourceRefs.some(
+    (sourceRef) => sourceRef.source === "gmail"
+  );
+  const hasCalendarBriefSource = draft.dailyBrief.sourceRefs.some(
+    (sourceRef) => sourceRef.source === "calendar"
+  );
+  const recentGmailQuery = trpc.google.getRecentGmailMessages.useQuery(
+    { maxResults: 100 },
+    {
+      enabled: hasGmailBriefSource,
+      staleTime: 60_000,
+      refetchOnWindowFocus: false,
+    }
+  );
+  const calendarSourceQuery = trpc.google.getCalendarEvents.useQuery(
+    { daysAhead: 183, maxResults: 250 },
+    {
+      enabled: hasCalendarBriefSource,
+      staleTime: 5 * 60_000,
+      refetchOnWindowFocus: false,
+    }
+  );
+  const briefSourcePickerOptions = useMemo(
+    () => ({
+      todoist: todoistBriefSourceOptions(todoistTasksDueToday),
+      gmail: gmailBriefSourceOptions(recentGmailQuery.data ?? []),
+      calendar: calendarBriefSourceOptions(calendarSourceQuery.data ?? []),
+    }),
+    [calendarSourceQuery.data, recentGmailQuery.data, todoistTasksDueToday]
   );
   const canCompleteCommitments = draft.commitments.some(
     (item) => item.status !== "done"
@@ -333,6 +376,99 @@ export function DailyWorkflowPanel({
         ),
       },
     }));
+  }
+
+  function pickerOptionsForSource(
+    source: DailyBriefSourceRef["source"]
+  ): BriefSourcePickerOption[] | null {
+    if (
+      source === "todoist" ||
+      source === "gmail" ||
+      source === "calendar"
+    ) {
+      return briefSourcePickerOptions[source];
+    }
+    return null;
+  }
+
+  function pickerLoadingForSource(source: DailyBriefSourceRef["source"]) {
+    if (source === "gmail") return recentGmailQuery.isLoading;
+    if (source === "calendar") return calendarSourceQuery.isLoading;
+    return false;
+  }
+
+  function selectedPickerKey(
+    sourceRef: DailyBriefSourceRef,
+    options: BriefSourcePickerOption[]
+  ): string {
+    const sourceId = sourceRef.id?.trim();
+    if (!sourceId) return "";
+    return (
+      options.find((option) => option.id === sourceId)?.key ??
+      `${sourceRef.source}:${sourceId}`
+    );
+  }
+
+  function selectBriefSourceOption(
+    index: number,
+    sourceRef: DailyBriefSourceRef,
+    optionKey: string
+  ) {
+    const options = pickerOptionsForSource(sourceRef.source) ?? [];
+    const selected = options.find((option) => option.key === optionKey);
+    if (!selected) {
+      updateBriefSourceRef(index, { id: null, label: "", url: null });
+      return;
+    }
+    updateBriefSourceRef(index, sourceRefPatchFromPickerOption(selected));
+  }
+
+  function renderBriefSourceFields(item: BriefSourceListItem) {
+    const pickerOptions = pickerOptionsForSource(item.sourceRef.source);
+    return (
+      <>
+        <select
+          value={item.sourceRef.source}
+          onChange={(event) => {
+            const source =
+              event.target.value as DailyBriefSourceRef["source"];
+            updateBriefSourceRef(item.index, {
+              source,
+              id: null,
+              label: "",
+              url: null,
+            });
+          }}
+          aria-label="Brief source type"
+        >
+          {briefSourceOptions.map((source) => (
+            <option key={source} value={source}>
+              {source}
+            </option>
+          ))}
+        </select>
+        {pickerOptions ? (
+          <BriefSourcePickerFields
+            item={item}
+            options={pickerOptions}
+            loading={pickerLoadingForSource(item.sourceRef.source)}
+            selectedKey={selectedPickerKey(item.sourceRef, pickerOptions)}
+            onSelect={selectBriefSourceOption}
+            onLabelChange={(label) =>
+              updateBriefSourceRef(item.index, { label })
+            }
+          />
+        ) : (
+          <ManualBriefSourceFields
+            sourceRef={item.sourceRef}
+            onLabelChange={(label) =>
+              updateBriefSourceRef(item.index, { label })
+            }
+            onUrlChange={(url) => updateBriefSourceRef(item.index, { url })}
+          />
+        )}
+      </>
+    );
   }
 
   function removeBriefSourceRef(index: number) {
@@ -755,53 +891,7 @@ export function DailyWorkflowPanel({
           renderRowActions={(item) =>
             renderBriefSourceActions(item.sourceRef)
           }
-          renderItem={(item) => (
-            <>
-              <input
-                className="fp-daily-workflow__row-field--wide"
-                value={item.sourceRef.label}
-                onChange={(event) =>
-                  updateBriefSourceRef(item.index, {
-                    label: event.target.value,
-                  })
-                }
-                placeholder="Source label"
-                aria-label="Brief source label"
-              />
-              <select
-                value={item.sourceRef.source}
-                onChange={(event) => {
-                  const source =
-                    event.target.value as DailyBriefSourceRef["source"];
-                  updateBriefSourceRef(item.index, { source });
-                }}
-                aria-label="Brief source type"
-              >
-                {briefSourceOptions.map((source) => (
-                  <option key={source} value={source}>
-                    {source}
-                  </option>
-                ))}
-              </select>
-              <input
-                value={item.sourceRef.id ?? ""}
-                onChange={(event) =>
-                  updateBriefSourceRef(item.index, { id: event.target.value })
-                }
-                placeholder="Source ID"
-                aria-label="Brief source ID"
-              />
-              <input
-                className="fp-daily-workflow__row-field--wide"
-                value={item.sourceRef.url ?? ""}
-                onChange={(event) =>
-                  updateBriefSourceRef(item.index, { url: event.target.value })
-                }
-                placeholder="https://..."
-                aria-label="Brief source URL"
-              />
-            </>
-          )}
+          renderItem={renderBriefSourceFields}
         />
 
         <div className="fp-daily-workflow__block">
@@ -1234,6 +1324,131 @@ function ReviewMetric({
       <strong>{primary}</strong>
       <small>{secondary}</small>
     </div>
+  );
+}
+
+function BriefSourcePickerFields({
+  item,
+  options,
+  loading,
+  selectedKey,
+  onSelect,
+  onLabelChange,
+}: {
+  item: BriefSourceListItem;
+  options: BriefSourcePickerOption[];
+  loading: boolean;
+  selectedKey: string;
+  onSelect: (
+    index: number,
+    sourceRef: DailyBriefSourceRef,
+    optionKey: string
+  ) => void;
+  onLabelChange: (label: string) => void;
+}) {
+  const selectedOption = options.find((option) => option.key === selectedKey);
+  const pickerValue = selectedOption?.display ?? item.sourceRef.label;
+  const [query, setQuery] = useState(pickerValue);
+  const listId = `brief-source-picker-${item.index}-${item.sourceRef.source}`;
+  const hasSelectedFallback = Boolean(
+    selectedKey &&
+      !options.some((option) => option.key === selectedKey) &&
+      item.sourceRef.label.trim()
+  );
+  const placeholder = loading
+    ? "Loading sources..."
+    : options.length > 0
+      ? `Type to select ${item.sourceRef.source} source`
+      : `No ${item.sourceRef.source} sources available`;
+
+  useEffect(() => {
+    setQuery(pickerValue);
+  }, [pickerValue]);
+
+  function findOption(value: string) {
+    const normalized = value.trim();
+    return options.find(
+      (option) =>
+        option.display === normalized ||
+        option.label === normalized ||
+        option.key === normalized
+    );
+  }
+
+  function applyTypedSelection(value: string) {
+    const selected = findOption(value);
+    if (selected) {
+      setQuery(selected.display);
+      onSelect(item.index, item.sourceRef, selected.key);
+      return;
+    }
+
+    if (!value.trim()) {
+      onSelect(item.index, item.sourceRef, "");
+    }
+  }
+
+  return (
+    <>
+      <input
+        className="fp-daily-workflow__row-field--wide"
+        list={listId}
+        value={query}
+        onChange={(event) => {
+          const value = event.target.value;
+          setQuery(value);
+          applyTypedSelection(value);
+        }}
+        onBlur={(event) => applyTypedSelection(event.target.value)}
+        disabled={loading}
+        aria-label={`Select ${item.sourceRef.source} source`}
+        placeholder={placeholder}
+      />
+      <datalist id={listId}>
+        {hasSelectedFallback ? (
+          <option value={item.sourceRef.label} />
+        ) : null}
+        {options.map((option) => (
+          <option key={option.key} value={option.display} />
+        ))}
+      </datalist>
+      <input
+        className="fp-daily-workflow__row-field--wide"
+        value={item.sourceRef.label}
+        onChange={(event) => onLabelChange(event.target.value)}
+        placeholder="Display label"
+        aria-label="Brief source display label"
+      />
+    </>
+  );
+}
+
+function ManualBriefSourceFields({
+  sourceRef,
+  onLabelChange,
+  onUrlChange,
+}: {
+  sourceRef: DailyBriefSourceRef;
+  onLabelChange: (label: string) => void;
+  onUrlChange: (url: string) => void;
+}) {
+  return (
+    <>
+      <input
+        className="fp-daily-workflow__row-field--wide"
+        value={sourceRef.label}
+        onChange={(event) => onLabelChange(event.target.value)}
+        placeholder="Source label"
+        aria-label="Brief source label"
+      />
+      <input
+        className="fp-daily-workflow__row-field--wide"
+        value={sourceRef.url ?? ""}
+        onChange={(event) => onUrlChange(event.target.value)}
+        placeholder="https://..."
+        aria-label="Brief source URL"
+      />
+    </>
   );
 }
 

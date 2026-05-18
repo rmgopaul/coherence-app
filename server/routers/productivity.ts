@@ -50,6 +50,7 @@ import {
 import {
   getGoogleCalendarEvents,
   getGmailMessages,
+  getRecentGmailMessages,
   getGmailWaitingOn,
   markGmailMessageAsRead,
   // Task 10.1 (2026-04-28): archive wired into the SignalActions menu.
@@ -976,6 +977,12 @@ export const googleRouter = router({
     const accessToken = await getValidGoogleToken(ctx.user.id);
     return getGmailMessages(accessToken, input?.maxResults ?? 50);
   }),
+  getRecentGmailMessages: protectedProcedure
+    .input(z.object({ maxResults: z.number().int().min(1).max(200).optional() }).optional())
+    .query(async ({ ctx, input }) => {
+      const accessToken = await getValidGoogleToken(ctx.user.id);
+      return getRecentGmailMessages(accessToken, input?.maxResults ?? 100);
+    }),
   getGmailWaitingOn: protectedProcedure
     .input(z.object({ maxResults: z.number().int().min(1).max(100).optional() }).optional())
     .query(async ({ ctx, input }) => {
