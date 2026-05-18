@@ -314,6 +314,9 @@ export const contractScanResults = mysqlTable(
     pdfFileName: varchar("pdfFileName", { length: 255 }),
     error: text("error"),
     scannedAt: timestamp("scannedAt").defaultNow(),
+    crgaNoticePresent: boolean("crgaNoticePresent"),
+    crgaNoticeMisplaced: boolean("crgaNoticeMisplaced"),
+    crgaNoticeFlag: varchar("crgaNoticeFlag", { length: 255 }),
     // Manual overrides — take precedence over scanned values when present.
     overrideVendorFeePercent: double("overrideVendorFeePercent"),
     overrideAdditionalCollateralPercent: double("overrideAdditionalCollateralPercent"),
