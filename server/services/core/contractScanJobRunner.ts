@@ -282,6 +282,12 @@ export async function runContractScanJob(
             recPrice: (extraction?.recPrice as number) ?? null,
             acSizeKw: (extraction?.acSizeKw as number) ?? null,
             dcSizeKw: (extraction?.dcSizeKw as number) ?? null,
+            crgaNoticePresent:
+              (extraction?.crgaNoticePresent as boolean) ?? null,
+            crgaNoticeMisplaced:
+              (extraction?.crgaNoticeMisplaced as boolean) ?? null,
+            crgaNoticeFlag:
+              (extraction?.crgaNoticeFlag as string) ?? null,
             pdfUrl: fetched.pdfUrl ?? null,
             pdfFileName: fetched.pdfFileName ?? null,
             error: rowError ?? null,

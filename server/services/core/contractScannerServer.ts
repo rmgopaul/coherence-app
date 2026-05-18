@@ -17,6 +17,9 @@ export type ContractExtraction = {
   recPrice: number | null;
   acSizeKw: number | null;
   dcSizeKw: number | null;
+  crgaNoticePresent: boolean;
+  crgaNoticeMisplaced: boolean;
+  crgaNoticeFlag: string | null;
 };
 
 type PositionedText = {
@@ -405,6 +408,51 @@ async function readPdfPages(data: Uint8Array): Promise<PdfPageData[]> {
   return pages;
 }
 
+const CRGA_NOTICE_PHRASE =
+  "notice of potential changes to rec price and payment schedule";
+
+function detectCrgaNotice(pages: PdfPageData[]): {
+  crgaNoticePresent: boolean;
+  crgaNoticeMisplaced: boolean;
+  crgaNoticeFlag: string | null;
+} {
+  if (pages.length === 0) {
+    return {
+      crgaNoticePresent: false,
+      crgaNoticeMisplaced: false,
+      crgaNoticeFlag:
+        "CRGA Notice of Potential Changes missing from contract stack",
+    };
+  }
+
+  const page1Text = pages[0].text.slice(0, 500).toLowerCase();
+  if (page1Text.includes(CRGA_NOTICE_PHRASE)) {
+    return {
+      crgaNoticePresent: true,
+      crgaNoticeMisplaced: false,
+      crgaNoticeFlag: null,
+    };
+  }
+
+  for (let i = 1; i < pages.length; i++) {
+    if (pages[i].text.toLowerCase().includes(CRGA_NOTICE_PHRASE)) {
+      return {
+        crgaNoticePresent: true,
+        crgaNoticeMisplaced: true,
+        crgaNoticeFlag:
+          "CRGA Notice present but not on page 1",
+      };
+    }
+  }
+
+  return {
+    crgaNoticePresent: false,
+    crgaNoticeMisplaced: false,
+    crgaNoticeFlag:
+      "CRGA Notice of Potential Changes missing from contract stack",
+  };
+}
+
 export async function extractContractDataFromPdfBuffer(data: Uint8Array, fileName: string): Promise<ContractExtraction> {
   const pages = await readPdfPages(data);
 
@@ -504,6 +552,9 @@ export async function extractContractDataFromPdfBuffer(data: Uint8Array, fileNam
     addressLineThreeRaw
   );
 
+  const { crgaNoticePresent, crgaNoticeMisplaced, crgaNoticeFlag } =
+    detectCrgaNotice(pages);
+
   return {
     fileName,
     ccAuthorizationCompleted,
@@ -521,5 +572,8 @@ export async function extractContractDataFromPdfBuffer(data: Uint8Array, fileNam
     recPrice,
     acSizeKw,
     dcSizeKw,
+    crgaNoticePresent,
+    crgaNoticeMisplaced,
+    crgaNoticeFlag,
   };
 }
