@@ -32,9 +32,20 @@ import {
 import type { DashboardData } from "../useDashboardData";
 import {
   calendarBriefSourceOptions,
+  clockifyBriefSourceOptions,
+  dailyBriefSourceOptions,
+  dockBriefSourceOptions,
+  driveBriefSourceOptions,
   gmailBriefSourceOptions,
+  googleBriefSourceOptions,
+  healthBriefSourceOptions,
+  newsBriefSourceOptions,
   sourceRefPatchFromPickerOption,
+  systemBriefSourceOptions,
+  todayPlanBriefSourceOptions,
   todoistBriefSourceOptions,
+  weatherBriefSourceOptions,
+  weeklyReviewBriefSourceOptions,
   type BriefSourcePickerOption,
 } from "./briefSourcePicker.helpers";
 import {
@@ -73,6 +84,9 @@ type BriefSourceListItem = {
   index: number;
   sourceRef: DailyBriefSourceRef;
 };
+type BriefSourcePickerOptionsBySource = Partial<
+  Record<DailyBriefSourceRef["source"], BriefSourcePickerOption[]>
+>;
 
 const briefSourceOptions: DailyBriefSourceRef["source"][] = Array.from(
   new Set([
@@ -81,11 +95,33 @@ const briefSourceOptions: DailyBriefSourceRef["source"][] = Array.from(
   ])
 );
 
+const briefSourceLabels: Record<DailyBriefSourceRef["source"], string> = {
+  calendar: "Calendar",
+  clockify: "Clockify",
+  daily_brief: "Daily brief",
+  dock: "Dock",
+  drive: "Drive",
+  gmail: "Gmail",
+  google: "Google",
+  health: "Health",
+  news: "News",
+  samsungHealth: "Samsung Health",
+  system: "System",
+  today_plan: "Today plan",
+  todoist: "Todoist",
+  weather: "Weather",
+  weekly_review: "Weekly review",
+  whoop: "WHOOP",
+};
+
 type DailyWorkflowPanelProps = {
   dateKey: string;
   commandCenter: DashboardData["commandCenter"]["data"];
   state: DashboardData["dailyState"];
   todoistTasksDueToday: DashboardData["tasks"]["dueToday"];
+  weather: DashboardData["weather"];
+  news: DashboardData["news"];
+  health: DashboardData["health"];
 };
 
 const commitmentStatuses: PersonalDashboardCommitment["status"][] = [
@@ -114,6 +150,9 @@ export function DailyWorkflowPanel({
   commandCenter,
   state,
   todoistTasksDueToday,
+  weather,
+  news,
+  health,
 }: DailyWorkflowPanelProps) {
   const utils = trpc.useUtils();
   const [draft, setDraft] = useState<DailyWorkflowDraft>(() =>
@@ -181,6 +220,18 @@ export function DailyWorkflowPanel({
   const hasCalendarBriefSource = draft.dailyBrief.sourceRefs.some(
     (sourceRef) => sourceRef.source === "calendar"
   );
+  const hasDockBriefSource = draft.dailyBrief.sourceRefs.some(
+    (sourceRef) => sourceRef.source === "dock"
+  );
+  const hasDriveBriefSource = draft.dailyBrief.sourceRefs.some(
+    (sourceRef) => sourceRef.source === "drive"
+  );
+  const hasClockifyBriefSource = draft.dailyBrief.sourceRefs.some(
+    (sourceRef) => sourceRef.source === "clockify"
+  );
+  const hasWeeklyReviewBriefSource = draft.dailyBrief.sourceRefs.some(
+    (sourceRef) => sourceRef.source === "weekly_review"
+  );
   const recentGmailQuery = trpc.google.getRecentGmailMessages.useQuery(
     { maxResults: 100 },
     {
@@ -197,13 +248,102 @@ export function DailyWorkflowPanel({
       refetchOnWindowFocus: false,
     }
   );
-  const briefSourcePickerOptions = useMemo(
-    () => ({
-      todoist: todoistBriefSourceOptions(todoistTasksDueToday),
-      gmail: gmailBriefSourceOptions(recentGmailQuery.data ?? []),
-      calendar: calendarBriefSourceOptions(calendarSourceQuery.data ?? []),
-    }),
-    [calendarSourceQuery.data, recentGmailQuery.data, todoistTasksDueToday]
+  const dockSourceQuery = trpc.dock.list.useQuery(undefined, {
+    enabled: hasDockBriefSource,
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+  });
+  const driveSourceQuery = trpc.google.getDriveFiles.useQuery(undefined, {
+    enabled: hasDriveBriefSource,
+    staleTime: 5 * 60_000,
+    refetchOnWindowFocus: false,
+    retry: false,
+  });
+  const weeklyReviewSourceQuery = trpc.weeklyReview.getLatest.useQuery(
+    undefined,
+    {
+      enabled: hasWeeklyReviewBriefSource,
+      staleTime: 5 * 60_000,
+      refetchOnWindowFocus: false,
+    }
+  );
+  const clockifyStatusQuery = trpc.clockify.getStatus.useQuery(undefined, {
+    enabled: hasClockifyBriefSource,
+    staleTime: 5 * 60_000,
+    refetchOnWindowFocus: false,
+    retry: false,
+  });
+  const isClockifyConnected = Boolean(clockifyStatusQuery.data?.connected);
+  const clockifyCurrentQuery = trpc.clockify.getCurrentEntry.useQuery(
+    undefined,
+    {
+      enabled: hasClockifyBriefSource && isClockifyConnected,
+      staleTime: 30_000,
+      refetchOnWindowFocus: false,
+      retry: false,
+    }
+  );
+  const clockifyRecentQuery = trpc.clockify.getRecentEntries.useQuery(
+    { limit: 20 },
+    {
+      enabled: hasClockifyBriefSource && isClockifyConnected,
+      staleTime: 60_000,
+      refetchOnWindowFocus: false,
+      retry: false,
+    }
+  );
+  const briefSourcePickerOptions = useMemo<BriefSourcePickerOptionsBySource>(
+    () => {
+      const healthOptions = healthBriefSourceOptions(
+        health.whoop,
+        commandCenter
+      );
+      return {
+        todoist: todoistBriefSourceOptions(todoistTasksDueToday),
+        gmail: gmailBriefSourceOptions(recentGmailQuery.data ?? []),
+        calendar: calendarBriefSourceOptions(calendarSourceQuery.data ?? []),
+        dock: dockBriefSourceOptions(dockSourceQuery.data ?? []),
+        drive: driveBriefSourceOptions(driveSourceQuery.data ?? []),
+        daily_brief: dailyBriefSourceOptions(draft.dailyBrief, dateKey),
+        today_plan: todayPlanBriefSourceOptions(draft.todayPlan),
+        weekly_review: weeklyReviewBriefSourceOptions(
+          weeklyReviewSourceQuery.data,
+          commandCenter
+        ),
+        system: systemBriefSourceOptions(commandCenter),
+        google: googleBriefSourceOptions(commandCenter),
+        health: healthOptions.filter((option) => option.source === "health"),
+        whoop: healthOptions.filter((option) => option.source === "whoop"),
+        samsungHealth: healthOptions.filter(
+          (option) => option.source === "samsungHealth"
+        ),
+        weather: weatherBriefSourceOptions(weather),
+        news: newsBriefSourceOptions(news),
+        clockify: clockifyBriefSourceOptions(
+          clockifyStatusQuery.data,
+          clockifyCurrentQuery.data,
+          clockifyRecentQuery.data ?? []
+        ),
+      };
+    },
+    [
+      calendarSourceQuery.data,
+      clockifyCurrentQuery.data,
+      clockifyRecentQuery.data,
+      clockifyStatusQuery.data,
+      commandCenter,
+      dateKey,
+      dockSourceQuery.data,
+      draft.dailyBrief,
+      draft.todayPlan,
+      driveSourceQuery.data,
+      health.whoop,
+      news,
+      recentGmailQuery.data,
+      todoistTasksDueToday,
+      weather,
+      weeklyReviewSourceQuery.data,
+    ]
   );
   const canCompleteCommitments = draft.commitments.some(
     (item) => item.status !== "done"
@@ -381,19 +521,22 @@ export function DailyWorkflowPanel({
   function pickerOptionsForSource(
     source: DailyBriefSourceRef["source"]
   ): BriefSourcePickerOption[] | null {
-    if (
-      source === "todoist" ||
-      source === "gmail" ||
-      source === "calendar"
-    ) {
-      return briefSourcePickerOptions[source];
-    }
-    return null;
+    return briefSourcePickerOptions[source] ?? null;
   }
 
   function pickerLoadingForSource(source: DailyBriefSourceRef["source"]) {
     if (source === "gmail") return recentGmailQuery.isLoading;
     if (source === "calendar") return calendarSourceQuery.isLoading;
+    if (source === "dock") return dockSourceQuery.isLoading;
+    if (source === "drive") return driveSourceQuery.isLoading;
+    if (source === "weekly_review") return weeklyReviewSourceQuery.isLoading;
+    if (source === "clockify") {
+      return (
+        clockifyStatusQuery.isLoading ||
+        clockifyCurrentQuery.isLoading ||
+        clockifyRecentQuery.isLoading
+      );
+    }
     return false;
   }
 
@@ -443,7 +586,7 @@ export function DailyWorkflowPanel({
         >
           {briefSourceOptions.map((source) => (
             <option key={source} value={source}>
-              {source}
+              {briefSourceLabels[source]}
             </option>
           ))}
         </select>
@@ -1358,8 +1501,8 @@ function BriefSourcePickerFields({
   const placeholder = loading
     ? "Loading sources..."
     : options.length > 0
-      ? `Type to select ${item.sourceRef.source} source`
-      : `No ${item.sourceRef.source} sources available`;
+      ? `Type to select ${briefSourceLabels[item.sourceRef.source]} source`
+      : `No ${briefSourceLabels[item.sourceRef.source]} sources available`;
 
   useEffect(() => {
     setQuery(pickerValue);
@@ -1401,7 +1544,7 @@ function BriefSourcePickerFields({
         }}
         onBlur={(event) => applyTypedSelection(event.target.value)}
         disabled={loading}
-        aria-label={`Select ${item.sourceRef.source} source`}
+        aria-label={`Select ${briefSourceLabels[item.sourceRef.source]} source`}
         placeholder={placeholder}
       />
       <datalist id={listId}>
