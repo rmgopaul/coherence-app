@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+  <uses-permission android:name="android.permission.INTERNET" />
+
+  <!--
+    Samsung Health Data SDK package visibility. Android 11+ requires
+    explicit <queries> entries to resolve / bind to the Samsung
+    Health service. The SDK's bundled AndroidManifest.xml already
+    declares com.sec.android.app.shealth + com.samsung.android.wear.shealth
+    and they are merged in automatically; they are repeated here so
+    the requirement is visible in this module's own manifest (and so
+    a future manifest-merger change can't silently drop them). The
+    SDK talks to the phone Samsung Health app's bound service —
+    there is NO android.permission.health.* permission flow here
+    (that is Health Connect; this module uses
+    HealthDataStore.requestPermissions() instead).
+  -->
+  <queries>
+    <package android:name="com.sec.android.app.shealth" />
+    <package android:name="com.samsung.android.wear.shealth" />
+  </queries>
+
+  <application
+    android:name=".SamsungHealthApp"
+    android:allowBackup="true"
+    android:icon="@android:drawable/ic_menu_today"
+    android:label="@string/app_name"
+    android:supportsRtl="true"
+    android:theme="@style/Theme.SamsungHealthCompanion">
+
+    <activity
+      android:name=".MainActivity"
+      android:exported="true">
+      <intent-filter>
+        <action android:name="android.intent.action.MAIN" />
+        <category android:name="android.intent.category.LAUNCHER" />
+      </intent-filter>
+    </activity>
+
+  </application>
+
+</manifest>

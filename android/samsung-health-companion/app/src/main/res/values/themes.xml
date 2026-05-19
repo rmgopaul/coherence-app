@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <!--
+    Minimal Material3 theme. The companion has a single status
+    screen rendered with Compose; the XML theme only needs to be a
+    valid Material3 parent so the host Activity inflates.
+  -->
+  <style name="Theme.SamsungHealthCompanion" parent="android:Theme.Material.Light.NoActionBar" />
+</resources>
