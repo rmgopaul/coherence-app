@@ -108,6 +108,28 @@ function toNullableManualScore(value: unknown): number | null {
   return null;
 }
 
+/**
+ * Precedence B (2026-05-19 product decision): an SDK-read Samsung
+ * score from the inbound webhook payload WINS over a manual entry;
+ * the manual entry is the fallback only when the SDK value is
+ * absent. "Absent" === `null` OR `<= 0`, because the Android
+ * `SamsungHealthPayload` model defaults both score fields to `0.0`
+ * (an unmeasured day arrives as `0`, never `null`/omitted), and a
+ * real Samsung sleep/energy score is never `0`. This matches the
+ * `incomingValue === null || incomingValue <= 0` "missing" test the
+ * degraded-preservation block already applies to these two keys.
+ * Both args are pre-validated/clamped via `toNullableManualScore`.
+ */
+export function pickScoreWithPayloadPrecedence(
+  payloadScore: number | null,
+  manualScore: number | null
+): number | null {
+  if (payloadScore !== null && payloadScore > 0) {
+    return payloadScore;
+  }
+  return manualScore;
+}
+
 function parseSamsungManualScores(metadata: string | null | undefined): SamsungManualScores | null {
   if (!metadata) return null;
   try {
@@ -125,7 +147,7 @@ function parseSamsungManualScores(metadata: string | null | undefined): SamsungM
   }
 }
 
-function buildSamsungMetadata(
+export function buildSamsungMetadata(
   payload: unknown,
   receivedAt: string,
   manualScores?: SamsungManualScores | null,
@@ -155,18 +177,33 @@ function buildSamsungMetadata(
     activeMinutes: asNumber(activity.activeMinutes),
     caloriesTotalKcal: asNumber(activity.caloriesTotalKcal),
     sleepTotalMinutes: asNumber(sleep.totalSleepMinutes),
-    // Manual scores only — no heuristic fallback. The Android mapper's
-    // `deriveSleepScore` produces a decimal (e.g. 82.4) computed from
-    // efficiency + deep/REM ratio + duration. Samsung's actual UI score
-    // is an integer the user might enter manually; falling back to the
-    // heuristic stamps decimals onto historical rows the user never
-    // entered, which looks like garbage in the dashboard. If no manual
-    // score exists for the date, leave the field null. `cardio.recoveryScore`
-    // is never populated anyway (the Android `CardioMetrics` data class
-    // has no recoveryScore field), so the energyScore line was already
-    // effectively `?? null`.
-    sleepScore: manualScores?.sleepScore ?? null,
-    energyScore: manualScores?.energyScore ?? null,
+    // 2026-05-19 — precedence B (product decision): the Samsung
+    // Health Data SDK companion (`android/samsung-health-companion`)
+    // reads the REAL Samsung UI scores —
+    // `DataType.SleepType.SLEEP_SCORE` (Int 0-100) and
+    // `DataType.EnergyScoreType.ENERGY_SCORE` (Float, rounded
+    // Android-side) — and ships them as `payload.sleep.sleepScore` /
+    // `payload.cardio.energyScore`. The SDK value WINS; a manual
+    // entry is only the fallback when the SDK value is absent.
+    //
+    // Critical: the Android `SamsungHealthPayload` model defaults
+    // BOTH fields to `0.0`, so an absent score arrives as `0`, not
+    // `null`/omitted. A naïve `?? manual` would treat `0` as present
+    // and clobber a real manual entry with garbage. We therefore
+    // gate on `> 0` (a real Samsung sleep/energy score is never 0 —
+    // you don't get a 0 sleep score on a night you slept). This is
+    // the SAME "<= 0 means absent" convention the degraded-
+    // preservation block below already uses for these two keys.
+    // `toNullableManualScore` reused for finite-check + 0-100 clamp,
+    // identical validation to the manual path.
+    sleepScore: pickScoreWithPayloadPrecedence(
+      toNullableManualScore(sleep.sleepScore),
+      manualScores?.sleepScore ?? null
+    ),
+    energyScore: pickScoreWithPayloadPrecedence(
+      toNullableManualScore(cardio.energyScore),
+      manualScores?.energyScore ?? null
+    ),
     restingHeartRateBpm: asNumber(cardio.restingHeartRateBpm),
     hrvRmssdMs: asNumber(cardio.hrvRmssdMs),
     spo2AvgPercent: asNumber(oxygenAndTemperature.spo2AvgPercent),
