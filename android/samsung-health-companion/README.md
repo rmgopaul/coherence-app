@@ -49,13 +49,22 @@ JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" \
 `SAMSUNG_HEALTH_WEBHOOK_URL` keys as the healthconnect-companion
 module, so one file configures both.
 
-## Server-side follow-up (NOT done in this module's PR)
+## Server-side handling (DONE — #625 + #626)
 
-`server/oauth-routes.ts` `buildSamsungMetadata()` currently derives
-`summary.sleepScore` / `summary.energyScore` ONLY from the
-integration's manual-score slot, never from the inbound payload.
-Until the server reads `payload.sleep.sleepScore` and
-`payload.cardio.energyScore`, the SDK-read values are stored in
-`samsungSyncPayloads` but do not flow into the
-`dailyHealthMetrics.samsung{Sleep,Energy}Score` columns. See the PR
-description for the exact change.
+`server/oauth-routes.ts` `buildSamsungMetadata()` consumes the
+inbound payload scores. `pickScoreWithPayloadPrecedence()` uses
+`payload.sleep.sleepScore` / `payload.cardio.energyScore` when they
+are present and `> 0` (precedence B — the SDK-read value WINS over
+the integration's manual-score slot; a manual entry is only the
+fallback when the SDK value is absent). The resolved scores flow
+into `dailyHealthMetrics.samsung{Sleep,Energy}Score` (#625).
+
+This companion is a deliberately *scores-only* source: it shares
+the `samsung-health` integration + the day's `dailyHealthMetrics`
+row with the Health Connect companion, which writes the rich data
+(steps, sleep minutes, SpO2, …). The server therefore treats a
+payload tagged `source.provider = "samsung-health-data-sdk"` as
+authoritative ONLY for the two scores — every other field falls
+back to the same-date previous summary when the incoming value is
+absent/≤0, so an SDK sync never clobbers the Health Connect
+companion's data (#626).
