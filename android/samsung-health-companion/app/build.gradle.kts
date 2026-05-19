@@ -5,6 +5,11 @@ plugins {
   id("org.jetbrains.kotlin.android")
   id("org.jetbrains.kotlin.plugin.serialization")
   id("org.jetbrains.kotlin.plugin.compose")
+  // Samsung Health Data SDK ReadDataRequest builders are @Parcelize;
+  // without this the read crashes at runtime (NoClassDefFoundError:
+  // kotlinx/parcelize/Parceler). Root cause of the 2026-05-19
+  // smoke-test "sleepScore=0.0 energyScore=0.0" silent fallback.
+  id("org.jetbrains.kotlin.plugin.parcelize")
 }
 
 // Load local.properties so command-line `./gradlew` builds get the
@@ -116,6 +121,22 @@ dependencies {
   // Samsung Health Data SDK (local .aar in app/libs/, resolved via
   // the flatDir repo declared in settings.gradle.kts).
   implementation("com.samsung.android.sdk.health.data:samsung-health-data-api-1.1.0@aar")
+  // 2026-05-19 — REQUIRED transitive runtime deps of the Samsung
+  // .aar. It ships WITHOUT a POM (flatDir/@aar), so its runtime
+  // dependencies are NOT resolved automatically; the consumer must
+  // declare them or the SDK's internal classes fail to load at
+  // runtime with NoClassDefFoundError (app still compiles clean).
+  // A full `javap` scan of the .aar's bytecode shows it references
+  // exactly two non-platform external packages: com.google.gson
+  // (below) and org.xmlpull.v1 (provided by the Android platform —
+  // no dep needed). The kotlin-parcelize plugin (root + app
+  // `plugins {}`) covers its @Parcelize ReadDataRequest builders.
+  // Found via the Galaxy Z Fold7 smoke test: missing gson →
+  // `NoClassDefFoundError: com/google/gson/GsonBuilder` in
+  // com.samsung.android.sdk.health.data.e → silent sleepScore=0.0
+  // energyScore=0.0 fallback (the #625 `>0` gate absorbed it
+  // safely; no garbage reached dailyHealthMetrics).
+  implementation("com.google.code.gson:gson:2.11.0")
 
   // Coroutines
   implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.1")
