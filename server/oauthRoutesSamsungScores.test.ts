@@ -108,3 +108,110 @@ describe("buildSamsungMetadata — SDK payload scores flow into the summary", ()
     expect(summary.energyScore).toBe(55);
   });
 });
+
+describe("buildSamsungMetadata — scores-only SDK source must not clobber Health Connect data", () => {
+  const RECEIVED_AT = "2026-05-19T12:00:00.000Z";
+
+  // The real Samsung Health Data SDK companion payload: source
+  // tagged, the two scores present, and EVERYTHING else empty/0
+  // (the Android model defaults steps/sleep-minutes/spo2 to 0).
+  const scoresOnlyPayload = {
+    date: "2026-05-19",
+    capturedAtIso: "2026-05-19T13:47:00.000Z",
+    timezone: "America/Chicago",
+    source: { provider: "samsung-health-data-sdk" },
+    activity: { steps: 0 },
+    sleep: { totalSleepMinutes: 0, sleepScore: 0 },
+    cardio: { energyScore: 91 },
+  };
+
+  // What the Health Connect companion wrote earlier the same day.
+  const richPreviousSummary = {
+    date: "2026-05-19",
+    steps: 9214,
+    sleepTotalMinutes: 437,
+    spo2AvgPercent: 96,
+    restingHeartRateBpm: 51,
+    sleepScore: 0,
+    energyScore: 0,
+  };
+
+  const summaryOf = (metadataJson: string) =>
+    JSON.parse(metadataJson).summary as Record<string, unknown>;
+
+  it("preserves HC steps/sleep/spo2 while still writing the SDK Energy Score", () => {
+    const meta = buildSamsungMetadata(scoresOnlyPayload, RECEIVED_AT, null, {
+      previousSummary: richPreviousSummary,
+      scoresOnlySource: true,
+    });
+    const summary = summaryOf(meta);
+    // Rich fields the SDK companion does NOT read → preserved.
+    expect(summary.steps).toBe(9214);
+    expect(summary.sleepTotalMinutes).toBe(437);
+    expect(summary.spo2AvgPercent).toBe(96);
+    expect(summary.restingHeartRateBpm).toBe(51);
+    // The score the SDK companion DID read → applied (not preserved).
+    expect(summary.energyScore).toBe(91);
+  });
+
+  it("preserves the HC Sleep Score (78.3) when the SDK Sleep read is empty, while Energy 91 still wins", () => {
+    // The exact 2026-05-19 report: webapp showed Sleep Score 78.3
+    // (Health Connect companion); the SDK sync's empty Sleep read
+    // must NOT overwrite it to null/N/A, but the SDK's real Energy
+    // Score (91) must still replace the stale 0.
+    const meta = buildSamsungMetadata(
+      scoresOnlyPayload,
+      RECEIVED_AT,
+      null,
+      {
+        previousSummary: { ...richPreviousSummary, sleepScore: 78.3 },
+        scoresOnlySource: true,
+      },
+    );
+    const summary = summaryOf(meta);
+    expect(summary.sleepScore).toBe(78.3); // preserved, not clobbered
+    expect(summary.energyScore).toBe(91); // real SDK score wins
+  });
+
+  it("without the scoresOnlySource flag the empty payload still overwrites (gate is load-bearing)", () => {
+    const meta = buildSamsungMetadata(scoresOnlyPayload, RECEIVED_AT, null, {
+      previousSummary: richPreviousSummary,
+      // scoresOnlySource omitted → legacy behaviour, no preserve.
+    });
+    const summary = summaryOf(meta);
+    expect(summary.steps).toBe(0);
+    // payload sends totalSleepMinutes:0 → asNumber(0)=0 (the
+    // clobber: HC's 437 is gone without the gate).
+    expect(summary.sleepTotalMinutes).toBe(0);
+    expect(summary.energyScore).toBe(91);
+  });
+
+  it("composes with preservePreviousIfDegraded: a degraded scores-only payload preserves both subsets idempotently", () => {
+    // Locks the two-block interaction: preservePreviousIfDegraded
+    // (subset) runs first, then scoresOnlySource (superset). Both
+    // use the same idempotent predicate; the second must not undo
+    // or double-apply the first.
+    const meta = buildSamsungMetadata(scoresOnlyPayload, RECEIVED_AT, null, {
+      previousSummary: {
+        ...richPreviousSummary,
+        sleepScore: 80,
+        steps: 9000,
+      },
+      preservePreviousIfDegraded: true,
+      scoresOnlySource: true,
+    });
+    const summary = summaryOf(meta);
+    expect(summary.sleepScore).toBe(80); // preserved by both blocks, consistently
+    expect(summary.steps).toBe(9000); // only scoresOnly covers steps
+    expect(summary.energyScore).toBe(91); // real SDK score still wins
+  });
+
+  it("scoresOnlySource with no previousSummary is a no-op (no crash, scores still flow)", () => {
+    const meta = buildSamsungMetadata(scoresOnlyPayload, RECEIVED_AT, null, {
+      scoresOnlySource: true,
+    });
+    const summary = summaryOf(meta);
+    expect(summary.energyScore).toBe(91);
+    expect(summary.steps).toBe(0);
+  });
+});

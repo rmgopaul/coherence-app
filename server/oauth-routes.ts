@@ -154,6 +154,27 @@ export function buildSamsungMetadata(
   options?: {
     previousSummary?: Record<string, unknown>;
     preservePreviousIfDegraded?: boolean;
+    /**
+     * 2026-05-19 — the Samsung Health Data SDK companion
+     * (`source.provider === "samsung-health-data-sdk"`) is a
+     * deliberately NARROW source: it reads ONLY the two
+     * proprietary scores (Sleep Score + Energy Score) and ships
+     * an otherwise-empty payload (steps/sleep-minutes/spo2/sample
+     * counts all 0/absent — the Android model defaults them).
+     *
+     * It shares the `samsung-health` integration + the day's
+     * `dailyHealthMetrics` row with the Health Connect companion,
+     * which writes the RICH data. Without this flag the narrow SDK
+     * payload's 0/empty fields overwrite Health Connect's good
+     * Steps/Sleep/SpO2 on every "Sync now" tap (the
+     * 2026-05-19 "it zeroes out other data and only writes energy"
+     * report). When set, the SDK source is authoritative ONLY for
+     * `sleepScore`/`energyScore`; every other field falls back to
+     * the same-date `previousSummary` instead of being clobbered.
+     * Distinct from `preservePreviousIfDegraded` (a successful
+     * narrow read is NOT "degraded").
+     */
+    scoresOnlySource?: boolean;
   }
 ): string {
   const root = asRecord(payload);
@@ -248,6 +269,64 @@ export function buildSamsungMetadata(
       const incomingValue = asNumber(summary[key]);
       const previousValue = asNumber(previousSummary[key]);
       if (previousValue !== null && (incomingValue === null || incomingValue <= 0)) {
+        summary[key] = previousValue;
+      }
+    }
+  }
+
+  // Narrow scores-only source (Samsung Health Data SDK companion):
+  // every field — INCLUDING sleepScore/energyScore — defers to the
+  // same-date previousSummary when the incoming value is missing or
+  // <= 0, so the Health Connect companion's data is never clobbered
+  // by the SDK companion's intentionally-empty payload. Runs
+  // regardless of `degradedSync` (a successful narrow read is not
+  // "degraded").
+  //
+  // sleepScore/energyScore ARE included (2026-05-19 fix): the SDK is
+  // authoritative for a score only when it actually READ one. When
+  // its read is empty (e.g. Sleep Score read returns no point), the
+  // score resolved to null above via pickScoreWithPayloadPrecedence
+  // and WITHOUT this would overwrite the HC companion's real value
+  // (the reported "webapp showed 78.3, SDK sync overwrote it to
+  // N/A"). The `incoming <= 0` guard means a real SDK score (e.g.
+  // Energy 91) still wins — only an absent SDK score falls back.
+  if (options?.scoresOnlySource && options.previousSummary) {
+    const previousSummary = options.previousSummary;
+    // NOTE: intentionally a near-superset of
+    // `preserveWhenIncomingMissingOrZero` above (the degraded list),
+    // not the same constant — degraded preserves a sleep/HR-centric
+    // subset; this scores-only list preserves EVERY field the SDK
+    // companion does not author. If you add a metric field, decide
+    // deliberately whether it belongs in one list, both, or neither;
+    // they are meant to differ.
+    const preserveForScoresOnlySource = [
+      "steps",
+      "activeMinutes",
+      "caloriesTotalKcal",
+      "sleepTotalMinutes",
+      "sleepScore",
+      "energyScore",
+      "restingHeartRateBpm",
+      "hrvRmssdMs",
+      "spo2AvgPercent",
+      "weightKg",
+      "caloriesIntakeKcal",
+      "waterMl",
+      "workoutsCount",
+      "sleepSessionsCount",
+      "sleepStageSamplesCount",
+      "heartRateSamplesCount",
+      "spo2SamplesCount",
+      "bloodPressureSamplesCount",
+      "glucoseSamplesCount",
+    ];
+    for (const key of preserveForScoresOnlySource) {
+      const incomingValue = asNumber(summary[key]);
+      const previousValue = asNumber(previousSummary[key]);
+      if (
+        previousValue !== null &&
+        (incomingValue === null || incomingValue <= 0)
+      ) {
         summary[key] = previousValue;
       }
     }
@@ -628,9 +707,20 @@ async function ingestSamsungPayload(
   // null too (see upsertSamsungDailyMetric — manual columns are not
   // null-preserved).
   const manualScoresForThisPayload = sameDateAsExisting ? manualScores : null;
+  // The Samsung Health Data SDK companion tags its payload
+  // `source.provider = "samsung-health-data-sdk"` and carries ONLY
+  // the two proprietary scores. Treat it as a scores-only source so
+  // its empty Steps/Sleep/SpO2 don't clobber the Health Connect
+  // companion's same-day data. Gated on `sameDateAsExisting`:
+  // preserving a *different* date's rich values onto today would be
+  // the 2026-04-25 cross-date stamping bug in another guise.
+  const isScoresOnlySdkSource =
+    asString(asRecord(payloadRecord.source).provider) ===
+    "samsung-health-data-sdk";
   const metadata = buildSamsungMetadata(payloadRecord, receivedAt, manualScoresForThisPayload, {
     previousSummary: existingSummary,
     preservePreviousIfDegraded: degradedSync && sameDateAsExisting,
+    scoresOnlySource: isScoresOnlySdkSource && sameDateAsExisting,
   });
 
   if (options.updateLiveSummary) {

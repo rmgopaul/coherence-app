@@ -152,7 +152,21 @@ class SamsungHealthReader(private val appContext: Context) {
     attempted += DataTypes.ENERGY_SCORE.name
     if (granted.any { it.dataType.name == DataTypes.ENERGY_SCORE.name }) {
       runCatching {
-        readEnergyScore(date, date)
+        // ENERGY_SCORE filters by `LocalDateFilter`, which is a
+        // HALF-OPEN `[start, end)` range with an EXCLUSIVE end.
+        // Verified from the SDK's decompiled
+        // `LocalDateFilter.Companion.of(start, end)`: it only
+        // rejects `start > end`; `start == end` is accepted and
+        // builds the filter with ctor flags
+        // (isInclusiveStart=true, isInclusiveEnd=false). So
+        // `of(date, date)` is an EMPTY window — it constructs
+        // cleanly, then `readData` rejects the empty query with
+        // ERR_INVALID_INPUT (1001). That was the silent
+        // `energyScore=0.0` root cause on the 2026-05-19 Galaxy
+        // Z Fold7 smoke test (`readData error callback (1001)`).
+        // Pass the next day as the exclusive upper bound so the
+        // window is exactly `[date, date+1)` = the single day.
+        readEnergyScore(date, date.plusDays(1))
       }.onSuccess { value ->
         if (value != null) {
           // SDK Field is Float; server stores a rounded Int
@@ -206,14 +220,54 @@ class SamsungHealthReader(private val appContext: Context) {
       .build()
     val response = store.readData(request)
     val points: List<HealthDataPoint> = response.dataList
-    // Last point in the window is the most recent session.
-    return points.lastOrNull()
+    // 2026-05-19 diagnostic — the read returns SUCCESS but the
+    // webhook lands sleepScore=0 even though the Samsung Health app
+    // shows a real score (~90). Dump the raw SDK response shape so
+    // the next on-device sync tells us the actual cause (0 points vs
+    // SLEEP_SCORE null on the point vs a window/anchor mismatch)
+    // instead of guessing a reader rewrite. Behaviour unchanged.
+    Log.i(TAG, "readSleepScore window=[$start, $end) points=${points.size}")
+    points.forEachIndexed { i, p ->
+      // -1 is a log-only null sentinel (so "no score" is
+      // unambiguous in logcat). The SELECTION below intentionally
+      // uses getValue(...) != null, not this sentinel.
+      val score = p.getValueOrDefault(DataType.SleepType.SLEEP_SCORE, -1)
+      val sessions = runCatching {
+        p.getValue(DataType.SleepType.SESSIONS)?.size
+      }.getOrNull()
+      Log.i(
+        TAG,
+        "  sleep[$i] start=${p.startTime} end=${p.endTime} " +
+          "SLEEP_SCORE=$score sessions=$sessions",
+      )
+    }
+    // Samsung returns MULTIPLE sleep points for a single night: the
+    // scored aggregate AND duplicate/secondary-source detail records
+    // whose SLEEP_SCORE is null. `points.lastOrNull()` grabbed
+    // whichever happened to be last — the 2026-05-19 Galaxy Z Fold7
+    // diagnostic showed sleep[0] SLEEP_SCORE=90, sleep[1]
+    // SLEEP_SCORE=null, and the old code returned sleep[1] → the
+    // silent "sleepScore: no data" despite the app showing 90.
+    // Pick the most-recent point that actually carries a non-null
+    // score (maxBy startTime over the scored points), not just the
+    // last point in the list.
+    return points
+      .filter { it.getValue(DataType.SleepType.SLEEP_SCORE) != null }
+      .maxByOrNull { it.startTime }
       ?.getValue(DataType.SleepType.SLEEP_SCORE)
   }
 
   /**
-   * Reads the latest Energy Score in the [from, to] local-date
-   * range. `DataTypes.ENERGY_SCORE` exposes a
+   * Reads the latest Energy Score in the **half-open** `[from, to)`
+   * local-date range — `to` is EXCLUSIVE (this mirrors the SDK's
+   * own `LocalDateFilter.of(start, end)`, whose decompiled
+   * constructor flags are isInclusiveStart=true / isInclusiveEnd=
+   * false). Callers reading a single day `d` must pass
+   * `readEnergyScore(d, d.plusDays(1))`; `readEnergyScore(d, d)` is
+   * an empty window and `readData` rejects it with
+   * ERR_INVALID_INPUT (1001).
+   *
+   * `DataTypes.ENERGY_SCORE` exposes a
    * `ReadDataRequest.LocalDateBuilder<HealthDataPoint>`, filtered by
    * `LocalDateFilter`. `EnergyScoreType.ENERGY_SCORE` is
    * `Field<Float>`.
