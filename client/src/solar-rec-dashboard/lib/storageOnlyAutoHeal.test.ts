@@ -68,6 +68,26 @@ describe("isStorageOnlySummary", () => {
     ).toBe(false);
   });
 
+  it("returns false when populationStatus is 'failed' even with cloudStatus 'synced' + bytes (durable auto-heal stop)", () => {
+    // The 2026-05-19 server-side fix: `getDatasetSummariesAll`
+    // reports populationStatus "failed" (not "missing") when the
+    // most recent solarRecImportBatches row terminally failed and
+    // there's no active version — e.g. a wrong CSV that can never
+    // pass header validation. The classifier MUST return false for
+    // that shape so the storage-only auto-heal stops retrying
+    // across page reloads (the client de-dupe is session-only;
+    // populationStatus is the durable, server-derived signal).
+    expect(
+      isStorageOnlySummary(
+        makeSummary({
+          cloudStatus: "synced",
+          populationStatus: "failed",
+          byteCount: 4_051_967,
+        })
+      )
+    ).toBe(false);
+  });
+
   it("returns false when there's no cloud blob at all", () => {
     expect(
       isStorageOnlySummary(

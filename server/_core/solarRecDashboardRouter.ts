@@ -12,6 +12,7 @@ import {
 } from "../services/solar/scheduleBApplySemaphore";
 import {
   DATASETS_WITH_RAW_ROW,
+  DATASET_KEYS,
   type DatasetKey,
 } from "../../shared/datasetUpload.helpers";
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
@@ -5045,6 +5046,49 @@ export const solarRecDashboardRouter = t.router({
     }),
 
   /**
+   * Fully clear a dataset's cloud footprint (every
+   * `solarRecDashboardStorage` chunk + the `solarRecDatasetSyncState`
+   * row + the `solarRecActiveDatasetVersions` pin) for the caller's
+   * scope. The durable, self-serve fix for the 2026-05-19 trap: a
+   * wrong/invalid CSV uploaded to a dataset slot leaves a blob that
+   * can never pass header validation, so `srDs*` rows never populate
+   * and the storage-only auto-heal retries it on every dashboard
+   * load. Removing the blob returns the slot to "not uploaded" and
+   * stops the loop at the source. Failed `solarRecImportBatches`
+   * history is intentionally retained (harmless audit trail).
+   *
+   * `edit` permission — destructive, scope-keyed write. The
+   * `z.enum(DATASET_KEYS)` input rejects unknown keys before the DB
+   * helper's own `[A-Za-z0-9]+` guard, so the prefix LIKE match can
+   * never be widened.
+   */
+  clearDatasetCloudStorage: dashboardProcedure(
+    "solar-rec-dashboard",
+    "edit"
+  )
+    .input(z.object({ datasetKey: z.enum(DATASET_KEYS) }))
+    .mutation(async ({ ctx, input }) => {
+      const { clearSolarRecDatasetCloudStorage } = await import(
+        "../db/preferences"
+      );
+      const result = await clearSolarRecDatasetCloudStorage(
+        ctx.userId,
+        input.datasetKey
+      );
+      // eslint-disable-next-line no-console
+      console.info(
+        `[solar-rec] clearDatasetCloudStorage user=${ctx.userId} ` +
+          `key=${input.datasetKey} storage=${result.storageRowsDeleted} ` +
+          `sync=${result.syncStateRowsDeleted} ` +
+          `activeVersion=${result.activeVersionRowsDeleted}`
+      );
+      return {
+        ...result,
+        _runnerVersion: "clear-dataset-cloud-storage-v1",
+      };
+    }),
+
+  /**
    * Snapshot-log raw persistence diagnostic (Task 5.15 PR-B).
    *
    * Returns the main `snapshot_logs_v1` row's payload length plus
@@ -5795,6 +5839,14 @@ export const solarRecDashboardRouter = t.router({
 
       const activeVersions = new Map<string, ActiveVersion>();
       const uploadSourcesByDataset = new Map<string, UploadSourceSummary[]>();
+      // Dataset keys whose MOST RECENT import batch terminally
+      // failed (e.g. a wrong CSV that can never pass header
+      // validation). Used below to report populationStatus
+      // "failed" instead of "missing" so the client's storage-only
+      // auto-heal stops retrying it on every page load. Server-
+      // derived from `solarRecImportBatches`, so it survives
+      // reloads (the client de-dupe is session-only).
+      const latestBatchFailedKeys = new Set<string>();
       if (db) {
         const rows = await db
           .select({
@@ -5831,6 +5883,30 @@ export const solarRecDashboardRouter = t.router({
             uploadFileName: r.uploadFileName ?? null,
             uploadCompletedAt: r.uploadCompletedAt ?? null,
           });
+        }
+
+        // Latest import batch per dataset for this scope. Newest
+        // first; the first row seen per datasetKey is the latest.
+        // 3 narrow columns, scope-filtered — internal computation,
+        // never returned on the wire. A dataset with an active
+        // version is unaffected (the derivation only consults this
+        // Set when there's no active batch).
+        const latestBatchRows = await db
+          .select({
+            datasetKey: solarRecImportBatches.datasetKey,
+            status: solarRecImportBatches.status,
+            createdAt: solarRecImportBatches.createdAt,
+          })
+          .from(solarRecImportBatches)
+          .where(eq(solarRecImportBatches.scopeId, scopeId))
+          .orderBy(desc(solarRecImportBatches.createdAt));
+        const seenBatchDatasetKeys = new Set<string>();
+        for (const row of latestBatchRows) {
+          if (seenBatchDatasetKeys.has(row.datasetKey)) continue;
+          seenBatchDatasetKeys.add(row.datasetKey);
+          if (row.status === "failed") {
+            latestBatchFailedKeys.add(row.datasetKey);
+          }
         }
 
         const appendUploadRows = await db
@@ -5987,7 +6063,20 @@ export const solarRecDashboardRouter = t.router({
         if (cloudStatus === "failed") {
           populationStatus = "failed";
         } else if (!activeBatch) {
-          populationStatus = "missing";
+          // No active batch. If the most recent ingest attempt for
+          // this dataset terminally failed (e.g. a wrong CSV that
+          // can never pass header validation), report "failed" —
+          // NOT "missing". "missing" + cloudStatus "synced" makes
+          // isStorageOnlySummary() true, which the client's
+          // storage-only auto-heal retries on every page load (its
+          // de-dupe is session-only, resets on reload). "failed" is
+          // server-derived from solarRecImportBatches so it durably
+          // suppresses the perpetual retry while still surfacing the
+          // dataset as needing attention. A blob with no failed
+          // batch (genuinely never ingested) stays "missing".
+          populationStatus = latestBatchFailedKeys.has(datasetKey)
+            ? "failed"
+            : "missing";
         } else if ((rowCount ?? 0) > 0) {
           populationStatus = "populated";
         } else {
