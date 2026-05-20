@@ -11,17 +11,30 @@
  *   3. Registers `/service-worker.js` from the root scope on
  *      `window.load` so the registration doesn't compete with
  *      first-paint critical resources.
- *   4. Listens for an updated SW: when a new worker reaches
- *      `installed` while another is already controlling the page,
- *      we surface an "update available" toast with a "Refresh now"
- *      action. Clicking it tells the waiting SW to skip waiting
- *      and reloads after `controllerchange` fires.
- *   5. Listens for `BUILD_ID_MISMATCH` messages from the SW (v3+).
+ *   4. Reloads once when the controlling SW changes (a freshly
+ *      activated worker claimed the page).
+ *   5. Listens for `BUILD_ID_MISMATCH` messages from the SW (v3).
  *      The SW posts this when it detects the live shell HTML's
  *      `<meta name="build-id">` doesn't match the SW's baked-in
  *      `BUILD_ID`. By the time the message arrives, the SW has
  *      already self-unregistered — so a `location.reload()` here
  *      bypasses the SW entirely and pulls fresh HTML + chunks.
+ *
+ * **No update toast (removed 2026-05-19).** v1/v2 surfaced a
+ * "New version available — Refresh now" toast when a new worker
+ * reached `installed` while an old one still controlled the page.
+ * v3 (2026-04-30) added `BUILD_ID_MISMATCH`, which already
+ * auto-reloads on the next navigation after *any* deploy (the SW
+ * script only varies by its baked `BUILD_ID`, so a new waiting
+ * worker and a shell build-id mismatch are the same event). That
+ * left the toast strictly redundant: it fired in the racy window
+ * right before the BUILD_ID_MISMATCH reload, and — because it was
+ * re-prompted on every `register()` call whenever a waiting worker
+ * existed, with no de-dupe — it nagged on *almost every load* until
+ * the user happened to click it. BUILD_ID_MISMATCH is now the
+ * single update mechanism; it covers both the personal (`/`) and
+ * solar-rec (`/solar-rec/`) shells (the build-id check runs for any
+ * text/html navigation regardless of offline-cache eligibility).
  *
  * v2 (PR #235) — re-enabled after the v1 hotfix (#234) disabled it.
  * The v2 SW is dual-app aware: solar-rec navigations get a
@@ -29,15 +42,11 @@
  *
  * v3 (Phase 1.1 of the dashboard foundation repair, 2026-04-30) —
  * solar-rec HTML is network-only, build-id mismatch detection
- * triggers a one-shot reload. No client-side change needed for the
- * caching behavior; the new BUILD_ID_MISMATCH listener is the only
- * surface here.
+ * triggers a one-shot reload.
  *
- * All steps are wrapped in a try/catch — a SW failure should never
- * brick the app. The page works fine without one.
+ * All steps are wrapped so a SW failure never bricks the app —
+ * the page works fine without one.
  */
-
-import { toast } from "sonner";
 
 let alreadyRegistered = false;
 
@@ -50,30 +59,10 @@ export function registerServiceWorker(): void {
   if (import.meta.env.DEV) return;
 
   const onLoad = () => {
-    navigator.serviceWorker
-      .register("/service-worker.js")
-      .then((registration) => {
-        registration.addEventListener("updatefound", () => {
-          const installing = registration.installing;
-          if (!installing) return;
-          installing.addEventListener("statechange", () => {
-            if (
-              installing.state === "installed" &&
-              navigator.serviceWorker.controller
-            ) {
-              promptForReload(registration);
-            }
-          });
-        });
-
-        if (registration.waiting && navigator.serviceWorker.controller) {
-          promptForReload(registration);
-        }
-      })
-      .catch((err) => {
-        // eslint-disable-next-line no-console
-        console.warn("[sw] registration failed:", err);
-      });
+    navigator.serviceWorker.register("/service-worker.js").catch((err) => {
+      // eslint-disable-next-line no-console
+      console.warn("[sw] registration failed:", err);
+    });
 
     let reloading = false;
     navigator.serviceWorker.addEventListener("controllerchange", () => {
@@ -105,20 +94,4 @@ export function registerServiceWorker(): void {
   } else {
     window.addEventListener("load", onLoad, { once: true });
   }
-}
-
-function promptForReload(registration: ServiceWorkerRegistration) {
-  toast("New version available", {
-    description: "Reload to pick up the latest build.",
-    duration: 30_000,
-    action: {
-      label: "Refresh now",
-      onClick: () => {
-        const target = registration.waiting ?? registration.installing;
-        target?.postMessage({ type: "SKIP_WAITING" });
-        // The SW activates, fires `controllerchange`, and our
-        // listener above reloads the page.
-      },
-    },
-  });
 }

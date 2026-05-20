@@ -77,12 +77,17 @@ const PRECACHE_URLS = [
 ];
 
 self.addEventListener("install", (event) => {
-  // NOTE: deliberately no `self.skipWaiting()` here — the new SW
-  // sits in `installed` state until the page sends a
-  // `{type: "SKIP_WAITING"}` message (triggered by the user clicking
-  // "Refresh now" on the update toast). This is the canonical
-  // service-worker update flow and avoids silent flash-reloads
-  // after a deploy.
+  // NOTE: deliberately no `self.skipWaiting()` here. A newly
+  // installed SW stays in `installed` and only activates once all
+  // tabs controlled by the old worker close — the canonical
+  // browser-managed lifecycle. The v1/v2 "Refresh now" toast +
+  // postMessage SKIP_WAITING flow was removed in 2026-05-19's
+  // toast-nag fix; deploys now reach users via v3's
+  // BUILD_ID_MISMATCH path (see `maybeReportBuildIdMismatch` below),
+  // which detects a stale shell on any HTML navigation, wipes the
+  // HTML cache, posts BUILD_ID_MISMATCH to all clients, and self-
+  // unregisters so the client reload pulls fresh bytes. That is the
+  // single update mechanism today.
   event.waitUntil(
     caches.open(STATIC_CACHE).then((cache) =>
       Promise.allSettled(
@@ -325,8 +330,3 @@ async function maybeReportBuildIdMismatch(response, pathname) {
   await self.registration.unregister();
 }
 
-self.addEventListener("message", (event) => {
-  if (event.data?.type === "SKIP_WAITING") {
-    self.skipWaiting();
-  }
-});
