@@ -7427,25 +7427,18 @@ const aiDataContext = useMemo(() => {
                           supported.
                         </p>
                         <div className="flex items-center gap-2">
-                          {dataset ? (
-                            <AlertDialog>
-                              <AlertDialogTrigger asChild>
-                                <Button variant="ghost" size="sm">Clear</Button>
-                              </AlertDialogTrigger>
-                              <AlertDialogContent>
-                                <AlertDialogHeader>
-                                  <AlertDialogTitle>Clear dataset?</AlertDialogTitle>
-                                  <AlertDialogDescription>
-                                    This will remove the local copy and queue a cloud-side delete. The dataset will need to be re-uploaded or re-scanned.
-                                  </AlertDialogDescription>
-                                </AlertDialogHeader>
-                                <AlertDialogFooter>
-                                  <AlertDialogCancel>Cancel</AlertDialogCancel>
-                                  <AlertDialogAction onClick={() => clearDatasetWithCloud(key)}>Clear</AlertDialogAction>
-                                </AlertDialogFooter>
-                              </AlertDialogContent>
-                            </AlertDialog>
-                          ) : null}
+                          {/* No Clear/Remove button in the scanner-
+                              managed branch (deliveryScheduleBase).
+                              Per 2026-05-20 product call: Schedule B
+                              applied delivery obligations must NEVER
+                              be wiped from this slot's UI — the data
+                              is regenerated only by the Schedule B
+                              PDF scanner on the Delivery Tracker tab,
+                              and a stray click here would destroy
+                              business-critical state with no obvious
+                              recovery path. The non-scanner branch
+                              below still has its Clear/Remove dialog
+                              wired through clearDatasetWithCloud. */}
                           {dataset && localOnlyDatasets[key] ? (
                             <Button
                               variant="outline"

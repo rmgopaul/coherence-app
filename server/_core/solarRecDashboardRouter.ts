@@ -15,6 +15,10 @@ import {
   DATASET_KEYS,
   type DatasetKey,
 } from "../../shared/datasetUpload.helpers";
+import {
+  derivePopulationStatus,
+  type PopulationStatus,
+} from "./datasetPopulationStatus";
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import {
   scheduleBImportFiles,
@@ -5891,19 +5895,52 @@ export const solarRecDashboardRouter = t.router({
         // never returned on the wire. A dataset with an active
         // version is unaffected (the derivation only consults this
         // Set when there's no active batch).
+        // Bounded per-dataset latest-batch read (review B3 fix).
+        // Subselect groups by datasetKey to find MAX(createdAt) for
+        // this scope, then we join back to fetch the matching row's
+        // `status`. Result is at most ONE row per known datasetKey
+        // (≤18 rows) regardless of how many batches accumulate
+        // scope-wide — `solarRecImportBatches` has no TTL prune, so
+        // the prior scope-wide scan + JS-dedupe was an unbounded
+        // read on a response-guard-budgeted Overview-mount-path
+        // proc. Internal computation, never returned on the wire.
+        const latestBatchSubquery = db
+          .select({
+            datasetKey: solarRecImportBatches.datasetKey,
+            maxCreatedAt:
+              sql<Date>`MAX(${solarRecImportBatches.createdAt})`.as(
+                "maxCreatedAt"
+              ),
+          })
+          .from(solarRecImportBatches)
+          .where(eq(solarRecImportBatches.scopeId, scopeId))
+          .groupBy(solarRecImportBatches.datasetKey)
+          .as("latestBatch");
         const latestBatchRows = await db
           .select({
             datasetKey: solarRecImportBatches.datasetKey,
             status: solarRecImportBatches.status,
-            createdAt: solarRecImportBatches.createdAt,
           })
           .from(solarRecImportBatches)
-          .where(eq(solarRecImportBatches.scopeId, scopeId))
-          .orderBy(desc(solarRecImportBatches.createdAt));
-        const seenBatchDatasetKeys = new Set<string>();
+          .innerJoin(
+            latestBatchSubquery,
+            and(
+              eq(
+                solarRecImportBatches.datasetKey,
+                latestBatchSubquery.datasetKey
+              ),
+              eq(
+                solarRecImportBatches.createdAt,
+                latestBatchSubquery.maxCreatedAt
+              )
+            )
+          )
+          .where(eq(solarRecImportBatches.scopeId, scopeId));
         for (const row of latestBatchRows) {
-          if (seenBatchDatasetKeys.has(row.datasetKey)) continue;
-          seenBatchDatasetKeys.add(row.datasetKey);
+          // Tie defense: if two batches share an identical
+          // createdAt for the same datasetKey (rapid programmatic
+          // creation), the join returns multiple rows — conservative
+          // policy: any "failed" wins (surface the failure).
           if (row.status === "failed") {
             latestBatchFailedKeys.add(row.datasetKey);
           }
@@ -5985,7 +6022,9 @@ export const solarRecDashboardRouter = t.router({
         }
       }
 
-      type PopulationStatus = "populated" | "empty" | "missing" | "failed";
+      // `PopulationStatus` imported from ./datasetPopulationStatus
+      // (single source of truth shared with the pure-function
+      // derivation + its regression tests).
 
       type Summary = {
         datasetKey: string;
@@ -6059,29 +6098,17 @@ export const solarRecDashboardRouter = t.router({
 
         const rowCount = isRowBacked ? recordedRowCount : null;
 
-        let populationStatus: PopulationStatus;
-        if (cloudStatus === "failed") {
-          populationStatus = "failed";
-        } else if (!activeBatch) {
-          // No active batch. If the most recent ingest attempt for
-          // this dataset terminally failed (e.g. a wrong CSV that
-          // can never pass header validation), report "failed" —
-          // NOT "missing". "missing" + cloudStatus "synced" makes
-          // isStorageOnlySummary() true, which the client's
-          // storage-only auto-heal retries on every page load (its
-          // de-dupe is session-only, resets on reload). "failed" is
-          // server-derived from solarRecImportBatches so it durably
-          // suppresses the perpetual retry while still surfacing the
-          // dataset as needing attention. A blob with no failed
-          // batch (genuinely never ingested) stays "missing".
-          populationStatus = latestBatchFailedKeys.has(datasetKey)
-            ? "failed"
-            : "missing";
-        } else if ((rowCount ?? 0) > 0) {
-          populationStatus = "populated";
-        } else {
-          populationStatus = "empty";
-        }
+        // Pure derivation lives in ./datasetPopulationStatus —
+        // single source of truth + regression tests for the
+        // contract (especially the post-clear case where the
+        // cloudStatus="missing" + stale-failed-batch combo must
+        // resolve to "missing", not "failed").
+        const populationStatus: PopulationStatus = derivePopulationStatus({
+          cloudStatus,
+          hasActiveBatch: Boolean(activeBatch),
+          activeBatchRowCount: rowCount,
+          latestBatchFailed: latestBatchFailedKeys.has(datasetKey),
+        });
 
         return {
           datasetKey,
