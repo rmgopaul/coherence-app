@@ -1685,6 +1685,8 @@ export default function SolarRecDashboard() {
     solarRecTrpc.solarRecDashboard.syncCoreDatasetFromStorage.useMutation();
   const syncCoreDatasetToSrDsRef = useRef(syncCoreDatasetToSrDs);
   syncCoreDatasetToSrDsRef.current = syncCoreDatasetToSrDs;
+  const clearDatasetCloudStorage =
+    solarRecTrpc.solarRecDashboard.clearDatasetCloudStorage.useMutation();
   const activeCoreDatasetSyncJobRef = useRef<Partial<Record<DatasetKey, string>>>({});
   const setDatasetSyncProgressState = useCallback(
     (key: DatasetKey, progress: DatasetSyncProgressState | undefined) => {
@@ -3311,6 +3313,53 @@ export default function SolarRecDashboard() {
     // Drop the per-session auto-heal gate so the next upload of
     // the same key can be auto-healed if it ends up storage-only.
     autoHealAttemptedRef.current.delete(key);
+  };
+
+  /**
+   * User-initiated clear from the per-dataset Clear/Remove dialogs.
+   * Fulfills the existing dialog promise — "remove the local copy
+   * and queue a cloud-side delete" — which `clearDataset` alone
+   * never did (it only reset React state). Resets local state,
+   * then calls `clearDatasetCloudStorage` to remove the server-side
+   * `solarRecDashboardStorage` + `solarRecDatasetSyncState` +
+   * `solarRecActiveDatasetVersions` rows so a permanently-invalid
+   * blob can't keep the dataset in storage-only purgatory and
+   * re-nag on every page load. On cloud-delete error, surfaces a
+   * toast (no silent swallow); the local reset has already taken
+   * effect so the slot reflects "not uploaded" until the next
+   * server summary refetch.
+   *
+   * Distinct from `clearDataset` itself — the programmatic
+   * `clearDataset("deliveryScheduleBase")` on the Schedule B card
+   * resets local state for scanner-managed delivery obligations
+   * and intentionally does NOT delete cloud storage there.
+   */
+  const clearDatasetWithCloud = (key: DatasetKey) => {
+    clearDataset(key);
+    clearDatasetCloudStorage.mutate(
+      { datasetKey: key },
+      {
+        onSuccess: () => {
+          // Refresh server-driven state so the dataset card +
+          // storage-only auto-heal classifier see the empty slot.
+          void solarRecTrpcUtils.solarRecDashboard.getDatasetSummariesAll.invalidate();
+          void solarRecTrpcUtils.solarRecDashboard.getDatasetCloudStatuses.invalidate();
+          void solarRecTrpcUtils.solarRecDashboard.getActiveDatasetVersions.invalidate();
+          void solarRecTrpcUtils.solarRecDashboard.listDatasetUploadJobs.invalidate();
+        },
+        onError: (err) => {
+          // eslint-disable-next-line no-console
+          console.error(
+            "[solar-rec] clearDatasetCloudStorage failed",
+            key,
+            err
+          );
+          toast.error(
+            `Cloud-side delete failed for ${key}: ${err.message ?? "unknown error"}`
+          );
+        },
+      }
+    );
   };
 
   const clearAll = () => {
@@ -7378,25 +7427,18 @@ const aiDataContext = useMemo(() => {
                           supported.
                         </p>
                         <div className="flex items-center gap-2">
-                          {dataset ? (
-                            <AlertDialog>
-                              <AlertDialogTrigger asChild>
-                                <Button variant="ghost" size="sm">Clear</Button>
-                              </AlertDialogTrigger>
-                              <AlertDialogContent>
-                                <AlertDialogHeader>
-                                  <AlertDialogTitle>Clear dataset?</AlertDialogTitle>
-                                  <AlertDialogDescription>
-                                    This will remove the local copy and queue a cloud-side delete. The dataset will need to be re-uploaded or re-scanned.
-                                  </AlertDialogDescription>
-                                </AlertDialogHeader>
-                                <AlertDialogFooter>
-                                  <AlertDialogCancel>Cancel</AlertDialogCancel>
-                                  <AlertDialogAction onClick={() => clearDataset(key)}>Clear</AlertDialogAction>
-                                </AlertDialogFooter>
-                              </AlertDialogContent>
-                            </AlertDialog>
-                          ) : null}
+                          {/* No Clear/Remove button in the scanner-
+                              managed branch (deliveryScheduleBase).
+                              Per 2026-05-20 product call: Schedule B
+                              applied delivery obligations must NEVER
+                              be wiped from this slot's UI — the data
+                              is regenerated only by the Schedule B
+                              PDF scanner on the Delivery Tracker tab,
+                              and a stray click here would destroy
+                              business-critical state with no obvious
+                              recovery path. The non-scanner branch
+                              below still has its Clear/Remove dialog
+                              wired through clearDatasetWithCloud. */}
                           {dataset && localOnlyDatasets[key] ? (
                             <Button
                               variant="outline"
@@ -7471,7 +7513,7 @@ const aiDataContext = useMemo(() => {
                               </AlertDialogHeader>
                               <AlertDialogFooter>
                                 <AlertDialogCancel>Cancel</AlertDialogCancel>
-                                <AlertDialogAction onClick={() => clearDataset(key)}>Remove</AlertDialogAction>
+                                <AlertDialogAction onClick={() => clearDatasetWithCloud(key)}>Remove</AlertDialogAction>
                               </AlertDialogFooter>
                             </AlertDialogContent>
                           </AlertDialog>

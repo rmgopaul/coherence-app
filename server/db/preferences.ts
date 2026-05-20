@@ -5,6 +5,7 @@ import {
   and,
   asc,
   inArray,
+  like,
   sql,
   getDb,
   withDbRetry,
@@ -18,6 +19,7 @@ import {
   InsertUserPreference,
   solarRecDashboardStorage,
   solarRecDatasetSyncState,
+  solarRecActiveDatasetVersions,
 } from "../../drizzle/schema";
 
 export async function getUserPreferences(userId: number) {
@@ -253,6 +255,100 @@ export async function deleteSolarRecDashboardStorageByExactKeys(
   // shape changing under future driver upgrades.
   const header = (result as unknown as Array<{ affectedRows?: number }>)[0];
   return typeof header?.affectedRows === "number" ? header.affectedRows : 0;
+}
+
+/**
+ * Fully clear a dataset's cloud footprint for the caller's scope:
+ * every `solarRecDashboardStorage` chunk (the main
+ * `dataset:<key>` blob AND any orphaned
+ * `dataset:<key>_chunk_NNNN` spillover), the
+ * `solarRecDatasetSyncState` row(s), and the
+ * `solarRecActiveDatasetVersions` pin. Atomic (single transaction).
+ *
+ * This is the durable, self-serve equivalent of the 2026-05-19
+ * one-off prod cleanup: a wrong/invalid CSV uploaded to a dataset
+ * slot leaves a blob that can never pass header validation, so
+ * `srDs*` rows never populate and the dashboard's storage-only
+ * auto-heal retries it on every load. Removing the blob returns the
+ * slot to "not uploaded" and stops the loop at the source. Failed
+ * `solarRecImportBatches` history rows are intentionally left in
+ * place (harmless audit trail; not what drives the auto-heal).
+ *
+ * `datasetKey` MUST be a bare identifier (the closed `DatasetKey`
+ * enum is `[A-Za-z0-9]+`); the guard below rejects anything with
+ * SQL-LIKE metacharacters so the prefix match can't be widened.
+ */
+export async function clearSolarRecDatasetCloudStorage(
+  userId: number,
+  datasetKey: string
+): Promise<{
+  storageRowsDeleted: number;
+  syncStateRowsDeleted: number;
+  activeVersionRowsDeleted: number;
+}> {
+  if (!/^[A-Za-z0-9]+$/.test(datasetKey)) {
+    throw new Error(
+      `clearSolarRecDatasetCloudStorage: refusing unsafe datasetKey "${datasetKey}"`
+    );
+  }
+  const db = await getDb();
+  if (!db) {
+    return {
+      storageRowsDeleted: 0,
+      syncStateRowsDeleted: 0,
+      activeVersionRowsDeleted: 0,
+    };
+  }
+  await ensureSolarRecDashboardStorageTable();
+  await ensureSolarRecDatasetSyncStateTable();
+  const scopeId = await resolveScopeIdFromUserId(userId);
+  // Matches `dataset:<key>` and `dataset:<key>_chunk_NNNN`. Safe
+  // because `datasetKey` is guarded to `[A-Za-z0-9]+` above (no
+  // LIKE wildcards reach the pattern).
+  const storagePrefix = `dataset:${datasetKey}%`;
+
+  const affected = (
+    result: unknown
+  ): number => {
+    const header = (result as Array<{ affectedRows?: number }>)[0];
+    return typeof header?.affectedRows === "number" ? header.affectedRows : 0;
+  };
+
+  return await withDbRetry(
+    "clear solar rec dataset cloud storage",
+    async () =>
+      db.transaction(async (tx) => {
+        const storage = await tx
+          .delete(solarRecDashboardStorage)
+          .where(
+            and(
+              eq(solarRecDashboardStorage.scopeId, scopeId),
+              like(solarRecDashboardStorage.storageKey, storagePrefix)
+            )
+          );
+        const syncState = await tx
+          .delete(solarRecDatasetSyncState)
+          .where(
+            and(
+              eq(solarRecDatasetSyncState.scopeId, scopeId),
+              like(solarRecDatasetSyncState.storageKey, storagePrefix)
+            )
+          );
+        const activeVersion = await tx
+          .delete(solarRecActiveDatasetVersions)
+          .where(
+            and(
+              eq(solarRecActiveDatasetVersions.scopeId, scopeId),
+              eq(solarRecActiveDatasetVersions.datasetKey, datasetKey)
+            )
+          );
+        return {
+          storageRowsDeleted: affected(storage),
+          syncStateRowsDeleted: affected(syncState),
+          activeVersionRowsDeleted: affected(activeVersion),
+        };
+      })
+  );
 }
 
 export async function saveSolarRecDashboardPayload(userId: number, storageKey: string, payload: string): Promise<boolean> {
