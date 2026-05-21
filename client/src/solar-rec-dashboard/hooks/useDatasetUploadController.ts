@@ -26,6 +26,10 @@ import {
   computeUploadChunkPlan,
   type UploadChunkPlanItem,
 } from "@shared/datasetUpload.helpers";
+import {
+  dashboardTransientRetryDelay,
+  shouldRetryDashboardTransient,
+} from "../lib/dashboardRetryPolicy";
 
 export type DatasetUploadControllerPhase =
   | "idle"
@@ -70,6 +74,74 @@ const INITIAL_STATE: DatasetUploadControllerState = {
  * supports without a Buffer polyfill. Fails the promise on
  * decode error so the controller can surface the message.
  */
+/**
+ * Sleep that aborts promptly on cancellation. Polls `isCancelled`
+ * every ~50 ms so a user-initiated cancel during a backoff wait
+ * doesn't have to ride out the full retry delay.
+ */
+async function sleepWithCancel(
+  ms: number,
+  isCancelled: () => boolean
+): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < ms) {
+    if (isCancelled()) return;
+    await new Promise((resolve) =>
+      setTimeout(resolve, Math.min(50, ms - (Date.now() - start)))
+    );
+  }
+}
+
+/**
+ * Run `thunk` with bounded jittered retry on transient overload
+ * responses (429/502/503/504). Reuses the canonical dashboard
+ * retry policy in `../lib/dashboardRetryPolicy` so the per-chunk
+ * upload uses the same classifier + backoff as the rest of the
+ * dashboard's query layer.
+ *
+ * Required upstream by the 2026-05-21 60 MB solarApplications
+ * upload report: ~333 sequential chunks + a single transient 502
+ * from the proxy = entire upload bailed because the imperative
+ * tRPC client doesn't go through react-query's retry pipeline.
+ * The server is idempotent on duplicate chunkIndex (acknowledges
+ * as `skipped: true`), so retries are safe and the server-side
+ * counter doesn't double-count.
+ *
+ * Bail conditions:
+ *   - Cancellation: returns null, caller marks phase "cancelled".
+ *   - Non-transient error (e.g. 4xx validation): rethrow on
+ *     first failure so callers see the real error immediately.
+ *   - Retry exhausted (default 3 retries, ~10.5 s worst-case
+ *     window): rethrow the LAST error so the user sees a useful
+ *     message.
+ */
+async function attemptWithTransientRetry<T>(
+  thunk: () => Promise<T>,
+  isCancelled: () => boolean
+): Promise<T> {
+  let attempt = 0;
+  let lastErr: unknown;
+  while (true) {
+    if (isCancelled()) {
+      throw new Error("cancelled");
+    }
+    try {
+      return await thunk();
+    } catch (err) {
+      lastErr = err;
+      if (!shouldRetryDashboardTransient(attempt, err)) {
+        throw err;
+      }
+      const delay = dashboardTransientRetryDelay(attempt, err);
+      await sleepWithCancel(delay, isCancelled);
+      if (isCancelled()) {
+        throw lastErr;
+      }
+      attempt += 1;
+    }
+  }
+}
+
 function blobToBase64(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -193,18 +265,33 @@ export function useDatasetUploadController(): UseDatasetUploadControllerResult {
         try {
           const slice: Blob = file.slice(chunk.byteStart, chunk.byteEnd);
           const chunkBase64 = await blobToBase64(slice);
-          await utils.client.solarRecDashboard.uploadDatasetChunk.mutate({
-            jobId: started.jobId,
-            uploadId: started.uploadId,
-            chunkIndex: chunk.chunkIndex,
-            totalChunks: plan.totalChunks,
-            chunkBase64,
-          });
+          await attemptWithTransientRetry(
+            () =>
+              utils.client.solarRecDashboard.uploadDatasetChunk.mutate({
+                jobId: started.jobId,
+                uploadId: started.uploadId,
+                chunkIndex: chunk.chunkIndex,
+                totalChunks: plan.totalChunks,
+                chunkBase64,
+              }),
+            () => localToken.cancelled
+          );
           safeSetState((prev) => ({
             ...prev,
             uploadedChunks: prev.uploadedChunks + 1,
           }));
         } catch (err) {
+          // Cancellation thrown by the retry helper surfaces as
+          // `Error("cancelled")` (or matches localToken.cancelled
+          // set during the in-flight call); treat that as a clean
+          // cancel, not a failure.
+          if (
+            localToken.cancelled ||
+            (err instanceof Error && err.message === "cancelled")
+          ) {
+            safeSetState((prev) => ({ ...prev, phase: "cancelled" }));
+            return null;
+          }
           const message =
             err instanceof Error ? err.message : describeChunkError(chunk, err);
           safeSetState((prev) => ({
@@ -224,10 +311,21 @@ export function useDatasetUploadController(): UseDatasetUploadControllerResult {
       safeSetState((prev) => ({ ...prev, phase: "finalizing" }));
 
       try {
-        await utils.client.solarRecDashboard.finalizeDatasetUpload.mutate({
-          jobId: started.jobId,
-        });
+        await attemptWithTransientRetry(
+          () =>
+            utils.client.solarRecDashboard.finalizeDatasetUpload.mutate({
+              jobId: started.jobId,
+            }),
+          () => localToken.cancelled
+        );
       } catch (err) {
+        if (
+          localToken.cancelled ||
+          (err instanceof Error && err.message === "cancelled")
+        ) {
+          safeSetState((prev) => ({ ...prev, phase: "cancelled" }));
+          return null;
+        }
         const message = err instanceof Error ? err.message : String(err);
         safeSetState((prev) => ({ ...prev, phase: "failed", error: message }));
         return null;

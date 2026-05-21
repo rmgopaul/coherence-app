@@ -54,6 +54,32 @@ describe("shouldRetryDashboardTransient", () => {
     ).toBe(true);
   });
 
+  it("retries the Error+status shape thrown by baseFetch on HTML-from-edge (60MB upload regression)", () => {
+    // 2026-05-21 regression: the solar-rec / personal-app `baseFetch`
+    // wrappers in `solar-rec-main.tsx` / `main.tsx` rewrite an HTML
+    // response (Render's proxy 502 error page) into a plain
+    // `Error("API returned HTML instead of JSON (HTTP 502). Refresh
+    // and retry.")`. Pre-fix the HTTP status was lost on the
+    // response→Error rewrite so this classifier returned false and
+    // a single transient 502 over ~333 sequential chunks bailed the
+    // entire upload. Fix attaches `status: response.status` to the
+    // Error; this test locks the contract that the resulting shape
+    // classifies as transient.
+    const htmlEdge502 = Object.assign(
+      new Error(
+        "API returned HTML instead of JSON (HTTP 502). Refresh and retry."
+      ),
+      { status: 502 }
+    );
+    expect(shouldRetryDashboardTransient(0, htmlEdge502)).toBe(true);
+    expect(shouldRetryDashboardTransient(2, htmlEdge502)).toBe(true);
+    // Cap is honored — exhausted attempts stop retrying.
+    expect(shouldRetryDashboardTransient(3, htmlEdge502)).toBe(false);
+    // 504 (gateway timeout) carrying the same shape also retries.
+    const htmlEdge504 = Object.assign(new Error("..."), { status: 504 });
+    expect(shouldRetryDashboardTransient(0, htmlEdge504)).toBe(true);
+  });
+
   it("does NOT retry on 4xx other than 429 (deterministic client errors)", () => {
     expect(
       shouldRetryDashboardTransient(0, { httpStatus: 400 })
