@@ -68,9 +68,17 @@ const trpcFetch: typeof fetch = async (input, init) => {
   const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
   if (contentType.includes("text/html")) {
     const statusPart = response.status ? ` (HTTP ${response.status})` : "";
-    throw new Error(
+    // Attach `status` so the canonical
+    // `extractTransportHttpStatus()` in
+    // `dashboardRetryPolicy.ts` can classify a transient overload
+    // (429/502/503/504) and let existing retry consumers recover.
+    // Pre-fix the status was lost on the response→Error rewrite,
+    // so a retryable HTML edge response surfaced as a fatal toast.
+    const err = new Error(
       `API returned HTML instead of JSON${statusPart}. This usually happens when the app/server reconnects after sleep; refresh and retry.`
-    );
+    ) as Error & { status?: number };
+    if (response.status) err.status = response.status;
+    throw err;
   }
 
   return response;

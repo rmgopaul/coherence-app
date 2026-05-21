@@ -64,9 +64,22 @@ const baseFetch: typeof fetch = async (input, init) => {
   const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
   if (contentType.includes("text/html")) {
     const statusPart = response.status ? ` (HTTP ${response.status})` : "";
-    throw new Error(
+    // Attach `status` to the thrown Error so the canonical
+    // `extractTransportHttpStatus()` in
+    // `dashboardRetryPolicy.ts` can classify it as a transient
+    // overload (429/502/503/504) and existing retry consumers
+    // can recover. Pre-fix the status was lost on the rewrite
+    // from `response → Error`, so a 502 HTML edge response that
+    // would otherwise be retryable bubbled up as a fatal
+    // "API returned HTML instead of JSON" toast — the exact
+    // failure mode of the 2026-05-21 60 MB solarApplications
+    // upload report (~333 sequential chunks, one transient
+    // proxy 502 bailed the whole upload).
+    const err = new Error(
       `API returned HTML instead of JSON${statusPart}. Refresh and retry.`
-    );
+    ) as Error & { status?: number };
+    if (response.status) err.status = response.status;
+    throw err;
   }
 
   return response;
