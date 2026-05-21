@@ -74,6 +74,42 @@ const INITIAL_STATE: DatasetUploadControllerState = {
  * supports without a Buffer polyfill. Fails the promise on
  * decode error so the controller can surface the message.
  */
+function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = reader.result;
+      if (typeof dataUrl !== "string") {
+        reject(new Error("FileReader returned non-string result"));
+        return;
+      }
+      const comma = dataUrl.indexOf(",");
+      if (comma < 0) {
+        reject(new Error("FileReader result missing data-URL prefix"));
+        return;
+      }
+      resolve(dataUrl.slice(comma + 1));
+    };
+    reader.onerror = () =>
+      reject(reader.error ?? new Error("FileReader failed"));
+    reader.readAsDataURL(blob);
+  });
+}
+
+/**
+ * Typed sentinel thrown by `attemptWithTransientRetry` when the
+ * caller cancels mid-loop. Using a class (vs. a magic-string
+ * `Error("cancelled")`) lets the catch sites do an `instanceof`
+ * check that can't be confused with any other Error that happens
+ * to carry the same message.
+ */
+class UploadCancelledError extends Error {
+  constructor() {
+    super("upload cancelled");
+    this.name = "UploadCancelledError";
+  }
+}
+
 /**
  * Sleep that aborts promptly on cancellation. Polls `isCancelled`
  * every ~50 ms so a user-initiated cancel during a backoff wait
@@ -108,60 +144,39 @@ async function sleepWithCancel(
  * counter doesn't double-count.
  *
  * Bail conditions:
- *   - Cancellation: returns null, caller marks phase "cancelled".
+ *   - Cancellation (detected at loop top, including immediately
+ *     after a wakeup from `sleepWithCancel`): throws
+ *     `UploadCancelledError` so the caller can distinguish a
+ *     clean cancel from a failed upload.
  *   - Non-transient error (e.g. 4xx validation): rethrow on
  *     first failure so callers see the real error immediately.
- *   - Retry exhausted (default 3 retries, ~10.5 s worst-case
- *     window): rethrow the LAST error so the user sees a useful
- *     message.
+ *   - Retry exhausted (3 retries after initial = 4 total
+ *     attempts, ~10.5 s worst-case window): rethrow the final
+ *     transient error so the user sees a useful message.
  */
 async function attemptWithTransientRetry<T>(
   thunk: () => Promise<T>,
   isCancelled: () => boolean
 ): Promise<T> {
   let attempt = 0;
-  let lastErr: unknown;
   while (true) {
-    if (isCancelled()) {
-      throw new Error("cancelled");
-    }
+    if (isCancelled()) throw new UploadCancelledError();
     try {
       return await thunk();
     } catch (err) {
-      lastErr = err;
       if (!shouldRetryDashboardTransient(attempt, err)) {
         throw err;
       }
-      const delay = dashboardTransientRetryDelay(attempt, err);
-      await sleepWithCancel(delay, isCancelled);
-      if (isCancelled()) {
-        throw lastErr;
-      }
+      await sleepWithCancel(
+        dashboardTransientRetryDelay(attempt, err),
+        isCancelled
+      );
+      // The top-of-loop `isCancelled()` check above catches a
+      // cancel that landed during the sleep — no separate check
+      // needed here.
       attempt += 1;
     }
   }
-}
-
-function blobToBase64(blob: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const dataUrl = reader.result;
-      if (typeof dataUrl !== "string") {
-        reject(new Error("FileReader returned non-string result"));
-        return;
-      }
-      const comma = dataUrl.indexOf(",");
-      if (comma < 0) {
-        reject(new Error("FileReader result missing data-URL prefix"));
-        return;
-      }
-      resolve(dataUrl.slice(comma + 1));
-    };
-    reader.onerror = () =>
-      reject(reader.error ?? new Error("FileReader failed"));
-    reader.readAsDataURL(blob);
-  });
 }
 
 export function useDatasetUploadController(): UseDatasetUploadControllerResult {
@@ -281,14 +296,13 @@ export function useDatasetUploadController(): UseDatasetUploadControllerResult {
             uploadedChunks: prev.uploadedChunks + 1,
           }));
         } catch (err) {
-          // Cancellation thrown by the retry helper surfaces as
-          // `Error("cancelled")` (or matches localToken.cancelled
-          // set during the in-flight call); treat that as a clean
-          // cancel, not a failure.
-          if (
-            localToken.cancelled ||
-            (err instanceof Error && err.message === "cancelled")
-          ) {
+          // Two cancellation paths: (a) the retry helper threw
+          // `UploadCancelledError` when it detected cancellation at
+          // a loop boundary; (b) cancellation landed DURING an
+          // in-flight thunk that then failed for an unrelated
+          // reason — `localToken.cancelled` is the durable signal.
+          // Both should surface as a clean cancel, not a failure.
+          if (err instanceof UploadCancelledError || localToken.cancelled) {
             safeSetState((prev) => ({ ...prev, phase: "cancelled" }));
             return null;
           }
@@ -319,10 +333,7 @@ export function useDatasetUploadController(): UseDatasetUploadControllerResult {
           () => localToken.cancelled
         );
       } catch (err) {
-        if (
-          localToken.cancelled ||
-          (err instanceof Error && err.message === "cancelled")
-        ) {
+        if (err instanceof UploadCancelledError || localToken.cancelled) {
           safeSetState((prev) => ({ ...prev, phase: "cancelled" }));
           return null;
         }
