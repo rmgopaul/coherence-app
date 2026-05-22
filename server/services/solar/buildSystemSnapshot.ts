@@ -24,6 +24,7 @@ import {
   srDsTransferHistory,
 } from "../../../drizzle/schema";
 import { getDb, withDbRetry } from "../../db/_core";
+import { memoizeDatasetLoad } from "./datasetLoadCache";
 import {
   claimComputeRun,
   reclaimComputeRun,
@@ -177,40 +178,52 @@ export async function loadDatasetRows(
     (table as unknown as { [k: symbol]: unknown })?.[NAME_SYMBOL] as
       | string
       | undefined;
-  const remap = tableName ? TYPED_COLUMN_TO_CSV_KEY[tableName] : undefined;
-  const skipRawRow = tableName ? SKIP_RAW_ROW_TABLES.has(tableName) : false;
 
-  // For big tables we build an explicit select that omits rawRow —
-  // saves ~500MB of wire transfer on the accountSolarGeneration +
-  // transferHistory pair, which is what was OOMing Render.
-  const selectCols = skipRawRow
-    ? (() => {
-        const cols: Record<string, unknown> = {};
-        const fromTable = table as Record<string, unknown>;
-        for (const [col, val] of Object.entries(fromTable)) {
-          if (col === "rawRow") continue;
-          cols[col] = val;
-        }
-        return cols;
-      })()
-    : undefined;
+  const doLoad = async (): Promise<CsvRow[]> => {
+    const remap = tableName ? TYPED_COLUMN_TO_CSV_KEY[tableName] : undefined;
+    const skipRawRow = tableName ? SKIP_RAW_ROW_TABLES.has(tableName) : false;
 
-  const rows = await withDbRetry("load dataset rows", () =>
-    selectCols
-      ? db
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- dynamic column set
-          .select(selectCols as any)
-          .from(table)
-          .where(and(eq(table.scopeId, scopeId), eq(table.batchId, batchId)))
-      : db
-          .select()
-          .from(table)
-          .where(and(eq(table.scopeId, scopeId), eq(table.batchId, batchId)))
-  );
+    // For big tables we build an explicit select that omits rawRow —
+    // saves ~500MB of wire transfer on the accountSolarGeneration +
+    // transferHistory pair, which is what was OOMing Render.
+    const selectCols = skipRawRow
+      ? (() => {
+          const cols: Record<string, unknown> = {};
+          const fromTable = table as Record<string, unknown>;
+          for (const [col, val] of Object.entries(fromTable)) {
+            if (col === "rawRow") continue;
+            cols[col] = val;
+          }
+          return cols;
+        })()
+      : undefined;
 
-  return (rows as Record<string, unknown>[]).map((row) =>
-    reconstructCsvRow(row, remap)
-  );
+    const rows = await withDbRetry("load dataset rows", () =>
+      selectCols
+        ? db
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- dynamic column set
+            .select(selectCols as any)
+            .from(table)
+            .where(and(eq(table.scopeId, scopeId), eq(table.batchId, batchId)))
+        : db
+            .select()
+            .from(table)
+            .where(and(eq(table.scopeId, scopeId), eq(table.batchId, batchId)))
+    );
+
+    return (rows as Record<string, unknown>[]).map((row) =>
+      reconstructCsvRow(row, remap)
+    );
+  };
+
+  // Within a build-scoped cache (set by the dashboard build runner via
+  // beginDatasetLoadCache), dedupe identical (scope, batch, table)
+  // loads so the ~8 builders that each read e.g. srDsAbpReport share
+  // ONE full-batch scan instead of re-reading it per builder. Outside a
+  // build context there is no cache, so single-request behavior is
+  // unchanged. We can only key safely when the table name resolved.
+  if (!tableName) return doLoad();
+  return memoizeDatasetLoad(`${scopeId}|${batchId}|${tableName}`, doLoad);
 }
 
 /**
