@@ -33,6 +33,35 @@ type DatasetLoadCache = Map<string, Promise<unknown>>;
 const datasetLoadCacheStore = new AsyncLocalStorage<DatasetLoadCache>();
 
 /**
+ * Tables the build-scoped cache is allowed to pin. Deliberately tiny.
+ *
+ * 2026-05-22 incident: the first cut cached EVERY `loadDatasetRows`
+ * call for a build's duration. A build loads the multi-million-row
+ * giants (`srDsConvertedReads` ~1M, `srDsTransferHistory` ~22M,
+ * `srDsAccountSolarGeneration` ~18M) plus the system snapshot's 7
+ * datasets — pinning them all spiked heap to the 2 GB reject ceiling
+ * and the breaker shed dashboard reads.
+ *
+ * `srDsAbpReport` is the one worth pinning: ~189K rows, read by ~8
+ * builders per build (the single largest repeat-read, ~29% of heavy
+ * Request Units in the slow-query sample). One pinned copy of a
+ * medium dataset is bounded; the giants must stay GC-eligible
+ * per-builder. To add a table, confirm it's (a) read by multiple
+ * builders in one build AND (b) small enough that one pinned copy is
+ * safe, then re-validate heap with the flag on.
+ */
+const CACHEABLE_DATASET_TABLES = new Set<string>(["srDsAbpReport"]);
+
+/**
+ * Whether a dataset table is safe to memoize in the build cache. Only
+ * allowlisted (small, high-repeat) tables qualify; the multi-million-
+ * row giants never do. See {@link CACHEABLE_DATASET_TABLES}.
+ */
+export function isCacheableDatasetTable(tableName: string): boolean {
+  return CACHEABLE_DATASET_TABLES.has(tableName);
+}
+
+/**
  * Whether the build-scoped dataset-load cache is enabled. Defaults
  * OFF so merging this code is a no-op in prod — the optimization is
  * opt-in and instantly reversible: set

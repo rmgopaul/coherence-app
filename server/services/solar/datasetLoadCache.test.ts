@@ -10,6 +10,7 @@ import {
   runWithDatasetLoadCache,
   memoizeDatasetLoad,
   hasActiveDatasetLoadCache,
+  isCacheableDatasetTable,
 } from "./datasetLoadCache";
 
 describe("datasetLoadCache", () => {
@@ -116,5 +117,25 @@ describe("datasetLoadCache", () => {
         delete process.env.DASHBOARD_BUILD_DATASET_CACHE_ENABLED;
       else process.env.DASHBOARD_BUILD_DATASET_CACHE_ENABLED = prev;
     }
+  });
+});
+
+describe("isCacheableDatasetTable — memory-safety allowlist", () => {
+  it("allows the one medium high-repeat table (srDsAbpReport)", () => {
+    expect(isCacheableDatasetTable("srDsAbpReport")).toBe(true);
+  });
+
+  it("NEVER allows the multi-million-row giants (2026-05-22 OOM guard)", () => {
+    // Pinning any of these for a whole build is what spiked heap to
+    // the 2 GB reject ceiling. They must stay GC-eligible per-builder.
+    expect(isCacheableDatasetTable("srDsConvertedReads")).toBe(false);
+    expect(isCacheableDatasetTable("srDsTransferHistory")).toBe(false);
+    expect(isCacheableDatasetTable("srDsAccountSolarGeneration")).toBe(false);
+  });
+
+  it("rejects unknown / unlisted tables by default", () => {
+    expect(isCacheableDatasetTable("srDsSolarApplications")).toBe(false);
+    expect(isCacheableDatasetTable("srDsDeliverySchedule")).toBe(false);
+    expect(isCacheableDatasetTable("")).toBe(false);
   });
 });
