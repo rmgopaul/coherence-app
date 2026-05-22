@@ -24,7 +24,10 @@ import {
   srDsTransferHistory,
 } from "../../../drizzle/schema";
 import { getDb, withDbRetry } from "../../db/_core";
-import { memoizeDatasetLoad } from "./datasetLoadCache";
+import {
+  memoizeDatasetLoad,
+  isCacheableDatasetTable,
+} from "./datasetLoadCache";
 import {
   claimComputeRun,
   reclaimComputeRun,
@@ -218,11 +221,18 @@ export async function loadDatasetRows(
 
   // Within a build-scoped cache (set by the dashboard build runner via
   // beginDatasetLoadCache), dedupe identical (scope, batch, table)
-  // loads so the ~8 builders that each read e.g. srDsAbpReport share
-  // ONE full-batch scan instead of re-reading it per builder. Outside a
+  // loads so the ~8 builders that each read srDsAbpReport share ONE
+  // full-batch scan instead of re-reading it per builder. Outside a
   // build context there is no cache, so single-request behavior is
-  // unchanged. We can only key safely when the table name resolved.
-  if (!tableName) return doLoad();
+  // unchanged.
+  //
+  // Only ALLOWLISTED tables are cached (isCacheableDatasetTable) — the
+  // multi-million-row giants (convertedReads/transferHistory/
+  // accountSolarGeneration) must stay GC-eligible per-builder; pinning
+  // them for a whole build spiked heap to the 2 GB reject ceiling on
+  // 2026-05-22. Everything else (incl. an unresolved table name) loads
+  // uncached.
+  if (!tableName || !isCacheableDatasetTable(tableName)) return doLoad();
   return memoizeDatasetLoad(`${scopeId}|${batchId}|${tableName}`, doLoad);
 }
 
