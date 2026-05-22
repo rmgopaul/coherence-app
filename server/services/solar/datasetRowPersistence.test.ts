@@ -330,3 +330,31 @@ describe("batch-row cloners — pagination rails", () => {
     }
   });
 });
+
+// The superseded-batch replace-deletes were single unbounded
+// `DELETE ... WHERE batchId = ?` statements that the slow-query log
+// showed scanning 18-22M rows at once (a long lock + a large
+// per-statement Request-Unit spike). These rails assert the deleter
+// now chunks via `batchedDelete` + `LIMIT` so a future refactor can't
+// quietly reintroduce the unbounded form.
+describe("batch-row deleters — LIMIT-batching rails", () => {
+  it("makeBatchDeleter chunks the replace-delete via batchedDelete + LIMIT", () => {
+    const src = readPersistenceSource();
+
+    const start = src.indexOf("function makeBatchDeleter(");
+    expect(
+      start,
+      "makeBatchDeleter must exist in datasetRowPersistence.ts"
+    ).toBeGreaterThan(-1);
+    const tail = src.slice(start);
+    const end = tail.indexOf("\nconst ");
+    const body = end > -1 ? tail.slice(0, end) : tail;
+
+    // Delegates to the shared bounded-delete loop helper...
+    expect(body).toContain("batchedDelete(");
+    // ...and the batchId DELETE it issues is LIMIT-bounded. Dropping
+    // the LIMIT would reintroduce the 18-22M-row single-statement
+    // replace-delete the slow-query log flagged.
+    expect(body).toMatch(/WHERE batchId = \$\{batchId\} LIMIT/);
+  });
+});
