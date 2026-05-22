@@ -864,10 +864,12 @@ function MonitoringDashboardImpl() {
   // updated the dataset. Without this indicator the bridge writes
   // are invisible — there's no UI confirmation that a run touched
   // the manifest, which is what the user expects when running an
-  // ad-hoc batch from this page.
+  // ad-hoc batch from this page. Poll fast only while a batch is
+  // active (when the user is watching for the update); idle the rest
+  // of the time to keep the DB request-unit cost down.
   const convertedReadsSummaryQuery = trpc.solarRecDashboard.getDatasetSummariesAll.useQuery(
     undefined,
-    { refetchInterval: 10_000 }
+    { refetchInterval: activeBatchId ? 10_000 : 60_000 }
   );
   const credentialsQuery = trpc.monitoring.getConfiguredCredentials.useQuery(undefined, {
     enabled: isOperator,

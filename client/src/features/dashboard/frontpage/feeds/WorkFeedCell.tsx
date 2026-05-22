@@ -50,13 +50,21 @@ export function WorkFeedCell({ updatedLabel }: Props) {
 
   const connected = status?.connected ?? false;
 
+  // This cell lives on the always-open dashboard, so its polls run all
+  // day. Local start/stop happens on the widget page and invalidates
+  // these queries, so the slow cadence only delays detecting changes
+  // made directly in Clockify — fine for a glanceable cell.
   const { data: current } = trpc.clockify.getCurrentEntry.useQuery(
     undefined,
-    { enabled: connected, refetchInterval: 30_000 }
+    {
+      enabled: connected,
+      refetchInterval: (query) =>
+        query.state.data?.isRunning ? ONE_MIN : 2 * ONE_MIN,
+    }
   );
   const { data: recent } = trpc.clockify.getRecentEntries.useQuery(
     { limit: 50 },
-    { enabled: connected, refetchInterval: ONE_MIN }
+    { enabled: connected, refetchInterval: 2 * ONE_MIN }
   );
 
   // Live tick so a running timer's total updates without refetching.
