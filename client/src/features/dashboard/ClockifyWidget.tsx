@@ -59,7 +59,12 @@ export default function ClockifyWidget() {
   const currentEntryQuery = trpc.clockify.getCurrentEntry.useQuery(undefined, {
     enabled: !!user && isConnected,
     retry: false,
-    refetchInterval: 15_000,
+    // Poll fast only while a timer is running (to catch an external
+    // stop quickly); idle detection of an external start can wait.
+    // Local start/stop invalidates this query, so the slow idle
+    // cadence never delays the user's own actions.
+    refetchInterval: (query) =>
+      query.state.data?.isRunning ? 15_000 : 60_000,
     refetchOnWindowFocus: true,
   });
 

@@ -144,7 +144,7 @@ export default function DinScrapeManager() {
   );
 
   const jobListQuery = trpc.dinScrape.listJobs.useQuery(undefined, {
-    refetchInterval: activeJobId ? 5000 : 30000,
+    refetchInterval: activeJobId ? 5000 : 300000,
   });
 
   const dinsQuery = trpc.dinScrape.getDins.useQuery(

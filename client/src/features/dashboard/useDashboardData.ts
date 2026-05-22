@@ -2,10 +2,12 @@
  * useDashboardData — shared query hook for the front-page dashboard.
  *
  * Consolidates the tRPC queries `FrontPageDashboard` and its children
- * need. Matches the cadence in handoff/web-spec.md:
- *   - tasks / inbox / calendar · 60s
- *   - whoop                    · 5m
- *   - markets                  · 5m (4m staleTime)
+ * need. Background poll cadence is deliberately relaxed to limit
+ * TiDB request-unit cost — this dashboard is open all day, and each
+ * poll is a DB round-trip:
+ *   - tasks / inbox / calendar / king-of-day · 5m (5m staleTime)
+ *   - whoop                                   · 30m (20m staleTime)
+ *   - markets                                 · 5m (4m staleTime)
  *
  * `dailyBrief` stays `null` in Phase B — the hero falls back to
  * client-side headline derivation from `todayTasks`. Phase C replaces
@@ -36,12 +38,12 @@ export function useDashboardData() {
 
   const { data: dueTodayTasks } = trpc.todoist.getTasks.useQuery(
     { filter: "today" },
-    { refetchInterval: ONE_MIN }
+    { refetchInterval: FIVE_MIN, staleTime: FIVE_MIN }
   );
 
   const { data: completedData } = trpc.todoist.getCompletedCount.useQuery(
     { dateKey: todayKey, timezoneOffsetMinutes },
-    { refetchInterval: ONE_MIN }
+    { refetchInterval: FIVE_MIN, staleTime: FIVE_MIN }
   );
 
   const commandCenterQuery = trpc.personalDashboard.getCommandCenter.useQuery(
@@ -56,12 +58,12 @@ export function useDashboardData() {
 
   const { data: calendarEvents } = trpc.google.getCalendarEvents.useQuery(
     undefined,
-    { refetchInterval: ONE_MIN }
+    { refetchInterval: FIVE_MIN, staleTime: FIVE_MIN }
   );
 
   const { data: gmailMessages } = trpc.google.getGmailMessages.useQuery(
     { maxResults: 50 },
-    { refetchInterval: ONE_MIN }
+    { refetchInterval: FIVE_MIN, staleTime: FIVE_MIN }
   );
 
   // `getGmailWaitingOn` already exists on the google router — the
@@ -99,7 +101,7 @@ export function useDashboardData() {
   // client-side headline derivation while loading or on error.
   const { data: kingOfDayServer } = trpc.kingOfDay.get.useQuery(
     { dateKey: todayKey },
-    { refetchInterval: ONE_MIN, staleTime: 30_000 }
+    { refetchInterval: FIVE_MIN, staleTime: FIVE_MIN }
   );
   const kingOfDay = kingOfDayServer ?? null;
 

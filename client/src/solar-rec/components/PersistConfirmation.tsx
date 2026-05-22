@@ -50,9 +50,11 @@ export function PersistConfirmation({
   onSuccess,
 }: PersistConfirmationProps) {
   const pushMutation = trpc.solarRecDashboard.pushConvertedReadsSource.useMutation();
-  // Poll for dataset summaries to get lastSavedAt
+  // Poll for dataset summaries to surface lastSavedAt. 60s keeps the
+  // DB request-unit cost low; the indicator is informational, and a
+  // save the user just triggered confirms via the mutation result.
   const summariesQuery = trpc.solarRecDashboard.getDatasetSummariesAll.useQuery(undefined, {
-    refetchInterval: 10000,
+    refetchInterval: 60_000,
   });
 
   const handleSave = async () => {
@@ -64,6 +66,10 @@ export function PersistConfirmation({
       });
       toast.success(`Saved ${rows.length} rows to Converted Reads`);
       onSuccess?.();
+      // Refresh the "last saved" indicator immediately instead of
+      // waiting for the next background poll — keeps the user's own
+      // save responsive while the poll cadence stays slow.
+      void summariesQuery.refetch();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       toast.error(`Failed to save: ${msg}`);

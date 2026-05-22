@@ -128,7 +128,7 @@ export default function ContractScrapeManager() {
 
   const jobListQuery = trpc.contractScan.listDbContractScanJobs.useQuery(
     undefined,
-    { refetchInterval: activeJobId ? 5000 : 30000 }
+    { refetchInterval: activeJobId ? 5000 : 300000 }
   );
 
   const resultsQuery = trpc.contractScan.getDbContractScanResults.useQuery(
