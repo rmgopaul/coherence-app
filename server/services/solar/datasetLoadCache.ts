@@ -70,10 +70,11 @@ export function isCacheableDatasetTable(tableName: string): boolean {
  * since the env is read at call time. Mirrors the Phase-H
  * `DASHBOARD_HEAP_PRESSURE_REJECT_BYTES` env-toggle pattern.
  *
- * Why dormant-by-default: the cache pins loaded datasets in memory for
- * a build's duration, and the heap impact can only be validated on
- * prod-shape data. Shipping it off lets that validation happen behind
- * a flag instead of as a deploy-time behavior change.
+ * Why dormant-by-default: the cache pins allowlisted datasets
+ * (currently just `srDsAbpReport`) in memory for a build's duration,
+ * and the heap impact can only be validated on prod-shape data.
+ * Shipping it off lets that validation happen behind a flag instead of
+ * as a deploy-time behavior change.
  */
 export function isDatasetLoadCacheEnabled(): boolean {
   return process.env.DASHBOARD_BUILD_DATASET_CACHE_ENABLED === "true";
@@ -93,8 +94,12 @@ export function beginDatasetLoadCache(): void {
 }
 
 /**
- * Callback form of {@link beginDatasetLoadCache} for call sites that
- * prefer an explicit scope boundary (e.g. a future per-request wrap).
+ * Callback-scoped form: runs `fn` with a fresh store via `run()`, which
+ * — unlike `beginDatasetLoadCache`'s `enterWith` — fully bounds the
+ * store to `fn` and does NOT persist into sibling async work. Use this
+ * where precise scoping matters: notably unit tests, where `enterWith`
+ * would leak the store into the next sequentially-run test (it sets the
+ * store for the rest of the current async context, not just a callback).
  */
 export function runWithDatasetLoadCache<T>(fn: () => Promise<T>): Promise<T> {
   return datasetLoadCacheStore.run(new Map(), fn);

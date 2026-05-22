@@ -12,6 +12,18 @@ import {
   hasActiveDatasetLoadCache,
   isCacheableDatasetTable,
 } from "./datasetLoadCache";
+import {
+  srDsAbpReport,
+  srDsConvertedReads,
+  srDsTransferHistory,
+  srDsAccountSolarGeneration,
+} from "../../../drizzle/schema";
+
+const NAME_SYMBOL = Symbol.for("drizzle:Name");
+/** The SQL table name Drizzle stores on the table object. */
+function drizzleName(table: unknown): string {
+  return (table as { [k: symbol]: unknown })[NAME_SYMBOL] as string;
+}
 
 describe("datasetLoadCache", () => {
   it("is a passthrough with no active cache (single-request behavior)", async () => {
@@ -121,21 +133,25 @@ describe("datasetLoadCache", () => {
 });
 
 describe("isCacheableDatasetTable — memory-safety allowlist", () => {
+  // Names are derived from the real Drizzle tables so a `mysqlTable(...)`
+  // rename can't silently make the cache no-op while a hardcoded-string
+  // test keeps passing.
   it("allows the one medium high-repeat table (srDsAbpReport)", () => {
-    expect(isCacheableDatasetTable("srDsAbpReport")).toBe(true);
+    expect(isCacheableDatasetTable(drizzleName(srDsAbpReport))).toBe(true);
   });
 
   it("NEVER allows the multi-million-row giants (2026-05-22 OOM guard)", () => {
     // Pinning any of these for a whole build is what spiked heap to
     // the 2 GB reject ceiling. They must stay GC-eligible per-builder.
-    expect(isCacheableDatasetTable("srDsConvertedReads")).toBe(false);
-    expect(isCacheableDatasetTable("srDsTransferHistory")).toBe(false);
-    expect(isCacheableDatasetTable("srDsAccountSolarGeneration")).toBe(false);
+    expect(isCacheableDatasetTable(drizzleName(srDsConvertedReads))).toBe(false);
+    expect(isCacheableDatasetTable(drizzleName(srDsTransferHistory))).toBe(false);
+    expect(
+      isCacheableDatasetTable(drizzleName(srDsAccountSolarGeneration))
+    ).toBe(false);
   });
 
   it("rejects unknown / unlisted tables by default", () => {
     expect(isCacheableDatasetTable("srDsSolarApplications")).toBe(false);
-    expect(isCacheableDatasetTable("srDsDeliverySchedule")).toBe(false);
     expect(isCacheableDatasetTable("")).toBe(false);
   });
 });
