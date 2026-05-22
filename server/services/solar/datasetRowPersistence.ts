@@ -41,6 +41,7 @@ import {
   withDbRetry,
   sql,
   getDbExecuteAffectedRows,
+  batchedDelete,
 } from "../../db/_core";
 
 // ---------------------------------------------------------------------------
@@ -1339,13 +1340,22 @@ function makeBatchDeleter(tableName: string): BatchRowDeleter {
     const db = await getDb();
     if (!db) throw new Error("Database not available");
 
-    const result = await withDbRetry(`delete ${tableName} batch rows`, () =>
+    // Delete the (potentially multi-million-row) superseded batch in
+    // bounded LIMIT chunks instead of one statement. The slow-query
+    // log showed these replace-deletes scanning 18-22M rows in a
+    // single DELETE — a long lock + a large per-statement Request-Unit
+    // spike. batchedDelete loops until a chunk deletes fewer than the
+    // batch size, retrying each chunk via withDbRetry. Net rows
+    // deleted are identical; the work is just chunked. `limit` is an
+    // internal trusted integer (sql.raw avoids a LIMIT-placeholder
+    // driver quirk).
+    return batchedDelete(`delete ${tableName} batch rows`, limit =>
       db.execute(
-        sql`DELETE FROM ${sql.raw(tableName)} WHERE batchId = ${batchId}`
+        sql`DELETE FROM ${sql.raw(tableName)} WHERE batchId = ${batchId} LIMIT ${sql.raw(
+          String(limit)
+        )}`
       )
     );
-
-    return getDbExecuteAffectedRows(result);
   };
 }
 
