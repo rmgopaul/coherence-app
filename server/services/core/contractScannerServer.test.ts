@@ -19,7 +19,13 @@ describe("extractContractDataFromPdfBuffer — CRGA Notice check", () => {
     expect(result.crgaNoticePresent).toBe(true);
     expect(result.crgaNoticeMisplaced).toBe(false);
     expect(result.crgaNoticeFlag).toBeNull();
-  });
+    // 30s timeout (vs vitest's 5s default): parsing the real
+    // REC-Agreement fixture — pdfjs cold-start + embedded font data —
+    // runs ~2s locally but intermittently exceeds 5s on the slower CI
+    // runner, which left the `test` job persistently red across PRs.
+    // The work is real PDF parsing, not a hang; a higher cap is the
+    // correct fix.
+  }, 30_000);
 
   it("flags missing notice when PDF has no CRGA Notice text", async () => {
     // Build a minimal valid PDF with no CRGA Notice text.
@@ -35,7 +41,9 @@ describe("extractContractDataFromPdfBuffer — CRGA Notice check", () => {
     expect(result.crgaNoticeFlag).toBe(
       "CRGA Notice of Potential Changes missing from contract stack"
     );
-  });
+    // Same 30s cap as the sibling test — both share the pdfjs parse
+    // path that's slow to cold-start on CI.
+  }, 30_000);
 });
 
 /**
