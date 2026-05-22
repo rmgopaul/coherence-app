@@ -755,31 +755,15 @@ export async function getSiteEnergy(
   });
 }
 
-export async function getSiteEnergyDetails(
-  context: SolarEdgeApiContext,
-  siteId: string,
-  startDate?: string | null,
-  endDate?: string | null,
-  timeUnit?: string | null,
-  meters?: string | null
-): Promise<unknown> {
-  return getSolarEdgeJson(`/site/${encodeURIComponent(siteId)}/energyDetails`, context, {
-    startTime: startDate ? toSolarEdgeDateTime(startDate, false) : undefined,
-    endTime: endDate ? toSolarEdgeDateTime(endDate, true) : undefined,
-    timeUnit: timeUnit ?? undefined,
-    meters: meters ?? "PRODUCTION",
-  });
-}
-
 export async function getSiteMeters(
   context: SolarEdgeApiContext,
   siteId: string,
-  startDate?: string | null,
-  endDate?: string | null
+  startDate: string,
+  endDate: string
 ): Promise<unknown> {
   return getSolarEdgeJson(`/site/${encodeURIComponent(siteId)}/meters`, context, {
-    startTime: startDate ? toSolarEdgeDateTime(startDate, false) : undefined,
-    endTime: endDate ? toSolarEdgeDateTime(endDate, true) : undefined,
+    startTime: toSolarEdgeDateTime(startDate, false),
+    endTime: toSolarEdgeDateTime(endDate, true),
   });
 }
 
@@ -877,7 +861,8 @@ export async function getSiteMeterSnapshot(
   const siteId = siteIdRaw.trim();
 
   try {
-    const payload = await getSiteMeters(context, siteId);
+    const today = formatIsoDate(new Date());
+    const payload = await getSiteMeters(context, siteId, today, today);
     const meterTypes = extractMeterTypeRows(payload);
     const productionMeters = meterTypes.filter((type) => /production|prod/i.test(type)).length;
     const consumptionMeters = meterTypes.filter((type) => /consumption|cons/i.test(type)).length;
