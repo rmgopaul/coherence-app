@@ -41,8 +41,12 @@ interface DragState {
 
 export default function Canvas() {
   const utils = trpc.useUtils();
+  // dock.list is shared with DropDock (same query key). Mutations
+  // (add/remove) invalidate it and drag uses an optimistic update, so
+  // a long background poll only reconciles cross-device edits — 5m is
+  // plenty and keeps the DB request-unit cost down.
   const { data: items = [], isLoading } = trpc.dock.list.useQuery(undefined, {
-    refetchInterval: 60_000,
+    refetchInterval: 5 * 60_000,
     refetchOnWindowFocus: false,
   });
   const moveMut = trpc.dock.move.useMutation({

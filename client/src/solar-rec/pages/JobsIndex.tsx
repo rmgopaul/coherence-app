@@ -218,7 +218,9 @@ function JobsIndexImpl() {
       refetchInterval: (query) => {
         const jobs = query.state.data?.jobs ?? [];
         const anyLive = jobs.some((j) => isLive(j.status as JobStatus));
-        return anyLive ? 3000 : 30000;
+        // Live jobs poll fast; idle cadence relaxed to 60s (window
+        // focus still refetches) to cut DB request-unit cost.
+        return anyLive ? 3000 : 60000;
       },
       // Refetch when window regains focus to keep the table fresh
       // when the user comes back from another tab.

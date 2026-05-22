@@ -1620,7 +1620,9 @@ export default function SolarRecDashboard() {
           const inFlight = data.jobs.some(
             (j) => !isTerminalUploadStatus(j.status)
           );
-          return inFlight ? 2_000 : 30_000;
+          // Fast while uploads are in flight; idle cadence relaxed to
+          // 60s to cut DB request-unit cost when nothing is uploading.
+          return inFlight ? 2_000 : 60_000;
         },
         refetchOnWindowFocus: true,
       }

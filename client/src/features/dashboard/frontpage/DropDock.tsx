@@ -37,8 +37,11 @@ export function DropDock() {
   const [dragActive, setDragActive] = useState(false);
   const [taskInput, setTaskInput] = useState("");
 
+  // Shared dock.list query (also read by Canvas). add/remove below
+  // invalidate it immediately, so a long background poll only catches
+  // cross-device edits — 5m keeps the DB request-unit cost low.
   const { data: items = [], isLoading } = trpc.dock.list.useQuery(undefined, {
-    refetchInterval: 60_000,
+    refetchInterval: 5 * 60_000,
     refetchOnWindowFocus: false,
   });
 
