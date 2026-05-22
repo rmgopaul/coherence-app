@@ -1,6 +1,6 @@
 import { createHash } from "crypto";
 import { nanoid } from "nanoid";
-import { eq, and, sql, getDb, withDbRetry } from "./_core";
+import { eq, and, sql, getDb, withDbRetry, batchedDelete } from "./_core";
 import { gmailWaitingOnCache } from "../../drizzle/schema";
 
 /**
@@ -87,9 +87,10 @@ export async function setCachedGmailWaitingOn(params: {
 export async function pruneExpiredGmailWaitingOn(): Promise<void> {
   const db = await getDb();
   if (!db) return;
-  await withDbRetry("prune expired gmail waiting-on cache", async () => {
-    await db
+  await batchedDelete("prune expired gmail waiting-on cache", (limit) =>
+    db
       .delete(gmailWaitingOnCache)
-      .where(sql`${gmailWaitingOnCache.expiresAt} < NOW()`);
-  });
+      .where(sql`${gmailWaitingOnCache.expiresAt} < NOW()`)
+      .limit(limit),
+  );
 }

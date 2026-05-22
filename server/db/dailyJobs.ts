@@ -1,5 +1,5 @@
 import { nanoid } from "nanoid";
-import { eq, and, sql, getDb, withDbRetry } from "./_core";
+import { eq, and, sql, getDb, withDbRetry, batchedDelete } from "./_core";
 import { dailyJobClaims } from "../../drizzle/schema";
 
 /**
@@ -117,9 +117,10 @@ export async function pruneDailyJobClaims(
 ): Promise<void> {
   const db = await getDb();
   if (!db) return;
-  await withDbRetry("prune daily job claims", async () => {
-    await db
+  await batchedDelete("prune daily job claims", (limit) =>
+    db
       .delete(dailyJobClaims)
-      .where(sql`${dailyJobClaims.dateKey} < ${olderThanDateKey}`);
-  });
+      .where(sql`${dailyJobClaims.dateKey} < ${olderThanDateKey}`)
+      .limit(limit),
+  );
 }
