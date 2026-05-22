@@ -42,6 +42,7 @@ import {
   updateSolarRecDashboardBuildProgress,
 } from "../../db/solarRecDashboardBuilds";
 import { startDashboardJobMetric } from "./dashboardJobMetrics";
+import { beginDatasetLoadCache } from "./datasetLoadCache";
 import type { SolarRecDashboardBuild } from "../../../drizzle/schema";
 
 const METRIC_PREFIX = "[dashboard:build-jobs]";
@@ -319,6 +320,13 @@ export async function runDashboardBuildJob(buildId: string): Promise<void> {
       metric.fail(new Error(error));
       return;
     }
+
+    // Establish a build-scoped dataset-load cache so the fact-build
+    // steps below share identical (scope, batch, table) reads instead
+    // of each re-scanning the full batch (the abpReport read alone was
+    // ~29% of heavy Request Units). enterWith (not run) avoids wrapping
+    // the loop in a closure, preserving its early returns.
+    beginDatasetLoadCache();
 
     for (let i = 0; i < totalSteps; i += 1) {
       if (claimLost) break;
