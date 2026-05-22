@@ -208,6 +208,40 @@ export function getDbExecuteAffectedRows(result: unknown): number {
   return 0;
 }
 
+const PRUNE_DELETE_BATCH_SIZE = 2_000;
+// Hard cap so a misread affected-row count can never spin forever.
+// 10k batches * 2k rows = 20M rows/run; anything beyond that finishes
+// on the next nightly pass.
+const PRUNE_DELETE_MAX_BATCHES = 10_000;
+
+/**
+ * Delete rows in bounded `LIMIT`-batches instead of one unbounded
+ * `DELETE`. Keeps each statement small so a large backlog can't take a
+ * long table lock or balloon a single transaction (and on TiDB, keeps
+ * per-statement Request Units predictable). Each batch retries
+ * independently via withDbRetry; the loop stops once a batch deletes
+ * fewer rows than the batch size (the tail) or the hard cap is hit.
+ *
+ * `deleteBatch(limit)` MUST apply a matching `.limit(limit)` and return
+ * the raw driver result so the affected-row count can be read. Returns
+ * the total number of rows deleted.
+ */
+export async function batchedDelete(
+  operation: string,
+  deleteBatch: (limit: number) => PromiseLike<unknown>,
+  batchSize = PRUNE_DELETE_BATCH_SIZE,
+): Promise<number> {
+  let totalDeleted = 0;
+  for (let batch = 0; batch < PRUNE_DELETE_MAX_BATCHES; batch++) {
+    const affected = await withDbRetry(operation, async () =>
+      getDbExecuteAffectedRows(await deleteBatch(batchSize)),
+    );
+    totalDeleted += affected;
+    if (affected < batchSize) break;
+  }
+  return totalDeleted;
+}
+
 export function buildMessagePreview(
   content: string | null | undefined,
   maxLength = 140

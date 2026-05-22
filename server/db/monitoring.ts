@@ -1,5 +1,5 @@
 import { nanoid } from "nanoid";
-import { eq, and, asc, desc, gte, sql, getDb, withDbRetry } from "./_core";
+import { eq, and, asc, desc, gte, sql, getDb, withDbRetry, batchedDelete } from "./_core";
 import {
   monitoringApiRuns,
   monitoringBatchRuns,
@@ -752,11 +752,12 @@ export async function pruneMonitoringApiRuns(olderThanDateKey: string) {
   const db = await getDb();
   if (!db) return;
 
-  await withDbRetry("prune monitoring api runs", async () => {
-    await db
+  await batchedDelete("prune monitoring api runs", (limit) =>
+    db
       .delete(monitoringApiRuns)
-      .where(sql`${monitoringApiRuns.dateKey} < ${olderThanDateKey}`);
-  });
+      .where(sql`${monitoringApiRuns.dateKey} < ${olderThanDateKey}`)
+      .limit(limit),
+  );
 }
 
 // ── Monitoring Batch Runs ───────────────────────────────────────────

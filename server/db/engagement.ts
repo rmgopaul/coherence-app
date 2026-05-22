@@ -1,5 +1,5 @@
 import { nanoid } from "nanoid";
-import { eq, and, sql, getDb, withDbRetry } from "./_core";
+import { eq, and, sql, getDb, withDbRetry, batchedDelete } from "./_core";
 import { sectionEngagement, InsertSectionEngagement } from "../../drizzle/schema";
 
 // ── Section Engagement ──
@@ -93,11 +93,12 @@ export async function pruneSectionEngagement(olderThanDateKey: string) {
   const db = await getDb();
   if (!db) return;
 
-  await withDbRetry("prune section engagement", async () => {
-    await db
+  await batchedDelete("prune section engagement", (limit) =>
+    db
       .delete(sectionEngagement)
-      .where(sql`${sectionEngagement.sessionDate} < ${olderThanDateKey}`);
-  });
+      .where(sql`${sectionEngagement.sessionDate} < ${olderThanDateKey}`)
+      .limit(limit),
+  );
 }
 
 export async function clearSectionEngagement(userId: number) {
