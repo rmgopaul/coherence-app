@@ -33,13 +33,33 @@ type DatasetLoadCache = Map<string, Promise<unknown>>;
 const datasetLoadCacheStore = new AsyncLocalStorage<DatasetLoadCache>();
 
 /**
+ * Whether the build-scoped dataset-load cache is enabled. Defaults
+ * OFF so merging this code is a no-op in prod — the optimization is
+ * opt-in and instantly reversible: set
+ * `DASHBOARD_BUILD_DATASET_CACHE_ENABLED=true` to turn it on, set it
+ * back to anything else (or unset) to turn it off, no redeploy needed
+ * since the env is read at call time. Mirrors the Phase-H
+ * `DASHBOARD_HEAP_PRESSURE_REJECT_BYTES` env-toggle pattern.
+ *
+ * Why dormant-by-default: the cache pins loaded datasets in memory for
+ * a build's duration, and the heap impact can only be validated on
+ * prod-shape data. Shipping it off lets that validation happen behind
+ * a flag instead of as a deploy-time behavior change.
+ */
+export function isDatasetLoadCacheEnabled(): boolean {
+  return process.env.DASHBOARD_BUILD_DATASET_CACHE_ENABLED === "true";
+}
+
+/**
  * Establish a fresh build-scoped cache for the current async context
- * and everything it awaits. Uses `enterWith` (not `run`) so the caller
- * does NOT have to wrap its body in a closure — important where the
- * surrounding code relies on early `return`s (e.g. the build runner's
- * step loop).
+ * and everything it awaits. **No-op unless
+ * `DASHBOARD_BUILD_DATASET_CACHE_ENABLED=true`** (dormant by default).
+ * Uses `enterWith` (not `run`) so the caller does NOT have to wrap its
+ * body in a closure — important where the surrounding code relies on
+ * early `return`s (e.g. the build runner's step loop).
  */
 export function beginDatasetLoadCache(): void {
+  if (!isDatasetLoadCacheEnabled()) return;
   datasetLoadCacheStore.enterWith(new Map());
 }
 

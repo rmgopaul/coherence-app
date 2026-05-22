@@ -81,13 +81,40 @@ describe("datasetLoadCache", () => {
     expect(loader).toHaveBeenCalledTimes(2); // each scope has its own map
   });
 
-  it("beginDatasetLoadCache activates the cache for the running context", async () => {
-    const loader = vi.fn(async () => ["a"]);
-    await (async () => {
-      beginDatasetLoadCache();
-      await memoizeDatasetLoad("k", loader);
-      await memoizeDatasetLoad("k", loader);
-    })();
-    expect(loader).toHaveBeenCalledTimes(1);
+  it("beginDatasetLoadCache is a no-op when the flag is unset (dormant default)", async () => {
+    const prev = process.env.DASHBOARD_BUILD_DATASET_CACHE_ENABLED;
+    delete process.env.DASHBOARD_BUILD_DATASET_CACHE_ENABLED;
+    try {
+      const loader = vi.fn(async () => ["a"]);
+      await (async () => {
+        beginDatasetLoadCache();
+        await memoizeDatasetLoad("k", loader);
+        await memoizeDatasetLoad("k", loader);
+      })();
+      // No flag → no cache established → no dedup → loader runs each call.
+      expect(loader).toHaveBeenCalledTimes(2);
+    } finally {
+      if (prev === undefined)
+        delete process.env.DASHBOARD_BUILD_DATASET_CACHE_ENABLED;
+      else process.env.DASHBOARD_BUILD_DATASET_CACHE_ENABLED = prev;
+    }
+  });
+
+  it("beginDatasetLoadCache activates the cache when the flag is 'true'", async () => {
+    const prev = process.env.DASHBOARD_BUILD_DATASET_CACHE_ENABLED;
+    process.env.DASHBOARD_BUILD_DATASET_CACHE_ENABLED = "true";
+    try {
+      const loader = vi.fn(async () => ["a"]);
+      await (async () => {
+        beginDatasetLoadCache();
+        await memoizeDatasetLoad("k", loader);
+        await memoizeDatasetLoad("k", loader);
+      })();
+      expect(loader).toHaveBeenCalledTimes(1);
+    } finally {
+      if (prev === undefined)
+        delete process.env.DASHBOARD_BUILD_DATASET_CACHE_ENABLED;
+      else process.env.DASHBOARD_BUILD_DATASET_CACHE_ENABLED = prev;
+    }
   });
 });
