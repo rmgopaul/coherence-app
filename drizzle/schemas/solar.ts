@@ -2257,6 +2257,7 @@ export const solarRecDashboardChangeOwnershipFacts = mysqlTable(
     zillowStatus: varchar("zillowStatus", { length: 64 }),
     zillowSoldDate: date("zillowSoldDate"),
     latestReportingDate: date("latestReportingDate"),
+    lastRecDeliveryDate: date("lastRecDeliveryDate"),
     // Status enums stored as varchar so adding a new status is a
     // code-only PR. The aggregator already validates against a
     // hard-coded set; this column captures whatever the validator
@@ -2381,6 +2382,7 @@ export const solarRecDashboardOwnershipFacts = mysqlTable(
     contractStatusText: text("contractStatusText").notNull(),
     // Date fields (4-byte date type, no time component).
     latestReportingDate: date("latestReportingDate"),
+    lastRecDeliveryDate: date("lastRecDeliveryDate"),
     contractedDate: date("contractedDate"),
     // Zillow cross-reference (optional sale tracking).
     zillowStatus: varchar("zillowStatus", { length: 64 }),
@@ -2480,13 +2482,16 @@ export const solarRecDashboardSystemFacts = mysqlTable(
     contractedValue: decimal("contractedValue", { precision: 18, scale: 4 }),
     deliveredValue: decimal("deliveredValue", { precision: 18, scale: 4 }),
     valueGap: decimal("valueGap", { precision: 18, scale: 4 }),
-    // Reporting telemetry.
+    // Reporting telemetry. See `SystemRecord` (state/types.ts) for
+    // the meter-only vs. transfer-date rationale that shapes both
+    // `latestReportingDate` and `lastRecDeliveryDate`.
     latestReportingDate: date("latestReportingDate"),
     latestReportingKwh: decimal("latestReportingKwh", {
       precision: 18,
       scale: 4,
     }),
     isReporting: boolean("isReporting").notNull(),
+    lastRecDeliveryDate: date("lastRecDeliveryDate"),
     // Ownership / status.
     isTerminated: boolean("isTerminated").notNull(),
     isTransferred: boolean("isTransferred").notNull(),

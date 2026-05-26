@@ -177,7 +177,10 @@ describe("buildOwnershipTileCsv", () => {
     );
   });
 
-  it("CSV header row matches the legacy 19-column ownership shape", () => {
+  it("CSV header row preserves the legacy 19 ownership columns and appends last_rec_delivery_date at the end", () => {
+    // 20-column shape since 2026-05: `last_rec_delivery_date` was
+    // appended (not interleaved) to keep existing index-based CSV
+    // consumers' column positions stable.
     const result = buildOwnershipTileCsv(rows, "reporting", FROZEN_TIME);
     const headerLine = result.csv.split("\n")[0];
     expect(headerLine).toBe(
@@ -201,6 +204,7 @@ describe("buildOwnershipTileCsv", () => {
         "contract_date",
         "zillow_status",
         "zillow_sold_date",
+        "last_rec_delivery_date",
       ].join(",")
     );
   });

@@ -84,6 +84,7 @@ export function buildChangeOwnershipFactRows(args: {
     zillowStatus: row.zillowStatus,
     zillowSoldDate: row.zillowSoldDate,
     latestReportingDate: row.latestReportingDate,
+    lastRecDeliveryDate: row.lastRecDeliveryDate,
     changeOwnershipStatus: row.changeOwnershipStatus,
     ownershipStatus: row.ownershipStatus,
     isReporting: row.isReporting,

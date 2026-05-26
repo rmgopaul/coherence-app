@@ -92,6 +92,11 @@ type SystemBuilder = {
   latestGenerationReadDate: Date | null;
   latestGenerationReadWh: number | null;
   lastRecDeliveredGenerationDate: Date | null;
+  // Most recent `Transfer Completion Date` from the GATS transfer
+  // ledger (`srDsTransferHistory`). Distinct from
+  // `lastRecDeliveredGenerationDate`, which is a production-period
+  // date sourced from solarApplications.
+  lastTransferCompletionDate: Date | null;
   contractedDate: Date | null;
   contractType: string | null;
   zillowStatus: string | null;
@@ -267,6 +272,7 @@ export function buildSystems(input: BuildSystemsInput): SystemRecord[] {
       latestGenerationReadDate: null,
       latestGenerationReadWh: null,
       lastRecDeliveredGenerationDate: null,
+      lastTransferCompletionDate: null,
       contractedDate: null,
       contractType: null,
       zillowStatus: null,
@@ -472,6 +478,24 @@ export function buildSystems(input: BuildSystemsInput): SystemRecord[] {
   // transferHistory (aggregated lifetime-total per tracking ID).
   const transferLookup = buildTransferDeliveryLookup(transferHistoryRows);
 
+  // Per-system MAX(Transfer Completion Date) from the GATS ledger.
+  // Skip rows whose unitId doesn't match an existing builder so we
+  // don't create phantom systems from transfers alone.
+  transferHistoryRows.forEach((row) => {
+    const unitId = clean(row["Unit ID"]);
+    if (!unitId) return;
+    const builderKey = keyByTracking.get(unitId);
+    if (!builderKey) return;
+    const builder = builders.get(builderKey);
+    if (!builder) return;
+    const completionDate = parseDate(clean(row["Transfer Completion Date"]));
+    if (!completionDate) return;
+    builder.lastTransferCompletionDate = maxDate(
+      builder.lastTransferCompletionDate,
+      completionDate,
+    );
+  });
+
   deliveryScheduleBaseRows.forEach((row) => {
     const trackingSystemRefId = clean(row.tracking_system_ref_id) || null;
     if (!trackingSystemRefId) return;
@@ -551,10 +575,9 @@ export function buildSystems(input: BuildSystemsInput): SystemRecord[] {
 
   return Array.from(builders.values())
     .map((builder) => {
-      const latestReportingDate = maxDate(
-        builder.latestGenerationDate,
-        builder.lastRecDeliveredGenerationDate,
-      );
+      // Meter-only — see SystemRecord type for rationale.
+      const latestReportingDate = builder.latestGenerationDate;
+      const lastRecDeliveryDate = builder.lastTransferCompletionDate;
       const isReporting = latestReportingDate ? latestReportingDate >= threshold : false;
 
       const sizeBucket: SizeBucket =
@@ -654,6 +677,7 @@ export function buildSystems(input: BuildSystemsInput): SystemRecord[] {
         latestReportingDate,
         latestReportingKwh,
         isReporting,
+        lastRecDeliveryDate,
         isTerminated,
         isTransferred: builder.transferSeen,
         ownershipStatus,

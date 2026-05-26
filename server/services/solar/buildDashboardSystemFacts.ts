@@ -76,6 +76,7 @@ export interface SystemRecordSubset {
   latestReportingDate: Date | null;
   latestReportingKwh: number | null;
   isReporting: boolean;
+  lastRecDeliveryDate: Date | null;
   isTerminated: boolean;
   isTransferred: boolean;
   ownershipStatus: string;
@@ -158,6 +159,7 @@ export function buildSystemFactRows(args: {
     latestReportingDate: row.latestReportingDate,
     latestReportingKwh: numberToDecimalString(row.latestReportingKwh),
     isReporting: row.isReporting,
+    lastRecDeliveryDate: row.lastRecDeliveryDate,
     isTerminated: row.isTerminated,
     isTransferred: row.isTransferred,
     ownershipStatus: row.ownershipStatus,

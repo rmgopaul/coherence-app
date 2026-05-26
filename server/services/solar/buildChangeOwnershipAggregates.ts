@@ -101,6 +101,7 @@ export interface ChangeOwnershipExportRow {
   zillowStatus: string | null;
   zillowSoldDate: Date | null;
   latestReportingDate: Date | null;
+  lastRecDeliveryDate: Date | null;
   changeOwnershipStatus: ChangeOwnershipStatus;
   ownershipStatus: OwnershipStatus;
   isReporting: boolean;
@@ -174,6 +175,7 @@ export interface SnapshotSystemForChangeOwnership {
   zillowStatus: string | null;
   zillowSoldDate: Date | null;
   latestReportingDate: Date | null;
+  lastRecDeliveryDate: Date | null;
   hasChangedOwnership: boolean;
   changeOwnershipStatus: ChangeOwnershipStatus | null;
   totalContractAmount: number | null;
@@ -300,6 +302,7 @@ export function extractSnapshotSystemsForChangeOwnership(
       zillowStatus: stringOrNull(r.zillowStatus),
       zillowSoldDate: dateOrNull(r.zillowSoldDate),
       latestReportingDate: dateOrNull(r.latestReportingDate),
+      lastRecDeliveryDate: dateOrNull(r.lastRecDeliveryDate),
       hasChangedOwnership: boolOr(r.hasChangedOwnership, false),
       changeOwnershipStatus: changeOwnershipStatusOf(r.changeOwnershipStatus),
       totalContractAmount: numberOrNull(r.totalContractAmount),
@@ -505,6 +508,10 @@ export function buildChangeOwnership(
           (latest, system) => maxDate(latest, system.latestReportingDate),
           null
         );
+        const lastRecDeliveryDate = allMatched.reduce<Date | null>(
+          (latest, system) => maxDate(latest, system.lastRecDeliveryDate),
+          null
+        );
         rows.push({
           key: `coo:${dedupeKey}`,
           systemName: representative.systemName,
@@ -517,6 +524,7 @@ export function buildChangeOwnership(
           zillowStatus: representative.zillowStatus,
           zillowSoldDate: representative.zillowSoldDate,
           latestReportingDate,
+          lastRecDeliveryDate,
           changeOwnershipStatus: "Terminated",
           ownershipStatus: isReporting
             ? "Terminated and Reporting"
@@ -577,6 +585,10 @@ export function buildChangeOwnership(
       (latest, system) => maxDate(latest, system.latestReportingDate),
       null
     );
+    const lastRecDeliveryDate = nonTerminatedSystems.reduce<Date | null>(
+      (latest, system) => maxDate(latest, system.lastRecDeliveryDate),
+      null
+    );
 
     rows.push({
       key: `coo:${dedupeKey}`,
@@ -590,6 +602,7 @@ export function buildChangeOwnership(
       zillowStatus: representative.zillowStatus,
       zillowSoldDate: representative.zillowSoldDate,
       latestReportingDate,
+      lastRecDeliveryDate,
       changeOwnershipStatus,
       ownershipStatus: isTransferred
         ? isReporting

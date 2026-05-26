@@ -196,6 +196,7 @@ describe("buildSystems", () => {
       "latestReportingDate",
       "latestReportingKwh",
       "isReporting",
+      "lastRecDeliveryDate",
       "isTerminated",
       "isTransferred",
       "ownershipStatus",
@@ -227,5 +228,48 @@ describe("buildSystems", () => {
     const result2 = buildSystems(input);
 
     expect(result1).toEqual(result2);
+  });
+
+  // Regression: `latestReportingDate` must reflect meter telemetry
+  // only. A REC transfer that completes AFTER the latest meter read
+  // (which is the common case — RECs are minted ~1 month later)
+  // must NOT advance `latestReportingDate`. The transfer date
+  // surfaces separately as `lastRecDeliveryDate`.
+  it("latestReportingDate is meter-only; lastRecDeliveryDate carries the GATS transfer date", () => {
+    const input = emptyInput();
+    input.part2VerifiedAbpRows = [makeAbpRow()];
+    input.solarApplicationsRows = [makeSolarAppRow()];
+    // Meter read: end of March.
+    input.generationEntryRows = [
+      makeGenerationRow({
+        "Last Month of Gen": "2024-03",
+        "Effective Date": "2024-03-31",
+      }),
+    ];
+    // REC transfer for that March production: completed April 25 —
+    // ~1 month after the meter read, mirroring real ABP cadence.
+    input.transferHistoryRows = [
+      {
+        "Unit ID": "TRACK-001",
+        "Transaction ID": "TX-001",
+        "Transfer Completion Date": "2024-04-25",
+        Quantity: "100",
+        Transferor: "Carbon Solutions",
+        Transferee: "Some Utility Co",
+      },
+    ];
+
+    const result = buildSystems(input);
+    const system = result.find((s) => s.trackingSystemRefId === "TRACK-001");
+    expect(system).toBeDefined();
+    if (!system) return;
+
+    expect(system.latestReportingDate?.getUTCMonth()).toBe(2); // March
+    expect(system.lastRecDeliveryDate?.getUTCMonth()).toBe(3); // April
+    // The bug would have set latestReportingDate to the April
+    // transfer date; pin meter-only semantics here.
+    expect(system.latestReportingDate?.getTime()).toBeLessThan(
+      system.lastRecDeliveryDate?.getTime() ?? Infinity,
+    );
   });
 });

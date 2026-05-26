@@ -103,9 +103,18 @@ export type SystemRecord = {
   contractedValue: number | null;
   deliveredValue: number | null;
   valueGap: number | null;
+  // Meter-only: MAX(srDsAccountSolarGeneration.lastMeterReadDate).
+  // RECs are minted ~1 month after the production they represent,
+  // so a `MAX(meter, rec_delivery)` definition would overstate
+  // freshness — `isReporting`'s 3-month threshold must track real
+  // telemetry, not REC paperwork.
   latestReportingDate: Date | null;
   latestReportingKwh: number | null;
   isReporting: boolean;
+  // MAX `Transfer Completion Date` from `srDsTransferHistory` —
+  // kept separate from `latestReportingDate` so callers can ask
+  // "when did RECs last move" without conflating it with reporting.
+  lastRecDeliveryDate: Date | null;
   isTerminated: boolean;
   isTransferred: boolean;
   ownershipStatus: OwnershipStatus;

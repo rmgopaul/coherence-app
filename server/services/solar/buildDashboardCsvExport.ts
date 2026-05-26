@@ -50,6 +50,7 @@ export interface OwnershipTileCsvRow {
   contractType: string | null;
   contractStatusText: string;
   latestReportingDate: Date | string | null;
+  lastRecDeliveryDate: Date | string | null;
   contractedDate: Date | string | null;
   zillowStatus: string | null;
   zillowSoldDate: Date | string | null;
@@ -70,6 +71,7 @@ export interface ChangeOwnershipTileCsvRow {
   zillowStatus: string | null;
   zillowSoldDate: Date | string | null;
   latestReportingDate: Date | string | null;
+  lastRecDeliveryDate: Date | string | null;
 }
 
 export interface OwnershipTileCsvResult {
@@ -113,6 +115,7 @@ const OWNERSHIP_HEADERS = [
   "contract_date",
   "zillow_status",
   "zillow_sold_date",
+  "last_rec_delivery_date",
 ];
 
 const CHANGE_OWNERSHIP_HEADERS = [
@@ -130,6 +133,7 @@ const CHANGE_OWNERSHIP_HEADERS = [
   "zillow_status",
   "zillow_sold_date",
   "last_reporting_date",
+  "last_rec_delivery_date",
 ];
 
 const REPORTING_TILE_STATUSES: ReadonlySet<OwnershipStatus> =
@@ -351,6 +355,7 @@ function ownershipRowToCsvRecord(
     contract_date: isoDateOnly(row.contractedDate),
     zillow_status: row.zillowStatus ?? "",
     zillow_sold_date: isoDateOnly(row.zillowSoldDate),
+    last_rec_delivery_date: isoDateOnly(row.lastRecDeliveryDate),
   };
 }
 
@@ -372,6 +377,7 @@ function changeOwnershipRowToCsvRecord(
     zillow_status: row.zillowStatus ?? "",
     zillow_sold_date: isoDateOnly(row.zillowSoldDate),
     last_reporting_date: isoDateOnly(row.latestReportingDate),
+    last_rec_delivery_date: isoDateOnly(row.lastRecDeliveryDate),
   };
 }
 
