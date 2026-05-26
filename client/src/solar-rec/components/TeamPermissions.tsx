@@ -79,6 +79,7 @@ export default function TeamPermissions() {
     onSuccess: () => {
       utils.permissions.listScopePermissions.invalidate();
       utils.permissions.getMyPermissions.invalidate();
+      toast.success("Permission updated");
     },
     onError: err => toast.error(`Save failed: ${err.message}`),
   });
@@ -86,6 +87,7 @@ export default function TeamPermissions() {
     onSuccess: () => {
       utils.permissions.listScopePermissions.invalidate();
       utils.permissions.getMyPermissions.invalidate();
+      toast.success("Scope admin updated");
     },
     onError: err => toast.error(`Save failed: ${err.message}`),
   });
