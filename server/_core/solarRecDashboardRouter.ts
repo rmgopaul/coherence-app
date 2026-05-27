@@ -5442,6 +5442,9 @@ export const solarRecDashboardRouter = t.router({
     .input(
       z.object({
         cursor: z.string().min(1).max(128).nullable().optional(),
+        // Offset-based pagination, used when `sortBy` is set. Ignored
+        // when sortBy is null (the cursor path covers default sort).
+        offset: z.number().int().min(0).max(100_000).nullable().optional(),
         limit: z.number().int().min(1).max(1000).default(200),
         ownershipStatus: z
           .enum([
@@ -5463,28 +5466,98 @@ export const solarRecDashboardRouter = t.router({
         // Case-insensitive contains-match across CSG ID (systemId)
         // and systemName. Trimmed server-side; empty → no filter.
         textSearch: z.string().max(128).nullable().optional(),
+        // Server-side sort. The DB helper validates `sortBy` against
+        // its own SORTABLE_COLUMN_NAMES allowlist; here we only
+        // bound the string length.
+        sortBy: z.string().max(64).nullable().optional(),
+        sortDir: z.enum(["asc", "desc"]).default("asc"),
+        // Per-column filter map. Each entry is one of:
+        //   { kind: "contains", value: string }   text contains
+        //   { kind: "equals",   value: string }   exact match
+        //   { kind: "in",       values: string[] } any-of
+        //   { kind: "boolean",  value: boolean }  boolean column
+        // Column name validated against SORTABLE_COLUMN_NAMES in
+        // the DB helper.
+        filters: z
+          .record(
+            z.string().max(64),
+            z.union([
+              z.object({
+                kind: z.literal("contains"),
+                value: z.string().max(128),
+              }),
+              z.object({
+                kind: z.literal("equals"),
+                value: z.string().max(255),
+              }),
+              z.object({
+                kind: z.literal("in"),
+                values: z.array(z.string().max(255)).max(50),
+              }),
+              z.object({
+                kind: z.literal("boolean"),
+                value: z.boolean(),
+              }),
+            ])
+          )
+          .nullable()
+          .optional(),
       })
     )
     .query(async ({ ctx, input }) => {
-      const { getSystemFactsPage } = await import(
+      const { getSystemFactsPage, SORTABLE_COLUMN_NAMES } = await import(
         "../db/dashboardSystemFacts"
       );
+      // Validate sortBy against the DB helper's allowlist. An unknown
+      // column from the client → ignore the sort and fall back to the
+      // default systemKey ASC + cursor path.
+      const sortableSet = new Set<string>(SORTABLE_COLUMN_NAMES);
+      const sortBy =
+        input.sortBy && sortableSet.has(input.sortBy)
+          ? (input.sortBy as (typeof SORTABLE_COLUMN_NAMES)[number])
+          : null;
+      const filters = (input.filters ?? null) as
+        | Parameters<typeof getSystemFactsPage>[1]["filters"]
+        | null;
+      // TanStack `useInfiniteQuery` passes the previous page's
+      // `nextCursor` back via the `cursor` field on the input. When
+      // `sortBy` is set we encode offsets as numeric strings into
+      // that cursor (the wire shape stays a string for the client's
+      // single pageParam binding); resolve back to a number here.
+      const explicitOffset =
+        typeof input.offset === "number" ? input.offset : null;
+      const offsetFromCursor =
+        sortBy && input.cursor && /^\d+$/.test(input.cursor)
+          ? Number(input.cursor)
+          : null;
+      const resolvedOffset = explicitOffset ?? offsetFromCursor ?? 0;
       const rows = await getSystemFactsPage(ctx.scopeId, {
-        cursorAfter: input.cursor ?? null,
+        // Cursor only applies when not sorting (preserves existing
+        // parent-dashboard callers).
+        cursorAfter: sortBy ? null : input.cursor ?? null,
+        offset: sortBy ? resolvedOffset : null,
         limit: input.limit,
         status: input.ownershipStatus ?? null,
         sizeBucket: input.sizeBucket ?? null,
         isReporting: input.isReporting ?? null,
         isPart2Eligible: input.isPart2Eligible ?? null,
         textSearch: input.textSearch ?? null,
+        sortBy,
+        sortDir: input.sortDir,
+        filters,
       });
-      const nextCursor =
-        rows.length === input.limit
-          ? rows[rows.length - 1]?.systemKey ?? null
-          : null;
+      // When sortBy is set, nextCursor becomes the next offset (as
+      // numeric string). When sortBy is null, nextCursor is the
+      // last row's systemKey.
+      const hasMore = rows.length === input.limit;
+      const nextCursor = hasMore
+        ? sortBy
+          ? String(resolvedOffset + rows.length)
+          : rows[rows.length - 1]?.systemKey ?? null
+        : null;
       return {
         _checkpoint: "systems-page-v1",
-        _runnerVersion: "phase-2-pr-f-3@3" as const,
+        _runnerVersion: "phase-2-pr-f-3@4" as const,
         rows,
         nextCursor,
         hasMore: nextCursor !== null,

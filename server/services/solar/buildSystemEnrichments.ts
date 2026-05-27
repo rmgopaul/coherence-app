@@ -23,6 +23,7 @@ import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import {
   contractScanResults,
   solarRecActiveDatasetVersions,
+  srDsAbpReport,
   srDsAccountSolarGeneration,
   srDsDeliverySchedule,
   srDsSolarApplications,
@@ -47,6 +48,12 @@ export interface SystemEnrichments {
   deliveryStartDate: Date | null;
   totalTransferredMwh: number | null;
   lastMeterReadDate: Date | null;
+  // Application + workflow statuses. project/internal come from
+  // solarApplications.rawRow; part1/part2 come from srDsAbpReport.rawRow.
+  projectStatus: string | null;
+  internalStatus: string | null;
+  part1Status: string | null;
+  part2Status: string | null;
 }
 
 export const EMPTY_SYSTEM_ENRICHMENTS: Readonly<SystemEnrichments> =
@@ -61,6 +68,10 @@ export const EMPTY_SYSTEM_ENRICHMENTS: Readonly<SystemEnrichments> =
     deliveryStartDate: null,
     totalTransferredMwh: null,
     lastMeterReadDate: null,
+    projectStatus: null,
+    internalStatus: null,
+    part1Status: null,
+    part2Status: null,
   });
 
 interface SystemIdentity {
@@ -85,7 +96,15 @@ const CITY_ALIASES = [
   "Project City",
 ] as const;
 
+// "Interconnecting Utility" — the LSE the system is interconnected to
+// (Ameren Illinois / Commonwealth Edison / etc). The canonical CSV
+// header in the user's solarApplications export is dot-notation
+// `utility.name`; everything else is a defensive alias for other
+// CSV shapes that may show up.
 const UTILITY_ALIASES = [
+  "utility.name",
+  "interconnecting_utility",
+  "Interconnecting Utility",
   "utilityTerritory",
   "utility_territory",
   "Utility Territory",
@@ -98,28 +117,102 @@ const UTILITY_ALIASES = [
 
 const YEAR1_START_ALIASES = ["year1_start_date", "Year 1 Start Date"] as const;
 
+const PROJECT_STATUS_ALIASES = [
+  "project.status",
+  "project_status",
+  "Project Status",
+  "projectStatus",
+] as const;
+
+const INTERNAL_STATUS_ALIASES = [
+  "internal_status",
+  "Internal Status",
+  "internalStatus",
+] as const;
+
+const PART_1_STATUS_ALIASES = [
+  "Part_1_Status",
+  "part_1_status",
+  "Part 1 Status",
+  "part1Status",
+] as const;
+
+const PART_2_STATUS_ALIASES = [
+  "Part_2_Status",
+  "part_2_status",
+  "Part 2 Status",
+  "part2Status",
+] as const;
+
 // ---------------------------------------------------------------------------
 // Pure helpers (exported for tests)
 // ---------------------------------------------------------------------------
 
+export interface SolarApplicationsRawFields {
+  addressCity: string | null;
+  utilityTerritory: string | null;
+  projectStatus: string | null;
+  internalStatus: string | null;
+}
+
+const EMPTY_SOLAR_APP_RAW_FIELDS: SolarApplicationsRawFields = {
+  addressCity: null,
+  utilityTerritory: null,
+  projectStatus: null,
+  internalStatus: null,
+};
+
 /**
  * Extract the rawRow-only enrichment fields from a `srDsSolarApplications`
- * rawRow JSON string. Returns `{ addressCity, utilityTerritory }`; both
- * `null` when the row doesn't carry the value (or the JSON is malformed).
+ * rawRow JSON string. All fields default `null` when the row doesn't
+ * carry the value (or the JSON is malformed).
  */
 export function extractSolarApplicationsRawFields(
   rawRowJson: string | null
-): { addressCity: string | null; utilityTerritory: string | null } {
-  if (!rawRowJson) return { addressCity: null, utilityTerritory: null };
+): SolarApplicationsRawFields {
+  if (!rawRowJson) return EMPTY_SOLAR_APP_RAW_FIELDS;
   let parsed: Record<string, string>;
   try {
     parsed = JSON.parse(rawRowJson) as Record<string, string>;
   } catch {
-    return { addressCity: null, utilityTerritory: null };
+    return EMPTY_SOLAR_APP_RAW_FIELDS;
   }
   return {
     addressCity: pickField(parsed, [...CITY_ALIASES]),
     utilityTerritory: pickField(parsed, [...UTILITY_ALIASES]),
+    projectStatus: pickField(parsed, [...PROJECT_STATUS_ALIASES]),
+    internalStatus: pickField(parsed, [...INTERNAL_STATUS_ALIASES]),
+  };
+}
+
+export interface AbpReportRawStatusFields {
+  part1Status: string | null;
+  part2Status: string | null;
+}
+
+const EMPTY_ABP_REPORT_STATUS_FIELDS: AbpReportRawStatusFields = {
+  part1Status: null,
+  part2Status: null,
+};
+
+/**
+ * Extract Part_1_Status + Part_2_Status from a `srDsAbpReport` rawRow
+ * JSON string. Returns both `null` when the row doesn't carry the
+ * value (or the JSON is malformed).
+ */
+export function extractAbpReportStatusFields(
+  rawRowJson: string | null
+): AbpReportRawStatusFields {
+  if (!rawRowJson) return EMPTY_ABP_REPORT_STATUS_FIELDS;
+  let parsed: Record<string, string>;
+  try {
+    parsed = JSON.parse(rawRowJson) as Record<string, string>;
+  } catch {
+    return EMPTY_ABP_REPORT_STATUS_FIELDS;
+  }
+  return {
+    part1Status: pickField(parsed, [...PART_1_STATUS_ALIASES]),
+    part2Status: pickField(parsed, [...PART_2_STATUS_ALIASES]),
   };
 }
 
@@ -173,6 +266,7 @@ const DATASET_KEYS_NEEDED: ReadonlySet<string> = new Set([
   "deliveryScheduleBase",
   "transferHistory",
   "accountSolarGeneration",
+  "abpReport",
 ]);
 
 export async function buildSystemEnrichments(
@@ -214,6 +308,7 @@ export async function buildSystemEnrichments(
 
   const [
     solarAppIndexes,
+    abpStatusIndexes,
     scheduleByTracking,
     transferTotalByUnit,
     lastReadByGenId,
@@ -223,6 +318,11 @@ export async function buildSystemEnrichments(
       db,
       scopeId,
       batchByDataset.get("solarApplications") ?? null
+    ),
+    loadAbpReportStatusesByIdentity(
+      db,
+      scopeId,
+      batchByDataset.get("abpReport") ?? null
     ),
     loadDeliveryScheduleByTracking(
       db,
@@ -261,6 +361,22 @@ export async function buildSystemEnrichments(
       enrich.addressZip = solarApp.zipCode;
       enrich.addressCity = solarApp.addressCity;
       enrich.utilityTerritory = solarApp.utilityTerritory;
+      enrich.projectStatus = solarApp.projectStatus;
+      enrich.internalStatus = solarApp.internalStatus;
+    }
+
+    // abpReport statuses — same 3-ID lookup priority.
+    const abpStatus =
+      (s.stateApplicationRefId
+        ? abpStatusIndexes.byApplicationId.get(s.stateApplicationRefId)
+        : undefined) ??
+      (s.systemId ? abpStatusIndexes.bySystemId.get(s.systemId) : undefined) ??
+      (s.trackingSystemRefId
+        ? abpStatusIndexes.byTrackingId.get(s.trackingSystemRefId)
+        : undefined);
+    if (abpStatus) {
+      enrich.part1Status = abpStatus.part1Status;
+      enrich.part2Status = abpStatus.part2Status;
     }
 
     // Delivery schedule — keyed on trackingSystemRefId.
@@ -313,12 +429,25 @@ interface SolarAppLookupRow {
   zipCode: string | null;
   addressCity: string | null;
   utilityTerritory: string | null;
+  projectStatus: string | null;
+  internalStatus: string | null;
 }
 
 interface SolarAppIndexes {
   byApplicationId: Map<string, SolarAppLookupRow>;
   bySystemId: Map<string, SolarAppLookupRow>;
   byTrackingId: Map<string, SolarAppLookupRow>;
+}
+
+interface AbpReportStatusLookup {
+  part1Status: string | null;
+  part2Status: string | null;
+}
+
+interface AbpReportStatusIndexes {
+  byApplicationId: Map<string, AbpReportStatusLookup>;
+  bySystemId: Map<string, AbpReportStatusLookup>;
+  byTrackingId: Map<string, AbpReportStatusLookup>;
 }
 
 async function loadSolarApplicationIndexes(
@@ -358,16 +487,71 @@ async function loadSolarApplicationIndexes(
   );
 
   for (const row of rows) {
-    const { addressCity, utilityTerritory } = extractSolarApplicationsRawFields(
-      row.rawRow ?? null
-    );
+    const {
+      addressCity,
+      utilityTerritory,
+      projectStatus,
+      internalStatus,
+    } = extractSolarApplicationsRawFields(row.rawRow ?? null);
     const lookup: SolarAppLookupRow = {
       county: row.county ?? null,
       state: row.state ?? null,
       zipCode: row.zipCode ?? null,
       addressCity,
       utilityTerritory,
+      projectStatus,
+      internalStatus,
     };
+    if (row.applicationId) out.byApplicationId.set(row.applicationId, lookup);
+    if (row.systemId) out.bySystemId.set(row.systemId, lookup);
+    if (row.trackingSystemRefId)
+      out.byTrackingId.set(row.trackingSystemRefId, lookup);
+  }
+  return out;
+}
+
+/**
+ * Load Part_1_Status + Part_2_Status from srDsAbpReport, indexed by
+ * all 3 IDs (applicationId / systemId / trackingSystemRefId). Mirror
+ * of `loadSolarApplicationIndexes` since the same 3-ID identity
+ * resolution applies — a given system may be findable via any of
+ * the three keys depending on which dataset originally seeded it.
+ */
+async function loadAbpReportStatusesByIdentity(
+  db: DbClient,
+  scopeId: string,
+  batchId: string | null
+): Promise<AbpReportStatusIndexes> {
+  const out: AbpReportStatusIndexes = {
+    byApplicationId: new Map(),
+    bySystemId: new Map(),
+    byTrackingId: new Map(),
+  };
+  if (!db || !batchId) return out;
+
+  const rows = await withDbRetry("load abp report statuses (enrichments)", () =>
+    db
+      .select({
+        applicationId: srDsAbpReport.applicationId,
+        systemId: srDsAbpReport.systemId,
+        trackingSystemRefId: srDsAbpReport.trackingSystemRefId,
+        rawRow: srDsAbpReport.rawRow,
+      })
+      .from(srDsAbpReport)
+      .where(
+        and(
+          eq(srDsAbpReport.scopeId, scopeId),
+          eq(srDsAbpReport.batchId, batchId)
+        )
+      )
+  );
+
+  for (const row of rows) {
+    const { part1Status, part2Status } = extractAbpReportStatusFields(
+      row.rawRow ?? null
+    );
+    if (part1Status === null && part2Status === null) continue;
+    const lookup: AbpReportStatusLookup = { part1Status, part2Status };
     if (row.applicationId) out.byApplicationId.set(row.applicationId, lookup);
     if (row.systemId) out.bySystemId.set(row.systemId, lookup);
     if (row.trackingSystemRefId)

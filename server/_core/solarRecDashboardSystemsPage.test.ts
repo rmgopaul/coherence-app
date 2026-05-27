@@ -113,13 +113,32 @@ describe("getDashboardSystemsPage (source rail)", () => {
     expect(proc!).toMatch(/hasMore/);
   });
 
-  it("ships a `_runnerVersion` marker bumped to @3 (Systems Index PR added textSearch input)", () => {
-    expect(proc!).toMatch(/_runnerVersion:\s*"phase-2-pr-f-3@3"/);
+  it("ships a `_runnerVersion` marker bumped to @4 (Systems Index PR added sort + filters)", () => {
+    expect(proc!).toMatch(/_runnerVersion:\s*"phase-2-pr-f-3@4"/);
   });
 
   it("wires the textSearch input through to the db helper", () => {
     expect(proc!).toMatch(/textSearch:\s*input\.textSearch\s*\?\?\s*null/);
     expect(proc!).toMatch(/textSearch:\s*z\.string\(\)/);
+  });
+
+  it("accepts sortBy + sortDir inputs and forwards them to the db helper", () => {
+    expect(proc!).toMatch(/sortBy:\s*z\.string\(\)/);
+    expect(proc!).toMatch(/sortDir:\s*z\.enum\(\["asc",\s*"desc"\]\)/);
+    expect(proc!).toMatch(/sortBy,?\n/);
+  });
+
+  it("accepts a structured filters record and forwards to the db helper", () => {
+    // `filters: z\n  .record(...)` is multi-line in the source; check
+    // the marker substrings independently.
+    expect(proc!).toContain("filters: z");
+    expect(proc!).toContain(".record(");
+    expect(proc!).toMatch(/filters,?\n/);
+  });
+
+  it("resolves cursor → offset when sortBy is set (TanStack pageParam shim)", () => {
+    expect(proc!).toMatch(/offsetFromCursor/);
+    expect(proc!).toMatch(/\/\^\\d\+\$\/\.test\(input\.cursor\)/);
   });
 
   it("ships a `_checkpoint` for deploy verification", () => {

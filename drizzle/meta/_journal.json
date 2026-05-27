@@ -491,6 +491,13 @@
       "when": 1779843107888,
       "tag": "0073_add_system_facts_enrichment_columns",
       "breakpoints": true
+    },
+    {
+      "idx": 74,
+      "version": "5",
+      "when": 1779904747066,
+      "tag": "0074_add_system_facts_status_columns",
+      "breakpoints": true
     }
   ]
 }

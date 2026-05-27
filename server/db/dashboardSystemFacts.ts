@@ -26,12 +26,118 @@
  */
 
 import { and, eq, getDb, sql, withDbRetry } from "./_core";
-import { gt, inArray, ne, or } from "drizzle-orm";
+import { asc, desc, gt, inArray, ne, or, type SQL } from "drizzle-orm";
 import {
   solarRecDashboardSystemFacts,
   type SolarRecDashboardSystemFact,
   type InsertSolarRecDashboardSystemFact,
 } from "../../drizzle/schema";
+
+// ────────────────────────────────────────────────────────────────────
+// Sort + filter column allowlists.
+//
+// Adding a new column to the schema does NOT auto-add it here — that's
+// intentional, so a public-API change requires a thoughtful decision
+// (e.g. an index on the column to keep ORDER BY cheap, or whether a
+// free-text contains filter would scan the whole table).
+// ────────────────────────────────────────────────────────────────────
+
+const SORT_COLUMNS = {
+  systemKey: solarRecDashboardSystemFacts.systemKey,
+  systemId: solarRecDashboardSystemFacts.systemId,
+  systemName: solarRecDashboardSystemFacts.systemName,
+  stateApplicationRefId: solarRecDashboardSystemFacts.stateApplicationRefId,
+  trackingSystemRefId: solarRecDashboardSystemFacts.trackingSystemRefId,
+  installedKwAc: solarRecDashboardSystemFacts.installedKwAc,
+  sizeBucket: solarRecDashboardSystemFacts.sizeBucket,
+  recPrice: solarRecDashboardSystemFacts.recPrice,
+  contractedRecs: solarRecDashboardSystemFacts.contractedRecs,
+  deliveredRecs: solarRecDashboardSystemFacts.deliveredRecs,
+  contractedValue: solarRecDashboardSystemFacts.contractedValue,
+  deliveredValue: solarRecDashboardSystemFacts.deliveredValue,
+  valueGap: solarRecDashboardSystemFacts.valueGap,
+  ownershipStatus: solarRecDashboardSystemFacts.ownershipStatus,
+  contractType: solarRecDashboardSystemFacts.contractType,
+  monitoringPlatform: solarRecDashboardSystemFacts.monitoringPlatform,
+  installerName: solarRecDashboardSystemFacts.installerName,
+  latestReportingDate: solarRecDashboardSystemFacts.latestReportingDate,
+  lastRecDeliveryDate: solarRecDashboardSystemFacts.lastRecDeliveryDate,
+  contractedDate: solarRecDashboardSystemFacts.contractedDate,
+  part2VerificationDate: solarRecDashboardSystemFacts.part2VerificationDate,
+  // PR 1 enrichments
+  addressCity: solarRecDashboardSystemFacts.addressCity,
+  addressState: solarRecDashboardSystemFacts.addressState,
+  addressZip: solarRecDashboardSystemFacts.addressZip,
+  county: solarRecDashboardSystemFacts.county,
+  utilityTerritory: solarRecDashboardSystemFacts.utilityTerritory,
+  contractIdNumber: solarRecDashboardSystemFacts.contractIdNumber,
+  additionalCollateralPercent:
+    solarRecDashboardSystemFacts.additionalCollateralPercent,
+  terminationCost: solarRecDashboardSystemFacts.terminationCost,
+  deliveryStartDate: solarRecDashboardSystemFacts.deliveryStartDate,
+  deliveryEndDate: solarRecDashboardSystemFacts.deliveryEndDate,
+  totalTransferredMwh: solarRecDashboardSystemFacts.totalTransferredMwh,
+  lastMeterReadDate: solarRecDashboardSystemFacts.lastMeterReadDate,
+  projectStatus: solarRecDashboardSystemFacts.projectStatus,
+  internalStatus: solarRecDashboardSystemFacts.internalStatus,
+  part1Status: solarRecDashboardSystemFacts.part1Status,
+  part2Status: solarRecDashboardSystemFacts.part2Status,
+} as const;
+
+export type SortableColumn = keyof typeof SORT_COLUMNS;
+export const SORTABLE_COLUMN_NAMES = Object.keys(SORT_COLUMNS) as SortableColumn[];
+
+/**
+ * One filter spec per column. Type-tagged so the proc layer can
+ * validate which spec a column accepts.
+ */
+export type FilterSpec =
+  | { kind: "contains"; value: string }
+  | { kind: "equals"; value: string }
+  | { kind: "in"; values: string[] }
+  | { kind: "boolean"; value: boolean };
+
+export type FilterMap = Partial<Record<SortableColumn, FilterSpec>>;
+
+function escapeLikeWildcards(input: string): string {
+  return input
+    .replaceAll("\\", "\\\\")
+    .replaceAll("%", "\\%")
+    .replaceAll("_", "\\_");
+}
+
+function buildFilterClause(
+  column: SortableColumn,
+  spec: FilterSpec
+): SQL | undefined {
+  const col = SORT_COLUMNS[column];
+  switch (spec.kind) {
+    case "contains": {
+      const trimmed = spec.value.trim();
+      if (!trimmed) return undefined;
+      const pattern = `%${escapeLikeWildcards(trimmed.toLowerCase())}%`;
+      return sql`LOWER(${col}) LIKE ${pattern}`;
+    }
+    case "equals": {
+      const trimmed = spec.value.trim();
+      if (!trimmed) return undefined;
+      return eq(col, trimmed);
+    }
+    case "in": {
+      const values = spec.values.map((v) => v.trim()).filter(Boolean);
+      if (values.length === 0) return undefined;
+      return inArray(col, values);
+    }
+    case "boolean":
+      // Drizzle's eq() overload requires a boolean column on the left
+      // when the right side is boolean. Our `col` is a union of every
+      // sortable/filterable column (mostly string/date), so use a raw
+      // sql template — the proc layer is the boundary that should
+      // refuse a boolean filter on a non-boolean column (or accept
+      // the silent always-false comparison if it slips through).
+      return sql`${col} = ${spec.value}`;
+  }
+}
 
 /**
  * Bulk UPSERT N fact rows. Each row's PK is `(scopeId, systemKey)`;
@@ -117,6 +223,10 @@ export async function upsertSystemFacts(
               deliveryEndDate: sql`VALUES(\`deliveryEndDate\`)`,
               totalTransferredMwh: sql`VALUES(\`totalTransferredMwh\`)`,
               lastMeterReadDate: sql`VALUES(\`lastMeterReadDate\`)`,
+              projectStatus: sql`VALUES(\`projectStatus\`)`,
+              internalStatus: sql`VALUES(\`internalStatus\`)`,
+              part1Status: sql`VALUES(\`part1Status\`)`,
+              part2Status: sql`VALUES(\`part2Status\`)`,
               buildId: sql`VALUES(\`buildId\`)`,
               // updatedAt auto-bumps via onUpdateNow.
             },
@@ -172,6 +282,13 @@ export async function getSystemFactsPage(
   scopeId: string,
   options: {
     cursorAfter?: string | null;
+    /**
+     * Offset-based pagination, used when `sortBy` is set (cursor
+     * isn't well-defined across arbitrary sort columns). Ignored
+     * when `sortBy` is null — the cursor path is preserved for
+     * existing callers (parent dashboard memos).
+     */
+    offset?: number | null;
     limit: number;
     status?: string | null;
     sizeBucket?: string | null;
@@ -182,23 +299,46 @@ export async function getSystemFactsPage(
      * and `systemName`. Trimmed by the caller; empty → no filter.
      */
     textSearch?: string | null;
+    /**
+     * Column to sort by. When null (default), sorts by `systemKey
+     * ASC` and uses cursor pagination — preserves backwards compat.
+     */
+    sortBy?: SortableColumn | null;
+    sortDir?: "asc" | "desc";
+    /**
+     * Per-column structured filters. Each column may declare at
+     * most one filter spec; the proc layer enforces type-correctness
+     * (e.g. boolean spec only on boolean columns).
+     */
+    filters?: FilterMap | null;
   }
 ): Promise<SolarRecDashboardSystemFact[]> {
   const db = await getDb();
   if (!db) return [];
   const {
     cursorAfter,
+    offset,
     limit,
     status,
     sizeBucket,
     isReporting,
     isPart2Eligible,
     textSearch,
+    sortBy,
+    sortDir,
+    filters,
   } = options;
   const safeLimit = Math.max(1, Math.min(1000, Math.floor(limit)));
+  const safeOffset =
+    typeof offset === "number" && Number.isFinite(offset)
+      ? Math.max(0, Math.floor(offset))
+      : 0;
+  const direction: "asc" | "desc" = sortDir === "desc" ? "desc" : "asc";
 
   const conditions = [eq(solarRecDashboardSystemFacts.scopeId, scopeId)];
-  if (cursorAfter) {
+  // Cursor pagination only applies when no explicit sortBy is set
+  // (the cursor is a systemKey and only orders by systemKey ASC).
+  if (!sortBy && cursorAfter) {
     conditions.push(
       gt(solarRecDashboardSystemFacts.systemKey, cursorAfter)
     );
@@ -225,10 +365,7 @@ export async function getSystemFactsPage(
   if (trimmedSearch) {
     // Escape SQL LIKE wildcards so a literal `_` or `%` in the
     // search term doesn't accidentally widen the match.
-    const escaped = trimmedSearch
-      .replaceAll("\\", "\\\\")
-      .replaceAll("%", "\\%")
-      .replaceAll("_", "\\_");
+    const escaped = escapeLikeWildcards(trimmedSearch);
     const pattern = `%${escaped.toLowerCase()}%`;
     const searchClause = or(
       sql`LOWER(${solarRecDashboardSystemFacts.systemId}) LIKE ${pattern}`,
@@ -237,15 +374,43 @@ export async function getSystemFactsPage(
     if (searchClause) conditions.push(searchClause);
   }
 
+  // Per-column structured filters.
+  if (filters) {
+    for (const [column, spec] of Object.entries(filters)) {
+      if (!spec) continue;
+      const clause = buildFilterClause(column as SortableColumn, spec);
+      if (clause) conditions.push(clause);
+    }
+  }
+
+  // Build ORDER BY. Always tiebreak on systemKey ASC for stable
+  // pagination across requests with the same sort.
+  const sortColumn = sortBy ? SORT_COLUMNS[sortBy] : null;
+  const orderByClauses =
+    sortColumn && sortBy !== "systemKey"
+      ? [
+          direction === "desc" ? desc(sortColumn) : asc(sortColumn),
+          asc(solarRecDashboardSystemFacts.systemKey),
+        ]
+      : [asc(solarRecDashboardSystemFacts.systemKey)];
+
   return withDbRetry(
     "get dashboard system facts page",
-    async () =>
-      db
+    async () => {
+      let q = db
         .select()
         .from(solarRecDashboardSystemFacts)
         .where(and(...conditions))
-        .orderBy(solarRecDashboardSystemFacts.systemKey)
-        .limit(safeLimit)
+        .orderBy(...orderByClauses)
+        .limit(safeLimit);
+      if (sortBy) {
+        // Offset path — only used when the caller opted into a
+        // non-default sort. The cursor path above keeps existing
+        // callers fast for the default systemKey ordering.
+        q = q.offset(safeOffset) as typeof q;
+      }
+      return q;
+    }
   );
 }
 
