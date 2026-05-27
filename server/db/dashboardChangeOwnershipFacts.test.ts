@@ -29,6 +29,7 @@ import {
   getChangeOwnershipFactsPage,
   upsertChangeOwnershipFacts,
 } from "./dashboardChangeOwnershipFacts";
+import { solarRecDashboardChangeOwnershipFacts } from "../../drizzle/schema";
 
 interface BuilderCall {
   kind: "select" | "insert" | "delete";
@@ -161,6 +162,9 @@ describe("upsertChangeOwnershipFacts", () => {
   });
 
   it("forwards rows with onDuplicateKeyUpdate set on every mutable column", async () => {
+    // Drift guard auto-derived from the schema — see the same
+    // pattern in dashboardSystemFacts.test.ts for the hotfix that
+    // motivated it.
     const stub = makeDbStub({});
     mocks.getDb.mockResolvedValue(stub);
     const rows = [makeRow("1"), makeRow("2")];
@@ -168,13 +172,14 @@ describe("upsertChangeOwnershipFacts", () => {
     const insertCall = stub.calls.find(c => c.kind === "insert");
     expect(insertCall?.insertValues).toEqual(rows);
     const set = insertCall?.onDuplicateSet ?? {};
-    // Mutable columns + buildId — 19 fields total.
-    expect(Object.keys(set)).toContain("systemName");
-    expect(Object.keys(set)).toContain("changeOwnershipStatus");
-    expect(Object.keys(set)).toContain("contractedDate");
-    expect(Object.keys(set)).toContain("isReporting");
-    expect(Object.keys(set)).toContain("buildId");
-    // PK columns + auto-managed timestamps NOT in update set.
+    const PK_COLUMNS = new Set(["scopeId", "systemKey"]);
+    const AUTO_COLUMNS = new Set(["createdAt", "updatedAt"]);
+    const expectedMutableColumns = Object.keys(
+      solarRecDashboardChangeOwnershipFacts as unknown as Record<string, unknown>
+    ).filter(
+      (col) => !PK_COLUMNS.has(col) && !AUTO_COLUMNS.has(col)
+    );
+    expect(new Set(Object.keys(set))).toEqual(new Set(expectedMutableColumns));
     expect(Object.keys(set)).not.toContain("scopeId");
     expect(Object.keys(set)).not.toContain("systemKey");
     expect(Object.keys(set)).not.toContain("createdAt");

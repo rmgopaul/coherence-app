@@ -35,6 +35,7 @@ import {
   getSystemFactsPage,
   upsertSystemFacts,
 } from "./dashboardSystemFacts";
+import { solarRecDashboardSystemFacts } from "../../drizzle/schema";
 
 interface BuilderCall {
   kind: "select" | "insert" | "delete";
@@ -180,6 +181,13 @@ describe("upsertSystemFacts", () => {
   });
 
   it("forwards rows with onDuplicateKeyUpdate set on every mutable column", async () => {
+    // Drift guard. Auto-derived from the schema so any future column
+    // addition that misses the SET clause fails this test instead of
+    // silently leaving existing fact rows with null values for the
+    // new column (see fix/fact-table-upsert-omits-new-columns hotfix
+    // — PR 0's lastRecDeliveryDate + PR 1's 12 enrichment columns
+    // shipped with the SET clause omitting them; only the INSERT path
+    // populated them, so every existing system stayed null on rebuild).
     const stub = makeDbStub({});
     mocks.getDb.mockResolvedValue(stub);
     const rows = [makeRow("1"), makeRow("2")];
@@ -187,25 +195,16 @@ describe("upsertSystemFacts", () => {
     const insertCall = stub.calls.find(c => c.kind === "insert");
     expect(insertCall?.insertValues).toEqual(rows);
     const set = insertCall?.onDuplicateSet ?? {};
-    // 31 SystemRecord fields + isPart2Eligible (PR-F-4-f-1) +
-    // buildId = 33 keys.
-    expect(Object.keys(set)).toContain("systemName");
-    expect(Object.keys(set)).toContain("installedKwAc");
-    expect(Object.keys(set)).toContain("installedKwDc");
-    expect(Object.keys(set)).toContain("sizeBucket");
-    expect(Object.keys(set)).toContain("recPrice");
-    expect(Object.keys(set)).toContain("contractedRecs");
-    expect(Object.keys(set)).toContain("deliveredRecs");
-    expect(Object.keys(set)).toContain("ownershipStatus");
-    expect(Object.keys(set)).toContain("changeOwnershipStatus");
-    expect(Object.keys(set)).toContain("hasChangedOwnership");
-    expect(Object.keys(set)).toContain("isReporting");
-    expect(Object.keys(set)).toContain("monitoringPlatform");
-    expect(Object.keys(set)).toContain("installerName");
-    expect(Object.keys(set)).toContain("part2VerificationDate");
-    expect(Object.keys(set)).toContain("isPart2Eligible");
-    expect(Object.keys(set)).toContain("buildId");
-    // PK columns + auto-managed timestamps NOT in update set.
+    const PK_COLUMNS = new Set(["scopeId", "systemKey"]);
+    const AUTO_COLUMNS = new Set(["createdAt", "updatedAt"]);
+    const expectedMutableColumns = Object.keys(
+      solarRecDashboardSystemFacts as unknown as Record<string, unknown>
+    ).filter(
+      (col) => !PK_COLUMNS.has(col) && !AUTO_COLUMNS.has(col)
+    );
+    expect(new Set(Object.keys(set))).toEqual(new Set(expectedMutableColumns));
+    // Belt-and-braces: the PK + timestamps must NEVER appear in the
+    // update set (they're either keys or auto-managed).
     expect(Object.keys(set)).not.toContain("scopeId");
     expect(Object.keys(set)).not.toContain("systemKey");
     expect(Object.keys(set)).not.toContain("createdAt");
