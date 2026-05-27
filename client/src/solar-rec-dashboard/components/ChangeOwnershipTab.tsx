@@ -80,6 +80,7 @@ export type ChangeOwnershipExportRow = {
   zillowStatus: string | null;
   zillowSoldDate: Date | null;
   latestReportingDate: Date | null;
+  lastRecDeliveryDate: Date | null;
   changeOwnershipStatus: ChangeOwnershipStatus;
   ownershipStatus: OwnershipStatus;
   isReporting: boolean;
