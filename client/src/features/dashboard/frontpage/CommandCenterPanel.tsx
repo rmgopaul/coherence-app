@@ -54,8 +54,8 @@ function workflowFallbackTitle(
 ): string {
   if (progress.dailyBriefStatus === "failed") return "Daily brief needs review";
   if (progress.dailyBriefStatus !== "not_started") return "Daily brief saved";
-  if (progress.tone !== "empty") return "Workflow in progress";
-  return "No workflow saved";
+  if (progress.tone !== "empty") return "Today Ops in progress";
+  return "Today Ops ready";
 }
 
 function statusTone(status: string): string {
@@ -239,6 +239,7 @@ export function CommandCenterPanel({ state }: { state: CommandCenterState }) {
   const progressTitle =
     progress.topPriority ??
     progress.headline ??
+    commandCenter.todayOps.autoBrief.headline ??
     workflowFallbackTitle(progress);
   const workflowReviewPrompts = buildWorkflowReviewPrompts(progress);
   const workspacePrompts = commandCenter.workspacePrompts ?? [];
@@ -297,7 +298,7 @@ export function CommandCenterPanel({ state }: { state: CommandCenterState }) {
           data-tone={statusTone(progress.tone)}
         >
           <div className="fp-command-block__head">
-            <span className="mono-label">DAILY WORKFLOW</span>
+            <span className="mono-label">TODAY OPS</span>
             <span className="mono-label">{progress.tone}</span>
           </div>
           <h3 className="fp-command-workflow__title">{progressTitle}</h3>
@@ -327,7 +328,7 @@ export function CommandCenterPanel({ state }: { state: CommandCenterState }) {
           </dl>
           {workflowReviewPrompts.length > 0 ? (
             <ul className="fp-command-workflow__prompts">
-              {workflowReviewPrompts.map((prompt) => (
+              {workflowReviewPrompts.map(prompt => (
                 <li key={prompt}>{prompt}</li>
               ))}
             </ul>
@@ -341,7 +342,7 @@ export function CommandCenterPanel({ state }: { state: CommandCenterState }) {
               <span className="mono-label">{workspacePrompts.length}</span>
             </div>
             <ol>
-              {workspacePrompts.map((item) => (
+              {workspacePrompts.map(item => (
                 <WorkspacePromptRow
                   key={item.id}
                   item={item}
