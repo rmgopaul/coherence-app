@@ -5460,6 +5460,9 @@ export const solarRecDashboardRouter = t.router({
           .optional(),
         isReporting: z.boolean().nullable().optional(),
         isPart2Eligible: z.boolean().nullable().optional(),
+        // Case-insensitive contains-match across CSG ID (systemId)
+        // and systemName. Trimmed server-side; empty → no filter.
+        textSearch: z.string().max(128).nullable().optional(),
       })
     )
     .query(async ({ ctx, input }) => {
@@ -5473,6 +5476,7 @@ export const solarRecDashboardRouter = t.router({
         sizeBucket: input.sizeBucket ?? null,
         isReporting: input.isReporting ?? null,
         isPart2Eligible: input.isPart2Eligible ?? null,
+        textSearch: input.textSearch ?? null,
       });
       const nextCursor =
         rows.length === input.limit
@@ -5480,7 +5484,7 @@ export const solarRecDashboardRouter = t.router({
           : null;
       return {
         _checkpoint: "systems-page-v1",
-        _runnerVersion: "phase-2-pr-f-3@2" as const,
+        _runnerVersion: "phase-2-pr-f-3@3" as const,
         rows,
         nextCursor,
         hasMore: nextCursor !== null,

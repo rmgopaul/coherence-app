@@ -26,7 +26,7 @@
  */
 
 import { and, eq, getDb, sql, withDbRetry } from "./_core";
-import { gt, inArray, ne } from "drizzle-orm";
+import { gt, inArray, ne, or } from "drizzle-orm";
 import {
   solarRecDashboardSystemFacts,
   type SolarRecDashboardSystemFact,
@@ -160,6 +160,11 @@ export async function getSystemFactsPage(
     sizeBucket?: string | null;
     isReporting?: boolean | null;
     isPart2Eligible?: boolean | null;
+    /**
+     * Case-insensitive contains-match across `systemId` (CSG ID)
+     * and `systemName`. Trimmed by the caller; empty → no filter.
+     */
+    textSearch?: string | null;
   }
 ): Promise<SolarRecDashboardSystemFact[]> {
   const db = await getDb();
@@ -171,6 +176,7 @@ export async function getSystemFactsPage(
     sizeBucket,
     isReporting,
     isPart2Eligible,
+    textSearch,
   } = options;
   const safeLimit = Math.max(1, Math.min(1000, Math.floor(limit)));
 
@@ -197,6 +203,21 @@ export async function getSystemFactsPage(
     conditions.push(
       eq(solarRecDashboardSystemFacts.isPart2Eligible, isPart2Eligible)
     );
+  }
+  const trimmedSearch = textSearch?.trim() ?? "";
+  if (trimmedSearch) {
+    // Escape SQL LIKE wildcards so a literal `_` or `%` in the
+    // search term doesn't accidentally widen the match.
+    const escaped = trimmedSearch
+      .replaceAll("\\", "\\\\")
+      .replaceAll("%", "\\%")
+      .replaceAll("_", "\\_");
+    const pattern = `%${escaped.toLowerCase()}%`;
+    const searchClause = or(
+      sql`LOWER(${solarRecDashboardSystemFacts.systemId}) LIKE ${pattern}`,
+      sql`LOWER(${solarRecDashboardSystemFacts.systemName}) LIKE ${pattern}`
+    );
+    if (searchClause) conditions.push(searchClause);
   }
 
   return withDbRetry(

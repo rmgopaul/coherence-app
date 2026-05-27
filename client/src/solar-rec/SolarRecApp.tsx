@@ -83,6 +83,9 @@ const JobDetail = lazy(() => import("./pages/JobDetail"));
 // composing the registry record + latest contract scan + DIN scrape
 // + Schedule B import result. Module key `portfolio-workbench`.
 const SystemDetail = lazy(() => import("./pages/SystemDetail"));
+// Top-level directory of every system in the portfolio. Reads the
+// `solarRecDashboardSystemFacts` table via getDashboardSystemsPage.
+const SystemsIndex = lazy(() => import("./pages/SystemsIndex"));
 
 // Meter read pages (existing, reused from main app)
 // Task 5.4 vendor 13/16 — SolarEdge migrated to solar-rec-native page
@@ -258,6 +261,9 @@ function AuthenticatedApp() {
               </Route>
               <Route path="/solar-rec/jobs/:kind/:id">
                 <JobDetail />
+              </Route>
+              <Route path="/solar-rec/systems">
+                <SystemsIndex />
               </Route>
               <Route path="/solar-rec/system/:csgId">
                 <SystemDetail />
