@@ -79,6 +79,7 @@ export interface OwnershipOverviewExportRow {
   contractType: string | null;
   contractStatusText: string;
   latestReportingDate: Date | null;
+  lastRecDeliveryDate: Date | null;
   contractedDate: Date | null;
   zillowStatus: string | null;
   zillowSoldDate: Date | null;
@@ -104,6 +105,7 @@ export interface SnapshotSystemForSummary {
   contractType: string | null;
   contractStatusText: string;
   latestReportingDate: Date | null;
+  lastRecDeliveryDate: Date | null;
   contractedDate: Date | null;
   zillowStatus: string | null;
   zillowSoldDate: Date | null;
@@ -254,6 +256,7 @@ export function extractSnapshotSystemsForSummary(
       contractType: stringOrNull(r.contractType),
       contractStatusText: stringOrEmpty(r.contractStatusText),
       latestReportingDate: dateOrNull(r.latestReportingDate),
+      lastRecDeliveryDate: dateOrNull(r.lastRecDeliveryDate),
       contractedDate: dateOrNull(r.contractedDate),
       zillowStatus: stringOrNull(r.zillowStatus),
       zillowSoldDate: dateOrNull(r.zillowSoldDate),
@@ -423,6 +426,7 @@ export function buildOverviewSummary(
         contractType: null,
         contractStatusText: "N/A",
         latestReportingDate: null,
+        lastRecDeliveryDate: null,
         contractedDate: null,
         zillowStatus: null,
         zillowSoldDate: null,
@@ -475,6 +479,7 @@ export function buildOverviewSummary(
       contractType: representative.contractType,
       contractStatusText: representative.contractStatusText,
       latestReportingDate: representative.latestReportingDate,
+      lastRecDeliveryDate: representative.lastRecDeliveryDate,
       contractedDate: representative.contractedDate,
       zillowStatus: representative.zillowStatus,
       zillowSoldDate: representative.zillowSoldDate,

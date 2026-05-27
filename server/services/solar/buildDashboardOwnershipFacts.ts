@@ -84,6 +84,7 @@ export function buildOwnershipFactRows(args: {
     contractType: row.contractType,
     contractStatusText: row.contractStatusText,
     latestReportingDate: row.latestReportingDate,
+    lastRecDeliveryDate: row.lastRecDeliveryDate,
     contractedDate: row.contractedDate,
     zillowStatus: row.zillowStatus,
     zillowSoldDate: row.zillowSoldDate,
