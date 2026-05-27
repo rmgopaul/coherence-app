@@ -484,6 +484,13 @@
       "when": 1779837315154,
       "tag": "0072_add_last_rec_delivery_date_to_fact_tables",
       "breakpoints": true
+    },
+    {
+      "idx": 73,
+      "version": "5",
+      "when": 1779843107888,
+      "tag": "0073_add_system_facts_enrichment_columns",
+      "breakpoints": true
     }
   ]
 }
