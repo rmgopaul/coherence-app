@@ -198,6 +198,10 @@ export function buildSystemFactRows(args: {
       deliveryEndDate: addYears(enrich.deliveryStartDate, 15),
       totalTransferredMwh: numberToDecimalString(enrich.totalTransferredMwh),
       lastMeterReadDate: enrich.lastMeterReadDate,
+      projectStatus: enrich.projectStatus,
+      internalStatus: enrich.internalStatus,
+      part1Status: enrich.part1Status,
+      part2Status: enrich.part2Status,
       buildId,
     };
   });

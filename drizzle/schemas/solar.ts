@@ -2553,6 +2553,19 @@ export const solarRecDashboardSystemFacts = mysqlTable(
     // period max). This is the date the meter was actually READ.
     lastMeterReadDate: date("lastMeterReadDate"),
 
+    // Application + workflow statuses (Systems Index follow-up).
+    // projectStatus + internalStatus come from `solarApplications.rawRow`
+    //   (CSV headers: `project.status`, `internal_status`).
+    // part1Status + part2Status come from `srDsAbpReport.rawRow`
+    //   (CSV headers: `Part_1_Status`, `Part_2_Status`).
+    // internalStatus is long-form ("Step 4.2 - Initial Payment Has
+    //   Been Sent to Customer"), so 255 chars; the others are short
+    //   enums.
+    projectStatus: varchar("projectStatus", { length: 64 }),
+    internalStatus: varchar("internalStatus", { length: 255 }),
+    part1Status: varchar("part1Status", { length: 64 }),
+    part2Status: varchar("part2Status", { length: 64 }),
+
     // Build versioning + observability. PR-F-2's runner step will
     // set `buildId` to the current `solarRecDashboardBuilds.id` so
     // the post-UPSERT DELETE can sweep orphans efficiently.

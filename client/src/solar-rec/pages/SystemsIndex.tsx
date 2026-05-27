@@ -2,17 +2,22 @@
  * `/solar-rec/systems` — browseable directory of every system in the
  * portfolio.
  *
- * Reads the `solarRecDashboardSystemFacts` table via
- * `getDashboardSystemsPage` (paginated, bounded ≤1 MB per page).
- * Row click navigates to the existing `/solar-rec/system/:csgId`
- * detail page. Text search is debounced and re-issued as the
- * cursor's first page; pagination is via `useInfiniteQuery`.
+ * Reads `solarRecDashboardSystemFacts` via `getDashboardSystemsPage`
+ * (paginated, bounded ≤1 MB per page). Click a column header to
+ * sort; click the filter icon next to any header to filter on that
+ * column. Row click navigates to the existing
+ * `/solar-rec/system/:csgId` detail page.
  *
  * Permission: gates on `solar-rec-dashboard` (same as the parent
- * dashboard). The fact table is the canonical browse surface; the
- * dashboard tabs are tab-specific slices.
+ * dashboard).
  */
-import { useEffect, useMemo, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react";
 import { useLocation } from "wouter";
 import { solarRecTrpc as trpc } from "../solarRecTrpc";
 import { PermissionGate } from "../components/PermissionGate";
@@ -34,10 +39,243 @@ import {
 } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { RefreshCcw, Search } from "lucide-react";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import {
+  ArrowDown,
+  ArrowUp,
+  ArrowUpDown,
+  Filter,
+  RefreshCcw,
+  Search,
+  X,
+} from "lucide-react";
 
 const PAGE_SIZE = 200;
 const SEARCH_DEBOUNCE_MS = 250;
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+type SortDir = "asc" | "desc";
+type FilterKind = "text" | "boolean" | "none";
+
+// Spec shape mirrors the server's FilterSpec union (see
+// `server/db/dashboardSystemFacts.ts`).
+type ServerFilter =
+  | { kind: "contains"; value: string }
+  | { kind: "equals"; value: string }
+  | { kind: "in"; values: string[] }
+  | { kind: "boolean"; value: boolean };
+
+type ClientFilter =
+  | { kind: "text"; value: string }
+  | { kind: "boolean"; value: boolean };
+
+type FilterMap = Record<string, ClientFilter>;
+
+interface ColumnDef {
+  key: string; // server SORTABLE_COLUMN_NAMES allowlist entry
+  label: string;
+  filter: FilterKind;
+  align?: "right";
+  className?: string;
+  cell: (row: SystemRow) => ReactNode;
+}
+
+interface SystemRow {
+  systemKey: string;
+  systemId: string | null;
+  stateApplicationRefId: string | null;
+  trackingSystemRefId: string | null;
+  systemName: string;
+  installedKwAc: string | null;
+  ownershipStatus: string;
+  recPrice: string | null;
+  contractedRecs: string | null;
+  deliveredRecs: string | null;
+  terminationCost: string | null;
+  additionalCollateralPercent: string | null;
+  totalTransferredMwh: string | null;
+  addressCity: string | null;
+  addressState: string | null;
+  addressZip: string | null;
+  county: string | null;
+  utilityTerritory: string | null;
+  contractIdNumber: string | null;
+  deliveryStartDate: Date | string | null;
+  deliveryEndDate: Date | string | null;
+  lastMeterReadDate: Date | string | null;
+  projectStatus: string | null;
+  internalStatus: string | null;
+  part1Status: string | null;
+  part2Status: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Column config — declarative so adding columns is one line.
+// ---------------------------------------------------------------------------
+
+const COLUMNS: ColumnDef[] = [
+  {
+    key: "systemName",
+    label: "System",
+    filter: "text",
+    className: "w-[260px] sticky left-0 bg-background z-10 font-medium",
+    cell: (row) => row.systemName || "—",
+  },
+  {
+    key: "systemId",
+    label: "CSG ID",
+    filter: "text",
+    className: "font-mono text-xs",
+    cell: (row) => row.systemId ?? "—",
+  },
+  {
+    key: "stateApplicationRefId",
+    label: "ABP ID",
+    filter: "text",
+    className: "font-mono text-xs",
+    cell: (row) => row.stateApplicationRefId ?? "—",
+  },
+  {
+    key: "trackingSystemRefId",
+    label: "GATS Gen ID",
+    filter: "text",
+    className: "font-mono text-xs",
+    cell: (row) => row.trackingSystemRefId ?? "—",
+  },
+  {
+    key: "addressCity",
+    label: "City / State",
+    filter: "text",
+    cell: (row) =>
+      formatCityState(row.addressCity, row.addressState, row.addressZip),
+  },
+  {
+    key: "county",
+    label: "County",
+    filter: "text",
+    cell: (row) => row.county ?? "—",
+  },
+  {
+    key: "utilityTerritory",
+    label: "Interconnecting Utility",
+    filter: "text",
+    cell: (row) => row.utilityTerritory ?? "—",
+  },
+  {
+    key: "installedKwAc",
+    label: "Size (kW AC)",
+    filter: "none",
+    align: "right",
+    cell: (row) => formatDecimal(row.installedKwAc, 2),
+  },
+  {
+    key: "ownershipStatus",
+    label: "Status",
+    filter: "text",
+    cell: (row) => <OwnershipStatusBadge status={row.ownershipStatus} />,
+  },
+  {
+    key: "projectStatus",
+    label: "Project Status",
+    filter: "text",
+    cell: (row) => row.projectStatus ?? "—",
+  },
+  {
+    key: "internalStatus",
+    label: "Internal Status",
+    filter: "text",
+    cell: (row) => row.internalStatus ?? "—",
+  },
+  {
+    key: "part1Status",
+    label: "ABP Part I",
+    filter: "text",
+    cell: (row) => row.part1Status ?? "—",
+  },
+  {
+    key: "part2Status",
+    label: "ABP Part II",
+    filter: "text",
+    cell: (row) => row.part2Status ?? "—",
+  },
+  {
+    key: "contractIdNumber",
+    label: "Contract ID",
+    filter: "text",
+    cell: (row) => row.contractIdNumber ?? "—",
+  },
+  {
+    key: "recPrice",
+    label: "REC Price",
+    filter: "none",
+    align: "right",
+    cell: (row) => formatCurrency(row.recPrice, 2),
+  },
+  {
+    key: "contractedRecs",
+    label: "Contracted RECs",
+    filter: "none",
+    align: "right",
+    cell: (row) => formatDecimal(row.contractedRecs, 0),
+  },
+  {
+    key: "deliveredRecs",
+    label: "Delivered RECs",
+    filter: "none",
+    align: "right",
+    cell: (row) => formatDecimal(row.deliveredRecs, 0),
+  },
+  {
+    key: "terminationCost",
+    label: "Termination Cost",
+    filter: "none",
+    align: "right",
+    cell: (row) => formatCurrency(row.terminationCost, 2),
+  },
+  {
+    key: "additionalCollateralPercent",
+    label: "Add'l Collateral",
+    filter: "none",
+    align: "right",
+    cell: (row) => formatPercent(row.additionalCollateralPercent),
+  },
+  {
+    key: "deliveryStartDate",
+    label: "Delivery Start",
+    filter: "none",
+    cell: (row) => formatDate(row.deliveryStartDate),
+  },
+  {
+    key: "deliveryEndDate",
+    label: "Delivery End",
+    filter: "none",
+    cell: (row) => formatDate(row.deliveryEndDate),
+  },
+  {
+    key: "totalTransferredMwh",
+    label: "Transferred (MWh)",
+    filter: "none",
+    align: "right",
+    cell: (row) => formatDecimal(row.totalTransferredMwh, 1),
+  },
+  {
+    key: "lastMeterReadDate",
+    label: "Last Meter Read",
+    filter: "none",
+    cell: (row) => formatDate(row.lastMeterReadDate),
+  },
+];
+
+// ---------------------------------------------------------------------------
+// Component
+// ---------------------------------------------------------------------------
 
 export default function SystemsIndex() {
   return (
@@ -51,9 +289,10 @@ function SystemsIndexImpl() {
   const [, setLocation] = useLocation();
   const [searchInput, setSearchInput] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [sortBy, setSortBy] = useState<string | null>(null);
+  const [sortDir, setSortDir] = useState<SortDir>("asc");
+  const [filters, setFilters] = useState<FilterMap>({});
 
-  // Debounce search input → server filter. Keeps the input snappy
-  // while avoiding a request on every keystroke.
   useEffect(() => {
     const id = window.setTimeout(() => {
       setDebouncedSearch(searchInput.trim());
@@ -61,20 +300,29 @@ function SystemsIndexImpl() {
     return () => window.clearTimeout(id);
   }, [searchInput]);
 
-  const pagesQuery = trpc.solarRecDashboard.getDashboardSystemsPage.useInfiniteQuery(
-    {
-      limit: PAGE_SIZE,
-      textSearch: debouncedSearch ? debouncedSearch : null,
-    },
-    {
-      getNextPageParam: (last) => (last.hasMore ? last.nextCursor : undefined),
-      initialCursor: null,
-    }
-  );
+  const serverFilters = useMemo(() => clientToServerFilters(filters), [
+    filters,
+  ]);
+
+  const pagesQuery =
+    trpc.solarRecDashboard.getDashboardSystemsPage.useInfiniteQuery(
+      {
+        limit: PAGE_SIZE,
+        textSearch: debouncedSearch ? debouncedSearch : null,
+        sortBy: sortBy ?? null,
+        sortDir,
+        filters: Object.keys(serverFilters).length > 0 ? serverFilters : null,
+      },
+      {
+        getNextPageParam: (last) =>
+          last.hasMore ? last.nextCursor : undefined,
+        initialCursor: null,
+      }
+    );
 
   const rows = useMemo(() => {
     const pages = pagesQuery.data?.pages ?? [];
-    return pages.flatMap((p) => p.rows);
+    return pages.flatMap((p) => p.rows as unknown as SystemRow[]);
   }, [pagesQuery.data]);
 
   const totalLoaded = rows.length;
@@ -82,23 +330,41 @@ function SystemsIndexImpl() {
   const isFetchingMore = pagesQuery.isFetchingNextPage;
   const hasMore = pagesQuery.hasNextPage ?? false;
 
-  function handleRowClick(systemId: string | null) {
-    if (!systemId) return;
-    setLocation(`/solar-rec/system/${encodeURIComponent(systemId)}`);
-  }
+  const handleSort = useCallback(
+    (columnKey: string) => {
+      if (sortBy === columnKey) {
+        setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+      } else {
+        setSortBy(columnKey);
+        setSortDir("asc");
+      }
+    },
+    [sortBy]
+  );
 
-  // A row is only navigable when it has a CSG ID (== systemId); SystemDetail
-  // keys off it. Rows without one render as inert (no pointer / no hover).
+  const handleFilterChange = useCallback(
+    (columnKey: string, next: ClientFilter | null) => {
+      setFilters((prev) => {
+        const out = { ...prev };
+        if (next === null) delete out[columnKey];
+        else out[columnKey] = next;
+        return out;
+      });
+    },
+    []
+  );
+
+  const activeFilterCount = Object.keys(filters).length;
+
   function rowProps(systemId: string | null): {
     className: string;
     onClick?: () => void;
   } {
-    if (!systemId) {
-      return { className: "" };
-    }
+    if (!systemId) return { className: "" };
     return {
       className: "cursor-pointer hover:bg-muted/50",
-      onClick: () => handleRowClick(systemId),
+      onClick: () =>
+        setLocation(`/solar-rec/system/${encodeURIComponent(systemId)}`),
     };
   }
 
@@ -109,11 +375,24 @@ function SystemsIndexImpl() {
           <h1 className="text-2xl font-semibold">Systems</h1>
           <p className="text-sm text-muted-foreground">
             Every system in the portfolio with its address, contract
-            terms, delivery window, and reporting status. Click a row
-            for the system detail page.
+            terms, delivery window, and reporting status. Click a column
+            header to sort; the filter icon next to any header narrows
+            on that column.
           </p>
         </div>
         <div className="flex items-center gap-2">
+          {activeFilterCount > 0 && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setFilters({})}
+              className="text-xs"
+            >
+              <X className="h-3.5 w-3.5 mr-1" />
+              Clear {activeFilterCount} filter
+              {activeFilterCount === 1 ? "" : "s"}
+            </Button>
+          )}
           <Badge variant="outline" className="text-xs">
             {totalLoaded.toLocaleString()} loaded
             {hasMore ? "+" : ""}
@@ -153,8 +432,7 @@ function SystemsIndexImpl() {
           <CardDescription>
             Source:{" "}
             <code className="text-xs">solarRecDashboardSystemFacts</code>
-            {" — populated by the dashboard build runner. New columns "}
-            land null until the next build runs.
+            {" — populated by the dashboard build runner."}
           </CardDescription>
         </CardHeader>
         <CardContent className="px-0">
@@ -162,40 +440,30 @@ function SystemsIndexImpl() {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead className="w-[260px] sticky left-0 bg-background z-10">
-                    System
-                  </TableHead>
-                  <TableHead>CSG ID</TableHead>
-                  <TableHead>ABP ID</TableHead>
-                  <TableHead>GATS Gen ID</TableHead>
-                  <TableHead>City / State</TableHead>
-                  <TableHead>County</TableHead>
-                  <TableHead>Utility</TableHead>
-                  <TableHead className="text-right">Size (kW AC)</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Contract ID</TableHead>
-                  <TableHead className="text-right">REC Price</TableHead>
-                  <TableHead className="text-right">Contracted RECs</TableHead>
-                  <TableHead className="text-right">Delivered RECs</TableHead>
-                  <TableHead className="text-right">
-                    Termination Cost
-                  </TableHead>
-                  <TableHead className="text-right">
-                    Add'l Collateral
-                  </TableHead>
-                  <TableHead>Delivery Start</TableHead>
-                  <TableHead>Delivery End</TableHead>
-                  <TableHead className="text-right">
-                    Transferred (MWh)
-                  </TableHead>
-                  <TableHead>Last Meter Read</TableHead>
+                  {COLUMNS.map((col) => (
+                    <TableHead
+                      key={col.key}
+                      className={col.className ?? ""}
+                    >
+                      <ColumnHeader
+                        col={col}
+                        sortBy={sortBy}
+                        sortDir={sortDir}
+                        filter={filters[col.key] ?? null}
+                        onSort={() => handleSort(col.key)}
+                        onFilterChange={(next) =>
+                          handleFilterChange(col.key, next)
+                        }
+                      />
+                    </TableHead>
+                  ))}
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {isLoading && totalLoaded === 0 ? (
                   <TableRow>
                     <TableCell
-                      colSpan={19}
+                      colSpan={COLUMNS.length}
                       className="text-center text-sm text-muted-foreground py-8"
                     >
                       Loading systems…
@@ -204,72 +472,27 @@ function SystemsIndexImpl() {
                 ) : totalLoaded === 0 ? (
                   <TableRow>
                     <TableCell
-                      colSpan={19}
+                      colSpan={COLUMNS.length}
                       className="text-center text-sm text-muted-foreground py-8"
                     >
-                      {debouncedSearch
-                        ? `No systems match "${debouncedSearch}".`
+                      {debouncedSearch || activeFilterCount > 0
+                        ? "No systems match the current search / filters."
                         : "No systems yet. Upload solarApplications to populate."}
                     </TableCell>
                   </TableRow>
                 ) : (
                   rows.map((row) => (
                     <TableRow key={row.systemKey} {...rowProps(row.systemId)}>
-                      <TableCell className="font-medium sticky left-0 bg-background">
-                        {row.systemName || "—"}
-                      </TableCell>
-                      <TableCell className="font-mono text-xs">
-                        {row.systemId ?? "—"}
-                      </TableCell>
-                      <TableCell className="font-mono text-xs">
-                        {row.stateApplicationRefId ?? "—"}
-                      </TableCell>
-                      <TableCell className="font-mono text-xs">
-                        {row.trackingSystemRefId ?? "—"}
-                      </TableCell>
-                      <TableCell>
-                        {formatCityState(
-                          row.addressCity,
-                          row.addressState,
-                          row.addressZip
-                        )}
-                      </TableCell>
-                      <TableCell>{row.county ?? "—"}</TableCell>
-                      <TableCell>{row.utilityTerritory ?? "—"}</TableCell>
-                      <TableCell className="text-right">
-                        {formatDecimal(row.installedKwAc, 2)}
-                      </TableCell>
-                      <TableCell>
-                        <OwnershipStatusBadge status={row.ownershipStatus} />
-                      </TableCell>
-                      <TableCell>{row.contractIdNumber ?? "—"}</TableCell>
-                      <TableCell className="text-right">
-                        {formatCurrency(row.recPrice, 4)}
-                      </TableCell>
-                      <TableCell className="text-right">
-                        {formatDecimal(row.contractedRecs, 0)}
-                      </TableCell>
-                      <TableCell className="text-right">
-                        {formatDecimal(row.deliveredRecs, 0)}
-                      </TableCell>
-                      <TableCell className="text-right">
-                        {formatCurrency(row.terminationCost, 0)}
-                      </TableCell>
-                      <TableCell className="text-right">
-                        {formatPercent(row.additionalCollateralPercent)}
-                      </TableCell>
-                      <TableCell>
-                        {formatDate(row.deliveryStartDate)}
-                      </TableCell>
-                      <TableCell>
-                        {formatDate(row.deliveryEndDate)}
-                      </TableCell>
-                      <TableCell className="text-right">
-                        {formatDecimal(row.totalTransferredMwh, 1)}
-                      </TableCell>
-                      <TableCell>
-                        {formatDate(row.lastMeterReadDate)}
-                      </TableCell>
+                      {COLUMNS.map((col) => (
+                        <TableCell
+                          key={col.key}
+                          className={`${col.className ?? ""} ${
+                            col.align === "right" ? "text-right" : ""
+                          }`}
+                        >
+                          {col.cell(row)}
+                        </TableCell>
+                      ))}
                     </TableRow>
                   ))
                 )}
@@ -296,6 +519,224 @@ function SystemsIndexImpl() {
 }
 
 // ---------------------------------------------------------------------------
+// Column header — sort + filter UI
+// ---------------------------------------------------------------------------
+
+function ColumnHeader({
+  col,
+  sortBy,
+  sortDir,
+  filter,
+  onSort,
+  onFilterChange,
+}: {
+  col: ColumnDef;
+  sortBy: string | null;
+  sortDir: SortDir;
+  filter: ClientFilter | null;
+  onSort: () => void;
+  onFilterChange: (next: ClientFilter | null) => void;
+}) {
+  const isActive = sortBy === col.key;
+  const SortIcon = isActive
+    ? sortDir === "asc"
+      ? ArrowUp
+      : ArrowDown
+    : ArrowUpDown;
+  return (
+    <div
+      className={`flex items-center gap-1 ${
+        col.align === "right" ? "justify-end" : ""
+      }`}
+    >
+      <button
+        type="button"
+        onClick={onSort}
+        className="inline-flex items-center gap-1 hover:text-foreground transition-colors"
+      >
+        <span>{col.label}</span>
+        <SortIcon
+          className={`h-3 w-3 ${
+            isActive ? "text-foreground" : "text-muted-foreground/50"
+          }`}
+        />
+      </button>
+      {col.filter !== "none" && (
+        <FilterPopover
+          column={col}
+          filter={filter}
+          onChange={onFilterChange}
+        />
+      )}
+    </div>
+  );
+}
+
+function FilterPopover({
+  column,
+  filter,
+  onChange,
+}: {
+  column: ColumnDef;
+  filter: ClientFilter | null;
+  onChange: (next: ClientFilter | null) => void;
+}) {
+  const isActive = filter !== null;
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className={`inline-flex h-5 w-5 items-center justify-center rounded transition-colors ${
+            isActive
+              ? "text-primary"
+              : "text-muted-foreground/40 hover:text-muted-foreground"
+          }`}
+          aria-label={`Filter ${column.label}`}
+        >
+          <Filter className="h-3 w-3" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent className="w-64 p-3" align="start">
+        {column.filter === "text" ? (
+          <TextFilterInput
+            column={column}
+            filter={filter}
+            onChange={onChange}
+          />
+        ) : column.filter === "boolean" ? (
+          <BooleanFilterInput filter={filter} onChange={onChange} />
+        ) : null}
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+function TextFilterInput({
+  column,
+  filter,
+  onChange,
+}: {
+  column: ColumnDef;
+  filter: ClientFilter | null;
+  onChange: (next: ClientFilter | null) => void;
+}) {
+  const initial =
+    filter && filter.kind === "text" ? filter.value : "";
+  const [value, setValue] = useState(initial);
+  useEffect(() => {
+    setValue(initial);
+  }, [initial]);
+  return (
+    <div className="space-y-2">
+      <div className="text-xs font-medium text-muted-foreground">
+        Filter {column.label} (contains)
+      </div>
+      <Input
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        placeholder="Type to filter…"
+        autoFocus
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            const trimmed = value.trim();
+            onChange(trimmed ? { kind: "text", value: trimmed } : null);
+          }
+        }}
+      />
+      <div className="flex gap-2">
+        <Button
+          size="sm"
+          variant="default"
+          className="flex-1"
+          onClick={() => {
+            const trimmed = value.trim();
+            onChange(trimmed ? { kind: "text", value: trimmed } : null);
+          }}
+        >
+          Apply
+        </Button>
+        {filter && (
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => {
+              setValue("");
+              onChange(null);
+            }}
+          >
+            Clear
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function BooleanFilterInput({
+  filter,
+  onChange,
+}: {
+  filter: ClientFilter | null;
+  onChange: (next: ClientFilter | null) => void;
+}) {
+  const current =
+    filter && filter.kind === "boolean" ? filter.value : null;
+  return (
+    <div className="space-y-2">
+      <div className="text-xs font-medium text-muted-foreground">
+        Filter
+      </div>
+      <div className="flex gap-1">
+        <Button
+          size="sm"
+          variant={current === true ? "default" : "outline"}
+          className="flex-1"
+          onClick={() => onChange({ kind: "boolean", value: true })}
+        >
+          Yes
+        </Button>
+        <Button
+          size="sm"
+          variant={current === false ? "default" : "outline"}
+          className="flex-1"
+          onClick={() => onChange({ kind: "boolean", value: false })}
+        >
+          No
+        </Button>
+        <Button
+          size="sm"
+          variant={current === null ? "default" : "outline"}
+          className="flex-1"
+          onClick={() => onChange(null)}
+        >
+          Any
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Conversion: client filter shape → server filter spec.
+// ---------------------------------------------------------------------------
+
+function clientToServerFilters(
+  filters: FilterMap
+): Record<string, ServerFilter> {
+  const out: Record<string, ServerFilter> = {};
+  for (const [key, f] of Object.entries(filters)) {
+    if (f.kind === "text") {
+      const trimmed = f.value.trim();
+      if (trimmed) out[key] = { kind: "contains", value: trimmed };
+    } else if (f.kind === "boolean") {
+      out[key] = { kind: "boolean", value: f.value };
+    }
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
 // Formatting helpers
 // ---------------------------------------------------------------------------
 
@@ -312,10 +753,6 @@ function formatCityState(
   return base || "—";
 }
 
-/**
- * Drizzle returns decimal columns as string-encoded numbers. Parse +
- * format with the given fraction digits; null / non-finite → em-dash.
- */
 function formatDecimal(value: string | null, fractionDigits: number): string {
   if (value === null) return "—";
   const n = Number(value);
@@ -355,10 +792,6 @@ function formatDate(value: Date | string | null): string {
     day: "numeric",
   });
 }
-
-// ---------------------------------------------------------------------------
-// Status badge
-// ---------------------------------------------------------------------------
 
 const STATUS_VARIANT: Record<
   string,
