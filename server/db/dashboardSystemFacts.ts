@@ -100,6 +100,23 @@ export async function upsertSystemFacts(
               installerName: sql`VALUES(\`installerName\`)`,
               part2VerificationDate: sql`VALUES(\`part2VerificationDate\`)`,
               isPart2Eligible: sql`VALUES(\`isPart2Eligible\`)`,
+              // PR 0 + PR 1 enrichment columns. Omitted from this set
+              // pre-fix → existing fact rows kept null for the new
+              // columns on every rebuild because the INSERT path
+              // only fires for NEW system keys.
+              lastRecDeliveryDate: sql`VALUES(\`lastRecDeliveryDate\`)`,
+              addressCity: sql`VALUES(\`addressCity\`)`,
+              addressState: sql`VALUES(\`addressState\`)`,
+              addressZip: sql`VALUES(\`addressZip\`)`,
+              county: sql`VALUES(\`county\`)`,
+              utilityTerritory: sql`VALUES(\`utilityTerritory\`)`,
+              contractIdNumber: sql`VALUES(\`contractIdNumber\`)`,
+              additionalCollateralPercent: sql`VALUES(\`additionalCollateralPercent\`)`,
+              terminationCost: sql`VALUES(\`terminationCost\`)`,
+              deliveryStartDate: sql`VALUES(\`deliveryStartDate\`)`,
+              deliveryEndDate: sql`VALUES(\`deliveryEndDate\`)`,
+              totalTransferredMwh: sql`VALUES(\`totalTransferredMwh\`)`,
+              lastMeterReadDate: sql`VALUES(\`lastMeterReadDate\`)`,
               buildId: sql`VALUES(\`buildId\`)`,
               // updatedAt auto-bumps via onUpdateNow.
             },

@@ -83,6 +83,7 @@ export async function upsertChangeOwnershipFacts(
               zillowStatus: sql`VALUES(\`zillowStatus\`)`,
               zillowSoldDate: sql`VALUES(\`zillowSoldDate\`)`,
               latestReportingDate: sql`VALUES(\`latestReportingDate\`)`,
+              lastRecDeliveryDate: sql`VALUES(\`lastRecDeliveryDate\`)`,
               changeOwnershipStatus: sql`VALUES(\`changeOwnershipStatus\`)`,
               ownershipStatus: sql`VALUES(\`ownershipStatus\`)`,
               isReporting: sql`VALUES(\`isReporting\`)`,

@@ -79,6 +79,7 @@ export async function upsertOwnershipFacts(
               contractType: sql`VALUES(\`contractType\`)`,
               contractStatusText: sql`VALUES(\`contractStatusText\`)`,
               latestReportingDate: sql`VALUES(\`latestReportingDate\`)`,
+              lastRecDeliveryDate: sql`VALUES(\`lastRecDeliveryDate\`)`,
               contractedDate: sql`VALUES(\`contractedDate\`)`,
               zillowStatus: sql`VALUES(\`zillowStatus\`)`,
               zillowSoldDate: sql`VALUES(\`zillowSoldDate\`)`,
