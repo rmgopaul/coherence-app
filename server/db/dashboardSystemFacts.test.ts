@@ -348,6 +348,30 @@ describe("getSystemFactsPage", () => {
     expect(selectCall?.whereCalled).toBe(1);
   });
 
+  it("applies textSearch filter when provided (Systems Index axis)", async () => {
+    const stub = makeDbStub({ selectRows: [[]] });
+    mocks.getDb.mockResolvedValue(stub);
+    await getSystemFactsPage("scope-1", {
+      textSearch: "csg-123",
+      limit: 100,
+    });
+    const selectCall = stub.calls.find(c => c.kind === "select");
+    expect(selectCall?.whereCalled).toBe(1);
+  });
+
+  it("treats whitespace-only / empty textSearch as no filter", async () => {
+    const stub = makeDbStub({ selectRows: [[]] });
+    mocks.getDb.mockResolvedValue(stub);
+    await getSystemFactsPage("scope-1", { textSearch: "   ", limit: 100 });
+    await getSystemFactsPage("scope-1", { textSearch: "", limit: 100 });
+    await getSystemFactsPage("scope-1", { textSearch: null, limit: 100 });
+    // All 3 should issue the unfiltered scoped scan (no additional
+    // condition beyond scopeId). The stub just records the where
+    // call; we trust the implementation's `trimmedSearch` short-
+    // circuit and verify no crash here.
+    expect(stub.calls.filter(c => c.kind === "select").length).toBe(3);
+  });
+
   it("combines all 4 filters into a single WHERE", async () => {
     // All four axes ANDed into one where clause; SELECT issues
     // exactly one filtered query.

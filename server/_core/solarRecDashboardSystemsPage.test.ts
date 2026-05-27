@@ -113,8 +113,13 @@ describe("getDashboardSystemsPage (source rail)", () => {
     expect(proc!).toMatch(/hasMore/);
   });
 
-  it("ships a `_runnerVersion` marker bumped to @2 (PR-F-4-f-1 added isPart2Eligible filter axis)", () => {
-    expect(proc!).toMatch(/_runnerVersion:\s*"phase-2-pr-f-3@2"/);
+  it("ships a `_runnerVersion` marker bumped to @3 (Systems Index PR added textSearch input)", () => {
+    expect(proc!).toMatch(/_runnerVersion:\s*"phase-2-pr-f-3@3"/);
+  });
+
+  it("wires the textSearch input through to the db helper", () => {
+    expect(proc!).toMatch(/textSearch:\s*input\.textSearch\s*\?\?\s*null/);
+    expect(proc!).toMatch(/textSearch:\s*z\.string\(\)/);
   });
 
   it("ships a `_checkpoint` for deploy verification", () => {

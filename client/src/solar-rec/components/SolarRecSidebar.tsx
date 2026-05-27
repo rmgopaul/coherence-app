@@ -2,6 +2,7 @@ import { useLocation } from "wouter";
 import {
   LayoutDashboard,
   Activity,
+  Database,
   Zap,
   Settings,
   LogOut,
@@ -194,6 +195,17 @@ export default function SolarRecSidebar({
                   >
                     <LayoutDashboard className="h-4 w-4" />
                     <span>Dashboard</span>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              )}
+              {canSee("solar-rec-dashboard") && (
+                <SidebarMenuItem>
+                  <SidebarMenuButton
+                    onClick={() => setLocation("/solar-rec/systems")}
+                    isActive={location === "/solar-rec/systems"}
+                  >
+                    <Database className="h-4 w-4" />
+                    <span>Systems</span>
                   </SidebarMenuButton>
                 </SidebarMenuItem>
               )}
