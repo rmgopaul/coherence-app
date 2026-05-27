@@ -2525,6 +2525,34 @@ export const solarRecDashboardSystemFacts = mysqlTable(
     // eligibility based on the abpReport batch the build saw).
     isPart2Eligible: boolean("isPart2Eligible").notNull(),
 
+    // Systems Index enrichments. Populated by `buildSystemEnrichments`
+    // alongside the snapshot → fact reshape; all nullable because
+    // the source dataset may be absent or the per-system join may
+    // not match. See that helper for source dataset per column.
+    addressCity: varchar("addressCity", { length: 128 }),
+    addressState: varchar("addressState", { length: 64 }),
+    addressZip: varchar("addressZip", { length: 16 }),
+    county: varchar("county", { length: 128 }),
+    utilityTerritory: varchar("utilityTerritory", { length: 128 }),
+    contractIdNumber: varchar("contractIdNumber", { length: 64 }),
+    additionalCollateralPercent: decimal("additionalCollateralPercent", {
+      precision: 10,
+      scale: 4,
+    }),
+    // (contractedRecs - deliveredRecs) * recPrice; computed in the
+    // fact-row builder from existing SystemRecord fields.
+    terminationCost: decimal("terminationCost", { precision: 18, scale: 4 }),
+    // `deliveryEndDate` = `deliveryStartDate + 15y` (ABP standard term).
+    deliveryStartDate: date("deliveryStartDate"),
+    deliveryEndDate: date("deliveryEndDate"),
+    totalTransferredMwh: decimal("totalTransferredMwh", {
+      precision: 18,
+      scale: 4,
+    }),
+    // Distinct from `latestReportingDate` (which is the production-
+    // period max). This is the date the meter was actually READ.
+    lastMeterReadDate: date("lastMeterReadDate"),
+
     // Build versioning + observability. PR-F-2's runner step will
     // set `buildId` to the current `solarRecDashboardBuilds.id` so
     // the post-UPSERT DELETE can sweep orphans efficiently.

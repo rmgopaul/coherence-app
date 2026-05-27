@@ -29,6 +29,7 @@ const mocks = vi.hoisted(() => ({
   deleteOrphanedSystemFacts: vi.fn(),
   getOrBuildSystemSnapshot: vi.fn(),
   getOrBuildOfflineMonitoringAggregates: vi.fn(),
+  buildSystemEnrichments: vi.fn(),
 }));
 
 vi.mock("../../db/dashboardSystemFacts", () => ({
@@ -62,14 +63,27 @@ vi.mock("./buildOfflineMonitoringAggregates", async () => {
   };
 });
 
+vi.mock("./buildSystemEnrichments", async () => {
+  const actual = await vi.importActual<
+    typeof import("./buildSystemEnrichments")
+  >("./buildSystemEnrichments");
+  return {
+    ...actual,
+    buildSystemEnrichments: mocks.buildSystemEnrichments,
+  };
+});
+
 import {
   __resetSystemBuildStepRegistrationForTests,
+  addYears,
   buildSystemFactRows,
+  computeTerminationCost,
   systemBuildStep,
   registerSystemBuildStep,
   type Part2EligibilityIdSets,
   type SystemRecordSubset,
 } from "./buildDashboardSystemFacts";
+import type { SystemEnrichments } from "./buildSystemEnrichments";
 import {
   getDashboardBuildSteps,
   setDashboardBuildSteps,
@@ -81,6 +95,9 @@ beforeEach(() => {
   }
   mocks.upsertSystemFacts.mockResolvedValue(undefined);
   mocks.deleteOrphanedSystemFacts.mockResolvedValue(0);
+  // Default to an empty enrichments map; individual tests override
+  // when exercising enrichment-specific behavior.
+  mocks.buildSystemEnrichments.mockResolvedValue(new Map());
   setDashboardBuildSteps([]);
   __resetSystemBuildStepRegistrationForTests();
 });
@@ -726,5 +743,177 @@ describe("registerSystemBuildStep", () => {
     ]);
     await registerSystemBuildStep();
     expect(getDashboardBuildSteps()).toHaveLength(1);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────
+// Systems Index enrichments (Phase 2 follow-up)
+// ────────────────────────────────────────────────────────────────────
+
+describe("computeTerminationCost", () => {
+  it("returns (contractedRecs - deliveredRecs) * recPrice", () => {
+    expect(
+      computeTerminationCost({
+        contractedRecs: 200,
+        deliveredRecs: 150,
+        recPrice: 1.25,
+      })
+    ).toBe(62.5);
+  });
+
+  it("returns null when any input is null", () => {
+    expect(
+      computeTerminationCost({
+        contractedRecs: null,
+        deliveredRecs: 150,
+        recPrice: 1.25,
+      })
+    ).toBeNull();
+    expect(
+      computeTerminationCost({
+        contractedRecs: 200,
+        deliveredRecs: null,
+        recPrice: 1.25,
+      })
+    ).toBeNull();
+    expect(
+      computeTerminationCost({
+        contractedRecs: 200,
+        deliveredRecs: 150,
+        recPrice: null,
+      })
+    ).toBeNull();
+  });
+
+  it("returns a negative number when the system over-delivered", () => {
+    expect(
+      computeTerminationCost({
+        contractedRecs: 100,
+        deliveredRecs: 110,
+        recPrice: 2.0,
+      })
+    ).toBe(-20);
+  });
+});
+
+describe("addYears", () => {
+  it("returns null for a null input", () => {
+    expect(addYears(null, 15)).toBeNull();
+  });
+
+  it("adds 15 years to the input date", () => {
+    const start = new Date(Date.UTC(2024, 5, 1)); // June 1 2024
+    const end = addYears(start, 15);
+    expect(end?.getUTCFullYear()).toBe(2039);
+    expect(end?.getUTCMonth()).toBe(5);
+    expect(end?.getUTCDate()).toBe(1);
+  });
+
+  it("does not mutate the input date", () => {
+    const start = new Date(Date.UTC(2024, 5, 1));
+    addYears(start, 15);
+    expect(start.getUTCFullYear()).toBe(2024);
+  });
+});
+
+function makeEnrichments(
+  overrides: Partial<SystemEnrichments> = {}
+): SystemEnrichments {
+  return {
+    addressCity: null,
+    addressState: null,
+    addressZip: null,
+    county: null,
+    utilityTerritory: null,
+    contractIdNumber: null,
+    additionalCollateralPercent: null,
+    deliveryStartDate: null,
+    totalTransferredMwh: null,
+    lastMeterReadDate: null,
+    ...overrides,
+  };
+}
+
+describe("buildSystemFactRows — enrichments", () => {
+  it("defaults every enrichment column to null when no map is passed", () => {
+    const [row] = buildSystemFactRows({
+      scopeId: "s",
+      buildId: "b",
+      rows: [makeRow()],
+      eligibility: EMPTY_ELIGIBILITY,
+    });
+    expect(row.addressCity).toBeNull();
+    expect(row.addressState).toBeNull();
+    expect(row.addressZip).toBeNull();
+    expect(row.county).toBeNull();
+    expect(row.utilityTerritory).toBeNull();
+    expect(row.contractIdNumber).toBeNull();
+    expect(row.additionalCollateralPercent).toBeNull();
+    expect(row.deliveryStartDate).toBeNull();
+    expect(row.deliveryEndDate).toBeNull();
+    expect(row.totalTransferredMwh).toBeNull();
+    expect(row.lastMeterReadDate).toBeNull();
+  });
+
+  it("applies enrichments keyed by systemKey", () => {
+    const enrichments = new Map<string, SystemEnrichments>([
+      [
+        "sys-a",
+        makeEnrichments({
+          addressCity: "Chicago",
+          addressState: "IL",
+          county: "Cook",
+          contractIdNumber: "C-123",
+          additionalCollateralPercent: 5.0,
+          totalTransferredMwh: 250.5,
+          deliveryStartDate: new Date(Date.UTC(2024, 5, 1)),
+        }),
+      ],
+    ]);
+    const [row] = buildSystemFactRows({
+      scopeId: "s",
+      buildId: "b",
+      rows: [makeRow({ key: "sys-a" })],
+      eligibility: EMPTY_ELIGIBILITY,
+      enrichments,
+    });
+    expect(row.addressCity).toBe("Chicago");
+    expect(row.addressState).toBe("IL");
+    expect(row.county).toBe("Cook");
+    expect(row.contractIdNumber).toBe("C-123");
+    expect(row.additionalCollateralPercent).toBe("5");
+    expect(row.totalTransferredMwh).toBe("250.5");
+    expect(row.deliveryStartDate).toBeInstanceOf(Date);
+    expect((row.deliveryEndDate as Date | null)?.getUTCFullYear()).toBe(2039);
+  });
+
+  it("computes terminationCost from the SystemRecord (not the enrichment)", () => {
+    const [row] = buildSystemFactRows({
+      scopeId: "s",
+      buildId: "b",
+      rows: [
+        makeRow({
+          contractedRecs: 200,
+          deliveredRecs: 150,
+          recPrice: 1.25,
+        }),
+      ],
+      eligibility: EMPTY_ELIGIBILITY,
+    });
+    expect(row.terminationCost).toBe("62.5");
+  });
+
+  it("leaves enrichment columns null when a system has no matching map entry", () => {
+    const enrichments = new Map<string, SystemEnrichments>([
+      ["sys-a", makeEnrichments({ addressCity: "Chicago" })],
+    ]);
+    const [row] = buildSystemFactRows({
+      scopeId: "s",
+      buildId: "b",
+      rows: [makeRow({ key: "sys-b" })], // not in map
+      eligibility: EMPTY_ELIGIBILITY,
+      enrichments,
+    });
+    expect(row.addressCity).toBeNull();
   });
 });

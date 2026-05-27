@@ -36,6 +36,11 @@ import {
 import { getOrBuildSystemSnapshot } from "./buildSystemSnapshot";
 import { getOrBuildOfflineMonitoringAggregates } from "./buildOfflineMonitoringAggregates";
 import {
+  buildSystemEnrichments,
+  EMPTY_SYSTEM_ENRICHMENTS,
+  type SystemEnrichments,
+} from "./buildSystemEnrichments";
+import {
   upsertSystemFacts,
   deleteOrphanedSystemFacts,
 } from "../../db/dashboardSystemFacts";
@@ -137,46 +142,98 @@ export function buildSystemFactRows(args: {
   buildId: string;
   rows: readonly SystemRecordSubset[];
   eligibility: Part2EligibilityIdSets;
+  enrichments?: ReadonlyMap<string, SystemEnrichments>;
 }): InsertSolarRecDashboardSystemFact[] {
-  const { scopeId, buildId, rows, eligibility } = args;
-  return rows.map(row => ({
-    scopeId,
-    systemKey: row.key,
-    systemId: row.systemId,
-    stateApplicationRefId: row.stateApplicationRefId,
-    trackingSystemRefId: row.trackingSystemRefId,
-    systemName: row.systemName,
-    installedKwAc: numberToDecimalString(row.installedKwAc),
-    installedKwDc: numberToDecimalString(row.installedKwDc),
-    sizeBucket: row.sizeBucket,
-    recPrice: numberToDecimalString(row.recPrice),
-    totalContractAmount: numberToDecimalString(row.totalContractAmount),
-    contractedRecs: numberToDecimalString(row.contractedRecs),
-    deliveredRecs: numberToDecimalString(row.deliveredRecs),
-    contractedValue: numberToDecimalString(row.contractedValue),
-    deliveredValue: numberToDecimalString(row.deliveredValue),
-    valueGap: numberToDecimalString(row.valueGap),
-    latestReportingDate: row.latestReportingDate,
-    latestReportingKwh: numberToDecimalString(row.latestReportingKwh),
-    isReporting: row.isReporting,
-    lastRecDeliveryDate: row.lastRecDeliveryDate,
-    isTerminated: row.isTerminated,
-    isTransferred: row.isTransferred,
-    ownershipStatus: row.ownershipStatus,
-    hasChangedOwnership: row.hasChangedOwnership,
-    changeOwnershipStatus: row.changeOwnershipStatus,
-    contractStatusText: row.contractStatusText,
-    contractType: row.contractType,
-    zillowStatus: row.zillowStatus,
-    zillowSoldDate: row.zillowSoldDate,
-    contractedDate: row.contractedDate,
-    monitoringType: row.monitoringType,
-    monitoringPlatform: row.monitoringPlatform,
-    installerName: row.installerName,
-    part2VerificationDate: row.part2VerificationDate,
-    isPart2Eligible: isSystemPart2Eligible(row, eligibility),
-    buildId,
-  }));
+  const { scopeId, buildId, rows, eligibility, enrichments } = args;
+  return rows.map(row => {
+    const enrich = enrichments?.get(row.key) ?? EMPTY_SYSTEM_ENRICHMENTS;
+    return {
+      scopeId,
+      systemKey: row.key,
+      systemId: row.systemId,
+      stateApplicationRefId: row.stateApplicationRefId,
+      trackingSystemRefId: row.trackingSystemRefId,
+      systemName: row.systemName,
+      installedKwAc: numberToDecimalString(row.installedKwAc),
+      installedKwDc: numberToDecimalString(row.installedKwDc),
+      sizeBucket: row.sizeBucket,
+      recPrice: numberToDecimalString(row.recPrice),
+      totalContractAmount: numberToDecimalString(row.totalContractAmount),
+      contractedRecs: numberToDecimalString(row.contractedRecs),
+      deliveredRecs: numberToDecimalString(row.deliveredRecs),
+      contractedValue: numberToDecimalString(row.contractedValue),
+      deliveredValue: numberToDecimalString(row.deliveredValue),
+      valueGap: numberToDecimalString(row.valueGap),
+      latestReportingDate: row.latestReportingDate,
+      latestReportingKwh: numberToDecimalString(row.latestReportingKwh),
+      isReporting: row.isReporting,
+      lastRecDeliveryDate: row.lastRecDeliveryDate,
+      isTerminated: row.isTerminated,
+      isTransferred: row.isTransferred,
+      ownershipStatus: row.ownershipStatus,
+      hasChangedOwnership: row.hasChangedOwnership,
+      changeOwnershipStatus: row.changeOwnershipStatus,
+      contractStatusText: row.contractStatusText,
+      contractType: row.contractType,
+      zillowStatus: row.zillowStatus,
+      zillowSoldDate: row.zillowSoldDate,
+      contractedDate: row.contractedDate,
+      monitoringType: row.monitoringType,
+      monitoringPlatform: row.monitoringPlatform,
+      installerName: row.installerName,
+      part2VerificationDate: row.part2VerificationDate,
+      isPart2Eligible: isSystemPart2Eligible(row, eligibility),
+      // Systems Index enrichments — see buildSystemEnrichments.
+      addressCity: enrich.addressCity,
+      addressState: enrich.addressState,
+      addressZip: enrich.addressZip,
+      county: enrich.county,
+      utilityTerritory: enrich.utilityTerritory,
+      contractIdNumber: enrich.contractIdNumber,
+      additionalCollateralPercent: numberToDecimalString(
+        enrich.additionalCollateralPercent
+      ),
+      terminationCost: numberToDecimalString(computeTerminationCost(row)),
+      deliveryStartDate: enrich.deliveryStartDate,
+      deliveryEndDate: addYears(enrich.deliveryStartDate, 15),
+      totalTransferredMwh: numberToDecimalString(enrich.totalTransferredMwh),
+      lastMeterReadDate: enrich.lastMeterReadDate,
+      buildId,
+    };
+  });
+}
+
+/**
+ * (contractedRecs - deliveredRecs) * recPrice. Null when any input
+ * is missing. Negative when the system has over-delivered (which
+ * isn't a "termination" scenario; treat as 0 for tile sums but the
+ * raw value is still informative).
+ */
+export function computeTerminationCost(row: {
+  contractedRecs: number | null;
+  deliveredRecs: number | null;
+  recPrice: number | null;
+}): number | null {
+  if (
+    row.contractedRecs === null ||
+    row.deliveredRecs === null ||
+    row.recPrice === null
+  ) {
+    return null;
+  }
+  return (row.contractedRecs - row.deliveredRecs) * row.recPrice;
+}
+
+/**
+ * Add N calendar years to a date. Returns `null` for a null input.
+ * Uses `setUTCFullYear` to avoid TZ skew; the date column stores
+ * a `YYYY-MM-DD` literal without time.
+ */
+export function addYears(date: Date | null, years: number): Date | null {
+  if (!date) return null;
+  const out = new Date(date.getTime());
+  out.setUTCFullYear(out.getUTCFullYear() + years);
+  return out;
 }
 
 function isSystemPart2Eligible(
@@ -260,11 +317,18 @@ async function runSystemStep(args: {
     // Cast `unknown[]` → `SystemRecordSubset[]`. The aggregator IS
     // the source of these rows; this is the validated boundary
     // every other downstream consumer assumes.
+    const typedSystems = systems as readonly SystemRecordSubset[];
+
+    const enrichments = await buildSystemEnrichments(scopeId, typedSystems);
+    if (signal.aborted)
+      throw new Error("aborted after enrichments fetch");
+
     const rows = buildSystemFactRows({
       scopeId,
       buildId,
-      rows: systems as readonly SystemRecordSubset[],
+      rows: typedSystems,
       eligibility,
+      enrichments,
     });
 
     if (signal.aborted) throw new Error("aborted before upsert");
