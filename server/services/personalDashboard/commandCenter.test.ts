@@ -1,10 +1,25 @@
 import { describe, expect, it } from "vitest";
 
+import type { PersonalDashboardDailyState } from "@shared/personalDashboard";
 import {
   buildPersonalDashboardDailyProgress,
+  buildPersonalDashboardTodayOps,
   buildPersonalDashboardWorkflowSuggestions,
   buildPersonalDashboardWorkspacePrompts,
 } from "./commandCenter";
+
+function emptyDailyState(dateKey: string): PersonalDashboardDailyState {
+  return {
+    dateKey,
+    dailyBriefStatus: "not_started",
+    dailyBrief: null,
+    todayPlanStatus: "not_started",
+    todayPlan: null,
+    commitments: [],
+    outcomes: [],
+    updatedAt: null,
+  };
+}
 
 describe("buildPersonalDashboardWorkflowSuggestions", () => {
   it("builds waiting commitments and top task outcomes from source signals", () => {
@@ -65,7 +80,7 @@ describe("buildPersonalDashboardWorkflowSuggestions", () => {
         status: "open",
       },
     ]);
-    expect(suggestions.suggestedOutcomes.map((item) => item.title)).toEqual([
+    expect(suggestions.suggestedOutcomes.map(item => item.title)).toEqual([
       "Close proposal",
       "Review contract",
       "Lower-priority task",
@@ -229,6 +244,207 @@ describe("buildPersonalDashboardWorkspacePrompts", () => {
         href: "/notes?eventId=event-now",
       },
     ]);
+  });
+});
+
+describe("buildPersonalDashboardTodayOps", () => {
+  it("ranks right-now, next meeting, waiting-on threads, and high-priority tasks", () => {
+    const dateKey = "2026-05-14";
+    const dailyState = emptyDailyState(dateKey);
+    const todayOps = buildPersonalDashboardTodayOps({
+      dateKey,
+      now: new Date("2026-05-14T12:00:00.000Z"),
+      metrics: {
+        tasksDueToday: 4,
+        tasksCompletedToday: 1,
+        meetingsRemaining: 2,
+        inboxToTriage: 8,
+        waitingOnCount: 4,
+        dockReminderCount: 0,
+        activeDockCount: 0,
+      },
+      rightNow: {
+        title: "Close proposal",
+        kind: "todoist",
+        sourceId: "task-now",
+        sourceUrl: "https://todoist.com/app/task/task-now",
+        reason: "Highest-priority task due today.",
+      },
+      workspacePrompts: [
+        {
+          id: "workspace:calendar:event-1",
+          kind: "calendar",
+          sourceId: "event-1",
+          title: "Client prep",
+          sourceUrl: "https://calendar.google.com/event?eid=event-1",
+          reason: "Upcoming calendar event has no linked workspace note.",
+          actionLabel: "Prep meeting note",
+          href: "/notes?eventId=event-1",
+        },
+      ],
+      waitingOn: [
+        { threadId: "thread-1", subject: "Contract approval", to: "A" },
+        { threadId: "thread-2", subject: "Scope answer", to: "B" },
+        { threadId: "thread-3", subject: "Invoice detail", to: "C" },
+        { threadId: "thread-4", subject: "Overflow", to: "D" },
+      ],
+      tasks: [
+        { id: "task-1", content: "Critical review", priority: 4 },
+        { id: "task-2", content: "High-priority cleanup", priority: 3 },
+      ],
+      dailyState,
+      dailyProgress: buildPersonalDashboardDailyProgress(dailyState),
+    });
+
+    expect(todayOps.cards).toHaveLength(6);
+    expect(todayOps.cards.map(card => card.kind)).toEqual([
+      "right_now",
+      "workspace_prompt",
+      "waiting_on",
+      "waiting_on",
+      "waiting_on",
+      "todoist",
+    ]);
+    expect(todayOps.cards.map(card => card.rank)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(todayOps.autoBrief).toMatchObject({
+      headline: "Close proposal",
+      generatedAt: "2026-05-14T12:00:00.000Z",
+    });
+    expect(todayOps.autoBrief.sourceRefs).toHaveLength(5);
+  });
+
+  it("builds an auto brief without requiring saved daily state", () => {
+    const dateKey = "2026-05-14";
+    const dailyState = emptyDailyState(dateKey);
+    const todayOps = buildPersonalDashboardTodayOps({
+      dateKey,
+      now: new Date("2026-05-14T12:00:00.000Z"),
+      metrics: {
+        tasksDueToday: 0,
+        tasksCompletedToday: 0,
+        meetingsRemaining: 0,
+        inboxToTriage: 0,
+        waitingOnCount: 0,
+        dockReminderCount: 0,
+        activeDockCount: 0,
+      },
+      rightNow: null,
+      workspacePrompts: [],
+      waitingOn: [],
+      tasks: [],
+      dailyState,
+      dailyProgress: buildPersonalDashboardDailyProgress(dailyState),
+    });
+
+    expect(todayOps.cards).toEqual([]);
+    expect(todayOps.autoBrief.headline).toBe("Today Ops is clear");
+    expect(todayOps.autoBrief.summaryBullets).toContain(
+      "0 tasks due today; 0 completed tasks."
+    );
+  });
+
+  it("includes unresolved saved daily state in cards and progress", () => {
+    const dateKey = "2026-05-14";
+    const dailyState: PersonalDashboardDailyState = {
+      ...emptyDailyState(dateKey),
+      todayPlanStatus: "ready",
+      todayPlan: {
+        topPriority: "Close proposal",
+        notes: null,
+        updatedAt: "2026-05-14T12:05:00.000Z",
+        blocks: [
+          {
+            id: "block-1",
+            title: "Draft client note",
+            startIso: null,
+            endIso: null,
+            source: "system",
+            sourceId: null,
+            status: "planned",
+          },
+          {
+            id: "block-2",
+            title: "Already done",
+            startIso: null,
+            endIso: null,
+            source: "system",
+            sourceId: null,
+            status: "done",
+          },
+        ],
+      },
+      commitments: [
+        {
+          id: "commitment-1",
+          title: "Follow up with client",
+          source: "gmail",
+          sourceId: "thread-1",
+          owner: null,
+          dueAt: null,
+          status: "waiting",
+          url: null,
+        },
+        {
+          id: "commitment-2",
+          title: "Closed",
+          source: "system",
+          sourceId: null,
+          owner: null,
+          dueAt: null,
+          status: "done",
+          url: null,
+        },
+      ],
+      outcomes: [
+        {
+          id: "outcome-1",
+          title: "Proposal sent",
+          status: "active",
+          metricLabel: "Progress",
+          target: "Done today",
+          current: null,
+        },
+        {
+          id: "outcome-2",
+          title: "Won already",
+          status: "won",
+          metricLabel: "Progress",
+          target: "Done today",
+          current: "Done",
+        },
+      ],
+    };
+    const progress = buildPersonalDashboardDailyProgress(dailyState);
+    const todayOps = buildPersonalDashboardTodayOps({
+      dateKey,
+      now: new Date("2026-05-14T12:00:00.000Z"),
+      metrics: {
+        tasksDueToday: 0,
+        tasksCompletedToday: 0,
+        meetingsRemaining: 0,
+        inboxToTriage: 0,
+        waitingOnCount: 0,
+        dockReminderCount: 0,
+        activeDockCount: 0,
+      },
+      rightNow: null,
+      workspacePrompts: [],
+      waitingOn: [],
+      tasks: [],
+      dailyState,
+      dailyProgress: progress,
+    });
+
+    expect(todayOps.cards.map(card => card.kind)).toEqual([
+      "saved_commitment",
+      "saved_outcome",
+      "saved_plan_block",
+    ]);
+    expect(todayOps.progress).toMatchObject({
+      commitments: { total: 2, waiting: 1, done: 1 },
+      outcomes: { total: 2, active: 1, won: 1 },
+      topPriority: "Close proposal",
+    });
   });
 });
 

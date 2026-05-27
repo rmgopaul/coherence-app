@@ -7,7 +7,11 @@ import {
   type PersonalDashboardDailyState,
   type PersonalDashboardHealthStatus,
   type PersonalDashboardIntegrationHealth,
+  type PersonalDashboardMetricSummary,
   type PersonalDashboardOutcome,
+  type PersonalDashboardPlanBlock,
+  type PersonalDashboardTodayOps,
+  type PersonalDashboardTodayOpsCard,
   type PersonalDashboardWorkspacePrompt,
 } from "@shared/personalDashboard";
 import { countNoteLinksByExternalIds } from "../../db/notes";
@@ -220,15 +224,15 @@ export async function getPersonalDashboardCommandCenter(
       input.userId,
       "todoist_task",
       workspacePromptCandidates
-        .filter((prompt) => prompt.kind === "todoist")
-        .map((prompt) => prompt.sourceId)
+        .filter(prompt => prompt.kind === "todoist")
+        .map(prompt => prompt.sourceId)
     ),
     countNoteLinksByExternalIds(
       input.userId,
       "google_calendar_event",
       workspacePromptCandidates
-        .filter((prompt) => prompt.kind === "calendar")
-        .map((prompt) => prompt.sourceId)
+        .filter(prompt => prompt.kind === "calendar")
+        .map(prompt => prompt.sourceId)
     ),
   ]);
   const workspacePrompts = filterWorkspacePromptsWithoutNotes(
@@ -239,6 +243,25 @@ export async function getPersonalDashboardCommandCenter(
     }
   );
   const dailyProgress = buildPersonalDashboardDailyProgress(dailyState);
+  const todayOps = buildPersonalDashboardTodayOps({
+    dateKey: input.dateKey,
+    now,
+    metrics: {
+      tasksDueToday: todoist.tasks.length,
+      tasksCompletedToday: todoist.completedCount,
+      meetingsRemaining: remainingMeetingCount(google.calendarEvents, now),
+      inboxToTriage: google.gmailMessages.length,
+      waitingOnCount: google.waitingOn.length,
+      dockReminderCount: upcomingDockItems.length,
+      activeDockCount: dockItems.length,
+    },
+    rightNow,
+    tasks: todoist.tasks,
+    waitingOn: google.waitingOn,
+    workspacePrompts,
+    dailyState,
+    dailyProgress,
+  });
 
   return {
     _runnerVersion: PERSONAL_DASHBOARD_RUNNER_VERSION,
@@ -257,6 +280,7 @@ export async function getPersonalDashboardCommandCenter(
     rightNow,
     dailyWorkflow,
     dailyProgress,
+    todayOps,
     workspacePrompts,
     integrations,
     dailyBrief: {
@@ -534,22 +558,20 @@ export function buildPersonalDashboardWorkflowSuggestions(input: {
   ]).slice(0, 5);
 
   const suggestedOutcomes = dedupeById<PersonalDashboardOutcome>(
-    sortedTasks(input.tasks)
-      .map((task, index) => ({
-        id: `task-outcome:${taskSourceId(task, index)}`,
-        title: taskTitle(task, `Outcome ${index + 1}`),
-        status: "active" as const,
-        metricLabel: "Task",
-        target: "Complete today",
-        current: null,
-      }))
+    sortedTasks(input.tasks).map((task, index) => ({
+      id: `task-outcome:${taskSourceId(task, index)}`,
+      title: taskTitle(task, `Outcome ${index + 1}`),
+      status: "active" as const,
+      metricLabel: "Task",
+      target: "Complete today",
+      current: null,
+    }))
   ).slice(0, 3);
 
   if (suggestedOutcomes.length === 0) {
     suggestedOutcomes.push({
       id: `fallback-outcome:${input.dateKey}:${input.now.getTime()}`,
-      title:
-        input.rightNow?.title ?? "Define one meaningful outcome for today",
+      title: input.rightNow?.title ?? "Define one meaningful outcome for today",
       status: "active",
       metricLabel: "Progress",
       target: "Done today",
@@ -561,6 +583,370 @@ export function buildPersonalDashboardWorkflowSuggestions(input: {
     suggestedCommitments,
     suggestedOutcomes: suggestedOutcomes.slice(0, 5),
   };
+}
+
+export function buildPersonalDashboardTodayOps(input: {
+  dateKey: string;
+  now: Date;
+  metrics: PersonalDashboardMetricSummary;
+  rightNow: PersonalDashboardCommandCenter["rightNow"];
+  tasks: TodoistTaskLike[];
+  waitingOn: GmailWaitingOnLike[];
+  workspacePrompts: PersonalDashboardWorkspacePrompt[];
+  dailyState: PersonalDashboardDailyState;
+  dailyProgress: PersonalDashboardCommandCenter["dailyProgress"];
+}): PersonalDashboardTodayOps {
+  const cards: Omit<PersonalDashboardTodayOpsCard, "rank">[] = [];
+  const seenTargets = new Set<string>();
+  const addCard = (card: Omit<PersonalDashboardTodayOpsCard, "rank">) => {
+    if (cards.length >= 6) return;
+    const targetKey = `${card.source}:${card.sourceId ?? card.relatedId ?? card.title}`;
+    if (seenTargets.has(targetKey)) return;
+    seenTargets.add(targetKey);
+    cards.push(card);
+  };
+
+  if (input.rightNow) {
+    addCard({
+      id: `right-now:${input.rightNow.kind}:${input.rightNow.sourceId ?? input.dateKey}`,
+      kind: "right_now",
+      title: input.rightNow.title,
+      reason: input.rightNow.reason,
+      source: input.rightNow.kind,
+      sourceId: input.rightNow.sourceId,
+      sourceUrl: normalizeUrl(input.rightNow.sourceUrl),
+      status: "current",
+      primaryAction: normalizeUrl(input.rightNow.sourceUrl)
+        ? "open_source"
+        : "add_to_plan",
+      workspaceTarget: workspaceTargetFromRightNow(input.rightNow),
+      relatedId: input.rightNow.sourceId,
+    });
+  }
+
+  const nextMeetingPrompt = input.workspacePrompts.find(
+    prompt => prompt.kind === "calendar"
+  );
+  if (nextMeetingPrompt) {
+    addCard({
+      id: `workspace:${nextMeetingPrompt.kind}:${nextMeetingPrompt.sourceId}`,
+      kind: "workspace_prompt",
+      title: nextMeetingPrompt.title,
+      reason: nextMeetingPrompt.reason,
+      source: "calendar",
+      sourceId: nextMeetingPrompt.sourceId,
+      sourceUrl: normalizeUrl(nextMeetingPrompt.sourceUrl),
+      status: "needs workspace",
+      primaryAction: "create_workspace_note",
+      workspaceTarget: workspaceTargetFromPrompt(nextMeetingPrompt),
+      relatedId: nextMeetingPrompt.sourceId,
+    });
+  }
+
+  input.waitingOn.slice(0, 3).forEach((item, index) => {
+    const sourceId = gmailSourceId(item);
+    const subject = normalizeText(item.subject) ?? "Waiting-on thread";
+    const fallbackUrl = sourceId
+      ? `https://mail.google.com/mail/u/0/#inbox/${sourceId}`
+      : null;
+    const url = normalizeUrl(item.url) ?? fallbackUrl;
+    addCard({
+      id: `waiting-on:${sourceId ?? `${input.dateKey}:${index}`}`,
+      kind: "waiting_on",
+      title: `Follow up: ${subject}`,
+      reason:
+        normalizePerson(item.to) || normalizePerson(item.from)
+          ? `Waiting on ${normalizePerson(item.to) ?? normalizePerson(item.from)}.`
+          : "Waiting-on Gmail thread needs a decision.",
+      source: "gmail",
+      sourceId,
+      sourceUrl: url,
+      status: "waiting",
+      primaryAction: url ? "open_source" : "add_to_plan",
+      workspaceTarget: null,
+      relatedId: sourceId,
+    });
+  });
+
+  sortedTasks(input.tasks)
+    .filter(task => Number(task.priority ?? 1) >= 3)
+    .forEach((task, index) => {
+      const sourceId = taskSourceId(task, index);
+      const url =
+        normalizeUrl(task.url) ??
+        `https://app.todoist.com/app/task/${encodeURIComponent(sourceId)}`;
+      addCard({
+        id: `todoist:${sourceId}`,
+        kind: "todoist",
+        title: taskTitle(task, `Task ${index + 1}`),
+        reason: `Priority ${Number(task.priority ?? 1)} Todoist task due today.`,
+        source: "todoist",
+        sourceId,
+        sourceUrl: url,
+        status: "open",
+        primaryAction: "open_source",
+        workspaceTarget: {
+          kind: "todoist",
+          taskId: sourceId,
+          title: taskTitle(task, `Task ${index + 1}`),
+          url,
+        },
+        relatedId: sourceId,
+      });
+    });
+
+  for (const commitment of input.dailyState.commitments) {
+    if (commitment.status === "done") continue;
+    addCard({
+      id: `saved-commitment:${commitment.id}`,
+      kind: "saved_commitment",
+      title: commitment.title,
+      reason: "Saved commitment still needs closure.",
+      source: commitment.source,
+      sourceId: commitment.sourceId,
+      sourceUrl: sourceUrlFromCommitment(commitment),
+      status: commitment.status,
+      primaryAction: "mark_done_local",
+      workspaceTarget: workspaceTargetFromCommitment(commitment),
+      relatedId: commitment.id,
+    });
+  }
+
+  for (const outcome of input.dailyState.outcomes) {
+    if (outcome.status === "won" || outcome.status === "missed") continue;
+    addCard({
+      id: `saved-outcome:${outcome.id}`,
+      kind: "saved_outcome",
+      title: outcome.title,
+      reason: "Saved outcome is still active.",
+      source: "today_plan",
+      sourceId: outcome.id,
+      sourceUrl: null,
+      status: outcome.status,
+      primaryAction: "mark_done_local",
+      workspaceTarget: null,
+      relatedId: outcome.id,
+    });
+  }
+
+  for (const block of input.dailyState.todayPlan?.blocks ?? []) {
+    if (block.status === "done" || block.status === "skipped") continue;
+    addCard({
+      id: `saved-plan-block:${block.id}`,
+      kind: "saved_plan_block",
+      title: block.title,
+      reason: "Saved plan block is still open.",
+      source: block.source,
+      sourceId: block.sourceId,
+      sourceUrl: sourceUrlFromPlanBlock(block),
+      status: block.status,
+      primaryAction: "mark_done_local",
+      workspaceTarget: workspaceTargetFromPlanBlock(block),
+      relatedId: block.id,
+    });
+  }
+
+  const rankedCards = cards.map((card, index) => ({
+    ...card,
+    rank: index + 1,
+  }));
+
+  return {
+    autoBrief: buildTodayOpsAutoBrief({
+      metrics: input.metrics,
+      rightNow: input.rightNow,
+      cards: rankedCards,
+      now: input.now,
+    }),
+    cards: rankedCards,
+    progress: input.dailyProgress,
+  };
+}
+
+function workspaceTargetFromRightNow(
+  rightNow: NonNullable<PersonalDashboardCommandCenter["rightNow"]>
+): PersonalDashboardTodayOpsCard["workspaceTarget"] {
+  const sourceId = normalizeText(rightNow.sourceId);
+  if (!sourceId) return null;
+  if (rightNow.kind === "todoist") {
+    return {
+      kind: "todoist",
+      taskId: sourceId,
+      title: rightNow.title,
+      url:
+        normalizeUrl(rightNow.sourceUrl) ??
+        `https://app.todoist.com/app/task/${encodeURIComponent(sourceId)}`,
+    };
+  }
+  if (rightNow.kind === "calendar") {
+    return {
+      kind: "calendar",
+      eventId: sourceId,
+      title: rightNow.title,
+      url: normalizeUrl(rightNow.sourceUrl),
+      startIso: null,
+    };
+  }
+  return null;
+}
+
+function workspaceTargetFromPrompt(
+  prompt: PersonalDashboardWorkspacePrompt
+): PersonalDashboardTodayOpsCard["workspaceTarget"] {
+  if (prompt.kind === "todoist") {
+    return {
+      kind: "todoist",
+      taskId: prompt.sourceId,
+      title: prompt.title,
+      url:
+        normalizeUrl(prompt.sourceUrl) ??
+        `https://app.todoist.com/app/task/${encodeURIComponent(prompt.sourceId)}`,
+    };
+  }
+
+  return {
+    kind: "calendar",
+    eventId: prompt.sourceId,
+    title: prompt.title,
+    url: normalizeUrl(prompt.sourceUrl),
+    startIso: null,
+  };
+}
+
+function workspaceTargetFromCommitment(
+  commitment: PersonalDashboardCommitment
+): PersonalDashboardTodayOpsCard["workspaceTarget"] {
+  const sourceId = normalizeText(commitment.sourceId);
+  if (!sourceId) return null;
+  if (commitment.source === "todoist") {
+    return {
+      kind: "todoist",
+      taskId: sourceId,
+      title: commitment.title,
+      url:
+        normalizeUrl(commitment.url) ??
+        `https://app.todoist.com/app/task/${encodeURIComponent(sourceId)}`,
+    };
+  }
+  if (commitment.source === "calendar") {
+    return {
+      kind: "calendar",
+      eventId: sourceId,
+      title: commitment.title,
+      url: normalizeUrl(commitment.url),
+      startIso: commitment.dueAt,
+    };
+  }
+  return null;
+}
+
+function sourceUrlFromCommitment(
+  commitment: PersonalDashboardCommitment
+): string | null {
+  const explicitUrl = normalizeUrl(commitment.url);
+  if (explicitUrl) return explicitUrl;
+  const sourceId = normalizeText(commitment.sourceId);
+  if (!sourceId) return null;
+  if (commitment.source === "todoist") {
+    return `https://app.todoist.com/app/task/${encodeURIComponent(sourceId)}`;
+  }
+  if (commitment.source === "calendar") {
+    return `https://calendar.google.com/calendar/u/0/r/eventedit/${encodeURIComponent(
+      sourceId
+    )}`;
+  }
+  return null;
+}
+
+function workspaceTargetFromPlanBlock(
+  block: PersonalDashboardPlanBlock
+): PersonalDashboardTodayOpsCard["workspaceTarget"] {
+  const sourceId = normalizeText(block.sourceId);
+  if (!sourceId) return null;
+  if (block.source === "todoist") {
+    return {
+      kind: "todoist",
+      taskId: sourceId,
+      title: block.title,
+      url: `https://app.todoist.com/app/task/${encodeURIComponent(sourceId)}`,
+    };
+  }
+  if (block.source === "calendar") {
+    return {
+      kind: "calendar",
+      eventId: sourceId,
+      title: block.title,
+      url: null,
+      startIso: block.startIso,
+    };
+  }
+  return null;
+}
+
+function sourceUrlFromPlanBlock(
+  block: PersonalDashboardPlanBlock
+): string | null {
+  const sourceId = normalizeText(block.sourceId);
+  if (!sourceId) return null;
+  if (block.source === "todoist") {
+    return `https://app.todoist.com/app/task/${encodeURIComponent(sourceId)}`;
+  }
+  if (block.source === "calendar") {
+    return `https://calendar.google.com/calendar/u/0/r/eventedit/${encodeURIComponent(
+      sourceId
+    )}`;
+  }
+  return null;
+}
+
+function buildTodayOpsAutoBrief(input: {
+  metrics: PersonalDashboardMetricSummary;
+  rightNow: PersonalDashboardCommandCenter["rightNow"];
+  cards: PersonalDashboardTodayOpsCard[];
+  now: Date;
+}): PersonalDashboardTodayOps["autoBrief"] {
+  const metrics = input.metrics;
+  const firstCard = input.cards[0];
+  const headline =
+    normalizeText(input.rightNow?.title) ??
+    normalizeText(firstCard?.title) ??
+    (metrics.tasksDueToday > 0
+      ? `${metrics.tasksDueToday} tasks need attention today`
+      : "Today Ops is clear");
+  const sourceRefs = input.cards.slice(0, 5).map(card => ({
+    source: card.source,
+    id: card.sourceId,
+    label: card.reason || card.title,
+    url: normalizeUrl(card.sourceUrl),
+  }));
+  const summaryBullets = [
+    `${formatMetricCount(metrics.tasksDueToday, "task")} due today; ${formatMetricCount(
+      metrics.tasksCompletedToday,
+      "completed task"
+    )}.`,
+    `${formatMetricCount(metrics.meetingsRemaining, "meeting")} remaining.`,
+    `${formatMetricCount(metrics.waitingOnCount, "waiting-on thread")} and ${formatMetricCount(
+      metrics.inboxToTriage,
+      "inbox item"
+    )} to triage.`,
+    metrics.dockReminderCount > 0
+      ? `${formatMetricCount(metrics.dockReminderCount, "dock reminder")} due soon.`
+      : null,
+    input.cards.length > 0
+      ? `${formatMetricCount(input.cards.length, "ranked action")} ready for triage.`
+      : "No ranked action card needs attention.",
+  ].filter((item): item is string => Boolean(item));
+
+  return {
+    headline,
+    summaryBullets,
+    generatedAt: input.now.toISOString(),
+    sourceRefs,
+  };
+}
+
+function formatMetricCount(count: number, singular: string): string {
+  return `${count} ${singular}${count === 1 ? "" : "s"}`;
 }
 
 export function buildPersonalDashboardWorkspacePrompts(input: {
@@ -634,7 +1020,7 @@ function filterWorkspacePromptsWithoutNotes(
   candidates: PersonalDashboardWorkspacePrompt[],
   noteCounts: WorkspacePromptCounts
 ): PersonalDashboardWorkspacePrompt[] {
-  return candidates.filter((candidate) => {
+  return candidates.filter(candidate => {
     const count =
       candidate.kind === "todoist"
         ? noteCounts.todoist[candidate.sourceId]
@@ -767,7 +1153,7 @@ function topTodoistTask(tasks: TodoistTaskLike[]) {
 function highPriorityTodoistTask(tasks: TodoistTaskLike[]) {
   const sorted = sortedTasks(tasks);
   const task =
-    sorted.find((item) => Number(item.priority ?? 1) >= 3) ?? sorted[0];
+    sorted.find(item => Number(item.priority ?? 1) >= 3) ?? sorted[0];
   if (!task) return null;
   const id = taskSourceId(task, "");
   if (!id) return null;
@@ -873,7 +1259,10 @@ function taskTitle(task: TodoistTaskLike, fallback: string): string {
   return normalizeText(task.content) ?? fallback;
 }
 
-function taskSourceId(task: TodoistTaskLike, fallback: string | number): string {
+function taskSourceId(
+  task: TodoistTaskLike,
+  fallback: string | number
+): string {
   return normalizeText(task.id) ?? String(fallback);
 }
 
@@ -897,10 +1286,12 @@ function countByStatus<T extends { status: string }>(
   items: T[],
   status: T["status"]
 ): number {
-  return items.filter((item) => item.status === status).length;
+  return items.filter(item => item.status === status).length;
 }
 
-function normalizeText(value: string | number | null | undefined): string | null {
+function normalizeText(
+  value: string | number | null | undefined
+): string | null {
   const trimmed = String(value ?? "").trim();
   return trimmed ? trimmed : null;
 }

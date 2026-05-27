@@ -12,10 +12,10 @@ export function buildWorkflowReviewPrompts(
   if (progress.dailyBriefStatus === "failed") {
     prompts.push("Review failed daily brief");
   } else if (progress.dailyBriefStatus === "not_started") {
-    prompts.push("Draft today's brief");
+    prompts.push("Commit today's plan");
   }
   if (progress.todayPlanStatus === "not_started") {
-    prompts.push("Set today's plan");
+    prompts.push("Commit today's plan");
   }
   if (progress.commitments.blocked > 0) {
     prompts.push(
@@ -50,7 +50,7 @@ export function buildWorkflowReviewPrompts(
     prompts.push("Ready for end-of-day review");
   }
 
-  return prompts.slice(0, 3);
+  return Array.from(new Set(prompts)).slice(0, 3);
 }
 
 export function workspacePromptToWorkspaceNoteRow(

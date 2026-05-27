@@ -40,7 +40,7 @@ describe("commandCenter helpers", () => {
         dailyBriefStatus: "not_started",
         todayPlanStatus: "not_started",
       })
-    ).toEqual(["Draft today's brief", "Set today's plan"]);
+    ).toEqual(["Commit today's plan"]);
   });
 
   it("surfaces failed daily brief review before setup prompts", () => {
@@ -50,7 +50,7 @@ describe("commandCenter helpers", () => {
         dailyBriefStatus: "failed",
         todayPlanStatus: "not_started",
       })
-    ).toEqual(["Review failed daily brief", "Set today's plan"]);
+    ).toEqual(["Review failed daily brief", "Commit today's plan"]);
   });
 
   it("summarizes blocked, waiting, and missed review prompts", () => {

@@ -73,6 +73,47 @@ const commandCenter: PersonalDashboardCommandCenter = {
     },
     tone: "empty",
   },
+  todayOps: {
+    autoBrief: {
+      headline: "Close proposal",
+      summaryBullets: [
+        "3 tasks due today; 1 completed task.",
+        "2 meetings remaining.",
+      ],
+      generatedAt: "2026-05-14T12:00:00.000Z",
+      sourceRefs: [
+        {
+          source: "todoist",
+          id: "task-1",
+          label: "Highest-priority task due today.",
+          url: "https://todoist.com/app/task/task-1",
+        },
+      ],
+    },
+    cards: [],
+    progress: {
+      dailyBriefStatus: "not_started",
+      todayPlanStatus: "not_started",
+      headline: null,
+      topPriority: null,
+      updatedAt: null,
+      commitments: {
+        total: 0,
+        open: 0,
+        waiting: 0,
+        blocked: 0,
+        done: 0,
+      },
+      outcomes: {
+        total: 0,
+        active: 0,
+        paused: 0,
+        won: 0,
+        missed: 0,
+      },
+      tone: "empty",
+    },
+  },
   workspacePrompts: [],
   integrations: [],
   dailyBrief: {
@@ -451,11 +492,12 @@ describe("dailyWorkflow helpers", () => {
     ];
 
     expect(
-      completeAllCommitments(draft.commitments).map((item) => item.status)
+      completeAllCommitments(draft.commitments).map(item => item.status)
     ).toEqual(["done", "done"]);
-    expect(
-      winActiveOutcomes(draft.outcomes).map((item) => item.status)
-    ).toEqual(["won", "paused"]);
+    expect(winActiveOutcomes(draft.outcomes).map(item => item.status)).toEqual([
+      "won",
+      "paused",
+    ]);
   });
 
   it("summarizes end-of-day review status and attention items", () => {

@@ -178,6 +178,70 @@ export type PersonalDashboardWorkspacePrompt = {
   href: string;
 };
 
+export type PersonalDashboardTodayOpsSourceRef = {
+  source: PersonalDashboardSourceKind | PersonalDashboardIntegrationKey;
+  id: string | null;
+  label: string;
+  url: string | null;
+};
+
+export type PersonalDashboardTodayOpsWorkspaceTarget =
+  | {
+      kind: "todoist";
+      taskId: string;
+      title: string;
+      url: string | null;
+    }
+  | {
+      kind: "calendar";
+      eventId: string;
+      title: string;
+      url: string | null;
+      startIso: string | null;
+    };
+
+export type PersonalDashboardTodayOpsCardKind =
+  | "right_now"
+  | "workspace_prompt"
+  | "waiting_on"
+  | "todoist"
+  | "saved_commitment"
+  | "saved_outcome"
+  | "saved_plan_block";
+
+export type PersonalDashboardTodayOpsCardAction =
+  | "open_source"
+  | "create_workspace_note"
+  | "add_to_plan"
+  | "mark_done_local"
+  | "carry_forward_local";
+
+export type PersonalDashboardTodayOpsCard = {
+  id: string;
+  rank: number;
+  kind: PersonalDashboardTodayOpsCardKind;
+  title: string;
+  reason: string;
+  source: PersonalDashboardSourceKind | PersonalDashboardIntegrationKey;
+  sourceId: string | null;
+  sourceUrl: string | null;
+  status: string | null;
+  primaryAction: PersonalDashboardTodayOpsCardAction;
+  workspaceTarget: PersonalDashboardTodayOpsWorkspaceTarget | null;
+  relatedId: string | null;
+};
+
+export type PersonalDashboardTodayOps = {
+  autoBrief: {
+    headline: string;
+    summaryBullets: string[];
+    generatedAt: string;
+    sourceRefs: PersonalDashboardTodayOpsSourceRef[];
+  };
+  cards: PersonalDashboardTodayOpsCard[];
+  progress: PersonalDashboardDailyProgress;
+};
+
 export type PersonalDashboardCommandCenter = {
   _runnerVersion: typeof PERSONAL_DASHBOARD_RUNNER_VERSION;
   generatedAt: string;
@@ -190,6 +254,7 @@ export type PersonalDashboardCommandCenter = {
     suggestedOutcomes: PersonalDashboardOutcome[];
   };
   dailyProgress: PersonalDashboardDailyProgress;
+  todayOps: PersonalDashboardTodayOps;
   workspacePrompts: PersonalDashboardWorkspacePrompt[];
   integrations: PersonalDashboardIntegrationHealth[];
   dailyBrief: PersonalDashboardFeatureReadiness;
