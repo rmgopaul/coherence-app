@@ -94,7 +94,6 @@ interface SystemRow {
   trackingSystemRefId: string | null;
   systemName: string;
   installedKwAc: string | null;
-  ownershipStatus: string;
   recPrice: string | null;
   contractedRecs: string | null;
   deliveredRecs: string | null;
@@ -180,12 +179,6 @@ const COLUMNS: ColumnDef[] = [
     filter: "none",
     align: "right",
     cell: (row) => formatDecimal(row.installedKwAc, 2),
-  },
-  {
-    key: "ownershipStatus",
-    label: "Status",
-    filter: "text",
-    cell: (row) => <OwnershipStatusBadge status={row.ownershipStatus} />,
   },
   {
     key: "standing",
@@ -805,25 +798,10 @@ function formatDate(value: Date | string | null): string {
   });
 }
 
-const STATUS_VARIANT: Record<
-  string,
-  "default" | "secondary" | "destructive" | "outline"
-> = {
-  "Not Transferred and Reporting": "default",
-  "Transferred and Reporting": "default",
-  "Not Transferred and Not Reporting": "secondary",
-  "Transferred and Not Reporting": "secondary",
-  "Terminated and Reporting": "destructive",
-  "Terminated and Not Reporting": "destructive",
-};
-
-function OwnershipStatusBadge({ status }: { status: string }) {
-  return (
-    <Badge variant={STATUS_VARIANT[status] ?? "outline"} className="text-xs">
-      {status}
-    </Badge>
-  );
-}
+// PR B1 (2026-05-28): retired `OwnershipStatusBadge` + `STATUS_VARIANT`
+// alongside the column drop. The `ownershipStatus` field is still on
+// the wire row payload + filterable via the generic `filters` map for
+// future consumers, but this page no longer renders or filters by it.
 
 // PR A: Standing taxonomy badge. Variants:
 //   - "default" (green-ish) → Active / Good Standing / Closed-good-standing
