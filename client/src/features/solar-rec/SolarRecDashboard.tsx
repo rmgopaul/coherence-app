@@ -139,8 +139,10 @@ import type {
   PipelineMonthRow,
   ScheduleYearEntry,
   SizeBucket,
+  Standing,
   SystemRecord,
 } from "@/solar-rec-dashboard/state/types";
+import { deriveStanding } from "@/solar-rec-dashboard/lib/deriveStanding";
 import { isTerminalUploadStatus } from "@shared/datasetUpload.helpers";
 import {
   buildCsv,
@@ -3719,6 +3721,19 @@ export default function SolarRecDashboard() {
           isTerminated: row.isTerminated,
           isTransferred: row.isTransferred,
           ownershipStatus: row.ownershipStatus as OwnershipStatus,
+          // PR A: prefer the server-derived `standing` when present;
+          // fall back to re-deriving on the client when the wire row
+          // hasn't been populated yet (handles a rolling deploy where
+          // the fact-builder hasn't yet rewritten every system row,
+          // and stays correct for any future row where the schema
+          // column is nullable but the SystemRecord field isn't).
+          standing:
+            (row.standing as Standing | null) ??
+            deriveStanding(
+              row.contractType,
+              row.isTransferred,
+              row.isReporting,
+            ),
           hasChangedOwnership: row.hasChangedOwnership,
           changeOwnershipStatus:
             (row.changeOwnershipStatus as ChangeOwnershipStatus | null) ?? null,

@@ -55,6 +55,7 @@ import {
   getDeliveredLifetime,
 } from "@/solar-rec-dashboard/lib/transferHistoryDeliveries";
 import { GENERATION_BASELINE_VALUE_HEADERS } from "@/solar-rec-dashboard/lib/constants";
+import { deriveStanding } from "@/solar-rec-dashboard/lib/deriveStanding";
 import type {
   ChangeOwnershipStatus,
   CsvRow,
@@ -637,6 +638,17 @@ export function buildSystems(input: BuildSystemsInput): SystemRecord[] {
           : "Not Transferred and Not Reporting";
       }
 
+      // PR A: parallel coexistence — `standing` is the new risk-tier
+      // taxonomy keyed off CSG portal `contractType` + `transferSeen` +
+      // `isReporting`. Stays alongside `ownershipStatus` until PR B
+      // migrates consumers + drops the legacy field. See
+      // `deriveStanding` for the full decision tree.
+      const standing = deriveStanding(
+        builder.contractType,
+        builder.transferSeen,
+        isReporting,
+      );
+
       let changeOwnershipStatus: ChangeOwnershipStatus | null = null;
       if (hasChangedOwnership) {
         if (isContractTransferred) {
@@ -681,6 +693,7 @@ export function buildSystems(input: BuildSystemsInput): SystemRecord[] {
         isTerminated,
         isTransferred: builder.transferSeen,
         ownershipStatus,
+        standing,
         hasChangedOwnership,
         changeOwnershipStatus,
         contractStatusText: builder.statusText || "N/A",

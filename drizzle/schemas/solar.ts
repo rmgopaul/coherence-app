@@ -2566,6 +2566,16 @@ export const solarRecDashboardSystemFacts = mysqlTable(
     part1Status: varchar("part1Status", { length: 64 }),
     part2Status: varchar("part2Status", { length: 64 }),
 
+    // Risk-tier "Standing" — 9-value taxonomy keyed off the CSG portal
+    // `contractType` + GATS `transferSeen` + meter `isReporting`. See
+    // `deriveStanding` (client/src/solar-rec-dashboard/lib) for the
+    // decision tree. PR A coexists with `ownershipStatus`; PR B
+    // migrates consumers + drops the legacy column. Stored as varchar
+    // (not enum) so taxonomy edits are code-only PRs. Nullable for
+    // forward compatibility with rows written by older runners during
+    // a rolling deploy.
+    standing: varchar("standing", { length: 64 }),
+
     // Build versioning + observability. PR-F-2's runner step will
     // set `buildId` to the current `solarRecDashboardBuilds.id` so
     // the post-UPSERT DELETE can sweep orphans efficiently.
