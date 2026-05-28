@@ -78,6 +78,10 @@ export function buildOwnershipFactRows(args: {
     stateApplicationRefId: row.stateApplicationRefId,
     trackingSystemRefId: row.trackingSystemRefId,
     ownershipStatus: row.ownershipStatus,
+    // PR B2: persist Standing alongside ownershipStatus. The
+    // aggregator already filled this in via shared `deriveStanding`;
+    // the fact builder just threads it through.
+    standing: row.standing,
     isReporting: row.isReporting,
     isTransferred: row.isTransferred,
     isTerminated: row.isTerminated,

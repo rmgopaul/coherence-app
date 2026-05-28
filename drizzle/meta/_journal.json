@@ -505,6 +505,13 @@
       "when": 1779982576590,
       "tag": "0075_add_standing_to_system_facts",
       "breakpoints": true
+    },
+    {
+      "idx": 76,
+      "version": "5",
+      "when": 1779991030535,
+      "tag": "0076_add_standing_to_ownership_and_change_ownership_facts",
+      "breakpoints": true
     }
   ]
 }

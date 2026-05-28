@@ -2266,6 +2266,13 @@ export const solarRecDashboardChangeOwnershipFacts = mysqlTable(
       length: 64,
     }).notNull(),
     ownershipStatus: varchar("ownershipStatus", { length: 64 }).notNull(),
+    // PR B2: risk-tier Standing taxonomy. Populated by
+    // `buildChangeOwnershipAggregates` via the shared
+    // `deriveStanding` helper. Nullable for rolling-deploy safety
+    // (older runner writes leave null; readers fall back to
+    // re-deriving). PR B3 will drop `ownershipStatus` once every
+    // tab consumer migrates.
+    standing: varchar("standing", { length: 64 }),
     isReporting: boolean("isReporting").notNull(),
     isTerminated: boolean("isTerminated").notNull(),
     isTransferred: boolean("isTransferred").notNull(),
@@ -2301,6 +2308,10 @@ export const solarRecDashboardChangeOwnershipFacts = mysqlTable(
     scopeStatusIdx: index(
       "solar_rec_dashboard_change_ownership_facts_scope_status_idx"
     ).on(table.scopeId, table.changeOwnershipStatus),
+    // PR B2: parallel index for the new Standing axis (PR B3+ tabs).
+    scopeStandingIdx: index(
+      "solar_rec_dashboard_change_ownership_facts_scope_standing_idx"
+    ).on(table.scopeId, table.standing),
   })
 );
 
@@ -2374,6 +2385,12 @@ export const solarRecDashboardOwnershipFacts = mysqlTable(
     trackingSystemRefId: varchar("trackingSystemRefId", { length: 128 }),
     // Status enums + booleans.
     ownershipStatus: varchar("ownershipStatus", { length: 64 }).notNull(),
+    // PR B2: risk-tier Standing taxonomy. Populated by
+    // `buildOverviewSummaryAggregates` via shared `deriveStanding`.
+    // Nullable for rolling-deploy safety (older runner writes leave
+    // null; readers fall back to re-deriving). PR B3 will drop
+    // `ownershipStatus` once every tab consumer migrates.
+    standing: varchar("standing", { length: 64 }),
     isReporting: boolean("isReporting").notNull(),
     isTransferred: boolean("isTransferred").notNull(),
     isTerminated: boolean("isTerminated").notNull(),
@@ -2406,6 +2423,10 @@ export const solarRecDashboardOwnershipFacts = mysqlTable(
     scopeStatusIdx: index(
       "solar_rec_dashboard_ownership_facts_scope_status_idx"
     ).on(table.scopeId, table.ownershipStatus),
+    // PR B2: parallel index for the new Standing axis (PR B3+ tabs).
+    scopeStandingIdx: index(
+      "solar_rec_dashboard_ownership_facts_scope_standing_idx"
+    ).on(table.scopeId, table.standing),
     // Source filter — Matched System vs Part II Unmatched toggle.
     scopeSourceIdx: index(
       "solar_rec_dashboard_ownership_facts_scope_source_idx"

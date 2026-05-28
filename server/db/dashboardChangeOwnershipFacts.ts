@@ -86,6 +86,9 @@ export async function upsertChangeOwnershipFacts(
               lastRecDeliveryDate: sql`VALUES(\`lastRecDeliveryDate\`)`,
               changeOwnershipStatus: sql`VALUES(\`changeOwnershipStatus\`)`,
               ownershipStatus: sql`VALUES(\`ownershipStatus\`)`,
+              // PR B2: keep Standing in sync on every rebuild —
+              // existing rows hit UPDATE, not INSERT.
+              standing: sql`VALUES(\`standing\`)`,
               isReporting: sql`VALUES(\`isReporting\`)`,
               isTerminated: sql`VALUES(\`isTerminated\`)`,
               isTransferred: sql`VALUES(\`isTransferred\`)`,

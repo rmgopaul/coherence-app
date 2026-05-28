@@ -6,48 +6,26 @@
 
 import { clean } from "@/lib/helpers";
 import type { CsvRow } from "@/solar-rec-dashboard/state/types";
-import {
-  IL_ABP_DEFAULTED_CONTRACT_TYPE,
-  IL_ABP_TERMINATED_CONTRACT_TYPE,
-  IL_ABP_TRANSFERRED_CONTRACT_TYPE,
-} from "@/solar-rec-dashboard/lib/constants";
 import { parsePart2VerificationDate } from "./parsing";
+
+// PR B2: the four contract-type predicates moved to
+// `@shared/solarRecStanding` so server aggregators + the client
+// worker share one normalization rule. Re-exported below so legacy
+// imports (`@/solar-rec-dashboard/lib/helpers` / `.../helpers/abp`)
+// keep resolving. Prefer importing from `@shared/solarRecStanding`
+// in new code.
+export {
+  isDefaultedContractType,
+  isTerminatedContractType,
+  isTransferredContractType,
+  normalizeContractType,
+} from "@shared/solarRecStanding";
 
 export function isPart2VerifiedAbpRow(row: CsvRow): boolean {
   const part2VerifiedDateRaw =
     clean(row.Part_2_App_Verification_Date) ||
     clean(row.part_2_app_verification_date);
   return parsePart2VerificationDate(part2VerifiedDateRaw) !== null;
-}
-
-export function normalizeContractType(
-  value: string | null | undefined,
-): string {
-  return clean(value).toLowerCase().replace(/\s+/g, " ");
-}
-
-export function isTransferredContractType(
-  value: string | null | undefined,
-): boolean {
-  return normalizeContractType(value) === IL_ABP_TRANSFERRED_CONTRACT_TYPE;
-}
-
-export function isTerminatedContractType(
-  value: string | null | undefined,
-): boolean {
-  return normalizeContractType(value) === IL_ABP_TERMINATED_CONTRACT_TYPE;
-}
-
-/**
- * `"IL ABP - Defaulted"` — contract terminated AND RECs were not
- * repaid. Distinct from `isTerminatedContractType` (which closes in
- * good standing). Drives the "Closed — Default" tier on the Standing
- * taxonomy.
- */
-export function isDefaultedContractType(
-  value: string | null | undefined,
-): boolean {
-  return normalizeContractType(value) === IL_ABP_DEFAULTED_CONTRACT_TYPE;
 }
 
 export function isValidCompliantSourceText(value: string): boolean {

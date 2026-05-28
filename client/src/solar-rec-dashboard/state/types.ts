@@ -77,34 +77,16 @@ export type OwnershipStatus =
 /**
  * Risk-tier "Standing" taxonomy keyed off CSG portal `contractType`.
  *
- * Replaces the prior 6-value `OwnershipStatus` for user-facing tiles
- * that need to differentiate proper assignment ("IL ABP - Transferred"
- * → a legitimate ownership handoff with paperwork) from orphaned
- * transfers (we observe a GATS transfer but no contract assignment,
- * which is the failure mode the risk taxonomy was designed to surface).
- *
- * Decision tree (see `deriveStanding`):
- *   contractType === null/empty                  → "Unknown"
- *   contractType === "IL ABP - Terminated"       → "Closed — RECs Repaid (Good Standing)"
- *   contractType === "IL ABP - Defaulted"        → "Closed — Default"
- *   contractType === "IL ABP - Transferred"      → Assigned branch (isReporting?)
- *   else, transferSeen === true                  → Orphaned branch (isReporting?)
- *   else                                         → Intact branch (isReporting?)
- *
- * PR A: parallel coexistence. `ownershipStatus` remains for current
- * consumers. PR B will migrate dashboard tabs / aggregates / exports
- * onto `standing` and drop `ownershipStatus`.
+ * PR B2: definition + decision tree live in `@shared/solarRecStanding`
+ * so the server aggregators and the client worker share one source
+ * of truth. Re-imported + re-exported here so legacy imports
+ * (`@/solar-rec-dashboard/state/types`) keep resolving and the
+ * `SystemRecord.standing` field below can reference the type without
+ * a fully-qualified path. Prefer importing from
+ * `@shared/solarRecStanding` in new code.
  */
-export type Standing =
-  | "Active — Good Standing"
-  | "Active — Good Standing (Assigned)"
-  | "At Risk — Unassigned Transfer"
-  | "At Risk — Reporting Lapse"
-  | "At Risk — Reporting Lapse (Assigned)"
-  | "Jeopardy / Default-Track"
-  | "Closed — RECs Repaid (Good Standing)"
-  | "Closed — Default"
-  | "Unknown";
+import type { Standing } from "@shared/solarRecStanding";
+export type { Standing };
 
 export type ChangeOwnershipStatus =
   | "Transferred and Reporting"
