@@ -82,6 +82,13 @@ const SORT_COLUMNS = {
   internalStatus: solarRecDashboardSystemFacts.internalStatus,
   part1Status: solarRecDashboardSystemFacts.part1Status,
   part2Status: solarRecDashboardSystemFacts.part2Status,
+  // PR A: risk-tier "Standing" taxonomy. Sortable + filterable from
+  // the SystemsIndex page. Index is *not* added in PR A — selectivity
+  // is bounded (9 values across ~110k systems → ~12k avg per value)
+  // and the page's primary axis is text search / per-column filters,
+  // not standing alone. Revisit if SizeReportingTab or a tile
+  // aggregate ends up doing `WHERE standing = ? GROUP BY ...`.
+  standing: solarRecDashboardSystemFacts.standing,
 } as const;
 
 export type SortableColumn = keyof typeof SORT_COLUMNS;
@@ -227,6 +234,11 @@ export async function upsertSystemFacts(
               internalStatus: sql`VALUES(\`internalStatus\`)`,
               part1Status: sql`VALUES(\`part1Status\`)`,
               part2Status: sql`VALUES(\`part2Status\`)`,
+              // PR A: parallel coexistence — keep `standing` in sync on
+              // every rebuild so an existing fact row that pre-dates
+              // the column gets its taxonomy populated on the next
+              // upsert (existing rows hit UPDATE, not INSERT).
+              standing: sql`VALUES(\`standing\`)`,
               buildId: sql`VALUES(\`buildId\`)`,
               // updatedAt auto-bumps via onUpdateNow.
             },

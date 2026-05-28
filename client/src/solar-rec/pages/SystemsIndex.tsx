@@ -114,6 +114,12 @@ interface SystemRow {
   internalStatus: string | null;
   part1Status: string | null;
   part2Status: string | null;
+  // PR A: parallel coexistence — risk-tier "Standing" derived from
+  // `contractType` + `transferSeen` + `isReporting`. See
+  // `deriveStanding` in client/src/solar-rec-dashboard/lib for the
+  // taxonomy. Nullable on the wire because older fact rows written
+  // by pre-PR-A runners hadn't populated it yet.
+  standing: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -180,6 +186,12 @@ const COLUMNS: ColumnDef[] = [
     label: "Status",
     filter: "text",
     cell: (row) => <OwnershipStatusBadge status={row.ownershipStatus} />,
+  },
+  {
+    key: "standing",
+    label: "Standing",
+    filter: "text",
+    cell: (row) => <StandingBadge standing={row.standing} />,
   },
   {
     key: "projectStatus",
@@ -809,6 +821,38 @@ function OwnershipStatusBadge({ status }: { status: string }) {
   return (
     <Badge variant={STATUS_VARIANT[status] ?? "outline"} className="text-xs">
       {status}
+    </Badge>
+  );
+}
+
+// PR A: Standing taxonomy badge. Variants:
+//   - "default" (green-ish) → Active / Good Standing / Closed-good-standing
+//   - "secondary" (muted) → At Risk
+//   - "destructive" (red) → Jeopardy / Closed-Default
+//   - "outline" (neutral) → Unknown
+const STANDING_VARIANT: Record<
+  string,
+  "default" | "secondary" | "destructive" | "outline"
+> = {
+  "Active — Good Standing": "default",
+  "Active — Good Standing (Assigned)": "default",
+  "Closed — RECs Repaid (Good Standing)": "default",
+  "At Risk — Unassigned Transfer": "secondary",
+  "At Risk — Reporting Lapse": "secondary",
+  "At Risk — Reporting Lapse (Assigned)": "secondary",
+  "Jeopardy / Default-Track": "destructive",
+  "Closed — Default": "destructive",
+  Unknown: "outline",
+};
+
+function StandingBadge({ standing }: { standing: string | null }) {
+  if (!standing) return <span className="text-muted-foreground">—</span>;
+  return (
+    <Badge
+      variant={STANDING_VARIANT[standing] ?? "outline"}
+      className="text-xs whitespace-nowrap"
+    >
+      {standing}
     </Badge>
   );
 }

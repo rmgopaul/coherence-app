@@ -1,0 +1,1 @@
+ALTER TABLE `solarRecDashboardSystemFacts` ADD `standing` varchar(64);

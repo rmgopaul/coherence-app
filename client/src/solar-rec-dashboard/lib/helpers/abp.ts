@@ -7,6 +7,7 @@
 import { clean } from "@/lib/helpers";
 import type { CsvRow } from "@/solar-rec-dashboard/state/types";
 import {
+  IL_ABP_DEFAULTED_CONTRACT_TYPE,
   IL_ABP_TERMINATED_CONTRACT_TYPE,
   IL_ABP_TRANSFERRED_CONTRACT_TYPE,
 } from "@/solar-rec-dashboard/lib/constants";
@@ -35,6 +36,18 @@ export function isTerminatedContractType(
   value: string | null | undefined,
 ): boolean {
   return normalizeContractType(value) === IL_ABP_TERMINATED_CONTRACT_TYPE;
+}
+
+/**
+ * `"IL ABP - Defaulted"` — contract terminated AND RECs were not
+ * repaid. Distinct from `isTerminatedContractType` (which closes in
+ * good standing). Drives the "Closed — Default" tier on the Standing
+ * taxonomy.
+ */
+export function isDefaultedContractType(
+  value: string | null | undefined,
+): boolean {
+  return normalizeContractType(value) === IL_ABP_DEFAULTED_CONTRACT_TYPE;
 }
 
 export function isValidCompliantSourceText(value: string): boolean {

@@ -74,6 +74,38 @@ export type OwnershipStatus =
   | "Terminated and Reporting"
   | "Terminated and Not Reporting";
 
+/**
+ * Risk-tier "Standing" taxonomy keyed off CSG portal `contractType`.
+ *
+ * Replaces the prior 6-value `OwnershipStatus` for user-facing tiles
+ * that need to differentiate proper assignment ("IL ABP - Transferred"
+ * → a legitimate ownership handoff with paperwork) from orphaned
+ * transfers (we observe a GATS transfer but no contract assignment,
+ * which is the failure mode the risk taxonomy was designed to surface).
+ *
+ * Decision tree (see `deriveStanding`):
+ *   contractType === null/empty                  → "Unknown"
+ *   contractType === "IL ABP - Terminated"       → "Closed — RECs Repaid (Good Standing)"
+ *   contractType === "IL ABP - Defaulted"        → "Closed — Default"
+ *   contractType === "IL ABP - Transferred"      → Assigned branch (isReporting?)
+ *   else, transferSeen === true                  → Orphaned branch (isReporting?)
+ *   else                                         → Intact branch (isReporting?)
+ *
+ * PR A: parallel coexistence. `ownershipStatus` remains for current
+ * consumers. PR B will migrate dashboard tabs / aggregates / exports
+ * onto `standing` and drop `ownershipStatus`.
+ */
+export type Standing =
+  | "Active — Good Standing"
+  | "Active — Good Standing (Assigned)"
+  | "At Risk — Unassigned Transfer"
+  | "At Risk — Reporting Lapse"
+  | "At Risk — Reporting Lapse (Assigned)"
+  | "Jeopardy / Default-Track"
+  | "Closed — RECs Repaid (Good Standing)"
+  | "Closed — Default"
+  | "Unknown";
+
 export type ChangeOwnershipStatus =
   | "Transferred and Reporting"
   | "Transferred and Not Reporting"
@@ -118,6 +150,13 @@ export type SystemRecord = {
   isTerminated: boolean;
   isTransferred: boolean;
   ownershipStatus: OwnershipStatus;
+  /**
+   * Risk-tier "Standing" derived from CSG portal `contractType` +
+   * GATS `transferSeen` + meter `isReporting`. See `Standing` type
+   * docs for the full decision tree. PR A coexists with
+   * `ownershipStatus`; PR B drops the latter.
+   */
+  standing: Standing;
   hasChangedOwnership: boolean;
   changeOwnershipStatus: ChangeOwnershipStatus | null;
   contractStatusText: string;

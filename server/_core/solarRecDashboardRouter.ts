@@ -5557,7 +5557,7 @@ export const solarRecDashboardRouter = t.router({
         : null;
       return {
         _checkpoint: "systems-page-v1",
-        _runnerVersion: "phase-2-pr-f-3@4" as const,
+        _runnerVersion: "phase-2-pr-f-3@5" as const,
         rows,
         nextCursor,
         hasMore: nextCursor !== null,

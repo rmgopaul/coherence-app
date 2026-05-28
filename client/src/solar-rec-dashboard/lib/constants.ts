@@ -86,6 +86,10 @@ export const OFFLINE_DETAIL_PAGE_SIZE = 50;
 export const SNAPSHOT_REC_PERFORMANCE_DELIVERY_YEAR_LABEL = "2025-2026";
 export const IL_ABP_TRANSFERRED_CONTRACT_TYPE = "il abp - transferred";
 export const IL_ABP_TERMINATED_CONTRACT_TYPE = "il abp - terminated";
+// "Terminated and RECs were not repaid" — distinct from
+// IL_ABP_TERMINATED_CONTRACT_TYPE (which closes in good standing).
+// Drives the "Closed — Default" tier on the Standing taxonomy.
+export const IL_ABP_DEFAULTED_CONTRACT_TYPE = "il abp - defaulted";
 
 // ---------------------------------------------------------------------------
 // Remote sync limits

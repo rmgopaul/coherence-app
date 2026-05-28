@@ -113,8 +113,8 @@ describe("getDashboardSystemsPage (source rail)", () => {
     expect(proc!).toMatch(/hasMore/);
   });
 
-  it("ships a `_runnerVersion` marker bumped to @4 (Systems Index PR added sort + filters)", () => {
-    expect(proc!).toMatch(/_runnerVersion:\s*"phase-2-pr-f-3@4"/);
+  it("ships a `_runnerVersion` marker bumped to @5 (Standing column PR A)", () => {
+    expect(proc!).toMatch(/_runnerVersion:\s*"phase-2-pr-f-3@5"/);
   });
 
   it("wires the textSearch input through to the db helper", () => {
