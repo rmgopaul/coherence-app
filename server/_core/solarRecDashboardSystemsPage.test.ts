@@ -56,13 +56,13 @@ describe("getDashboardSystemsPage (source rail)", () => {
     expect(proc!).toMatch(/\.default\(200\)/);
   });
 
-  it("accepts the full 6-value OwnershipStatus filter", () => {
-    expect(proc!).toMatch(/"Transferred and Reporting"/);
-    expect(proc!).toMatch(/"Transferred and Not Reporting"/);
-    expect(proc!).toMatch(/"Not Transferred and Reporting"/);
-    expect(proc!).toMatch(/"Not Transferred and Not Reporting"/);
-    expect(proc!).toMatch(/"Terminated and Reporting"/);
-    expect(proc!).toMatch(/"Terminated and Not Reporting"/);
+  // PR B1: dedicated `ownershipStatus` zod enum input slot retired
+  // (nobody was passing it as a top-level input; SystemsIndex drove
+  // status filtering through the generic `filters` map). Standing
+  // is the user-facing replacement on SystemsIndex; the column is
+  // still readable for tab consumers via the generic `filters` map.
+  it("does NOT declare a dedicated `ownershipStatus` zod input slot", () => {
+    expect(proc!).not.toMatch(/ownershipStatus:\s*z\.enum/);
   });
 
   it("accepts the full 3-value SizeBucket filter", () => {
@@ -72,9 +72,7 @@ describe("getDashboardSystemsPage (source rail)", () => {
   });
 
   it("declares all filters as nullable + optional", () => {
-    expect(proc!).toMatch(
-      /ownershipStatus:\s*z[\s\S]*?\.nullable\(\)[\s\S]*?\.optional\(\)/
-    );
+    // PR B1: `ownershipStatus` slot retired — see test above.
     expect(proc!).toMatch(
       /sizeBucket:\s*z[\s\S]*?\.nullable\(\)[\s\S]*?\.optional\(\)/
     );
@@ -94,8 +92,11 @@ describe("getDashboardSystemsPage (source rail)", () => {
     );
   });
 
-  it("forwards all four filter axes to the DB helper", () => {
-    expect(proc!).toMatch(/status:\s*input\.ownershipStatus\s*\?\?\s*null/);
+  it("forwards the three remaining dedicated filter axes to the DB helper", () => {
+    // PR B1: `status:` forward retired alongside the input slot. The
+    // `ownershipStatus` column on the fact table is still filterable
+    // via the generic `filters` map (validated by SORTABLE_COLUMN_NAMES).
+    expect(proc!).not.toMatch(/status:\s*input\.ownershipStatus/);
     expect(proc!).toMatch(/sizeBucket:\s*input\.sizeBucket\s*\?\?\s*null/);
     expect(proc!).toMatch(/isReporting:\s*input\.isReporting\s*\?\?\s*null/);
     expect(proc!).toMatch(
@@ -113,8 +114,8 @@ describe("getDashboardSystemsPage (source rail)", () => {
     expect(proc!).toMatch(/hasMore/);
   });
 
-  it("ships a `_runnerVersion` marker bumped to @5 (Standing column PR A)", () => {
-    expect(proc!).toMatch(/_runnerVersion:\s*"phase-2-pr-f-3@5"/);
+  it("ships a `_runnerVersion` marker bumped to @6 (PR B1: retired dedicated ownershipStatus zod input slot)", () => {
+    expect(proc!).toMatch(/_runnerVersion:\s*"phase-2-pr-f-3@6"/);
   });
 
   it("wires the textSearch input through to the db helper", () => {

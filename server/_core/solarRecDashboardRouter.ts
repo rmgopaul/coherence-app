@@ -5446,17 +5446,16 @@ export const solarRecDashboardRouter = t.router({
         // when sortBy is null (the cursor path covers default sort).
         offset: z.number().int().min(0).max(100_000).nullable().optional(),
         limit: z.number().int().min(1).max(1000).default(200),
-        ownershipStatus: z
-          .enum([
-            "Transferred and Reporting",
-            "Transferred and Not Reporting",
-            "Not Transferred and Reporting",
-            "Not Transferred and Not Reporting",
-            "Terminated and Reporting",
-            "Terminated and Not Reporting",
-          ])
-          .nullable()
-          .optional(),
+        // PR B1 (2026-05-28): the dedicated `ownershipStatus` zod enum
+        // slot retired. Nobody passes it as a top-level input — the
+        // only consumer (SystemsIndex) drove status filtering via the
+        // generic `filters` map below, and PR A added `Standing` as
+        // the user-facing replacement. The `ownershipStatus` column
+        // on `solarRecDashboardSystemFacts` remains readable via the
+        // generic `filters` map (entry exists in `SORTABLE_COLUMN_NAMES`)
+        // and is still on every row payload — only the dedicated
+        // input slot is gone. The matching `status:` forward to
+        // `getSystemFactsPage` below is removed too.
         sizeBucket: z
           .enum(["<=10 kW AC", ">10 kW AC", "Unknown"])
           .nullable()
@@ -5537,7 +5536,10 @@ export const solarRecDashboardRouter = t.router({
         cursorAfter: sortBy ? null : input.cursor ?? null,
         offset: sortBy ? resolvedOffset : null,
         limit: input.limit,
-        status: input.ownershipStatus ?? null,
+        // `status` forward retired in PR B1 — see input zod section
+        // above. Callers that still want to filter on the legacy
+        // 6-value `ownershipStatus` axis can do so via the generic
+        // `filters` map (`{ ownershipStatus: { kind: "equals", value: "..." } }`).
         sizeBucket: input.sizeBucket ?? null,
         isReporting: input.isReporting ?? null,
         isPart2Eligible: input.isPart2Eligible ?? null,
@@ -5557,7 +5559,7 @@ export const solarRecDashboardRouter = t.router({
         : null;
       return {
         _checkpoint: "systems-page-v1",
-        _runnerVersion: "phase-2-pr-f-3@5" as const,
+        _runnerVersion: "phase-2-pr-f-3@6" as const,
         rows,
         nextCursor,
         hasMore: nextCursor !== null,
