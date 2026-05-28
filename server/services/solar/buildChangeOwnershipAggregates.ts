@@ -45,6 +45,14 @@ import {
 import { getOrBuildFoundation } from "./foundationRunner";
 import { superjsonSerde, withArtifactCache } from "./withArtifactCache";
 import { shouldCacheAggregatorEmptyResult } from "./aggregatorCachePredicates";
+// PR B2: shared 9-value Standing taxonomy. Emitted on every
+// ChangeOwnershipExportRow so the fact-table builder
+// (`buildDashboardChangeOwnershipFacts`) can persist it without
+// re-deriving from the snapshot.
+import {
+  deriveStanding,
+  type Standing,
+} from "../../../shared/solarRecStanding";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -104,6 +112,12 @@ export interface ChangeOwnershipExportRow {
   lastRecDeliveryDate: Date | null;
   changeOwnershipStatus: ChangeOwnershipStatus;
   ownershipStatus: OwnershipStatus;
+  // PR B2: parallel coexistence — risk-tier Standing derived from
+  // `(representative.contractType, isTransferred, isReporting)` via
+  // shared `deriveStanding`. Persisted on
+  // `solarRecDashboardChangeOwnershipFacts` so PR B3+ tabs can
+  // bucket by Standing without re-deriving.
+  standing: Standing;
   isReporting: boolean;
   isTerminated: boolean;
   isTransferred: boolean;
@@ -529,6 +543,18 @@ export function buildChangeOwnership(
           ownershipStatus: isReporting
             ? "Terminated and Reporting"
             : "Terminated and Not Reporting",
+          // PR B2: derive Standing from the same `(contractType,
+          // transferSeen, isReporting)` triple the client worker
+          // uses. `isTransferred` is hard-`false` on this branch
+          // (terminated systems are not transferred to a new owner).
+          // For an "IL ABP - Terminated" contractType this maps to
+          // "Closed — RECs Repaid (Good Standing)"; "IL ABP -
+          // Defaulted" → "Closed — Default"; null/empty → "Unknown".
+          standing: deriveStanding(
+            representative.contractType,
+            false,
+            isReporting,
+          ),
           isReporting,
           isTerminated: true,
           isTransferred: false,
@@ -611,6 +637,16 @@ export function buildChangeOwnership(
         : isReporting
           ? "Not Transferred and Reporting"
           : "Not Transferred and Not Reporting",
+      // PR B2: same Standing-from-snapshot pattern as the
+      // terminated branch above; here `isTransferred` is the
+      // locally-aggregated boolean (true if any non-terminated
+      // matched system has a GATS transfer / change-of-ownership
+      // signal), which corresponds 1:1 to `builder.transferSeen`.
+      standing: deriveStanding(
+        representative.contractType,
+        isTransferred,
+        isReporting,
+      ),
       isReporting,
       isTerminated: false,
       isTransferred,

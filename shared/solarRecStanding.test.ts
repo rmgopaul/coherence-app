@@ -5,7 +5,7 @@
  * matching (load-bearing because `normalizeContractType` lowercases).
  */
 import { describe, expect, it } from "vitest";
-import { deriveStanding } from "./deriveStanding";
+import { deriveStanding } from "./solarRecStanding";
 
 describe("deriveStanding", () => {
   // -----------------------------------------------------------------

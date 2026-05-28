@@ -87,6 +87,8 @@ export function buildChangeOwnershipFactRows(args: {
     lastRecDeliveryDate: row.lastRecDeliveryDate,
     changeOwnershipStatus: row.changeOwnershipStatus,
     ownershipStatus: row.ownershipStatus,
+    // PR B2: persist Standing alongside the legacy status columns.
+    standing: row.standing,
     isReporting: row.isReporting,
     isTerminated: row.isTerminated,
     isTransferred: row.isTransferred,

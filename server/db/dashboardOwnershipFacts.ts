@@ -73,6 +73,11 @@ export async function upsertOwnershipFacts(
               stateApplicationRefId: sql`VALUES(\`stateApplicationRefId\`)`,
               trackingSystemRefId: sql`VALUES(\`trackingSystemRefId\`)`,
               ownershipStatus: sql`VALUES(\`ownershipStatus\`)`,
+              // PR B2: keep Standing in sync on every rebuild so
+              // existing rows that pre-date the column get populated
+              // on the next upsert (existing rows hit UPDATE, not
+              // INSERT — same pattern as PR A's hotfix #644).
+              standing: sql`VALUES(\`standing\`)`,
               isReporting: sql`VALUES(\`isReporting\`)`,
               isTransferred: sql`VALUES(\`isTransferred\`)`,
               isTerminated: sql`VALUES(\`isTerminated\`)`,

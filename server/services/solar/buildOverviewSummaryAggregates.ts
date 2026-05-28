@@ -40,6 +40,14 @@ import {
 import { getOrBuildFoundation } from "./foundationRunner";
 import { superjsonSerde, withArtifactCache } from "./withArtifactCache";
 import { shouldCacheAggregatorEmptyResult } from "./aggregatorCachePredicates";
+// PR B2: shared 9-value Standing taxonomy. The aggregator emits
+// `standing` on every OwnershipOverviewExportRow so the fact-table
+// builder (`buildDashboardOwnershipFacts`) can persist it without
+// re-deriving from the snapshot.
+import {
+  deriveStanding,
+  type Standing,
+} from "../../../shared/solarRecStanding";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -73,6 +81,11 @@ export interface OwnershipOverviewExportRow {
   stateApplicationRefId: string | null;
   trackingSystemRefId: string | null;
   ownershipStatus: OwnershipStatus;
+  // PR B2: parallel coexistence — risk-tier Standing derived from
+  // `(contractType, isTransferred, isReporting)` via shared
+  // `deriveStanding`. Persisted on `solarRecDashboardOwnershipFacts`
+  // by PR B2; consumed by future tab tiles in PR B3+.
+  standing: Standing;
   isReporting: boolean;
   isTransferred: boolean;
   isTerminated: boolean;
@@ -420,6 +433,10 @@ export function buildOverviewSummary(
         stateApplicationRefId: applicationId || null,
         trackingSystemRefId: trackingId || null,
         ownershipStatus: "Not Transferred and Not Reporting",
+        // PR B2: Part-II Unmatched rows have no contractType → the
+        // shared `deriveStanding(null, false, false)` returns
+        // "Unknown" by construction. Inlined for clarity here.
+        standing: "Unknown",
         isReporting: false,
         isTransferred: false,
         isTerminated: false,
@@ -473,6 +490,17 @@ export function buildOverviewSummary(
       stateApplicationRefId: representative.stateApplicationRefId,
       trackingSystemRefId: representative.trackingSystemRefId,
       ownershipStatus,
+      // PR B2: derive Standing from the same three signals the
+      // client worker uses (`contractType` + `transferSeen` +
+      // `isReporting`). `SystemRecord.isTransferred ===
+      // builder.transferSeen` (1:1 mapping in `buildSystems.ts`),
+      // so passing `isTransferred` here gives the identical
+      // Standing the client worker would have computed.
+      standing: deriveStanding(
+        representative.contractType,
+        isTransferred,
+        isReporting,
+      ),
       isReporting,
       isTransferred,
       isTerminated,
