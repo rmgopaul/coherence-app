@@ -77,10 +77,8 @@ export function buildOwnershipFactRows(args: {
     systemId: row.systemId,
     stateApplicationRefId: row.stateApplicationRefId,
     trackingSystemRefId: row.trackingSystemRefId,
-    ownershipStatus: row.ownershipStatus,
-    // PR B2: persist Standing alongside ownershipStatus. The
-    // aggregator already filled this in via shared `deriveStanding`;
-    // the fact builder just threads it through.
+    // B3-cleanup: `ownershipStatus` column dropped (migration 0077);
+    // `standing` is the sole risk-tier axis on this fact table.
     standing: row.standing,
     isReporting: row.isReporting,
     isTransferred: row.isTransferred,

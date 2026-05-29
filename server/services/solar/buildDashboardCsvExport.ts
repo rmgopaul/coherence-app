@@ -26,10 +26,16 @@
 import { appendFile, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type {
-  ChangeOwnershipStatus,
-  OwnershipStatus,
-} from "./buildChangeOwnershipAggregates";
+import type { ChangeOwnershipStatus } from "./buildChangeOwnershipAggregates";
+// B3-cleanup: legacy `OwnershipStatus`-based tile bucketing migrated
+// to `Standing`. Tiles map to the 4 top-tier rollups (Active / At
+// Risk / Closed / Unknown) — same tile-key vocabulary preserved for
+// the download handlers, but semantics are now risk-tier-based.
+import {
+  type Standing,
+  type StandingTier,
+  standingTier,
+} from "../../../shared/solarRecStanding";
 
 export type OwnershipTileKey = "reporting" | "notReporting" | "terminated";
 
@@ -43,7 +49,11 @@ export interface OwnershipTileCsvRow {
   part2SystemId: string | null;
   part2TrackingId: string | null;
   source: string;
-  ownershipStatus: string;
+  // B3-cleanup: `ownershipStatus` retired; `standing` is the
+  // risk-tier axis the tile bucketing + status_category column key
+  // off. Nullable on the wire — older rows may not have it
+  // populated yet.
+  standing: string | null;
   isReporting: boolean;
   isTransferred: boolean;
   isTerminated: boolean;
@@ -60,7 +70,7 @@ export interface ChangeOwnershipTileCsvRow {
   systemName: string;
   systemId: string | null;
   trackingSystemRefId: string | null;
-  ownershipStatus: string;
+  standing: string | null;
   changeOwnershipStatus: string | null;
   isReporting: boolean;
   isTransferred: boolean;
@@ -136,39 +146,40 @@ const CHANGE_OWNERSHIP_HEADERS = [
   "last_rec_delivery_date",
 ];
 
-const REPORTING_TILE_STATUSES: ReadonlySet<OwnershipStatus> =
-  new Set<OwnershipStatus>([
-    "Not Transferred and Reporting",
-    "Transferred and Reporting",
-  ]);
-
-const NOT_REPORTING_TILE_STATUSES: ReadonlySet<OwnershipStatus> =
-  new Set<OwnershipStatus>([
-    "Not Transferred and Not Reporting",
-    "Transferred and Not Reporting",
-  ]);
-
-const TERMINATED_TILE_STATUSES: ReadonlySet<OwnershipStatus> =
-  new Set<OwnershipStatus>([
-    "Terminated and Reporting",
-    "Terminated and Not Reporting",
-  ]);
+// B3-cleanup: tile bucketing migrated from OwnershipStatus to
+// Standing tiers. Tile-key vocabulary preserved (reporting /
+// notReporting / terminated) for the download handler API, but the
+// matcher now uses `row.standing` + `row.isReporting` to decide
+// membership. Mapping:
+//   - "reporting"    → Active tier (Good Standing + Assigned), i.e.
+//                      systems with healthy paperwork that are
+//                      currently reporting. Subset of pre-migration
+//                      "reporting" — orphaned-transfer-but-reporting
+//                      systems now fall under "notReporting" instead.
+//   - "notReporting" → At Risk tier (Unassigned Transfer + Reporting
+//                      Lapse + Jeopardy). The actionable bucket.
+//   - "terminated"   → Closed tier (RECs Repaid + Default).
+// Unknown systems (no contractType) currently aren't surfaced as a
+// tile — the CSV export skips them; the OverviewTab shows a count
+// tile but no download button. Tag flagged for B5 follow-up.
 
 const CSV_FILE_WRITE_CHUNK_ROWS = 1000;
+
+function tileMatchesStanding(
+  tile: OwnershipTileKey,
+  standing: string | null,
+): boolean {
+  if (!standing) return false;
+  const tier: StandingTier = standingTier(standing as Standing);
+  if (tile === "reporting") return tier === "Active";
+  if (tile === "notReporting") return tier === "At Risk";
+  return tier === "Closed";
+}
 
 function ownershipTileMatcher(
   tile: OwnershipTileKey
 ): (row: OwnershipTileCsvRow) => boolean {
-  if (tile === "reporting") {
-    return row =>
-      REPORTING_TILE_STATUSES.has(row.ownershipStatus as OwnershipStatus);
-  }
-  if (tile === "notReporting") {
-    return row =>
-      NOT_REPORTING_TILE_STATUSES.has(row.ownershipStatus as OwnershipStatus);
-  }
-  return row =>
-    TERMINATED_TILE_STATUSES.has(row.ownershipStatus as OwnershipStatus);
+  return row => tileMatchesStanding(tile, row.standing);
 }
 
 /**
@@ -345,7 +356,7 @@ function ownershipRowToCsvRecord(
     part2_system_id: row.part2SystemId ?? "",
     part2_tracking_id: row.part2TrackingId ?? "",
     source: row.source,
-    status_category: row.ownershipStatus,
+    status_category: row.standing ?? "",
     reporting: row.isReporting ? "Yes" : "No",
     transferred: row.isTransferred ? "Yes" : "No",
     terminated: row.isTerminated ? "Yes" : "No",
@@ -366,7 +377,7 @@ function changeOwnershipRowToCsvRecord(
     system_name: row.systemName,
     system_id: row.systemId ?? "",
     tracking_id: row.trackingSystemRefId ?? "",
-    status_category: row.ownershipStatus,
+    status_category: row.standing ?? "",
     change_ownership_status: row.changeOwnershipStatus ?? "",
     reporting: row.isReporting ? "Yes" : "No",
     transferred: row.isTransferred ? "Yes" : "No",

@@ -86,8 +86,8 @@ export function buildChangeOwnershipFactRows(args: {
     latestReportingDate: row.latestReportingDate,
     lastRecDeliveryDate: row.lastRecDeliveryDate,
     changeOwnershipStatus: row.changeOwnershipStatus,
-    ownershipStatus: row.ownershipStatus,
-    // PR B2: persist Standing alongside the legacy status columns.
+    // B3-cleanup: `ownershipStatus` column dropped (migration 0077);
+    // `standing` is the sole risk-tier axis on this fact table.
     standing: row.standing,
     isReporting: row.isReporting,
     isTerminated: row.isTerminated,

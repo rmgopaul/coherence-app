@@ -96,7 +96,7 @@ function makeRow(
     systemId: "sys-1",
     stateApplicationRefId: "state-1",
     trackingSystemRefId: "tr-1",
-    ownershipStatus: "Transferred and Reporting",
+    standing: "Active — Good Standing",
     isReporting: true,
     isTransferred: true,
     isTerminated: false,
@@ -152,7 +152,7 @@ describe("buildOwnershipFactRows (pure transformation)", () => {
       systemId: "sys-X",
       stateApplicationRefId: "state-X",
       trackingSystemRefId: "tr-X",
-      ownershipStatus: "Terminated and Not Reporting",
+      standing: "Closed — RECs Repaid (Good Standing)",
       isReporting: false,
       isTransferred: false,
       isTerminated: true,
@@ -177,7 +177,7 @@ describe("buildOwnershipFactRows (pure transformation)", () => {
     expect(row.systemId).toBe("sys-X");
     expect(row.stateApplicationRefId).toBe("state-X");
     expect(row.trackingSystemRefId).toBe("tr-X");
-    expect(row.ownershipStatus).toBe("Terminated and Not Reporting");
+    expect(row.standing).toBe("Closed — RECs Repaid (Good Standing)");
     expect(row.isReporting).toBe(false);
     expect(row.isTransferred).toBe(false);
     expect(row.isTerminated).toBe(true);

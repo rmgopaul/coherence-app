@@ -136,7 +136,7 @@ function makeRow(
     isReporting: true,
     isTerminated: false,
     isTransferred: true,
-    ownershipStatus: "Transferred and Reporting",
+    standing: "At Risk — Unassigned Transfer",
     hasChangedOwnership: false,
     changeOwnershipStatus: null,
     contractStatusText: "Active",
@@ -209,7 +209,7 @@ describe("buildSystemFactRows (pure transformation)", () => {
       isReporting: false,
       isTerminated: true,
       isTransferred: false,
-      ownershipStatus: "Terminated and Not Reporting",
+      standing: "Closed — RECs Repaid (Good Standing)",
       hasChangedOwnership: true,
       changeOwnershipStatus: "Change of Ownership - Not Transferred and Reporting",
       contractStatusText: "Pending",
@@ -237,7 +237,7 @@ describe("buildSystemFactRows (pure transformation)", () => {
     expect(row.isReporting).toBe(false);
     expect(row.isTerminated).toBe(true);
     expect(row.isTransferred).toBe(false);
-    expect(row.ownershipStatus).toBe("Terminated and Not Reporting");
+    expect(row.standing).toBe("Closed — RECs Repaid (Good Standing)");
     expect(row.hasChangedOwnership).toBe(true);
     expect(row.changeOwnershipStatus).toBe(
       "Change of Ownership - Not Transferred and Reporting"

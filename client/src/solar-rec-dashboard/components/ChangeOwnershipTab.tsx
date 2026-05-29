@@ -55,7 +55,6 @@ import { DashboardBuildProgressBar } from "@/solar-rec-dashboard/components/Dash
 import type {
   ChangeOwnershipStatus,
   ChangeOwnershipSummary,
-  OwnershipStatus,
 } from "@/solar-rec-dashboard/state/types";
 
 // ---------------------------------------------------------------------------
@@ -82,7 +81,7 @@ export type ChangeOwnershipExportRow = {
   latestReportingDate: Date | null;
   lastRecDeliveryDate: Date | null;
   changeOwnershipStatus: ChangeOwnershipStatus;
-  ownershipStatus: OwnershipStatus;
+  // B3-cleanup: `ownershipStatus` field retired from the row shape.
   isReporting: boolean;
   isTerminated: boolean;
   isTransferred: boolean;

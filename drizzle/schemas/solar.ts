@@ -2265,7 +2265,9 @@ export const solarRecDashboardChangeOwnershipFacts = mysqlTable(
     changeOwnershipStatus: varchar("changeOwnershipStatus", {
       length: 64,
     }).notNull(),
-    ownershipStatus: varchar("ownershipStatus", { length: 64 }).notNull(),
+    // B3-cleanup (2026-05-29): `ownershipStatus` column dropped
+    // (migration 0077). The 9-value `standing` field below is the
+    // sole risk-tier axis on this fact table.
     // PR B2: risk-tier Standing taxonomy. Populated by
     // `buildChangeOwnershipAggregates` via the shared
     // `deriveStanding` helper. Nullable for rolling-deploy safety
@@ -2383,13 +2385,8 @@ export const solarRecDashboardOwnershipFacts = mysqlTable(
     systemId: varchar("systemId", { length: 128 }),
     stateApplicationRefId: varchar("stateApplicationRefId", { length: 128 }),
     trackingSystemRefId: varchar("trackingSystemRefId", { length: 128 }),
-    // Status enums + booleans.
-    ownershipStatus: varchar("ownershipStatus", { length: 64 }).notNull(),
-    // PR B2: risk-tier Standing taxonomy. Populated by
-    // `buildOverviewSummaryAggregates` via shared `deriveStanding`.
-    // Nullable for rolling-deploy safety (older runner writes leave
-    // null; readers fall back to re-deriving). PR B3 will drop
-    // `ownershipStatus` once every tab consumer migrates.
+    // B3-cleanup (2026-05-29): `ownershipStatus` column dropped
+    // (migration 0077). Risk-tier `standing` below is sole axis.
     standing: varchar("standing", { length: 64 }),
     isReporting: boolean("isReporting").notNull(),
     isTransferred: boolean("isTransferred").notNull(),
@@ -2419,11 +2416,9 @@ export const solarRecDashboardOwnershipFacts = mysqlTable(
     scopeBuildIdx: index(
       "solar_rec_dashboard_ownership_facts_scope_build_idx"
     ).on(table.scopeId, table.buildId),
-    // Status filter — primary tab filter axis.
-    scopeStatusIdx: index(
-      "solar_rec_dashboard_ownership_facts_scope_status_idx"
-    ).on(table.scopeId, table.ownershipStatus),
-    // PR B2: parallel index for the new Standing axis (PR B3+ tabs).
+    // B3-cleanup: `scopeStatusIdx` (on `ownershipStatus`) dropped
+    // alongside the column (migration 0077). `scopeStandingIdx`
+    // replaces it as the risk-tier filter axis.
     scopeStandingIdx: index(
       "solar_rec_dashboard_ownership_facts_scope_standing_idx"
     ).on(table.scopeId, table.standing),
@@ -2516,7 +2511,8 @@ export const solarRecDashboardSystemFacts = mysqlTable(
     // Ownership / status.
     isTerminated: boolean("isTerminated").notNull(),
     isTransferred: boolean("isTransferred").notNull(),
-    ownershipStatus: varchar("ownershipStatus", { length: 64 }).notNull(),
+    // B3-cleanup (2026-05-29): `ownershipStatus` column dropped
+    // (migration 0077). Risk-tier `standing` (below) is sole axis.
     hasChangedOwnership: boolean("hasChangedOwnership").notNull(),
     changeOwnershipStatus: varchar("changeOwnershipStatus", { length: 64 }),
     // Contract metadata.
@@ -2613,12 +2609,10 @@ export const solarRecDashboardSystemFacts = mysqlTable(
     scopeBuildIdx: index(
       "solar_rec_dashboard_system_facts_scope_build_idx"
     ).on(table.scopeId, table.buildId),
-    // Status filter — primary axis on Overview/ChangeOwnership
-    // tabs. PR-F-3's read proc may add `status` as a server-side
-    // filter; the index makes that read efficient.
-    scopeStatusIdx: index(
-      "solar_rec_dashboard_system_facts_scope_status_idx"
-    ).on(table.scopeId, table.ownershipStatus),
+    // B3-cleanup: `scopeStatusIdx` (on `ownershipStatus`) dropped
+    // alongside the column (migration 0077). The `standing` column
+    // has no dedicated index — SystemsIndex filters Standing via
+    // the generic filters map; selectivity is bounded (9 values).
     // Size filter — SizeReportingTab + Overview tile filter axis.
     scopeSizeIdx: index(
       "solar_rec_dashboard_system_facts_scope_size_idx"

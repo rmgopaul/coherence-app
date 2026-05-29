@@ -59,7 +59,6 @@ import { deriveStanding } from "@/solar-rec-dashboard/lib/deriveStanding";
 import type {
   ChangeOwnershipStatus,
   CsvRow,
-  OwnershipStatus,
   SizeBucket,
   SystemRecord,
 } from "@/solar-rec-dashboard/state/types";
@@ -625,24 +624,9 @@ export function buildSystems(input: BuildSystemsInput): SystemRecord[] {
       const hasChangedOwnership =
         isContractTransferred || isContractTerminated || hasZillowConfirmedOwnershipChange;
 
-      let ownershipStatus: OwnershipStatus;
-      if (isTerminated) {
-        ownershipStatus = isReporting ? "Terminated and Reporting" : "Terminated and Not Reporting";
-      } else if (builder.transferSeen || isContractTransferred) {
-        ownershipStatus = isReporting
-          ? "Transferred and Reporting"
-          : "Transferred and Not Reporting";
-      } else {
-        ownershipStatus = isReporting
-          ? "Not Transferred and Reporting"
-          : "Not Transferred and Not Reporting";
-      }
-
-      // PR A: parallel coexistence — `standing` is the new risk-tier
-      // taxonomy keyed off CSG portal `contractType` + `transferSeen` +
-      // `isReporting`. Stays alongside `ownershipStatus` until PR B
-      // migrates consumers + drops the legacy field. See
-      // `deriveStanding` for the full decision tree.
+      // B3-cleanup (2026-05-29): legacy `ownershipStatus` derivation
+      // retired. The 9-value `standing` taxonomy below is the sole
+      // axis (see shared/solarRecStanding).
       const standing = deriveStanding(
         builder.contractType,
         builder.transferSeen,
@@ -692,7 +676,6 @@ export function buildSystems(input: BuildSystemsInput): SystemRecord[] {
         lastRecDeliveryDate,
         isTerminated,
         isTransferred: builder.transferSeen,
-        ownershipStatus,
         standing,
         hasChangedOwnership,
         changeOwnershipStatus,

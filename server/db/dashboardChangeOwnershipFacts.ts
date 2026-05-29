@@ -85,9 +85,9 @@ export async function upsertChangeOwnershipFacts(
               latestReportingDate: sql`VALUES(\`latestReportingDate\`)`,
               lastRecDeliveryDate: sql`VALUES(\`lastRecDeliveryDate\`)`,
               changeOwnershipStatus: sql`VALUES(\`changeOwnershipStatus\`)`,
-              ownershipStatus: sql`VALUES(\`ownershipStatus\`)`,
-              // PR B2: keep Standing in sync on every rebuild —
-              // existing rows hit UPDATE, not INSERT.
+              // B3-cleanup: `ownershipStatus` column dropped
+              // (migration 0077). `standing` is the sole risk-tier
+              // axis on this fact table.
               standing: sql`VALUES(\`standing\`)`,
               isReporting: sql`VALUES(\`isReporting\`)`,
               isTerminated: sql`VALUES(\`isTerminated\`)`,

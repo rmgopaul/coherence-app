@@ -72,11 +72,9 @@ export async function upsertOwnershipFacts(
               systemId: sql`VALUES(\`systemId\`)`,
               stateApplicationRefId: sql`VALUES(\`stateApplicationRefId\`)`,
               trackingSystemRefId: sql`VALUES(\`trackingSystemRefId\`)`,
-              ownershipStatus: sql`VALUES(\`ownershipStatus\`)`,
-              // PR B2: keep Standing in sync on every rebuild so
-              // existing rows that pre-date the column get populated
-              // on the next upsert (existing rows hit UPDATE, not
-              // INSERT — same pattern as PR A's hotfix #644).
+              // B3-cleanup: `ownershipStatus` column dropped
+              // (migration 0077); the `standing` SET below keeps the
+              // sole risk-tier axis in sync on every rebuild.
               standing: sql`VALUES(\`standing\`)`,
               isReporting: sql`VALUES(\`isReporting\`)`,
               isTransferred: sql`VALUES(\`isTransferred\`)`,
@@ -178,11 +176,9 @@ export async function getOwnershipFactsPage(
       gt(solarRecDashboardOwnershipFacts.systemKey, cursorAfter)
     );
   }
-  if (status) {
-    conditions.push(
-      eq(solarRecDashboardOwnershipFacts.ownershipStatus, status)
-    );
-  }
+  // B3-cleanup: legacy `status` filter retired alongside the column.
+  // `standing` is the sole risk-tier filter axis.
+  void status;
   if (standing) {
     conditions.push(
       eq(solarRecDashboardOwnershipFacts.standing, standing)
@@ -248,14 +244,8 @@ export async function getOwnershipFactsCount(
   const conditions = [
     eq(solarRecDashboardOwnershipFacts.scopeId, scopeId),
   ];
-  if (options?.status) {
-    conditions.push(
-      eq(
-        solarRecDashboardOwnershipFacts.ownershipStatus,
-        options.status
-      )
-    );
-  }
+  // B3-cleanup: legacy `status` filter retired alongside the column.
+  void options?.status;
   if (options?.source) {
     conditions.push(
       eq(solarRecDashboardOwnershipFacts.source, options.source)

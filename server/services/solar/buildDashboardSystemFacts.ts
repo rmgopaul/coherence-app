@@ -84,10 +84,9 @@ export interface SystemRecordSubset {
   lastRecDeliveryDate: Date | null;
   isTerminated: boolean;
   isTransferred: boolean;
-  ownershipStatus: string;
-  // PR A: risk-tier "Standing" derived from CSG portal `contractType`
-  // + GATS `transferSeen` + meter `isReporting`. Persisted on the
-  // fact row alongside `ownershipStatus`; PR B drops the latter.
+  // B3-cleanup: `ownershipStatus: string` retired. `standing` is the
+  // sole axis on the fact-table schema as well (column dropped in
+  // migration 0077).
   standing: string;
   hasChangedOwnership: boolean;
   changeOwnershipStatus: string | null;
@@ -174,11 +173,8 @@ export function buildSystemFactRows(args: {
       lastRecDeliveryDate: row.lastRecDeliveryDate,
       isTerminated: row.isTerminated,
       isTransferred: row.isTransferred,
-      ownershipStatus: row.ownershipStatus,
-      // PR A: parallel coexistence. Persist `standing` alongside
-      // `ownershipStatus` so the SystemsIndex column (and PR B's
-      // downstream consumers) can read it directly without
-      // re-deriving from `contractType` at query time.
+      // B3-cleanup: `ownershipStatus` column dropped (migration 0077).
+      // `standing` is the sole risk-tier axis on the fact table.
       standing: row.standing,
       hasChangedOwnership: row.hasChangedOwnership,
       changeOwnershipStatus: row.changeOwnershipStatus,

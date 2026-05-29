@@ -59,13 +59,9 @@ import {
 
 export type SizeBucket = "<=10 kW AC" | ">10 kW AC" | "Unknown";
 
-export type OwnershipStatus =
-  | "Transferred and Reporting"
-  | "Transferred and Not Reporting"
-  | "Not Transferred and Reporting"
-  | "Not Transferred and Not Reporting"
-  | "Terminated and Reporting"
-  | "Terminated and Not Reporting";
+// B3-cleanup: server-side `OwnershipStatus` type alias retired
+// alongside the client one. The 9-value Standing taxonomy is the
+// sole axis.
 
 /**
  * Mirrors `client/src/features/solar-rec/SolarRecDashboard.tsx ::
@@ -84,11 +80,8 @@ export interface OwnershipOverviewExportRow {
   systemId: string | null;
   stateApplicationRefId: string | null;
   trackingSystemRefId: string | null;
-  ownershipStatus: OwnershipStatus;
-  // PR B2: parallel coexistence — risk-tier Standing derived from
-  // `(contractType, isTransferred, isReporting)` via shared
-  // `deriveStanding`. Persisted on `solarRecDashboardOwnershipFacts`
-  // by PR B2; consumed by future tab tiles in PR B3+.
+  // B3-cleanup: `ownershipStatus` field retired. `standing` below
+  // is the canonical axis (fact-table column same name).
   standing: Standing;
   isReporting: boolean;
   isTransferred: boolean;
@@ -118,7 +111,10 @@ export interface SnapshotSystemForSummary {
   isReporting: boolean;
   isTransferred: boolean;
   isTerminated: boolean;
-  ownershipStatus: OwnershipStatus;
+  // B3-cleanup: `ownershipStatus` retired from the snapshot subset
+  // (aggregator no longer needs it after the rollup migrated to
+  // `standingOverview` in B3a). `contractType` + `isTransferred`
+  // + `isReporting` feed `deriveStanding` per-row.
   contractType: string | null;
   contractStatusText: string;
   latestReportingDate: Date | null;
@@ -197,14 +193,8 @@ const VALID_SIZE_BUCKETS = new Set<SizeBucket>([
   "Unknown",
 ]);
 
-const VALID_OWNERSHIP_STATUSES = new Set<OwnershipStatus>([
-  "Transferred and Reporting",
-  "Transferred and Not Reporting",
-  "Not Transferred and Reporting",
-  "Not Transferred and Not Reporting",
-  "Terminated and Reporting",
-  "Terminated and Not Reporting",
-]);
+// B3-cleanup: `VALID_OWNERSHIP_STATUSES` set retired alongside the
+// `ownershipStatusOf` extractor and the field on the snapshot subset.
 
 /**
  * Mirrors `resolveContractValueAmount` in
@@ -265,18 +255,9 @@ export function extractSnapshotSystemsForSummary(
       }
       return "Unknown";
     };
-    const ownershipStatusOf = (v: unknown): OwnershipStatus => {
-      if (
-        typeof v === "string" &&
-        VALID_OWNERSHIP_STATUSES.has(v as OwnershipStatus)
-      ) {
-        return v as OwnershipStatus;
-      }
-      // Default — matches the "fallthrough" branch in the client memo
-      // (no isTerminated/isTransferred/isReporting → "Not Transferred
-      // and Not Reporting").
-      return "Not Transferred and Not Reporting";
-    };
+    // B3-cleanup: `ownershipStatusOf` extractor retired alongside the
+    // field on the snapshot subset. Standing is per-row-derived from
+    // `(contractType, isTransferred, isReporting)` downstream.
 
     const key = stringOrNull(r.key);
     if (!key) continue;
@@ -291,7 +272,6 @@ export function extractSnapshotSystemsForSummary(
       isReporting: boolOr(r.isReporting, false),
       isTransferred: boolOr(r.isTransferred, false),
       isTerminated: boolOr(r.isTerminated, false),
-      ownershipStatus: ownershipStatusOf(r.ownershipStatus),
       contractType: stringOrNull(r.contractType),
       contractStatusText: stringOrEmpty(r.contractStatusText),
       latestReportingDate: dateOrNull(r.latestReportingDate),
@@ -505,10 +485,8 @@ export function buildOverviewSummary(
         systemId: portalSystemId || null,
         stateApplicationRefId: applicationId || null,
         trackingSystemRefId: trackingId || null,
-        ownershipStatus: "Not Transferred and Not Reporting",
-        // PR B2: Part-II Unmatched rows have no contractType → the
-        // shared `deriveStanding(null, false, false)` returns
-        // "Unknown" by construction. Inlined for clarity here.
+        // B3-cleanup: Part-II Unmatched rows have no contractType →
+        // `deriveStanding(null, false, false) === "Unknown"`. Inlined.
         standing: "Unknown",
         isReporting: false,
         isTransferred: false,
@@ -533,23 +511,11 @@ export function buildOverviewSummary(
       if (system.isTerminated) isTerminated = true;
     });
 
-    const ownershipStatus: OwnershipStatus = isTerminated
-      ? isReporting
-        ? "Terminated and Reporting"
-        : "Terminated and Not Reporting"
-      : isTransferred
-        ? isReporting
-          ? "Transferred and Reporting"
-          : "Transferred and Not Reporting"
-        : isReporting
-          ? "Not Transferred and Reporting"
-          : "Not Transferred and Not Reporting";
-
+    // B3-cleanup: `ownershipStatus` derivation retired. Representative
+    // is now the first matched system (the prior `find()` filtered by
+    // matching ownershipStatus, which no longer exists as a field).
     const matchedSystemList = Array.from(matchedSystems.values());
-    const representative =
-      matchedSystemList.find(
-        (system) => system.ownershipStatus === ownershipStatus
-      ) ?? matchedSystemList[0]!;
+    const representative = matchedSystemList[0]!;
 
     ownershipRows.push({
       key: `part2:${dedupeKey}`,
@@ -562,13 +528,9 @@ export function buildOverviewSummary(
       systemId: representative.systemId,
       stateApplicationRefId: representative.stateApplicationRefId,
       trackingSystemRefId: representative.trackingSystemRefId,
-      ownershipStatus,
-      // PR B2: derive Standing from the same three signals the
-      // client worker uses (`contractType` + `transferSeen` +
-      // `isReporting`). `SystemRecord.isTransferred ===
-      // builder.transferSeen` (1:1 mapping in `buildSystems.ts`),
-      // so passing `isTransferred` here gives the identical
-      // Standing the client worker would have computed.
+      // B3-cleanup: derive Standing from `(contractType,
+      // isTransferred, isReporting)` — same signals the client
+      // worker uses, 1:1 with `builder.transferSeen`.
       standing: deriveStanding(
         representative.contractType,
         isTransferred,
@@ -700,7 +662,12 @@ const OVERVIEW_SUMMARY_DEPS = ["abpReport"] as const;
 // downstream readers would see `undefined` where the type promises
 // a populated object. Cache rows under the old key are ignored;
 // the next build per scope writes a fresh `-v3` row.
-const ARTIFACT_TYPE = "overviewSummary-v3";
+// B3-cleanup (2026-05-29): bumped `-v3` → `-v4` because
+// `OwnershipOverviewExportRow.ownershipStatus` was dropped from the
+// row shape. Stale `-v3` rows carry the legacy field; reader code
+// no longer expects it. Cache rows under the old key are ignored;
+// the next build per scope writes a fresh `-v4` row.
+const ARTIFACT_TYPE = "overviewSummary-v4";
 
 // 2026-05-13 (@3): bump after adding shouldCache gate (HIGH-2
 // follow-up). The aggregator consumes `getOrBuildSystemSnapshot`

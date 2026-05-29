@@ -6,10 +6,7 @@
  * the pagesize constants, and the REMOTE_* keys here too.
  */
 
-import type {
-  ChangeOwnershipStatus,
-  OwnershipStatus,
-} from "@/solar-rec-dashboard/state/types";
+import type { ChangeOwnershipStatus } from "@/solar-rec-dashboard/state/types";
 
 /**
  * Transferee / transferor name fragments that identify the receiving entity
@@ -231,23 +228,8 @@ export const DASHBOARD_TAB_VALUE_SET = new Set<string>(DASHBOARD_TAB_VALUES);
 // the destructive cleanup PR once every reader has migrated.
 // ---------------------------------------------------------------------------
 
-/**
- * @deprecated B3-final (PR #651) retired every client consumer of
- * this array (the OwnershipTab filter dropdown now enumerates
- * `ALL_STANDING_VALUES` from `@shared/solarRecStanding`). Kept alive
- * only for the B3-cleanup PR to delete alongside the `OwnershipStatus`
- * type + the column. New UI surfaces MUST import
- * `ALL_STANDING_VALUES` from `@shared/solarRecStanding` instead.
- */
-export const OWNERSHIP_ORDER: OwnershipStatus[] = [
-  "Transferred and Reporting",
-  "Transferred and Not Reporting",
-  "Not Transferred and Reporting",
-  "Not Transferred and Not Reporting",
-  "Terminated and Reporting",
-  "Terminated and Not Reporting",
-];
-
+// B3-cleanup (2026-05-29): `OWNERSHIP_ORDER` retired. Use
+// `ALL_STANDING_VALUES` from `@shared/solarRecStanding` instead.
 export const CHANGE_OWNERSHIP_ORDER: ChangeOwnershipStatus[] = [
   "Transferred and Reporting",
   "Transferred and Not Reporting",

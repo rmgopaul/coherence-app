@@ -56,7 +56,8 @@ const SORT_COLUMNS = {
   contractedValue: solarRecDashboardSystemFacts.contractedValue,
   deliveredValue: solarRecDashboardSystemFacts.deliveredValue,
   valueGap: solarRecDashboardSystemFacts.valueGap,
-  ownershipStatus: solarRecDashboardSystemFacts.ownershipStatus,
+  // B3-cleanup: `ownershipStatus` SORT_COLUMNS entry retired
+  // alongside the column. Standing replaces it.
   contractType: solarRecDashboardSystemFacts.contractType,
   monitoringPlatform: solarRecDashboardSystemFacts.monitoringPlatform,
   installerName: solarRecDashboardSystemFacts.installerName,
@@ -200,7 +201,7 @@ export async function upsertSystemFacts(
               isReporting: sql`VALUES(\`isReporting\`)`,
               isTerminated: sql`VALUES(\`isTerminated\`)`,
               isTransferred: sql`VALUES(\`isTransferred\`)`,
-              ownershipStatus: sql`VALUES(\`ownershipStatus\`)`,
+              // B3-cleanup: `ownershipStatus` column dropped (0077).
               hasChangedOwnership: sql`VALUES(\`hasChangedOwnership\`)`,
               changeOwnershipStatus: sql`VALUES(\`changeOwnershipStatus\`)`,
               contractStatusText: sql`VALUES(\`contractStatusText\`)`,
@@ -355,11 +356,8 @@ export async function getSystemFactsPage(
       gt(solarRecDashboardSystemFacts.systemKey, cursorAfter)
     );
   }
-  if (status) {
-    conditions.push(
-      eq(solarRecDashboardSystemFacts.ownershipStatus, status)
-    );
-  }
+  // B3-cleanup: legacy `status` filter retired with the column.
+  void status;
   if (sizeBucket) {
     conditions.push(eq(solarRecDashboardSystemFacts.sizeBucket, sizeBucket));
   }
@@ -471,11 +469,8 @@ export async function getSystemFactsCount(
   const db = await getDb();
   if (!db) return 0;
   const conditions = [eq(solarRecDashboardSystemFacts.scopeId, scopeId)];
-  if (options?.status) {
-    conditions.push(
-      eq(solarRecDashboardSystemFacts.ownershipStatus, options.status)
-    );
-  }
+  // B3-cleanup: legacy `status` filter retired with the column.
+  void options?.status;
   if (options?.sizeBucket) {
     conditions.push(
       eq(solarRecDashboardSystemFacts.sizeBucket, options.sizeBucket)

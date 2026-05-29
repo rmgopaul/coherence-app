@@ -37,7 +37,6 @@ function system(
     isReporting: true,
     isTransferred: false,
     isTerminated: false,
-    ownershipStatus: "Not Transferred and Reporting",
     contractType: "Standard",
     contractedDate: new Date("2024-01-01"),
     zillowStatus: null,
@@ -490,7 +489,7 @@ describe("extractSnapshotSystemsForChangeOwnership", () => {
     expect(extracted!.installedKwAc).toBeNull();
     expect(extracted!.hasChangedOwnership).toBe(false);
     expect(extracted!.changeOwnershipStatus).toBeNull();
-    expect(extracted!.ownershipStatus).toBe("Not Transferred and Not Reporting");
+    // B3-cleanup: `ownershipStatus` retired from the snapshot subset.
   });
 
   it("validates changeOwnershipStatus to the enumerated literals", () => {

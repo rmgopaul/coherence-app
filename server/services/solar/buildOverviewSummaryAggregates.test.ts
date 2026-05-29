@@ -35,7 +35,6 @@ function system(overrides: Partial<SnapshotSystemForSummary> = {}): SnapshotSyst
     isReporting: true,
     isTransferred: false,
     isTerminated: false,
-    ownershipStatus: "Not Transferred and Reporting",
     contractType: "Standard",
     contractStatusText: "Active",
     latestReportingDate: new Date("2026-04-01"),
@@ -144,9 +143,10 @@ describe("buildOverviewSummary", () => {
     expect(out.ownershipOverview.reportingOwnershipTotal).toBe(1);
     expect(out.ownershipRows).toHaveLength(1);
     expect(out.ownershipRows[0]!.source).toBe("Matched System");
-    expect(out.ownershipRows[0]!.ownershipStatus).toBe(
-      "Not Transferred and Reporting"
-    );
+    // B3-cleanup: assertion on `ownershipStatus` retired; `standing`
+    // is the risk-tier axis. "Standard" contractType + reporting →
+    // Active — Good Standing (intact + reporting).
+    expect(out.ownershipRows[0]!.standing).toBe("Active — Good Standing");
   });
 
   it("emits a Part II Unmatched row when no system matches", () => {
@@ -212,7 +212,6 @@ describe("buildOverviewSummary", () => {
           isReporting: true,
           isTransferred: false,
           isTerminated: false,
-          ownershipStatus: "Not Transferred and Reporting",
         }),
         system({
           key: "sys-b",
@@ -223,7 +222,6 @@ describe("buildOverviewSummary", () => {
           isReporting: true,
           isTransferred: true,
           isTerminated: false,
-          ownershipStatus: "Transferred and Reporting",
         }),
         system({
           key: "sys-c",
@@ -234,7 +232,6 @@ describe("buildOverviewSummary", () => {
           isReporting: false,
           isTransferred: true,
           isTerminated: true,
-          ownershipStatus: "Terminated and Not Reporting",
         }),
       ],
     });
@@ -285,7 +282,6 @@ describe("buildOverviewSummary", () => {
           isReporting: true,
           isTransferred: false,
           isTerminated: false,
-          ownershipStatus: "Not Transferred and Reporting",
         }),
         system({
           key: "sys-b",
@@ -297,7 +293,6 @@ describe("buildOverviewSummary", () => {
           isReporting: true,
           isTransferred: true,
           isTerminated: false,
-          ownershipStatus: "Transferred and Reporting",
         }),
         system({
           key: "sys-c",
@@ -309,7 +304,6 @@ describe("buildOverviewSummary", () => {
           isReporting: false,
           isTransferred: false,
           isTerminated: true,
-          ownershipStatus: "Terminated and Not Reporting",
         }),
       ],
     });
@@ -564,9 +558,8 @@ describe("extractSnapshotSystemsForSummary", () => {
     ]);
     expect(extracted!.systemId).toBeNull();
     expect(extracted!.sizeBucket).toBe("Unknown");
-    expect(extracted!.ownershipStatus).toBe(
-      "Not Transferred and Not Reporting"
-    );
+    // B3-cleanup: `ownershipStatus` retired from the snapshot
+    // subset; nothing to assert here.
     expect(extracted!.isReporting).toBe(false);
     expect(extracted!.totalContractAmount).toBeNull();
     expect(extracted!.latestReportingDate).toBeNull();

@@ -133,7 +133,6 @@ import type {
   FinancialProfitData,
   MonitoringDetailsRecord,
   OfflineBreakdownRow,
-  OwnershipStatus,
   PerformanceSourceRow,
   PipelineCashFlowRow,
   PipelineMonthRow,
@@ -175,7 +174,6 @@ import { ScheduleBImport } from "@/solar-rec-dashboard/components/ScheduleBImpor
 // runtime, the parity report has no two sources to compare.
 import {
   LOGS_STORAGE_KEY,
-  OWNERSHIP_ORDER,
   CHANGE_OWNERSHIP_ORDER,
   SNAPSHOT_REC_PERFORMANCE_DELIVERY_YEAR_LABEL,
   MAX_REMOTE_STATE_LOG_BYTES,
@@ -207,7 +205,6 @@ import {
   createLogId,
   classifyMonitoringAccessType,
   resolveOfflineMonitoringAccessFields,
-  ownershipBadgeClass,
   changeOwnershipBadgeClass,
   buildDeliveryYearLabel,
 } from "@/solar-rec-dashboard/lib/helpers";
@@ -3744,7 +3741,6 @@ export default function SolarRecDashboard() {
           lastRecDeliveryDate: row.lastRecDeliveryDate,
           isTerminated: row.isTerminated,
           isTransferred: row.isTransferred,
-          ownershipStatus: row.ownershipStatus as OwnershipStatus,
           // PR A: prefer the server-derived `standing` when present;
           // fall back to re-deriving on the client when the wire row
           // hasn't been populated yet (handles a rolling deploy where
@@ -4097,7 +4093,6 @@ export default function SolarRecDashboard() {
           latestReportingDate: row.latestReportingDate,
           lastRecDeliveryDate: row.lastRecDeliveryDate,
           changeOwnershipStatus: row.changeOwnershipStatus as ChangeOwnershipStatus,
-          ownershipStatus: row.ownershipStatus as OwnershipStatus,
           isReporting: row.isReporting,
           isTerminated: row.isTerminated,
           isTransferred: row.isTransferred,

@@ -89,7 +89,7 @@ function makeRow(
     zillowSoldDate: null,
     latestReportingDate: new Date("2026-04-01"),
     changeOwnershipStatus: "Transferred and Reporting",
-    ownershipStatus: "Transferred and Reporting",
+    standing: "Active — Good Standing (Assigned)",
     isReporting: true,
     isTerminated: false,
     isTransferred: true,
@@ -144,7 +144,7 @@ describe("buildChangeOwnershipFactRows (pure transformation)", () => {
       zillowSoldDate: new Date("2025-01-10"),
       latestReportingDate: new Date("2026-04-30"),
       changeOwnershipStatus: "Terminated and Not Reporting",
-      ownershipStatus: "Terminated and Not Reporting",
+      standing: "Closed — RECs Repaid (Good Standing)",
       isReporting: false,
       isTerminated: true,
       isTransferred: false,
@@ -167,7 +167,7 @@ describe("buildChangeOwnershipFactRows (pure transformation)", () => {
     expect(row.zillowSoldDate).toEqual(new Date("2025-01-10"));
     expect(row.latestReportingDate).toEqual(new Date("2026-04-30"));
     expect(row.changeOwnershipStatus).toBe("Terminated and Not Reporting");
-    expect(row.ownershipStatus).toBe("Terminated and Not Reporting");
+    expect(row.standing).toBe("Closed — RECs Repaid (Good Standing)");
     expect(row.isReporting).toBe(false);
     expect(row.isTerminated).toBe(true);
     expect(row.isTransferred).toBe(false);

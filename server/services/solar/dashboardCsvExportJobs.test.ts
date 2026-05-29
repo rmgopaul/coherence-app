@@ -268,7 +268,7 @@ vi.mock("./buildOverviewSummaryAggregates", () => ({
           part2SystemId: null,
           part2TrackingId: null,
           source: "abp",
-          ownershipStatus: "Transferred and Reporting",
+          standing: "Active — Good Standing (Assigned)",
           isReporting: true,
           isTransferred: true,
           isTerminated: false,
@@ -293,7 +293,7 @@ vi.mock("./buildChangeOwnershipAggregates", () => ({
           systemName: "Transferred Project",
           systemId: "sys-2",
           trackingSystemRefId: "trk-2",
-          ownershipStatus: "Transferred and Reporting",
+          standing: "Active — Good Standing (Assigned)",
           changeOwnershipStatus: "Transferred and Reporting",
           isReporting: true,
           isTransferred: true,
@@ -431,9 +431,11 @@ beforeEach(() => {
     ) => {
       return ownershipFactsMockState.rows
         .filter(row => row.scopeId === scopeId)
-        .filter(row =>
-          options.status ? row.ownershipStatus === options.status : true
-        )
+        // B3-cleanup: legacy `status` filter is a no-op now.
+        .filter(() => {
+          void options.status;
+          return true;
+        })
         .filter(row =>
           options.cursorAfter
             ? String(row.systemKey) > options.cursorAfter
@@ -540,7 +542,7 @@ function makeOwnershipFact(
     systemId: `sys-${systemKey}`,
     stateApplicationRefId: null,
     trackingSystemRefId: `trk-${systemKey}`,
-    ownershipStatus: "Transferred and Reporting",
+    standing: "Active — Good Standing (Assigned)",
     isReporting: true,
     isTransferred: true,
     isTerminated: false,
@@ -575,7 +577,7 @@ function makeChangeOwnershipFact(
     zillowSoldDate: null,
     latestReportingDate: new Date("2026-04-15T00:00:00Z"),
     changeOwnershipStatus: "Transferred and Reporting",
-    ownershipStatus: "Transferred and Reporting",
+    standing: "Active — Good Standing (Assigned)",
     isReporting: true,
     isTerminated: false,
     isTransferred: true,
@@ -681,13 +683,13 @@ describe("dashboardCsvExportJobs — runner: ownership-tile (DB-backed)", () => 
   it("prefers paginated ownership fact rows and skips the heavy overview aggregator", async () => {
     ownershipFactsMockState.rows = [
       makeOwnershipFact("key-b", {
-        ownershipStatus: "Transferred and Reporting",
+        standing: "Active — Good Standing (Assigned)",
       }),
       makeOwnershipFact("key-a", {
-        ownershipStatus: "Not Transferred and Reporting",
+        standing: "Active — Good Standing",
       }),
       makeOwnershipFact("key-z", {
-        ownershipStatus: "Transferred and Not Reporting",
+        standing: "At Risk — Reporting Lapse (Assigned)",
       }),
     ];
     const overviewMod = await import("./buildOverviewSummaryAggregates");
