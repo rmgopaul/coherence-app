@@ -36,9 +36,8 @@ import {
 } from "@/components/ui/table";
 import {
   formatDate,
-  ownershipBadgeClass,
+  standingBadgeClass,
 } from "@/solar-rec-dashboard/lib/helpers";
-import { OWNERSHIP_ORDER } from "@/solar-rec-dashboard/lib/constants";
 import {
   dashboardTransientRetryDelay,
   shouldRetryDashboardTransient,
@@ -47,7 +46,10 @@ import { solarRecTrpc } from "@/solar-rec/solarRecTrpc";
 import { useDashboardBuildControl } from "@/solar-rec-dashboard/hooks/useDashboardBuildControl";
 import { DashboardBuildProgressBar } from "@/solar-rec-dashboard/components/DashboardBuildProgressBar";
 import type { SolarRecAppRouter } from "@server/_core/solarRecRouter";
-import type { OwnershipStatus } from "@/solar-rec-dashboard/state/types";
+import {
+  ALL_STANDING_VALUES,
+  type Standing,
+} from "@shared/solarRecStanding";
 
 // ---------------------------------------------------------------------------
 // Types/constants
@@ -73,9 +75,13 @@ function toDateOrNull(value: Date | string | null): Date | null {
 // ---------------------------------------------------------------------------
 
 export default memo(function OwnershipTab() {
-  const [ownershipFilter, setOwnershipFilter] = useState<
-    OwnershipStatus | "All"
-  >("All");
+  // B3-final: filter axis switched from the legacy 6-value
+  // `OwnershipStatus` enum to the 9-value `Standing` taxonomy. The
+  // dropdown enumerates `ALL_STANDING_VALUES` directly so operators
+  // can pick any specific tier (drill-in by per-row badge if needed).
+  const [standingFilter, setStandingFilter] = useState<Standing | "All">(
+    "All",
+  );
   const [sourceFilter, setSourceFilter] =
     useState<OwnershipSourceFilter>("All");
   const [searchTerm, setSearchTerm] = useState("");
@@ -96,7 +102,12 @@ export default memo(function OwnershipTab() {
         // it's an internal handle, not the wire contract.
         cursor: cursorAfter,
         limit: OWNERSHIP_PAGE_SIZE,
-        status: ownershipFilter === "All" ? null : ownershipFilter,
+        // B3-final: filter by Standing. The proc accepts a new
+        // `standing` input that filters the fact-table column added
+        // in PR B2 (#649). Legacy `status: ownershipStatus` input
+        // stays alive on the proc for backward compatibility (this
+        // PR doesn't drop it) but the tab no longer sends it.
+        standing: standingFilter === "All" ? null : standingFilter,
         source: sourceFilter === "All" ? null : sourceFilter,
       },
       {
@@ -178,18 +189,18 @@ export default memo(function OwnershipTab() {
               </label>
               <select
                 className="h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm"
-                value={ownershipFilter}
+                value={standingFilter}
                 onChange={(event) => {
-                  setOwnershipFilter(
-                    event.target.value as OwnershipStatus | "All",
+                  setStandingFilter(
+                    event.target.value as Standing | "All",
                   );
                   resetPaging();
                 }}
               >
                 <option value="All">All Categories</option>
-                {OWNERSHIP_ORDER.map((status) => (
-                  <option key={status} value={status}>
-                    {status}
+                {ALL_STANDING_VALUES.map((standing) => (
+                  <option key={standing} value={standing}>
+                    {standing}
                   </option>
                 ))}
               </select>
@@ -289,13 +300,17 @@ export default memo(function OwnershipTab() {
                   <TableCell>{system.trackingSystemRefId ?? "N/A"}</TableCell>
                   <TableCell>{system.source}</TableCell>
                   <TableCell>
-                    <span
-                      className={`inline-flex items-center rounded-md border px-2 py-1 text-xs font-medium ${ownershipBadgeClass(
-                        system.ownershipStatus as OwnershipStatus,
-                      )}`}
-                    >
-                      {system.ownershipStatus}
-                    </span>
+                    {system.standing ? (
+                      <span
+                        className={`inline-flex items-center rounded-md border px-2 py-1 text-xs font-medium whitespace-nowrap ${standingBadgeClass(
+                          system.standing as Standing,
+                        )}`}
+                      >
+                        {system.standing}
+                      </span>
+                    ) : (
+                      <span className="text-slate-400">—</span>
+                    )}
                   </TableCell>
                   <TableCell>{system.isReporting ? "Yes" : "No"}</TableCell>
                   <TableCell>{system.isTransferred ? "Yes" : "No"}</TableCell>
@@ -347,18 +362,16 @@ export default memo(function OwnershipTab() {
         contextGetter={() => {
           const counts = new Map<string, number>();
           for (const s of ownershipRows) {
-            counts.set(
-              s.ownershipStatus,
-              (counts.get(s.ownershipStatus) ?? 0) + 1,
-            );
+            const key = s.standing ?? "(none)";
+            counts.set(key, (counts.get(key) ?? 0) + 1);
           }
           return {
             loadedRows: ownershipRows.length,
-            byOwnershipStatus: Array.from(counts.entries()).map(
-              ([status, count]) => ({ status, count }),
+            byStanding: Array.from(counts.entries()).map(
+              ([standing, count]) => ({ standing, count }),
             ),
             filters: {
-              category: ownershipFilter,
+              category: standingFilter,
               source: sourceFilter,
               search: deferredSearchTerm || null,
             },
@@ -370,7 +383,7 @@ export default memo(function OwnershipTab() {
                 systemId: s.systemId,
                 trackingSystemRefId: s.trackingSystemRefId,
                 source: s.source,
-                ownershipStatus: s.ownershipStatus,
+                standing: s.standing,
                 isReporting: s.isReporting,
                 isTransferred: s.isTransferred,
                 isTerminated: s.isTerminated,

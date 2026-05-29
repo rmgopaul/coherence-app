@@ -4098,6 +4098,12 @@ export default function SolarRecDashboard() {
           lastRecDeliveryDate: row.lastRecDeliveryDate,
           changeOwnershipStatus: row.changeOwnershipStatus as ChangeOwnershipStatus,
           ownershipStatus: row.ownershipStatus as OwnershipStatus,
+          // B3-final: thread `standing` from the wire fact row
+          // (populated by PR B2 #649 on the
+          // `solarRecDashboardChangeOwnershipFacts` table). Nullable
+          // for backward compatibility with rows written by older
+          // runners; ChangeOwnershipTab renders "—" when null.
+          standing: (row.standing as Standing | null) ?? null,
           isReporting: row.isReporting,
           isTerminated: row.isTerminated,
           isTransferred: row.isTransferred,

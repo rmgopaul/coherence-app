@@ -57,6 +57,7 @@ import type {
   ChangeOwnershipSummary,
   OwnershipStatus,
 } from "@/solar-rec-dashboard/state/types";
+import type { Standing } from "@shared/solarRecStanding";
 
 // ---------------------------------------------------------------------------
 // Props
@@ -83,6 +84,14 @@ export type ChangeOwnershipExportRow = {
   lastRecDeliveryDate: Date | null;
   changeOwnershipStatus: ChangeOwnershipStatus;
   ownershipStatus: OwnershipStatus;
+  /**
+   * B3-final: Standing risk-tier surfaced on every row. Populated
+   * by the change-ownership aggregator (PR B2 #649) + projected
+   * onto the wire by the fact-table SELECT. Nullable on the wire
+   * because pre-B2 fact rows didn't have the column populated; the
+   * per-row badge falls back to "—" when null.
+   */
+  standing: Standing | null;
   isReporting: boolean;
   isTerminated: boolean;
   isTransferred: boolean;

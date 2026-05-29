@@ -9,6 +9,11 @@ import type {
   ChangeOwnershipStatus,
   OwnershipStatus,
 } from "@/solar-rec-dashboard/state/types";
+import {
+  type Standing,
+  type StandingTier,
+  standingTier,
+} from "@shared/solarRecStanding";
 
 /**
  * Build alternating 4-month shaded bands for pipeline charts. Returns
@@ -48,12 +53,38 @@ export function pipelineRowGroupIndex(
   return Math.floor(idx / 4);
 }
 
+/**
+ * Legacy 6-value `OwnershipStatus` badge — kept alive for code paths
+ * (CSV exports, fact-table inserts) that still write `ownershipStatus`
+ * for rollback safety. New UI surfaces should call `standingBadgeClass`
+ * below instead.
+ */
 export function ownershipBadgeClass(status: OwnershipStatus): string {
   if (status.startsWith("Transferred"))
     return "bg-blue-100 text-blue-800 border-blue-200";
   if (status.startsWith("Terminated"))
     return "bg-rose-100 text-rose-800 border-rose-200";
   return "bg-emerald-100 text-emerald-800 border-emerald-200";
+}
+
+/**
+ * Tailwind class string for a `Standing` badge — keyed off the 4
+ * top-tier rollup (Active / At Risk / Closed / Unknown). Mirrors
+ * the legacy `ownershipBadgeClass` color palette: green = active,
+ * amber = at-risk, red = closed, gray = unknown.
+ */
+export function standingBadgeClass(standing: Standing): string {
+  const tier: StandingTier = standingTier(standing);
+  switch (tier) {
+    case "Active":
+      return "bg-emerald-100 text-emerald-800 border-emerald-200";
+    case "At Risk":
+      return "bg-amber-100 text-amber-900 border-amber-200";
+    case "Closed":
+      return "bg-rose-100 text-rose-800 border-rose-200";
+    case "Unknown":
+      return "bg-gray-100 text-gray-700 border-gray-200";
+  }
 }
 
 export function changeOwnershipBadgeClass(status: ChangeOwnershipStatus): string {

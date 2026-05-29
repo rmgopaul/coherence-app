@@ -146,13 +146,24 @@ export async function getOwnershipFactsPage(
   options: {
     cursorAfter?: string | null;
     limit: number;
+    /**
+     * Legacy 6-value `OwnershipStatus` filter. Kept alive during the
+     * B3 consumer migration; new callers (the OwnershipTab) use
+     * `standing` instead. Both filters are AND-combined when both
+     * are passed.
+     */
     status?: string | null;
+    /**
+     * B3-final: filter by the 9-value `Standing` taxonomy populated
+     * on the `(scopeId, standing)` covering index from PR B2.
+     */
+    standing?: string | null;
     source?: string | null;
   }
 ): Promise<SolarRecDashboardOwnershipFact[]> {
   const db = await getDb();
   if (!db) return [];
-  const { cursorAfter, limit, status, source } = options;
+  const { cursorAfter, limit, status, standing, source } = options;
   const safeLimit = Math.max(1, Math.min(1000, Math.floor(limit)));
 
   const conditions = [
@@ -166,6 +177,11 @@ export async function getOwnershipFactsPage(
   if (status) {
     conditions.push(
       eq(solarRecDashboardOwnershipFacts.ownershipStatus, status)
+    );
+  }
+  if (standing) {
+    conditions.push(
+      eq(solarRecDashboardOwnershipFacts.standing, standing)
     );
   }
   if (source) {
