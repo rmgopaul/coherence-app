@@ -50,8 +50,12 @@ import { shouldCacheAggregatorEmptyResult } from "./aggregatorCachePredicates";
 // (`buildDashboardChangeOwnershipFacts`) can persist it without
 // re-deriving from the snapshot.
 import {
+  ALL_STANDING_VALUES,
   deriveStanding,
+  STANDING_TIERS,
+  standingTier,
   type Standing,
+  type StandingTier,
 } from "../../../shared/solarRecStanding";
 
 // ---------------------------------------------------------------------------
@@ -137,6 +141,16 @@ export type ChangeOwnershipSummaryCount = {
   percent: number | null;
 };
 
+/**
+ * PR B3a: per-Standing count entry. Used by `standingCounts` below
+ * for drill-in into the 9 sub-tiers.
+ */
+export type ChangeOwnershipStandingCount = {
+  standing: Standing;
+  count: number;
+  percent: number | null;
+};
+
 export type ChangeOwnershipSummary = {
   total: number;
   reporting: number;
@@ -146,6 +160,21 @@ export type ChangeOwnershipSummary = {
   contractedValueReporting: number;
   contractedValueNotReporting: number;
   counts: ChangeOwnershipSummaryCount[];
+  /**
+   * PR B3a: Standing-tier rollup of the same `rows` collection.
+   * Coexists with `counts` (which buckets by the legacy 6-value
+   * `ChangeOwnershipStatus`) until PR B4 retires the legacy field.
+   *
+   * `tierTotals` is the user-confirmed 3-tile layout (Active / At
+   * Risk / Closed) plus an `Unknown` bucket; consumers may render
+   * Unknown as a 4th tile or fold into drill-in. `perStanding`
+   * carries the 9 sub-tier counts. Sum of `tierTotals` equals sum
+   * of `perStanding[*].count` equals `total`.
+   */
+  standingCounts: {
+    tierTotals: Record<StandingTier, number>;
+    perStanding: ChangeOwnershipStandingCount[];
+  };
 };
 
 export type OwnershipStackedChartRow = {
@@ -345,6 +374,14 @@ const EMPTY_CHANGE_OWNERSHIP: ChangeOwnershipAggregate = {
       count: 0,
       percent: null,
     })),
+    standingCounts: {
+      tierTotals: { Active: 0, "At Risk": 0, Closed: 0, Unknown: 0 },
+      perStanding: ALL_STANDING_VALUES.map((standing) => ({
+        standing,
+        count: 0,
+        percent: null,
+      })),
+    },
   },
   cooNotTransferredNotReportingCurrentCount: 0,
   ownershipStackedChartRows: [
@@ -545,14 +582,18 @@ export function buildChangeOwnership(
             : "Terminated and Not Reporting",
           // PR B2: derive Standing from the same `(contractType,
           // transferSeen, isReporting)` triple the client worker
-          // uses. `isTransferred` is hard-`false` on this branch
-          // (terminated systems are not transferred to a new owner).
-          // For an "IL ABP - Terminated" contractType this maps to
-          // "Closed — RECs Repaid (Good Standing)"; "IL ABP -
-          // Defaulted" → "Closed — Default"; null/empty → "Unknown".
+          // uses. PR B3a (reviewer #2) — switched from hardcoded
+          // `false` to `allMatched.some(s => s.isTransferred)` so
+          // the call is parity-safe with the non-terminated branch
+          // and stays correct if `isTerminated`'s definition ever
+          // expands to include non-closed contract types. For an
+          // "IL ABP - Terminated" / "IL ABP - Defaulted"
+          // contractType the closed-branch short-circuit ignores
+          // transferSeen regardless; the broader parametric form
+          // just removes the latent coupling.
           standing: deriveStanding(
             representative.contractType,
-            false,
+            allMatched.some((system) => system.isTransferred),
             isReporting,
           ),
           isReporting,
@@ -690,6 +731,33 @@ export function buildChangeOwnership(
     }
   );
 
+  // PR B3a: Standing tier rollup of the same `rows` collection. Each
+  // row's `standing` was populated by PR B2's aggregator pass.
+  const tierTotals: Record<StandingTier, number> = {
+    Active: 0,
+    "At Risk": 0,
+    Closed: 0,
+    Unknown: 0,
+  };
+  const perStandingCounts: Record<Standing, number> = (() => {
+    const out: Partial<Record<Standing, number>> = {};
+    for (const s of ALL_STANDING_VALUES) out[s] = 0;
+    return out as Record<Standing, number>;
+  })();
+  for (const row of rows) {
+    perStandingCounts[row.standing] += 1;
+    tierTotals[standingTier(row.standing)] += 1;
+  }
+  void STANDING_TIERS; // touch the constant so future drift fails tsc
+  const standingCounts: ChangeOwnershipSummary["standingCounts"] = {
+    tierTotals,
+    perStanding: ALL_STANDING_VALUES.map((standing) => ({
+      standing,
+      count: perStandingCounts[standing],
+      percent: toPercentValue(perStandingCounts[standing], total),
+    })),
+  };
+
   const cooNotTransferredNotReportingCurrentCount = rows.filter(
     (row) =>
       row.changeOwnershipStatus ===
@@ -707,6 +775,7 @@ export function buildChangeOwnership(
       contractedValueReporting,
       contractedValueNotReporting,
       counts,
+      standingCounts,
     },
     cooNotTransferredNotReportingCurrentCount,
     ownershipStackedChartRows: [
@@ -782,7 +851,14 @@ const CHANGE_OWNERSHIP_DEPS = ["abpReport"] as const;
 // in. The new payload's `hasChangedOwnership` /
 // `changeOwnershipStatus` come from the foundation, not the
 // snapshot.
-const ARTIFACT_TYPE = "changeOwnership-v2";
+//
+// PR B3a (2026-05-29) — bumped `-v2` → `-v3` because the
+// `summary.standingCounts` shape was added. Stale `-v2` rows
+// would deserialize without it and downstream readers would see
+// `undefined` where the type promises a populated object. Cache
+// rows under the old key are ignored; the next build per scope
+// writes a fresh `-v3` row.
+const ARTIFACT_TYPE = "changeOwnership-v3";
 
 // 2026-05-13 (@2): bump after adding shouldCache gate (HIGH-2
 // follow-up). The aggregator consumes `getOrBuildSystemSnapshot`

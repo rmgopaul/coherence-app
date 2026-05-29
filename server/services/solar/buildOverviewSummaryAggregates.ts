@@ -45,8 +45,12 @@ import { shouldCacheAggregatorEmptyResult } from "./aggregatorCachePredicates";
 // builder (`buildDashboardOwnershipFacts`) can persist it without
 // re-deriving from the snapshot.
 import {
+  ALL_STANDING_VALUES,
   deriveStanding,
+  STANDING_TIERS,
+  standingTier,
   type Standing,
+  type StandingTier,
 } from "../../../shared/solarRecStanding";
 
 // ---------------------------------------------------------------------------
@@ -149,6 +153,28 @@ export interface OverviewSummaryAggregate {
     terminatedReporting: number;
     terminatedNotReporting: number;
     terminatedTotal: number;
+  };
+  /**
+   * PR B3a: risk-tier "Standing" rollup of the same `ownershipRows`
+   * collection. Coexists with `ownershipOverview` until PR B4 retires
+   * the legacy field.
+   *
+   * Tier totals are the user-confirmed 3-tile layout (Active / At
+   * Risk / Closed); `Unknown` is broken out as a 4th top-level
+   * bucket so consumers can decide whether to render it as a 4th
+   * tile or fold it into drill-in. `perStanding` carries the 9 sub-
+   * tier counts for drill-in / chart segmentation. Sum of
+   * `perStanding` equals sum of tier totals equals
+   * `ownershipRows.length`.
+   */
+  standingOverview: {
+    /** 4 top-tier rollups. Sum = ownershipRows.length. */
+    activeTotal: number;
+    atRiskTotal: number;
+    closedTotal: number;
+    unknownTotal: number;
+    /** Per-Standing counts. Sum = ownershipRows.length. */
+    perStanding: Record<Standing, number>;
   };
   ownershipRows: OwnershipOverviewExportRow[];
   withValueDataCount: number;
@@ -285,6 +311,46 @@ export function extractSnapshotSystemsForSummary(
 // Pure builder
 // ---------------------------------------------------------------------------
 
+/**
+ * Returns a zero-initialized `perStanding` record. Iterated from
+ * `ALL_STANDING_VALUES` so adding a 10th tier picks up automatically.
+ */
+function emptyPerStandingCounts(): Record<Standing, number> {
+  const out: Partial<Record<Standing, number>> = {};
+  for (const s of ALL_STANDING_VALUES) out[s] = 0;
+  return out as Record<Standing, number>;
+}
+
+/**
+ * Compute `standingOverview` from a populated `ownershipRows`
+ * collection. Pure — touches only the input rows. Each row has its
+ * own `standing` populated by PR B2's aggregator update.
+ */
+function computeStandingOverview(
+  rows: readonly OwnershipOverviewExportRow[],
+): OverviewSummaryAggregate["standingOverview"] {
+  const perStanding = emptyPerStandingCounts();
+  const tierCounts: Record<StandingTier, number> = {
+    Active: 0,
+    "At Risk": 0,
+    Closed: 0,
+    Unknown: 0,
+  };
+  for (const row of rows) {
+    perStanding[row.standing] += 1;
+    tierCounts[standingTier(row.standing)] += 1;
+  }
+  // Exhaustiveness — touch every tier so the type-narrowing reads.
+  void STANDING_TIERS;
+  return {
+    activeTotal: tierCounts.Active,
+    atRiskTotal: tierCounts["At Risk"],
+    closedTotal: tierCounts.Closed,
+    unknownTotal: tierCounts.Unknown,
+    perStanding,
+  };
+}
+
 const EMPTY_SUMMARY: OverviewSummaryAggregate = {
   totalSystems: 0,
   reportingSystems: 0,
@@ -302,6 +368,13 @@ const EMPTY_SUMMARY: OverviewSummaryAggregate = {
     terminatedReporting: 0,
     terminatedNotReporting: 0,
     terminatedTotal: 0,
+  },
+  standingOverview: {
+    activeTotal: 0,
+    atRiskTotal: 0,
+    closedTotal: 0,
+    unknownTotal: 0,
+    perStanding: emptyPerStandingCounts(),
   },
   ownershipRows: [],
   withValueDataCount: 0,
@@ -595,6 +668,9 @@ export function buildOverviewSummary(
       terminatedNotReporting,
       terminatedTotal,
     },
+    // PR B3a: Standing tier rollup over the same rows. Pure walk of
+    // `ownershipRows` after every row's `standing` is populated.
+    standingOverview: computeStandingOverview(ownershipRows),
     ownershipRows,
     withValueDataCount: withValueData.length,
     totalContractedValue,
@@ -617,7 +693,14 @@ const OVERVIEW_SUMMARY_DEPS = ["abpReport"] as const;
 // in. The new payload's `isReporting` / `isTerminated` /
 // `ownershipStatus` come from the foundation, not the snapshot's
 // legacy `today − 3 months` reporting math.
-const ARTIFACT_TYPE = "overviewSummary-v2";
+//
+// PR B3a (2026-05-29) — bumped `-v2` → `-v3` because the payload
+// shape gained `standingOverview` (4 tier totals + per-Standing
+// counts). Stale `-v2` rows would deserialize without it and
+// downstream readers would see `undefined` where the type promises
+// a populated object. Cache rows under the old key are ignored;
+// the next build per scope writes a fresh `-v3` row.
+const ARTIFACT_TYPE = "overviewSummary-v3";
 
 // 2026-05-13 (@3): bump after adding shouldCache gate (HIGH-2
 // follow-up). The aggregator consumes `getOrBuildSystemSnapshot`

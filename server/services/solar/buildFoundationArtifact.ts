@@ -84,6 +84,14 @@ import {
   parseNumber as parseFlexibleNumber,
 } from "../../../shared/solarRecPerformanceRatio";
 import { toDateKey } from "../../../shared/dateKey";
+// PR B3a (reviewer #5) — contract-type heuristics consolidated:
+// hoisted to `@shared/solarRecStanding` in PR B2. The 5 inline
+// duplicates that used to live here (at the former Phase 6 TODO
+// site) are now imported below.
+import {
+  isTerminatedContractType,
+  isTransferredContractType,
+} from "../../../shared/solarRecStanding";
 
 export { FOUNDATION_RUNNER_VERSION };
 
@@ -240,31 +248,11 @@ export type FoundationBuilderInputs = {
    */
 };
 
-// ---------------------------------------------------------------------------
-// Contract type heuristics — TEMPORARILY mirror the client logic.
-//
-// `client/src/solar-rec-dashboard/lib/helpers/abp.ts::isTerminatedContractType`
-// + `isTransferredContractType` match against constants defined in
-// `client/src/solar-rec-dashboard/lib/constants.ts:91-92`. Server→client
-// imports aren't allowed, so we inline the same normalization.
-// Phase 6 cleanup hoists both copies to `shared/solarRecAbpStatus.ts`.
-// ---------------------------------------------------------------------------
-
-function normalizeContractType(value: string | null | undefined): string {
-  if (typeof value !== "string") return "";
-  return value.trim().toLowerCase().replace(/\s+/g, " ");
-}
-
-const IL_ABP_TERMINATED_CONTRACT_TYPE = "il abp - terminated";
-const IL_ABP_TRANSFERRED_CONTRACT_TYPE = "il abp - transferred";
-
-function isTerminatedContractType(value: string | null | undefined): boolean {
-  return normalizeContractType(value) === IL_ABP_TERMINATED_CONTRACT_TYPE;
-}
-
-function isTransferredContractType(value: string | null | undefined): boolean {
-  return normalizeContractType(value) === IL_ABP_TRANSFERRED_CONTRACT_TYPE;
-}
+// PR B3a — contract-type heuristics live in the shared module
+// imported above. The inline duplicates that used to sit here
+// (`normalizeContractType` + `isTerminatedContractType` +
+// `isTransferredContractType` + their 2 constants) were retired
+// once PR B2 hoisted the definitions to `@shared/solarRecStanding`.
 
 // ---------------------------------------------------------------------------
 // Date helpers — month-level arithmetic on ISO `yyyy-mm-dd` strings.
