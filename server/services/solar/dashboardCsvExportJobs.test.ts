@@ -716,16 +716,6 @@ describe("dashboardCsvExportJobs — runner: ownership-tile (DB-backed)", () => 
     ).toHaveBeenCalledWith(
       SCOPE,
       expect.objectContaining({
-        status: "Not Transferred and Reporting",
-        limit: 1000,
-      })
-    );
-    expect(
-      ownershipFactsMockState.getOwnershipFactsPage
-    ).toHaveBeenCalledWith(
-      SCOPE,
-      expect.objectContaining({
-        status: "Transferred and Reporting",
         limit: 1000,
       })
     );

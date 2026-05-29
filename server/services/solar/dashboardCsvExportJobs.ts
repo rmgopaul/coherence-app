@@ -102,23 +102,6 @@ const LEGACY_DETERMINISTIC_ARTIFACT_RUNNER_VERSION =
   "dashboard-csv-export-jobs-v3-heartbeat";
 const OWNERSHIP_FACT_EXPORT_PAGE_SIZE = 1000;
 const CHANGE_OWNERSHIP_FACT_EXPORT_PAGE_SIZE = 1000;
-const OWNERSHIP_TILE_STATUS_FILTERS: Record<
-  OwnershipTileKey,
-  readonly string[]
-> = {
-  reporting: [
-    "Not Transferred and Reporting",
-    "Transferred and Reporting",
-  ],
-  notReporting: [
-    "Not Transferred and Not Reporting",
-    "Transferred and Not Reporting",
-  ],
-  terminated: [
-    "Terminated and Reporting",
-    "Terminated and Not Reporting",
-  ],
-};
 
 /**
  * TTL for terminal rows. After `completedAt + JOB_TTL_MS`, the
@@ -1501,25 +1484,22 @@ async function buildOwnershipTileCsvFromFacts(
 
 async function* streamOwnershipFactCsvRows(
   scopeId: string,
-  tile: OwnershipTileKey
+  _tile: OwnershipTileKey
 ): AsyncGenerator<readonly OwnershipTileCsvRow[]> {
-  for (const status of OWNERSHIP_TILE_STATUS_FILTERS[tile]) {
-    let cursorAfter: string | null = null;
-    while (true) {
-      const page = await getOwnershipFactsPage(scopeId, {
-        cursorAfter,
-        limit: OWNERSHIP_FACT_EXPORT_PAGE_SIZE,
-        status,
-      });
-      if (page.length > 0) {
-        yield page as readonly OwnershipTileCsvRow[];
-      }
-
-      if (page.length < OWNERSHIP_FACT_EXPORT_PAGE_SIZE) break;
-      const nextCursor = page[page.length - 1]?.systemKey ?? null;
-      if (!nextCursor || nextCursor === cursorAfter) break;
-      cursorAfter = nextCursor;
+  let cursorAfter: string | null = null;
+  while (true) {
+    const page = await getOwnershipFactsPage(scopeId, {
+      cursorAfter,
+      limit: OWNERSHIP_FACT_EXPORT_PAGE_SIZE,
+    });
+    if (page.length > 0) {
+      yield page as readonly OwnershipTileCsvRow[];
     }
+
+    if (page.length < OWNERSHIP_FACT_EXPORT_PAGE_SIZE) break;
+    const nextCursor = page[page.length - 1]?.systemKey ?? null;
+    if (!nextCursor || nextCursor === cursorAfter) break;
+    cursorAfter = nextCursor;
   }
 }
 

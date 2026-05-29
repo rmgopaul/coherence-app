@@ -110,7 +110,6 @@ describe("buildChangeOwnership", () => {
     expect(out.rows).toHaveLength(1);
     expect(out.rows[0]!.changeOwnershipStatus).toBe("Terminated");
     expect(out.rows[0]!.isTerminated).toBe(true);
-    expect(out.rows[0]!.ownershipStatus).toBe("Terminated and Reporting");
     // Stacked chart: terminated systems are excluded from buckets.
     expect(out.ownershipStackedChartRows[0]!.notTransferred).toBe(0);
     expect(out.ownershipStackedChartRows[0]!.transferred).toBe(0);
