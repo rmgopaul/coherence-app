@@ -66,13 +66,12 @@ export type CsvDataset = {
 
 export type SizeBucket = "<=10 kW AC" | ">10 kW AC" | "Unknown";
 
-export type OwnershipStatus =
-  | "Transferred and Reporting"
-  | "Transferred and Not Reporting"
-  | "Not Transferred and Reporting"
-  | "Not Transferred and Not Reporting"
-  | "Terminated and Reporting"
-  | "Terminated and Not Reporting";
+// B3-cleanup (2026-05-29): `OwnershipStatus` retired. Every consumer
+// migrated to the 9-value `Standing` taxonomy in PR #651. The
+// `ownershipStatus` column on the 3 fact tables + the field on
+// SystemRecord / aggregator output rows / wire payloads all dropped
+// in the same PR. Re-introduction would conflict with the
+// `(scopeId, standing)` covering index that replaced it.
 
 /**
  * Risk-tier "Standing" taxonomy keyed off CSG portal `contractType`.
@@ -131,12 +130,13 @@ export type SystemRecord = {
   lastRecDeliveryDate: Date | null;
   isTerminated: boolean;
   isTransferred: boolean;
-  ownershipStatus: OwnershipStatus;
+  // B3-cleanup (2026-05-29): `ownershipStatus: OwnershipStatus`
+  // dropped. The 9-value `standing` field below is the canonical
+  // axis. See shared/solarRecStanding for the decision tree.
   /**
    * Risk-tier "Standing" derived from CSG portal `contractType` +
    * GATS `transferSeen` + meter `isReporting`. See `Standing` type
-   * docs for the full decision tree. PR A coexists with
-   * `ownershipStatus`; PR B drops the latter.
+   * docs for the full decision tree.
    */
   standing: Standing;
   hasChangedOwnership: boolean;

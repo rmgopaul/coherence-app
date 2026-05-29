@@ -158,7 +158,6 @@ function makeRow(suffix: string): Record<string, unknown> {
     isReporting: true,
     isTerminated: false,
     isTransferred: true,
-    ownershipStatus: "Transferred and Reporting",
     hasChangedOwnership: false,
     changeOwnershipStatus: null,
     contractStatusText: "Active",

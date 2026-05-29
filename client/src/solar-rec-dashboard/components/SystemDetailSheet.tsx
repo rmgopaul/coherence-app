@@ -72,7 +72,9 @@ interface DetailSystem {
   valueGap: number | null;
   latestReportingDate: Date | null;
   isReporting: boolean;
-  ownershipStatus: string;
+  // B3-cleanup: `ownershipStatus` retired; `standing` is the
+  // risk-tier axis the sheet renders below.
+  standing: string | null;
   contractStatusText: string;
   installedKwAc: number | null;
   installedKwDc: number | null;
@@ -114,7 +116,7 @@ function normalizeSystemFact(row: SystemFactRow): DetailSystem {
     valueGap: toNullableNumber(row.valueGap),
     latestReportingDate: toNullableDate(row.latestReportingDate),
     isReporting: row.isReporting,
-    ownershipStatus: row.ownershipStatus,
+    standing: row.standing,
     contractStatusText: row.contractStatusText,
     installedKwAc: toNullableNumber(row.installedKwAc),
     installedKwDc: toNullableNumber(row.installedKwDc),
@@ -320,7 +322,7 @@ export default function SystemDetailSheet(props: SystemDetailSheetProps) {
                   </span>
                   <span className="text-slate-500">Ownership</span>
                   <span>
-                    <Badge variant="outline">{sys.ownershipStatus}</Badge>
+                    <Badge variant="outline">{sys.standing ?? "—"}</Badge>
                   </span>
                   <span className="text-slate-500">Contract Status</span>
                   <span className="font-medium">

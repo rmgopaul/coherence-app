@@ -2,23 +2,25 @@
  * Solar REC dashboard ownership facts — DB helpers
  * (Phase 2 PR-E-1, the third derived fact table).
  *
- * Backs the `solarRecDashboardOwnershipFacts` table that PR-E-2
- * will populate via the build runner. PR-E-3 will add the
- * paginated read proc the OverviewTab migrates onto, retiring the
- * per-row `OwnershipOverviewExportRow[]` payload from
+ * Backs the `solarRecDashboardOwnershipFacts` table that the build
+ * runner populates. Paginated reads back the OwnershipTab, which
+ * retired the per-row `OwnershipOverviewExportRow[]` payload from
  * `getDashboardOverviewSummary`'s response (~5-15 MB on prod).
  *
- * PR-E-1 is helpers ONLY — no caller wires these in yet.
- *
- * Matches the proven pattern from PR-C-1 (monitoringDetails) +
- * PR-D-1 (changeOwnership) with two filter axes for the OverviewTab:
- *   - `ownershipStatus` — primary filter (Transferred / Not
- *     Transferred / Terminated × Reporting / Not Reporting)
- *   - `source` — Matched System vs Part II Unmatched toggle
+ * Two filter axes for the OwnershipTab (B3-cleanup, 2026-05-29):
+ *   - `standing` — 9-value risk-tier taxonomy from
+ *     `shared/solarRecStanding.ts`, backed by the covering index
+ *     `(scopeId, standing)` from PR B2 (migration 0076).
+ *   - `source` — Matched System vs Part II Unmatched toggle.
  *
  * Both filter axes can be combined; reads filtering on neither
  * fall back to the PK index `(scopeId, systemKey)` for an
  * unfiltered scoped scan.
+ *
+ * History: the original PR-E-1 filter axis was the 6-value
+ * `ownershipStatus` enum; B3-cleanup (migration 0077) dropped both
+ * the column and the `(scopeId, ownershipStatus)` index after every
+ * consumer migrated to `standing` in B3-final (PR #651).
  */
 
 import { and, eq, getDb, sql, withDbRetry } from "./_core";
@@ -72,11 +74,9 @@ export async function upsertOwnershipFacts(
               systemId: sql`VALUES(\`systemId\`)`,
               stateApplicationRefId: sql`VALUES(\`stateApplicationRefId\`)`,
               trackingSystemRefId: sql`VALUES(\`trackingSystemRefId\`)`,
-              ownershipStatus: sql`VALUES(\`ownershipStatus\`)`,
-              // PR B2: keep Standing in sync on every rebuild so
-              // existing rows that pre-date the column get populated
-              // on the next upsert (existing rows hit UPDATE, not
-              // INSERT — same pattern as PR A's hotfix #644).
+              // B3-cleanup: `ownershipStatus` column dropped
+              // (migration 0077); the `standing` SET below keeps the
+              // sole risk-tier axis in sync on every rebuild.
               standing: sql`VALUES(\`standing\`)`,
               isReporting: sql`VALUES(\`isReporting\`)`,
               isTransferred: sql`VALUES(\`isTransferred\`)`,
@@ -128,46 +128,31 @@ export async function deleteOrphanedOwnershipFacts(
 
 /**
  * Fetch a paginated page of fact rows for a scope, optionally
- * filtered by `ownershipStatus` AND/OR `source`. Cursor is
- * `systemKey`; rows are sorted by `systemKey ASC` for stable
- * pagination across requests.
+ * filtered by `standing` AND/OR `source`. Cursor is `systemKey`;
+ * rows are sorted by `systemKey ASC` for stable pagination across
+ * requests.
  *
  * Both filter axes can be applied independently or together. The
- * covering indexes `(scopeId, ownershipStatus)` and
- * `(scopeId, source)` make either single-axis filter efficient;
+ * covering indexes `(scopeId, standing)` (PR B2) and `(scopeId,
+ * source)` (PR-E-1) make either single-axis filter efficient;
  * combined filters fall back to one of the two indexes + a
  * post-index filter on the other column.
  *
- * `limit` is bounded server-side. PR-E-3's proc layer will
- * additionally clamp at the wire-payload contract.
+ * `limit` is bounded server-side. The proc layer additionally
+ * clamps at the wire-payload contract.
  */
 export async function getOwnershipFactsPage(
   scopeId: string,
   options: {
     cursorAfter?: string | null;
     limit: number;
-    /**
-     * Legacy 6-value `OwnershipStatus` filter. Kept alive during the
-     * B3 consumer migration; new callers (the OwnershipTab) use
-     * `standing` instead. The proc layer's contract is "one or the
-     * other," but this helper AND-combines if both arrive — a future
-     * caller passing both with mismatched values gets an empty page
-     * silently. The proc-level zod schema is the boundary that
-     * decides which one to send.
-     */
-    status?: string | null;
-    /**
-     * B3-final: filter by the 9-value `Standing` taxonomy populated
-     * on the `(scopeId, standing)` covering index from PR B2. See
-     * the `status` JSDoc above for the AND-with-status semantic.
-     */
     standing?: string | null;
     source?: string | null;
   }
 ): Promise<SolarRecDashboardOwnershipFact[]> {
   const db = await getDb();
   if (!db) return [];
-  const { cursorAfter, limit, status, standing, source } = options;
+  const { cursorAfter, limit, standing, source } = options;
   const safeLimit = Math.max(1, Math.min(1000, Math.floor(limit)));
 
   const conditions = [
@@ -176,11 +161,6 @@ export async function getOwnershipFactsPage(
   if (cursorAfter) {
     conditions.push(
       gt(solarRecDashboardOwnershipFacts.systemKey, cursorAfter)
-    );
-  }
-  if (status) {
-    conditions.push(
-      eq(solarRecDashboardOwnershipFacts.ownershipStatus, status)
     );
   }
   if (standing) {
@@ -235,27 +215,18 @@ export async function getOwnershipFactsBySystemKeys(
 }
 
 /**
- * Count fact rows for a scope, optionally narrowed by status
- * AND/OR source. Useful for first-page totalCount + per-status
- * counts.
+ * Count fact rows for a scope, optionally narrowed by source.
+ * Useful for first-page totalCount.
  */
 export async function getOwnershipFactsCount(
   scopeId: string,
-  options?: { status?: string | null; source?: string | null }
+  options?: { source?: string | null }
 ): Promise<number> {
   const db = await getDb();
   if (!db) return 0;
   const conditions = [
     eq(solarRecDashboardOwnershipFacts.scopeId, scopeId),
   ];
-  if (options?.status) {
-    conditions.push(
-      eq(
-        solarRecDashboardOwnershipFacts.ownershipStatus,
-        options.status
-      )
-    );
-  }
   if (options?.source) {
     conditions.push(
       eq(solarRecDashboardOwnershipFacts.source, options.source)

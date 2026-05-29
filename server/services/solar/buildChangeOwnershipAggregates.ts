@@ -71,13 +71,8 @@ export type ChangeOwnershipStatus =
   | "Change of Ownership - Not Transferred and Reporting"
   | "Change of Ownership - Not Transferred and Not Reporting";
 
-export type OwnershipStatus =
-  | "Transferred and Reporting"
-  | "Transferred and Not Reporting"
-  | "Not Transferred and Reporting"
-  | "Not Transferred and Not Reporting"
-  | "Terminated and Reporting"
-  | "Terminated and Not Reporting";
+// B3-cleanup: `OwnershipStatus` type alias retired alongside the
+// fact-table column.
 
 /**
  * Ordered list driving `changeOwnershipSummary.counts`. Mirrors
@@ -115,12 +110,8 @@ export interface ChangeOwnershipExportRow {
   latestReportingDate: Date | null;
   lastRecDeliveryDate: Date | null;
   changeOwnershipStatus: ChangeOwnershipStatus;
-  ownershipStatus: OwnershipStatus;
-  // PR B2: parallel coexistence — risk-tier Standing derived from
-  // `(representative.contractType, isTransferred, isReporting)` via
-  // shared `deriveStanding`. Persisted on
-  // `solarRecDashboardChangeOwnershipFacts` so PR B3+ tabs can
-  // bucket by Standing without re-deriving.
+  // B3-cleanup: `ownershipStatus` retired. `standing` below is the
+  // sole risk-tier axis on the wire row + the fact table.
   standing: Standing;
   isReporting: boolean;
   isTerminated: boolean;
@@ -211,7 +202,7 @@ export interface SnapshotSystemForChangeOwnership {
   isReporting: boolean;
   isTransferred: boolean;
   isTerminated: boolean;
-  ownershipStatus: OwnershipStatus;
+  // B3-cleanup: `ownershipStatus` retired from the snapshot subset.
   contractType: string | null;
   contractStatusText: string;
   contractedDate: Date | null;
@@ -234,14 +225,7 @@ export interface BuildChangeOwnershipInput {
 // Helpers
 // ---------------------------------------------------------------------------
 
-const VALID_OWNERSHIP_STATUSES = new Set<OwnershipStatus>([
-  "Transferred and Reporting",
-  "Transferred and Not Reporting",
-  "Not Transferred and Reporting",
-  "Not Transferred and Not Reporting",
-  "Terminated and Reporting",
-  "Terminated and Not Reporting",
-]);
+// B3-cleanup: `VALID_OWNERSHIP_STATUSES` retired.
 
 const VALID_CHANGE_OWNERSHIP_STATUSES = new Set<ChangeOwnershipStatus>([
   "Transferred and Reporting",
@@ -304,15 +288,7 @@ export function extractSnapshotSystemsForChangeOwnership(
       }
       return null;
     };
-    const ownershipStatusOf = (v: unknown): OwnershipStatus => {
-      if (
-        typeof v === "string" &&
-        VALID_OWNERSHIP_STATUSES.has(v as OwnershipStatus)
-      ) {
-        return v as OwnershipStatus;
-      }
-      return "Not Transferred and Not Reporting";
-    };
+    // B3-cleanup: `ownershipStatusOf` extractor retired.
     const changeOwnershipStatusOf = (
       v: unknown
     ): ChangeOwnershipStatus | null => {
@@ -338,7 +314,6 @@ export function extractSnapshotSystemsForChangeOwnership(
       isReporting: boolOr(r.isReporting, false),
       isTransferred: boolOr(r.isTransferred, false),
       isTerminated: boolOr(r.isTerminated, false),
-      ownershipStatus: ownershipStatusOf(r.ownershipStatus),
       contractType: stringOrNull(r.contractType),
       contractStatusText: stringOrEmpty(r.contractStatusText),
       contractedDate: dateOrNull(r.contractedDate),
@@ -577,20 +552,8 @@ export function buildChangeOwnership(
           latestReportingDate,
           lastRecDeliveryDate,
           changeOwnershipStatus: "Terminated",
-          ownershipStatus: isReporting
-            ? "Terminated and Reporting"
-            : "Terminated and Not Reporting",
-          // PR B2: derive Standing from the same `(contractType,
-          // transferSeen, isReporting)` triple the client worker
-          // uses. PR B3a (reviewer #2) — switched from hardcoded
-          // `false` to `allMatched.some(s => s.isTransferred)` so
-          // the call is parity-safe with the non-terminated branch
-          // and stays correct if `isTerminated`'s definition ever
-          // expands to include non-closed contract types. For an
-          // "IL ABP - Terminated" / "IL ABP - Defaulted"
-          // contractType the closed-branch short-circuit ignores
-          // transferSeen regardless; the broader parametric form
-          // just removes the latent coupling.
+          // B3-cleanup: `ownershipStatus` field dropped from the row
+          // shape. `standing` below carries the risk-tier signal.
           standing: deriveStanding(
             representative.contractType,
             allMatched.some((system) => system.isTransferred),
@@ -671,18 +634,11 @@ export function buildChangeOwnership(
       latestReportingDate,
       lastRecDeliveryDate,
       changeOwnershipStatus,
-      ownershipStatus: isTransferred
-        ? isReporting
-          ? "Transferred and Reporting"
-          : "Transferred and Not Reporting"
-        : isReporting
-          ? "Not Transferred and Reporting"
-          : "Not Transferred and Not Reporting",
-      // PR B2: same Standing-from-snapshot pattern as the
-      // terminated branch above; here `isTransferred` is the
-      // locally-aggregated boolean (true if any non-terminated
-      // matched system has a GATS transfer / change-of-ownership
-      // signal), which corresponds 1:1 to `builder.transferSeen`.
+      // B3-cleanup: `ownershipStatus` field dropped. `standing`
+      // below — `isTransferred` is the locally-aggregated boolean
+      // (true if any non-terminated matched system has a GATS
+      // transfer / change-of-ownership signal), 1:1 with
+      // `builder.transferSeen`.
       standing: deriveStanding(
         representative.contractType,
         isTransferred,
@@ -858,7 +814,12 @@ const CHANGE_OWNERSHIP_DEPS = ["abpReport"] as const;
 // `undefined` where the type promises a populated object. Cache
 // rows under the old key are ignored; the next build per scope
 // writes a fresh `-v3` row.
-const ARTIFACT_TYPE = "changeOwnership-v3";
+// B3-cleanup (2026-05-29): bumped `-v3` → `-v4` because
+// `ChangeOwnershipExportRow.ownershipStatus` was dropped from the
+// row shape. Stale `-v3` rows carry the legacy field; readers no
+// longer expect it. Cache rows under the old key are ignored;
+// the next build per scope writes a fresh `-v4` row.
+const ARTIFACT_TYPE = "changeOwnership-v4";
 
 // 2026-05-13 (@2): bump after adding shouldCache gate (HIGH-2
 // follow-up). The aggregator consumes `getOrBuildSystemSnapshot`

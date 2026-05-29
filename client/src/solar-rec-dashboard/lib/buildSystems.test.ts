@@ -94,7 +94,9 @@ describe("buildSystems", () => {
     expect(typeof system.isReporting).toBe("boolean");
     expect(typeof system.isTerminated).toBe("boolean");
     expect(typeof system.isTransferred).toBe("boolean");
-    expect(system.ownershipStatus).toBeDefined();
+    // B3-cleanup: `ownershipStatus` dropped; `standing` is the
+    // risk-tier axis.
+    expect(system.standing).toBeDefined();
     expect(system.contractStatusText).toBeDefined();
     expect(system.monitoringType).toBeDefined();
     expect(system.monitoringPlatform).toBeDefined();
@@ -199,7 +201,7 @@ describe("buildSystems", () => {
       "lastRecDeliveryDate",
       "isTerminated",
       "isTransferred",
-      "ownershipStatus",
+      "standing",
       "hasChangedOwnership",
       "changeOwnershipStatus",
       "contractStatusText",

@@ -5320,13 +5320,10 @@ export const solarRecDashboardRouter = t.router({
    * `cursor` field by convention.
    *
    * **Two filter axes — independent and combinable.**
-   *   - `status` — the OverviewTab's primary control (Transferred
-   *     and Reporting / Not Reporting / Not Transferred and …
-   *     Terminated and …). 6-value enum matching
-   *     `OwnershipStatus` from
-   *     `server/services/solar/buildOverviewSummaryAggregates.ts`.
-   *     Backed by the covering index `(scopeId, ownershipStatus)`
-   *     PR-E-1 added.
+   *   - `standing` — the OwnershipTab's primary control (9-value
+   *     `Standing` taxonomy from `shared/solarRecStanding.ts`).
+   *     Backed by the covering index `(scopeId, standing)` PR B2
+   *     added.
    *   - `source` — the Matched System vs Part II Unmatched toggle.
    *     2-value enum. Backed by the covering index `(scopeId,
    *     source)` PR-E-1 added.
@@ -5356,26 +5353,8 @@ export const solarRecDashboardRouter = t.router({
       z.object({
         cursor: z.string().min(1).max(128).nullable().optional(),
         limit: z.number().int().min(1).max(1000).default(200),
-        // Match the 6-value `OwnershipStatus` union exactly. The DB
-        // filter is an exact-match `WHERE ownershipStatus = ?`, so
-        // a value the builder doesn't write resolves to an empty
-        // page.
-        status: z
-          .enum([
-            "Transferred and Reporting",
-            "Transferred and Not Reporting",
-            "Not Transferred and Reporting",
-            "Not Transferred and Not Reporting",
-            "Terminated and Reporting",
-            "Terminated and Not Reporting",
-          ])
-          .nullable()
-          .optional(),
-        // B3-final: filter by the 9-value `Standing` taxonomy
-        // populated on the `(scopeId, standing)` index from PR B2.
-        // Coexists with the legacy `status` filter; both AND-combine
-        // server-side if both are passed (in practice the
-        // OwnershipTab uses one or the other).
+        // Filter by the 9-value `Standing` taxonomy populated on
+        // the `(scopeId, standing)` index from PR B2.
         standing: z
           .enum([
             "Active — Good Standing",
@@ -5408,7 +5387,6 @@ export const solarRecDashboardRouter = t.router({
       const rows = await getOwnershipFactsPage(ctx.scopeId, {
         cursorAfter: input.cursor ?? null,
         limit: input.limit,
-        status: input.status ?? null,
         standing: input.standing ?? null,
         source: input.source ?? null,
       });
@@ -5418,10 +5396,10 @@ export const solarRecDashboardRouter = t.router({
           : null;
       return {
         _checkpoint: "ownership-page-v1",
-        // B3-final: bumped @1 → @2 after adding the `standing` zod
-        // input + DB filter; wire shape gained one optional field
-        // (additive).
-        _runnerVersion: "phase-2-pr-e-3@2" as const,
+        // B3-cleanup: bumped @2 → @3 after dropping the legacy
+        // `status` zod input + DB filter (the `ownershipStatus`
+        // column was dropped in migration 0077).
+        _runnerVersion: "phase-2-pr-e-3@3" as const,
         rows,
         nextCursor,
         hasMore: nextCursor !== null,
@@ -5559,10 +5537,9 @@ export const solarRecDashboardRouter = t.router({
         cursorAfter: sortBy ? null : input.cursor ?? null,
         offset: sortBy ? resolvedOffset : null,
         limit: input.limit,
-        // `status` forward retired in PR B1 — see input zod section
-        // above. Callers that still want to filter on the legacy
-        // 6-value `ownershipStatus` axis can do so via the generic
-        // `filters` map (`{ ownershipStatus: { kind: "equals", value: "..." } }`).
+        // Risk-tier filtering now goes through the dedicated
+        // `standing` axis (B3 series) — the legacy 6-value
+        // `ownershipStatus` column was dropped in migration 0077.
         sizeBucket: input.sizeBucket ?? null,
         isReporting: input.isReporting ?? null,
         isPart2Eligible: input.isPart2Eligible ?? null,

@@ -5,10 +5,7 @@
  * render with.
  */
 
-import type {
-  ChangeOwnershipStatus,
-  OwnershipStatus,
-} from "@/solar-rec-dashboard/state/types";
+import type { ChangeOwnershipStatus } from "@/solar-rec-dashboard/state/types";
 import {
   type Standing,
   type StandingTier,
@@ -53,22 +50,10 @@ export function pipelineRowGroupIndex(
   return Math.floor(idx / 4);
 }
 
-/**
- * Legacy 6-value `OwnershipStatus` badge.
- *
- * @deprecated B3-final (PR #651) retired every client consumer; this
- * helper is no longer imported anywhere in `client/`. Kept alive only
- * for the B3-cleanup PR to delete in one focused commit alongside the
- * `OwnershipStatus` type + the `ownershipStatus` column + index. New
- * UI surfaces MUST call `standingBadgeClass` below instead.
- */
-export function ownershipBadgeClass(status: OwnershipStatus): string {
-  if (status.startsWith("Transferred"))
-    return "bg-blue-100 text-blue-800 border-blue-200";
-  if (status.startsWith("Terminated"))
-    return "bg-rose-100 text-rose-800 border-rose-200";
-  return "bg-emerald-100 text-emerald-800 border-emerald-200";
-}
+// B3-cleanup (2026-05-29): `ownershipBadgeClass` retired. The
+// SystemsIndex page already shows Standing (PR #647/#651) and the
+// OwnershipTab badge migrated in PR #651. New badge surfaces use
+// `standingBadgeClass` below.
 
 /**
  * Tailwind class string for a `Standing` badge — keyed off the 4

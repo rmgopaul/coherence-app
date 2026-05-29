@@ -12,9 +12,9 @@ import { describe, expect, it } from "vitest";
 import type {
   ChangeOwnershipExportRow,
   ChangeOwnershipStatus,
-  OwnershipStatus,
 } from "./buildChangeOwnershipAggregates";
 import type { OwnershipOverviewExportRow } from "./buildOverviewSummaryAggregates";
+import type { Standing } from "../../../shared/solarRecStanding";
 import {
   buildChangeOwnershipTileCsv,
   buildChangeOwnershipTileCsvFile,
@@ -34,10 +34,16 @@ async function* rowChunks<Row>(
   }
 }
 
+// B3-cleanup: fixtures key off `standing` (the 9-value risk-tier
+// taxonomy) instead of the dropped `ownershipStatus` enum. Tile
+// bucketing now keys off `standingTier(standing)`:
+//   "Active" → "reporting" tile
+//   "At Risk" → "notReporting" tile
+//   "Closed" → "terminated" tile
 function makeOwnershipRow(
   partial: Partial<OwnershipOverviewExportRow> & {
     systemName: string;
-    ownershipStatus: OwnershipStatus;
+    standing: Standing;
   }
 ): OwnershipOverviewExportRow {
   return {
@@ -51,13 +57,14 @@ function makeOwnershipRow(
     systemId: null,
     stateApplicationRefId: null,
     trackingSystemRefId: null,
-    ownershipStatus: partial.ownershipStatus,
-    isReporting: partial.ownershipStatus.endsWith(" and Reporting"),
-    isTransferred: partial.ownershipStatus.startsWith("Transferred"),
-    isTerminated: partial.ownershipStatus.startsWith("Terminated"),
+    standing: partial.standing,
+    isReporting: false,
+    isTransferred: false,
+    isTerminated: false,
     contractType: null,
     contractStatusText: "",
     latestReportingDate: null,
+    lastRecDeliveryDate: null,
     contractedDate: null,
     zillowStatus: null,
     zillowSoldDate: null,
@@ -83,8 +90,9 @@ function makeChangeOwnershipRow(
     zillowStatus: null,
     zillowSoldDate: null,
     latestReportingDate: null,
-    ownershipStatus: partial.changeOwnershipStatus as OwnershipStatus,
+    lastRecDeliveryDate: null,
     changeOwnershipStatus: partial.changeOwnershipStatus,
+    standing: "Unknown",
     isReporting: false,
     isTransferred: false,
     isTerminated: false,
@@ -96,26 +104,30 @@ function makeChangeOwnershipRow(
 }
 
 describe("buildOwnershipTileCsv", () => {
+  // B3-cleanup: tile bucketing now keys off `standing` tier.
+  //   Active (2 systems) → "reporting" tile: Alpha + Beta
+  //   At Risk (1 system) → "notReporting" tile: Gamma
+  //   Closed (2 systems) → "terminated" tile: Delta + Epsilon
   const rows: OwnershipOverviewExportRow[] = [
     makeOwnershipRow({
       systemName: "Alpha System",
-      ownershipStatus: "Not Transferred and Reporting",
+      standing: "Active — Good Standing",
     }),
     makeOwnershipRow({
       systemName: "Beta System",
-      ownershipStatus: "Transferred and Reporting",
+      standing: "Active — Good Standing (Assigned)",
     }),
     makeOwnershipRow({
       systemName: "Gamma System",
-      ownershipStatus: "Not Transferred and Not Reporting",
+      standing: "At Risk — Reporting Lapse",
     }),
     makeOwnershipRow({
       systemName: "Delta System",
-      ownershipStatus: "Terminated and Reporting",
+      standing: "Closed — RECs Repaid (Good Standing)",
     }),
     makeOwnershipRow({
       systemName: "Epsilon System",
-      ownershipStatus: "Terminated and Not Reporting",
+      standing: "Closed — Default",
     }),
   ];
 
@@ -157,7 +169,7 @@ describe("buildOwnershipTileCsv", () => {
     const onlyTerminated = [
       makeOwnershipRow({
         systemName: "Only",
-        ownershipStatus: "Terminated and Reporting",
+        standing: "Closed — RECs Repaid (Good Standing)",
       }),
     ];
     const result = buildOwnershipTileCsv(
@@ -212,7 +224,7 @@ describe("buildOwnershipTileCsv", () => {
   it("escapes commas and quotes in cell values per RFC 4180", () => {
     const tricky = makeOwnershipRow({
       systemName: 'O\'Connor "Solar", LLC',
-      ownershipStatus: "Not Transferred and Reporting",
+      standing: "Active — Good Standing",
     });
     const result = buildOwnershipTileCsv([tricky], "reporting", FROZEN_TIME);
     // The opening quote-escape applies because the cell contains
