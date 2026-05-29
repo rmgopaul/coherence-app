@@ -47,6 +47,7 @@ import type {
   SizeBucket,
   SystemRecord,
 } from "@/solar-rec-dashboard/state/types";
+import type { Standing } from "@shared/solarRecStanding";
 
 // ---------------------------------------------------------------------------
 // Props
@@ -90,6 +91,28 @@ export type OverviewSummary =
       ownershipOverview: OverviewSummaryCommon["ownershipOverview"] & {
         /** Part-II-scoped terminated count from the heavy aggregator. */
         terminatedTotal: number;
+      };
+      /**
+       * B3a (PR #650): 4-tier Standing rollup. Slim variant has no
+       * Standing data (foundation contract doesn't carry contractType
+       * yet); heavy aggregator emits it from
+       * `getOrBuildOverviewSummary`. B3-final wires this up to render
+       * the new Standing-axis tiles alongside the legacy Reporting /
+       * Not Reporting / Terminated trio.
+       *
+       * Shape mirrors the server's
+       * `OverviewSummaryAggregate["standingOverview"]` exactly —
+       * 4 tier totals + the 9-key `perStanding` drill-in. Keeping
+       * both fields here means a future drill-in tooltip / deep-link
+       * tab filter can read `summary.standingOverview.perStanding`
+       * without another contract update.
+       */
+      standingOverview: {
+        activeTotal: number;
+        atRiskTotal: number;
+        closedTotal: number;
+        unknownTotal: number;
+        perStanding: Record<Standing, number>;
       };
     });
 
@@ -520,6 +543,52 @@ export default memo(function OverviewTab(props: OverviewTabProps) {
               ) : null}
             </button>
           </div>
+
+          {/* B3-final: Standing risk-tier tiles. Renders only when the
+              heavy aggregator has landed (slim mount doesn't carry
+              standingOverview because the foundation contract doesn't
+              ship contractType yet). 4 tiles map to the 4 top-tier
+              rollups; tap a tile to navigate to OwnershipTab filtered
+              by that tier (deep-link integration is a follow-up). */}
+          {summary.kind === "heavy" ? (
+            <div className="grid gap-3 md:grid-cols-4 mt-3">
+              <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3">
+                <p className="text-xs font-semibold text-emerald-800">
+                  Active (Good Standing)
+                </p>
+                <p className="text-2xl font-semibold text-emerald-900">
+                  {formatNumber(summary.standingOverview.activeTotal)}
+                </p>
+              </div>
+              <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+                <p className="text-xs font-semibold text-amber-800">At Risk</p>
+                <p className="text-2xl font-semibold text-amber-900">
+                  {formatNumber(summary.standingOverview.atRiskTotal)}
+                </p>
+                <p className="text-[10px] text-amber-700 mt-1">
+                  Includes Unassigned Transfer + Reporting Lapse + Jeopardy
+                </p>
+              </div>
+              <div className="rounded-lg border border-rose-200 bg-rose-50 p-3">
+                <p className="text-xs font-semibold text-rose-800">Closed</p>
+                <p className="text-2xl font-semibold text-rose-900">
+                  {formatNumber(summary.standingOverview.closedTotal)}
+                </p>
+                <p className="text-[10px] text-rose-700 mt-1">
+                  RECs Repaid + Default
+                </p>
+              </div>
+              <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+                <p className="text-xs font-semibold text-gray-700">Unknown</p>
+                <p className="text-2xl font-semibold text-gray-900">
+                  {formatNumber(summary.standingOverview.unknownTotal)}
+                </p>
+                <p className="text-[10px] text-gray-600 mt-1">
+                  No CSG portal contractType
+                </p>
+              </div>
+            </div>
+          ) : null}
 
           <div>
             <p className="text-xs font-semibold uppercase tracking-wide text-slate-600">

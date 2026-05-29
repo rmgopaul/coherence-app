@@ -5371,6 +5371,25 @@ export const solarRecDashboardRouter = t.router({
           ])
           .nullable()
           .optional(),
+        // B3-final: filter by the 9-value `Standing` taxonomy
+        // populated on the `(scopeId, standing)` index from PR B2.
+        // Coexists with the legacy `status` filter; both AND-combine
+        // server-side if both are passed (in practice the
+        // OwnershipTab uses one or the other).
+        standing: z
+          .enum([
+            "Active — Good Standing",
+            "Active — Good Standing (Assigned)",
+            "At Risk — Unassigned Transfer",
+            "At Risk — Reporting Lapse",
+            "At Risk — Reporting Lapse (Assigned)",
+            "Jeopardy / Default-Track",
+            "Closed — RECs Repaid (Good Standing)",
+            "Closed — Default",
+            "Unknown",
+          ])
+          .nullable()
+          .optional(),
         // Discriminator: matched-system rows came from the system
         // snapshot ⨝ Part II report; unmatched rows came from the
         // Part II report alone. Two values; storing as varchar in
@@ -5390,6 +5409,7 @@ export const solarRecDashboardRouter = t.router({
         cursorAfter: input.cursor ?? null,
         limit: input.limit,
         status: input.status ?? null,
+        standing: input.standing ?? null,
         source: input.source ?? null,
       });
       const nextCursor =
@@ -5398,7 +5418,10 @@ export const solarRecDashboardRouter = t.router({
           : null;
       return {
         _checkpoint: "ownership-page-v1",
-        _runnerVersion: "phase-2-pr-e-3@1" as const,
+        // B3-final: bumped @1 → @2 after adding the `standing` zod
+        // input + DB filter; wire shape gained one optional field
+        // (additive).
+        _runnerVersion: "phase-2-pr-e-3@2" as const,
         rows,
         nextCursor,
         hasMore: nextCursor !== null,

@@ -224,11 +224,21 @@ export const DEFAULT_DASHBOARD_TAB = "overview";
 export const DASHBOARD_TAB_VALUE_SET = new Set<string>(DASHBOARD_TAB_VALUES);
 
 // ---------------------------------------------------------------------------
-// Ownership status orderings (for dropdowns, breakdown tables, and snapshot
-// diffs). Used by both the parent dashboard and the extracted Ownership +
-// ChangeOwnership tabs.
+// Status orderings — for dropdowns, breakdown tables, and snapshot diffs.
+// `OWNERSHIP_ORDER` is the legacy 6-value enum; new UI surfaces prefer
+// `ALL_STANDING_VALUES` from `@shared/solarRecStanding`. Both stay alive
+// during the B3 consumer migration; the legacy array gets retired with
+// the destructive cleanup PR once every reader has migrated.
 // ---------------------------------------------------------------------------
 
+/**
+ * @deprecated B3-final (PR #651) retired every client consumer of
+ * this array (the OwnershipTab filter dropdown now enumerates
+ * `ALL_STANDING_VALUES` from `@shared/solarRecStanding`). Kept alive
+ * only for the B3-cleanup PR to delete alongside the `OwnershipStatus`
+ * type + the column. New UI surfaces MUST import
+ * `ALL_STANDING_VALUES` from `@shared/solarRecStanding` instead.
+ */
 export const OWNERSHIP_ORDER: OwnershipStatus[] = [
   "Transferred and Reporting",
   "Transferred and Not Reporting",
