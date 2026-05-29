@@ -388,6 +388,88 @@ describe("buildChangeOwnership", () => {
     // "Terminated" matches any rows whose status starts with "Terminated"
     expect(out.summary.counts[2]!.count).toBe(1);
   });
+
+  // PR B3a (reviewer #1): positive assertion that summary.standingCounts
+  // is populated alongside the legacy counts. Same 2-system fixture
+  // shape, with explicit contractTypes that resolve through shared
+  // deriveStanding.
+  //  - "IL ABP - Transferred" + reporting → "Active — Good Standing (Assigned)" → tier Active
+  //  - "IL ABP - Terminated" → "Closed — RECs Repaid (Good Standing)" → tier Closed
+  it("emits standingCounts rolled up by tier + per-Standing drill-in", () => {
+    const out = buildChangeOwnership({
+      part2VerifiedAbpRows: [
+        abpRow({
+          Application_ID: "APP-A",
+          system_id: "SYS-A",
+          PJM_GATS_or_MRETS_Unit_ID_Part_2: "NON-A",
+          Project_Name: "A",
+        }),
+        abpRow({
+          Application_ID: "APP-B",
+          system_id: "SYS-B",
+          PJM_GATS_or_MRETS_Unit_ID_Part_2: "NON-B",
+          Project_Name: "B",
+        }),
+      ],
+      systems: [
+        system({
+          key: "sys-a",
+          systemId: "SYS-A",
+          stateApplicationRefId: "APP-A",
+          trackingSystemRefId: "NON-A",
+          systemName: "A",
+          contractType: "IL ABP - Transferred",
+          hasChangedOwnership: true,
+          isTransferred: true,
+          isReporting: true,
+          changeOwnershipStatus: "Transferred and Reporting",
+        }),
+        system({
+          key: "sys-b",
+          systemId: "SYS-B",
+          stateApplicationRefId: "APP-B",
+          trackingSystemRefId: "NON-B",
+          systemName: "B",
+          contractType: "IL ABP - Terminated",
+          hasChangedOwnership: true,
+          isTerminated: true,
+          isReporting: false,
+          changeOwnershipStatus: "Terminated and Not Reporting",
+        }),
+      ],
+    });
+    // Per-row standing.
+    const rowsByName = new Map(out.rows.map((row) => [row.systemName, row]));
+    expect(rowsByName.get("A")?.standing).toBe(
+      "Active — Good Standing (Assigned)",
+    );
+    expect(rowsByName.get("B")?.standing).toBe(
+      "Closed — RECs Repaid (Good Standing)",
+    );
+    // Tier totals: 1 Active + 0 At Risk + 1 Closed + 0 Unknown = 2.
+    expect(out.summary.standingCounts.tierTotals).toEqual({
+      Active: 1,
+      "At Risk": 0,
+      Closed: 1,
+      Unknown: 0,
+    });
+    // 9 perStanding entries always present, in canonical order.
+    expect(out.summary.standingCounts.perStanding).toHaveLength(9);
+    const drillIn = new Map(
+      out.summary.standingCounts.perStanding.map((c) => [c.standing, c]),
+    );
+    expect(drillIn.get("Active — Good Standing (Assigned)")?.count).toBe(1);
+    expect(drillIn.get("Active — Good Standing (Assigned)")?.percent).toBe(50);
+    expect(
+      drillIn.get("Closed — RECs Repaid (Good Standing)")?.count,
+    ).toBe(1);
+    // Invariant: sum of perStanding counts === total.
+    const perStandingSum = out.summary.standingCounts.perStanding.reduce(
+      (sum, c) => sum + c.count,
+      0,
+    );
+    expect(perStandingSum).toBe(out.summary.total);
+  });
 });
 
 describe("extractSnapshotSystemsForChangeOwnership", () => {

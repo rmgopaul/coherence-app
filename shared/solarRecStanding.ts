@@ -111,6 +111,79 @@ export type Standing =
   | "Unknown";
 
 /**
+ * Canonical ordered list of every `Standing` value, used by
+ * aggregators that build per-Standing count rollups and by UI
+ * surfaces that render one row per value. Mirrors the `Standing`
+ * union 1:1.
+ */
+export const ALL_STANDING_VALUES: readonly Standing[] = [
+  "Active — Good Standing",
+  "Active — Good Standing (Assigned)",
+  "At Risk — Unassigned Transfer",
+  "At Risk — Reporting Lapse",
+  "At Risk — Reporting Lapse (Assigned)",
+  "Jeopardy / Default-Track",
+  "Closed — RECs Repaid (Good Standing)",
+  "Closed — Default",
+  "Unknown",
+] as const;
+
+/**
+ * Top-tier rollup of the 9-value `Standing` taxonomy. Tab tiles
+ * default to grouping by this 4-tier axis (Active / At Risk /
+ * Closed / Unknown) for at-a-glance counts, with drill-in into the
+ * 9 sub-tiers.
+ *
+ * Membership (see `standingTier`):
+ *   - "Active"   → "Active — Good Standing", "Active — Good Standing (Assigned)"
+ *   - "At Risk"  → "At Risk — Unassigned Transfer",
+ *                  "At Risk — Reporting Lapse",
+ *                  "At Risk — Reporting Lapse (Assigned)",
+ *                  "Jeopardy / Default-Track"
+ *   - "Closed"   → "Closed — RECs Repaid (Good Standing)",
+ *                  "Closed — Default"
+ *   - "Unknown"  → "Unknown"
+ *
+ * Note: "Jeopardy / Default-Track" rolls up to "At Risk" — it's an
+ * escalated sub-tier of the At Risk pile, not a separate top tier.
+ * UI may surface it with extra emphasis at the drill-in level.
+ */
+export type StandingTier = "Active" | "At Risk" | "Closed" | "Unknown";
+
+export const STANDING_TIERS: readonly StandingTier[] = [
+  "Active",
+  "At Risk",
+  "Closed",
+  "Unknown",
+] as const;
+
+/**
+ * Map a `Standing` value to its top-tier rollup bucket. Total over
+ * the `Standing` union — every value resolves to exactly one tier.
+ *
+ * Implemented as an exhaustive switch (not a lookup table) so
+ * adding a 10th `Standing` value fails tsc here until the new
+ * tier mapping is declared, instead of silently defaulting.
+ */
+export function standingTier(standing: Standing): StandingTier {
+  switch (standing) {
+    case "Active — Good Standing":
+    case "Active — Good Standing (Assigned)":
+      return "Active";
+    case "At Risk — Unassigned Transfer":
+    case "At Risk — Reporting Lapse":
+    case "At Risk — Reporting Lapse (Assigned)":
+    case "Jeopardy / Default-Track":
+      return "At Risk";
+    case "Closed — RECs Repaid (Good Standing)":
+    case "Closed — Default":
+      return "Closed";
+    case "Unknown":
+      return "Unknown";
+  }
+}
+
+/**
  * Pure derivation of the `Standing` risk tier.
  *
  * Inputs:

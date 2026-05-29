@@ -246,6 +246,109 @@ describe("buildOverviewSummary", () => {
     expect(out.reportingSystems).toBe(2);
   });
 
+  // PR B3a (reviewer #1): positive assertion that standingOverview is
+  // populated. Exercises 3 of the 4 top tiers + drill-in counts via
+  // distinct contractTypes that resolve through shared deriveStanding.
+  // Intact + Reporting → "Active — Good Standing".
+  // "IL ABP - Transferred" + Reporting → "Active — Good Standing (Assigned)".
+  // "IL ABP - Terminated" → "Closed — RECs Repaid (Good Standing)".
+  it("emits standingOverview rolled up by tier + per-Standing counts", () => {
+    const out = buildOverviewSummary({
+      part2VerifiedAbpRows: [
+        abpRow({
+          Application_ID: "APP-A",
+          system_id: "SYS-A",
+          PJM_GATS_or_MRETS_Unit_ID_Part_2: "NON-A",
+          Project_Name: "Project A",
+        }),
+        abpRow({
+          Application_ID: "APP-B",
+          system_id: "SYS-B",
+          PJM_GATS_or_MRETS_Unit_ID_Part_2: "NON-B",
+          Project_Name: "Project B",
+        }),
+        abpRow({
+          Application_ID: "APP-C",
+          system_id: "SYS-C",
+          PJM_GATS_or_MRETS_Unit_ID_Part_2: "NON-C",
+          Project_Name: "Project C",
+        }),
+      ],
+      systems: [
+        system({
+          key: "sys-a",
+          systemId: "SYS-A",
+          stateApplicationRefId: "APP-A",
+          trackingSystemRefId: "NON-A",
+          systemName: "Project A",
+          contractType: "Standard",
+          isReporting: true,
+          isTransferred: false,
+          isTerminated: false,
+          ownershipStatus: "Not Transferred and Reporting",
+        }),
+        system({
+          key: "sys-b",
+          systemId: "SYS-B",
+          stateApplicationRefId: "APP-B",
+          trackingSystemRefId: "NON-B",
+          systemName: "Project B",
+          contractType: "IL ABP - Transferred",
+          isReporting: true,
+          isTransferred: true,
+          isTerminated: false,
+          ownershipStatus: "Transferred and Reporting",
+        }),
+        system({
+          key: "sys-c",
+          systemId: "SYS-C",
+          stateApplicationRefId: "APP-C",
+          trackingSystemRefId: "NON-C",
+          systemName: "Project C",
+          contractType: "IL ABP - Terminated",
+          isReporting: false,
+          isTransferred: false,
+          isTerminated: true,
+          ownershipStatus: "Terminated and Not Reporting",
+        }),
+      ],
+    });
+    // Per-row standing.
+    const rowsByName = new Map(
+      out.ownershipRows.map((row) => [row.systemName, row]),
+    );
+    expect(rowsByName.get("Project A")?.standing).toBe(
+      "Active — Good Standing",
+    );
+    expect(rowsByName.get("Project B")?.standing).toBe(
+      "Active — Good Standing (Assigned)",
+    );
+    expect(rowsByName.get("Project C")?.standing).toBe(
+      "Closed — RECs Repaid (Good Standing)",
+    );
+    // Tier rollups: 2 Active + 0 At Risk + 1 Closed + 0 Unknown = 3.
+    expect(out.standingOverview.activeTotal).toBe(2);
+    expect(out.standingOverview.atRiskTotal).toBe(0);
+    expect(out.standingOverview.closedTotal).toBe(1);
+    expect(out.standingOverview.unknownTotal).toBe(0);
+    // Per-Standing drill-in.
+    expect(
+      out.standingOverview.perStanding["Active — Good Standing"],
+    ).toBe(1);
+    expect(
+      out.standingOverview.perStanding["Active — Good Standing (Assigned)"],
+    ).toBe(1);
+    expect(
+      out.standingOverview.perStanding[
+        "Closed — RECs Repaid (Good Standing)"
+      ],
+    ).toBe(1);
+    // Invariant: sum of all perStanding === ownershipRows.length.
+    const perStandingSum = Object.values(out.standingOverview.perStanding)
+      .reduce((sum, count) => sum + count, 0);
+    expect(perStandingSum).toBe(out.ownershipRows.length);
+  });
+
   it("counts size buckets from scopedPart2Systems", () => {
     const out = buildOverviewSummary({
       part2VerifiedAbpRows: [

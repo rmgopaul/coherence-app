@@ -3540,6 +3540,30 @@ export default function SolarRecDashboard() {
         terminatedNotReporting: 0,
         terminatedTotal: 0,
       },
+      // PR B3a: client-side empty fallback mirrors the server's
+      // EMPTY_SUMMARY shape so the OverviewTab can render zero-state
+      // tiles before the heavy query lands. All 9 sub-tier counts
+      // start at 0 — kept inline (not derived from
+      // ALL_STANDING_VALUES) so this fallback stays self-contained
+      // and doesn't pull a shared-module dependency into the parent
+      // dashboard hydration path.
+      standingOverview: {
+        activeTotal: 0,
+        atRiskTotal: 0,
+        closedTotal: 0,
+        unknownTotal: 0,
+        perStanding: {
+          "Active — Good Standing": 0,
+          "Active — Good Standing (Assigned)": 0,
+          "At Risk — Unassigned Transfer": 0,
+          "At Risk — Reporting Lapse": 0,
+          "At Risk — Reporting Lapse (Assigned)": 0,
+          "Jeopardy / Default-Track": 0,
+          "Closed — RECs Repaid (Good Standing)": 0,
+          "Closed — Default": 0,
+          Unknown: 0,
+        },
+      },
       withValueDataCount: 0,
       totalContractedValue: 0,
       totalDeliveredValue: 0,
@@ -3934,6 +3958,49 @@ export default function SolarRecDashboard() {
         count: 0,
         percent: null,
       })),
+      // PR B3a: client-side empty fallback mirrors the server's
+      // EMPTY_CHANGE_OWNERSHIP shape. Same rationale as the
+      // OverviewSummary fallback above — kept inline to avoid
+      // pulling shared-module imports into the parent dashboard
+      // hydration path. 9 sub-tier counts at 0, 4 tier totals at 0.
+      standingCounts: {
+        tierTotals: { Active: 0, "At Risk": 0, Closed: 0, Unknown: 0 },
+        perStanding: [
+          { standing: "Active — Good Standing", count: 0, percent: null },
+          {
+            standing: "Active — Good Standing (Assigned)",
+            count: 0,
+            percent: null,
+          },
+          {
+            standing: "At Risk — Unassigned Transfer",
+            count: 0,
+            percent: null,
+          },
+          {
+            standing: "At Risk — Reporting Lapse",
+            count: 0,
+            percent: null,
+          },
+          {
+            standing: "At Risk — Reporting Lapse (Assigned)",
+            count: 0,
+            percent: null,
+          },
+          {
+            standing: "Jeopardy / Default-Track",
+            count: 0,
+            percent: null,
+          },
+          {
+            standing: "Closed — RECs Repaid (Good Standing)",
+            count: 0,
+            percent: null,
+          },
+          { standing: "Closed — Default", count: 0, percent: null },
+          { standing: "Unknown", count: 0, percent: null },
+        ],
+      },
     }),
     []
   );

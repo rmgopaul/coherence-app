@@ -5,7 +5,13 @@
  * matching (load-bearing because `normalizeContractType` lowercases).
  */
 import { describe, expect, it } from "vitest";
-import { deriveStanding } from "./solarRecStanding";
+import {
+  ALL_STANDING_VALUES,
+  deriveStanding,
+  STANDING_TIERS,
+  standingTier,
+  type StandingTier,
+} from "./solarRecStanding";
 
 describe("deriveStanding", () => {
   // -----------------------------------------------------------------
@@ -125,5 +131,68 @@ describe("deriveStanding", () => {
     expect(deriveStanding("IL  ABP -  Transferred", false, true)).toBe(
       "Active — Good Standing (Assigned)"
     );
+  });
+});
+
+describe("standingTier", () => {
+  it("rolls 'Active' tier", () => {
+    expect(standingTier("Active — Good Standing")).toBe("Active");
+    expect(standingTier("Active — Good Standing (Assigned)")).toBe("Active");
+  });
+
+  it("rolls 'At Risk' tier (includes Jeopardy / Default-Track)", () => {
+    expect(standingTier("At Risk — Unassigned Transfer")).toBe("At Risk");
+    expect(standingTier("At Risk — Reporting Lapse")).toBe("At Risk");
+    expect(standingTier("At Risk — Reporting Lapse (Assigned)")).toBe(
+      "At Risk"
+    );
+    // Jeopardy is a sub-tier of At Risk, not its own top tier.
+    expect(standingTier("Jeopardy / Default-Track")).toBe("At Risk");
+  });
+
+  it("rolls 'Closed' tier (both repaid + defaulted)", () => {
+    expect(standingTier("Closed — RECs Repaid (Good Standing)")).toBe(
+      "Closed"
+    );
+    expect(standingTier("Closed — Default")).toBe("Closed");
+  });
+
+  it("rolls 'Unknown' to its own tier", () => {
+    expect(standingTier("Unknown")).toBe("Unknown");
+  });
+
+  it("ALL_STANDING_VALUES enumerates every Standing exactly once", () => {
+    // Drift guard: bumping the union must also bump the array.
+    expect(ALL_STANDING_VALUES).toHaveLength(9);
+    expect(new Set(ALL_STANDING_VALUES).size).toBe(9);
+  });
+
+  it("STANDING_TIERS enumerates every tier exactly once", () => {
+    expect(STANDING_TIERS).toHaveLength(4);
+    expect(new Set(STANDING_TIERS).size).toBe(4);
+  });
+
+  it("every Standing value maps to a known StandingTier", () => {
+    const tierSet = new Set<StandingTier>(STANDING_TIERS);
+    for (const s of ALL_STANDING_VALUES) {
+      expect(tierSet.has(standingTier(s))).toBe(true);
+    }
+  });
+
+  it("tier rollup totals across the 9 values match the expected partition", () => {
+    // 2 Active + 4 At Risk + 2 Closed + 1 Unknown = 9
+    const counts: Record<StandingTier, number> = {
+      Active: 0,
+      "At Risk": 0,
+      Closed: 0,
+      Unknown: 0,
+    };
+    for (const s of ALL_STANDING_VALUES) counts[standingTier(s)] += 1;
+    expect(counts).toEqual({
+      Active: 2,
+      "At Risk": 4,
+      Closed: 2,
+      Unknown: 1,
+    });
   });
 });
