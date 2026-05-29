@@ -149,19 +149,20 @@ const CHANGE_OWNERSHIP_HEADERS = [
 // B3-cleanup: tile bucketing migrated from OwnershipStatus to
 // Standing tiers. Tile-key vocabulary preserved (reporting /
 // notReporting / terminated) for the download handler API, but the
-// matcher now uses `row.standing` + `row.isReporting` to decide
-// membership. Mapping:
+// matcher now uses `row.standing` to decide membership. Mapping:
 //   - "reporting"    → Active tier (Good Standing + Assigned), i.e.
 //                      systems with healthy paperwork that are
-//                      currently reporting. Subset of pre-migration
-//                      "reporting" — orphaned-transfer-but-reporting
-//                      systems now fall under "notReporting" instead.
+//                      currently reporting.
 //   - "notReporting" → At Risk tier (Unassigned Transfer + Reporting
-//                      Lapse + Jeopardy). The actionable bucket.
+//                      Lapse + Jeopardy) PLUS Unknown — both buckets
+//                      represent "needs operator attention." Unknown
+//                      lands here (rather than being dropped from
+//                      every tile) so Part-II Unmatched rows + any
+//                      system without a derivable Standing remain
+//                      visible in the actionable export — matches
+//                      pre-migration behavior where these rows fell
+//                      into "Not Transferred and Not Reporting."
 //   - "terminated"   → Closed tier (RECs Repaid + Default).
-// Unknown systems (no contractType) currently aren't surfaced as a
-// tile — the CSV export skips them; the OverviewTab shows a count
-// tile but no download button. Tag flagged for B5 follow-up.
 
 const CSV_FILE_WRITE_CHUNK_ROWS = 1000;
 
@@ -169,10 +170,10 @@ function tileMatchesStanding(
   tile: OwnershipTileKey,
   standing: string | null,
 ): boolean {
-  if (!standing) return false;
+  if (!standing) return tile === "notReporting";
   const tier: StandingTier = standingTier(standing as Standing);
   if (tile === "reporting") return tier === "Active";
-  if (tile === "notReporting") return tier === "At Risk";
+  if (tile === "notReporting") return tier === "At Risk" || tier === "Unknown";
   return tier === "Closed";
 }
 

@@ -143,7 +143,6 @@ function makeRow(suffix: string): Record<string, unknown> {
     systemId: null,
     stateApplicationRefId: null,
     trackingSystemRefId: null,
-    ownershipStatus: "Transferred and Reporting",
     isReporting: true,
     isTransferred: true,
     isTerminated: false,

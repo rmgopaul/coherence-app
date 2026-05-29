@@ -144,7 +144,6 @@ function makeRow(suffix: string): Record<string, unknown> {
     zillowSoldDate: null,
     latestReportingDate: null,
     changeOwnershipStatus: "Transferred and Reporting",
-    ownershipStatus: "Transferred and Reporting",
     isReporting: true,
     isTerminated: false,
     isTransferred: true,

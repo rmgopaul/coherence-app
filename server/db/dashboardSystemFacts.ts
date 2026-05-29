@@ -2,27 +2,31 @@
  * Solar REC dashboard per-system facts — DB helpers
  * (Phase 2 PR-F-1, the fourth derived fact table).
  *
- * Backs the `solarRecDashboardSystemFacts` table that PR-F-2
- * will populate via the build runner. PR-F-3 will add the
- * paginated read proc that retires the legacy
- * `getSystemSnapshot` payload (~26 MB on prod, formerly the
- * largest `DASHBOARD_OVERSIZE_ALLOWLIST` entry).
+ * Backs the `solarRecDashboardSystemFacts` table that the build
+ * runner populates. Paginated reads back SystemsIndex + the
+ * cross-tab "details for these systems" pattern, retiring the
+ * legacy `getSystemSnapshot` payload (~26 MB on prod, formerly
+ * the largest `DASHBOARD_OVERSIZE_ALLOWLIST` entry).
  *
- * PR-F-1 is helpers ONLY — no caller wires these in yet.
- *
- * Matches the proven pattern from PR-C-1 / PR-D-1 / PR-E-1 with
- * three filter axes for the tabs that will consume this table:
- *   - `ownershipStatus` — primary filter on Overview / Change
- *     Ownership tabs.
+ * Filter axes for the consuming tabs (B3-cleanup, 2026-05-29):
+ *   - `standing` — primary risk-tier axis (9-value taxonomy from
+ *     `shared/solarRecStanding.ts`), backed by the `(scopeId,
+ *     standing)` covering index from PR A.
  *   - `sizeBucket` — SizeReportingTab + Overview tile filter.
  *   - `isReporting` — used by the "currently reporting" splits
  *     on multiple tabs.
+ *   - `isPart2Eligible` — Part-II eligibility predicate.
  *
- * All three filter axes can be combined; the read helper falls
- * back to the most-selective covering index + post-index
- * filtering on the remaining columns. Reads filtering on none of
- * the axes scan from the PK index `(scopeId, systemKey)` for an
- * unfiltered scoped scan.
+ * All filter axes can be combined; the read helper falls back to
+ * the most-selective covering index + post-index filtering on the
+ * remaining columns. Reads filtering on none of the axes scan
+ * from the PK index `(scopeId, systemKey)` for an unfiltered
+ * scoped scan.
+ *
+ * History: the original PR-F-1 primary filter was the 6-value
+ * `ownershipStatus` enum; B3-cleanup (migration 0077) dropped both
+ * the column and the `(scopeId, ownershipStatus)` index after every
+ * consumer migrated to `standing`.
  */
 
 import { and, eq, getDb, sql, withDbRetry } from "./_core";
@@ -303,7 +307,6 @@ export async function getSystemFactsPage(
      */
     offset?: number | null;
     limit: number;
-    status?: string | null;
     sizeBucket?: string | null;
     isReporting?: boolean | null;
     isPart2Eligible?: boolean | null;
@@ -332,7 +335,6 @@ export async function getSystemFactsPage(
     cursorAfter,
     offset,
     limit,
-    status,
     sizeBucket,
     isReporting,
     isPart2Eligible,
@@ -356,8 +358,6 @@ export async function getSystemFactsPage(
       gt(solarRecDashboardSystemFacts.systemKey, cursorAfter)
     );
   }
-  // B3-cleanup: legacy `status` filter retired with the column.
-  void status;
   if (sizeBucket) {
     conditions.push(eq(solarRecDashboardSystemFacts.sizeBucket, sizeBucket));
   }
@@ -453,14 +453,12 @@ export async function getSystemFactsBySystemKeys(
 
 /**
  * Count fact rows for a scope, optionally narrowed by
- * `ownershipStatus`, `sizeBucket`, `isReporting`, and/or
- * `isPart2Eligible`. Useful for first-page totalCount + per-axis
- * counts.
+ * `sizeBucket`, `isReporting`, and/or `isPart2Eligible`. Useful
+ * for first-page totalCount + per-axis counts.
  */
 export async function getSystemFactsCount(
   scopeId: string,
   options?: {
-    status?: string | null;
     sizeBucket?: string | null;
     isReporting?: boolean | null;
     isPart2Eligible?: boolean | null;
@@ -469,8 +467,6 @@ export async function getSystemFactsCount(
   const db = await getDb();
   if (!db) return 0;
   const conditions = [eq(solarRecDashboardSystemFacts.scopeId, scopeId)];
-  // B3-cleanup: legacy `status` filter retired with the column.
-  void options?.status;
   if (options?.sizeBucket) {
     conditions.push(
       eq(solarRecDashboardSystemFacts.sizeBucket, options.sizeBucket)

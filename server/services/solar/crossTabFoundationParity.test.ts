@@ -195,7 +195,6 @@ function buildFixture() {
       isReporting: true, // matches foundation
       isTransferred: false,
       isTerminated: false,
-      ownershipStatus: "Not Transferred and Reporting",
       contractType: "IL ABP - Active",
       contractStatusText: "Active",
       latestReportingDate: new Date("2024-04-15"),
@@ -219,7 +218,6 @@ function buildFixture() {
       isReporting: false, // foundation says true (overlay rescues)
       isTransferred: false,
       isTerminated: false,
-      ownershipStatus: "Not Transferred and Not Reporting",
       contractType: "IL ABP - Active",
       contractStatusText: "Active",
       latestReportingDate: null,
@@ -243,7 +241,6 @@ function buildFixture() {
       isReporting: true, // foundation says false (overlay corrects)
       isTransferred: false,
       isTerminated: false,
-      ownershipStatus: "Not Transferred and Reporting",
       contractType: "IL ABP - Active",
       contractStatusText: "Active",
       latestReportingDate: new Date("2024-01-05"),
@@ -267,7 +264,6 @@ function buildFixture() {
       isReporting: true, // snapshot says reporting; foundation excludes (terminated)
       isTransferred: false,
       isTerminated: true,
-      ownershipStatus: "Terminated and Reporting",
       contractType: "IL ABP - Terminated",
       contractStatusText: "Active",
       latestReportingDate: new Date("2024-04-01"),
@@ -292,7 +288,6 @@ function buildFixture() {
       isReporting: false,
       isTransferred: false,
       isTerminated: false,
-      ownershipStatus: "Not Transferred and Not Reporting",
       contractType: "IL ABP - Transferred",
       contractStatusText: "Active",
       latestReportingDate: null,

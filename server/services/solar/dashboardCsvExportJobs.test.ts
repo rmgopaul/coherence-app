@@ -1178,9 +1178,9 @@ describe("dashboardCsvExportJobs — sweepStaleAndPruned", () => {
 });
 
 describe("dashboardCsvExportJobs — runner version + claim id", () => {
-  it("exports the v12 streaming fact CSV runner version", () => {
+  it("exports the v13 Standing-tier matcher runner version", () => {
     expect(DASHBOARD_CSV_EXPORT_RUNNER_VERSION).toBe(
-      "dashboard-csv-export-jobs-v12-stream-fact-export"
+      "dashboard-csv-export-jobs-v13-standing-tier-matcher"
     );
   });
 

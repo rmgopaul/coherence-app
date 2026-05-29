@@ -97,7 +97,7 @@ import type { DashboardCsvExportJob } from "../../../drizzle/schema";
 const METRIC_PREFIX = "[dashboard:csv-export-jobs]";
 
 export const DASHBOARD_CSV_EXPORT_RUNNER_VERSION =
-  "dashboard-csv-export-jobs-v12-stream-fact-export";
+  "dashboard-csv-export-jobs-v13-standing-tier-matcher";
 const LEGACY_DETERMINISTIC_ARTIFACT_RUNNER_VERSION =
   "dashboard-csv-export-jobs-v3-heartbeat";
 const OWNERSHIP_FACT_EXPORT_PAGE_SIZE = 1000;

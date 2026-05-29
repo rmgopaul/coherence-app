@@ -1,19 +1,25 @@
 /**
  * Source-rail test for `getDashboardOwnershipPage`
- * (Phase 2 PR-E-3).
+ * (Phase 2 PR-E-3, updated through B3-cleanup 2026-05-29).
  *
  * Mirrors `solarRecDashboardChangeOwnershipPage.test.ts` — pin
- * the procedure's shape (auth gate, input validation, status
+ * the procedure's shape (auth gate, input validation, standing
  * filter, source filter, DB-helper call, response envelope)
  * without spinning up a real DB or tRPC caller. The actual data
  * path is covered by `dashboardOwnershipFacts.test.ts` (PR-E-1).
  *
- * Two filter axes vs. PR-D-3's one: the OverviewTab combines
- * `ownershipStatus` (primary control) with the Matched System vs
- * Part II Unmatched `source` toggle. Both covering indexes —
- * `(scopeId, ownershipStatus)` and `(scopeId, source)` — exist
- * because the proc actually passes both inputs through to the DB
- * helper. This test pins both wirings.
+ * Two filter axes: the OwnershipTab combines `standing` (the
+ * 9-value risk-tier taxonomy, primary control) with the Matched
+ * System vs Part II Unmatched `source` toggle. Both covering
+ * indexes — `(scopeId, standing)` (PR B2) and `(scopeId, source)`
+ * (PR-E-1) — exist because the proc actually passes both inputs
+ * through to the DB helper. This test pins both wirings.
+ *
+ * History: PR-E-3 originally shipped with a 6-value `status`
+ * filter axis (the legacy `ownershipStatus` enum) plus `source`.
+ * B3-cleanup (migration 0077) retired both the column and the
+ * `status` zod input after B3-final (#651) migrated every
+ * consumer to `standing`.
  */
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -61,26 +67,25 @@ describe("getDashboardOwnershipPage (source rail)", () => {
     expect(proc!).toMatch(/\.default\(200\)/);
   });
 
-  it("accepts the full OwnershipStatus enum (6 values: Transferred / Not Transferred / Terminated × Reporting / Not Reporting)", () => {
-    // Listing all 6 values defends against a regression where one
-    // is dropped silently and the OverviewTab's status filter
-    // breaks for that status.
-    expect(proc!).toMatch(/"Transferred and Reporting"/);
-    expect(proc!).toMatch(/"Transferred and Not Reporting"/);
-    expect(proc!).toMatch(/"Not Transferred and Reporting"/);
-    expect(proc!).toMatch(/"Not Transferred and Not Reporting"/);
-    expect(proc!).toMatch(/"Terminated and Reporting"/);
-    expect(proc!).toMatch(/"Terminated and Not Reporting"/);
+  // B3-cleanup: the legacy 6-value `OwnershipStatus` zod input was
+  // retired here along with the column. Defend against accidental
+  // re-introduction — a regression that re-adds the input would
+  // re-create the silent-no-op trap that B3-cleanup closed.
+  it("does NOT accept any of the legacy 6-value OwnershipStatus enum members", () => {
+    expect(proc!).not.toMatch(/"Transferred and Reporting"/);
+    expect(proc!).not.toMatch(/"Transferred and Not Reporting"/);
+    expect(proc!).not.toMatch(/"Not Transferred and Reporting"/);
+    expect(proc!).not.toMatch(/"Not Transferred and Not Reporting"/);
+    expect(proc!).not.toMatch(/"Terminated and Reporting"/);
+    expect(proc!).not.toMatch(/"Terminated and Not Reporting"/);
   });
 
-  it("declares status as nullable + optional (omit-to-fetch-all semantics)", () => {
-    expect(proc!).toMatch(
-      /status:\s*z[\s\S]*?\.nullable\(\)[\s\S]*?\.optional\(\)/
-    );
+  it("does NOT declare a legacy `status` zod input", () => {
+    expect(proc!).not.toMatch(/^\s*status:\s*z/m);
   });
 
-  // B3-final (PR #651): new `standing` filter axis. Same drift
-  // defense as `status` above — listing every Standing value
+  // B3-final (PR #651): the `standing` filter axis is now the
+  // sole risk-tier filter. Listing every Standing value
   // explicitly catches a silent enum drop.
   it("accepts the full 9-value Standing enum", () => {
     expect(proc!).toMatch(/"Active — Good Standing"/);
@@ -94,7 +99,7 @@ describe("getDashboardOwnershipPage (source rail)", () => {
     expect(proc!).toMatch(/"Unknown"/);
   });
 
-  it("declares standing as nullable + optional (coexists with status)", () => {
+  it("declares standing as nullable + optional", () => {
     expect(proc!).toMatch(
       /standing:\s*z[\s\S]*?\.nullable\(\)[\s\S]*?\.optional\(\)/
     );
@@ -108,7 +113,7 @@ describe("getDashboardOwnershipPage (source rail)", () => {
     expect(proc!).toMatch(/"Part II Unmatched"/);
   });
 
-  it("declares source as nullable + optional (combinable with status; either omitted)", () => {
+  it("declares source as nullable + optional (combinable with standing)", () => {
     expect(proc!).toMatch(
       /source:\s*z[\s\S]*?\.nullable\(\)[\s\S]*?\.optional\(\)/
     );
@@ -121,14 +126,7 @@ describe("getDashboardOwnershipPage (source rail)", () => {
     );
   });
 
-  it("forwards the status filter to the DB helper (key wiring axis 1)", () => {
-    // Defends against a regression where the input is accepted
-    // but never passed through — the proc would still pass tsc
-    // but status-filtered reads would scan the whole table.
-    expect(proc!).toMatch(/status:\s*input\.status\s*\?\?\s*null/);
-  });
-
-  it("forwards the standing filter to the DB helper (B3-final axis)", () => {
+  it("forwards the standing filter to the DB helper (B3 risk-tier axis)", () => {
     // Same defense as `status` above — the proc could accept the
     // new `standing` input and silently never apply the WHERE
     // predicate.
@@ -151,8 +149,8 @@ describe("getDashboardOwnershipPage (source rail)", () => {
     expect(proc!).toMatch(/hasMore/);
   });
 
-  it("ships a `_runnerVersion` marker (CLAUDE.md Hard Rule #3)", () => {
-    expect(proc!).toMatch(/_runnerVersion:\s*"phase-2-pr-e-3/);
+  it("ships the bumped B3-cleanup `_runnerVersion` marker (CLAUDE.md Hard Rule #3)", () => {
+    expect(proc!).toMatch(/_runnerVersion:\s*"phase-2-pr-e-3@3"/);
   });
 
   it("ships a `_checkpoint` for cache-busting + deploy verification", () => {
