@@ -47,6 +47,7 @@ import type {
   SizeBucket,
   SystemRecord,
 } from "@/solar-rec-dashboard/state/types";
+import type { Standing } from "@shared/solarRecStanding";
 
 // ---------------------------------------------------------------------------
 // Props
@@ -98,12 +99,20 @@ export type OverviewSummary =
        * `getOrBuildOverviewSummary`. B3-final wires this up to render
        * the new Standing-axis tiles alongside the legacy Reporting /
        * Not Reporting / Terminated trio.
+       *
+       * Shape mirrors the server's
+       * `OverviewSummaryAggregate["standingOverview"]` exactly —
+       * 4 tier totals + the 9-key `perStanding` drill-in. Keeping
+       * both fields here means a future drill-in tooltip / deep-link
+       * tab filter can read `summary.standingOverview.perStanding`
+       * without another contract update.
        */
       standingOverview: {
         activeTotal: number;
         atRiskTotal: number;
         closedTotal: number;
         unknownTotal: number;
+        perStanding: Record<Standing, number>;
       };
     });
 

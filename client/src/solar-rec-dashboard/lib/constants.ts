@@ -231,6 +231,14 @@ export const DASHBOARD_TAB_VALUE_SET = new Set<string>(DASHBOARD_TAB_VALUES);
 // the destructive cleanup PR once every reader has migrated.
 // ---------------------------------------------------------------------------
 
+/**
+ * @deprecated B3-final (PR #651) retired every client consumer of
+ * this array (the OwnershipTab filter dropdown now enumerates
+ * `ALL_STANDING_VALUES` from `@shared/solarRecStanding`). Kept alive
+ * only for the B3-cleanup PR to delete alongside the `OwnershipStatus`
+ * type + the column. New UI surfaces MUST import
+ * `ALL_STANDING_VALUES` from `@shared/solarRecStanding` instead.
+ */
 export const OWNERSHIP_ORDER: OwnershipStatus[] = [
   "Transferred and Reporting",
   "Transferred and Not Reporting",

@@ -294,6 +294,37 @@ describe("getOwnershipFactsPage", () => {
     expect(selectCall?.whereCalled).toBe(1);
   });
 
+  // B3-final (PR #651): new `standing` filter on the
+  // `(scopeId, standing)` covering index added by PR B2 #649.
+  // Coexists with the legacy `status` filter; the proc layer is
+  // the boundary that decides which one to send.
+  it("applies standing filter when provided (B3-final axis)", async () => {
+    const stub = makeDbStub({ selectRows: [[]] });
+    mocks.getDb.mockResolvedValue(stub);
+    await getOwnershipFactsPage("scope-1", {
+      standing: "At Risk — Unassigned Transfer",
+      limit: 100,
+    });
+    const selectCall = stub.calls.find(c => c.kind === "select");
+    expect(selectCall?.whereCalled).toBe(1);
+  });
+
+  it("combines status + standing filters when both passed (AND semantic)", async () => {
+    // The proc layer's contract is "OwnershipTab sends one or the
+    // other, but the helper AND-combines if both arrive." A future
+    // caller passing both with mismatched values gets an empty
+    // page silently — verify the AND wiring is intact.
+    const stub = makeDbStub({ selectRows: [[]] });
+    mocks.getDb.mockResolvedValue(stub);
+    await getOwnershipFactsPage("scope-1", {
+      status: "Transferred and Reporting",
+      standing: "Active — Good Standing (Assigned)",
+      limit: 100,
+    });
+    const selectCall = stub.calls.find(c => c.kind === "select");
+    expect(selectCall?.whereCalled).toBe(1);
+  });
+
   it("clamps limit to [1, 1000]", async () => {
     const stub = makeDbStub({ selectRows: [[]] });
     mocks.getDb.mockResolvedValue(stub);

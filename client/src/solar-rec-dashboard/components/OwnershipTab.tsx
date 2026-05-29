@@ -49,6 +49,9 @@ import type { SolarRecAppRouter } from "@server/_core/solarRecRouter";
 import {
   ALL_STANDING_VALUES,
   type Standing,
+  STANDING_TIERS,
+  standingTier,
+  type StandingTier,
 } from "@shared/solarRecStanding";
 
 // ---------------------------------------------------------------------------
@@ -173,12 +176,13 @@ export default memo(function OwnershipTab() {
     <div className="space-y-4 mt-4">
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">
-            Ownership Status Classifier
-          </CardTitle>
+          <CardTitle className="text-base">Standing Classifier</CardTitle>
           <CardDescription>
-            Categories: Transferred, Not Transferred, and Terminated crossed
-            with Reporting / Not Reporting.
+            Risk-tier taxonomy keyed off CSG portal contractType + GATS
+            transfer history + meter reporting. 9 sub-tiers grouped into
+            4 top tiers (Active / At Risk / Closed / Unknown). See
+            `deriveStanding` in shared/solarRecStanding for the decision
+            tree.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -198,11 +202,24 @@ export default memo(function OwnershipTab() {
                 }}
               >
                 <option value="All">All Categories</option>
-                {ALL_STANDING_VALUES.map((standing) => (
-                  <option key={standing} value={standing}>
-                    {standing}
-                  </option>
-                ))}
+                {/* B3-final reviewer #7: group the 9 sub-tiers under
+                    their 4 top tiers (Active / At Risk / Closed /
+                    Unknown) so the dropdown is scannable instead of a
+                    flat 30-char wall of options. */}
+                {STANDING_TIERS.map((tier: StandingTier) => {
+                  const tierValues = ALL_STANDING_VALUES.filter(
+                    (s) => standingTier(s) === tier,
+                  );
+                  return (
+                    <optgroup key={tier} label={tier}>
+                      {tierValues.map((standing) => (
+                        <option key={standing} value={standing}>
+                          {standing}
+                        </option>
+                      ))}
+                    </optgroup>
+                  );
+                })}
               </select>
             </div>
             <div className="space-y-1">
@@ -281,7 +298,7 @@ export default memo(function OwnershipTab() {
                 <TableHead>system_id</TableHead>
                 <TableHead>Tracking ID</TableHead>
                 <TableHead>Source</TableHead>
-                <TableHead>Status Category</TableHead>
+                <TableHead>Standing</TableHead>
                 <TableHead>Reporting?</TableHead>
                 <TableHead>Transferred?</TableHead>
                 <TableHead>Terminated?</TableHead>

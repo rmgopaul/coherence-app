@@ -149,13 +149,17 @@ export async function getOwnershipFactsPage(
     /**
      * Legacy 6-value `OwnershipStatus` filter. Kept alive during the
      * B3 consumer migration; new callers (the OwnershipTab) use
-     * `standing` instead. Both filters are AND-combined when both
-     * are passed.
+     * `standing` instead. The proc layer's contract is "one or the
+     * other," but this helper AND-combines if both arrive — a future
+     * caller passing both with mismatched values gets an empty page
+     * silently. The proc-level zod schema is the boundary that
+     * decides which one to send.
      */
     status?: string | null;
     /**
      * B3-final: filter by the 9-value `Standing` taxonomy populated
-     * on the `(scopeId, standing)` covering index from PR B2.
+     * on the `(scopeId, standing)` covering index from PR B2. See
+     * the `status` JSDoc above for the AND-with-status semantic.
      */
     standing?: string | null;
     source?: string | null;

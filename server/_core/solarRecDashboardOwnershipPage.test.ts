@@ -79,6 +79,27 @@ describe("getDashboardOwnershipPage (source rail)", () => {
     );
   });
 
+  // B3-final (PR #651): new `standing` filter axis. Same drift
+  // defense as `status` above — listing every Standing value
+  // explicitly catches a silent enum drop.
+  it("accepts the full 9-value Standing enum", () => {
+    expect(proc!).toMatch(/"Active — Good Standing"/);
+    expect(proc!).toMatch(/"Active — Good Standing \(Assigned\)"/);
+    expect(proc!).toMatch(/"At Risk — Unassigned Transfer"/);
+    expect(proc!).toMatch(/"At Risk — Reporting Lapse"/);
+    expect(proc!).toMatch(/"At Risk — Reporting Lapse \(Assigned\)"/);
+    expect(proc!).toMatch(/"Jeopardy \/ Default-Track"/);
+    expect(proc!).toMatch(/"Closed — RECs Repaid \(Good Standing\)"/);
+    expect(proc!).toMatch(/"Closed — Default"/);
+    expect(proc!).toMatch(/"Unknown"/);
+  });
+
+  it("declares standing as nullable + optional (coexists with status)", () => {
+    expect(proc!).toMatch(
+      /standing:\s*z[\s\S]*?\.nullable\(\)[\s\S]*?\.optional\(\)/
+    );
+  });
+
   it("accepts the 2-value source enum (Matched System vs Part II Unmatched)", () => {
     // The source toggle is the second filter axis vs PR-D-3.
     // Pinning both values explicitly defends against a regression
@@ -105,6 +126,13 @@ describe("getDashboardOwnershipPage (source rail)", () => {
     // but never passed through — the proc would still pass tsc
     // but status-filtered reads would scan the whole table.
     expect(proc!).toMatch(/status:\s*input\.status\s*\?\?\s*null/);
+  });
+
+  it("forwards the standing filter to the DB helper (B3-final axis)", () => {
+    // Same defense as `status` above — the proc could accept the
+    // new `standing` input and silently never apply the WHERE
+    // predicate.
+    expect(proc!).toMatch(/standing:\s*input\.standing\s*\?\?\s*null/);
   });
 
   it("forwards the source filter to the DB helper (key wiring axis 2)", () => {

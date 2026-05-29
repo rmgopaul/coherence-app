@@ -54,10 +54,13 @@ export function pipelineRowGroupIndex(
 }
 
 /**
- * Legacy 6-value `OwnershipStatus` badge — kept alive for code paths
- * (CSV exports, fact-table inserts) that still write `ownershipStatus`
- * for rollback safety. New UI surfaces should call `standingBadgeClass`
- * below instead.
+ * Legacy 6-value `OwnershipStatus` badge.
+ *
+ * @deprecated B3-final (PR #651) retired every client consumer; this
+ * helper is no longer imported anywhere in `client/`. Kept alive only
+ * for the B3-cleanup PR to delete in one focused commit alongside the
+ * `OwnershipStatus` type + the `ownershipStatus` column + index. New
+ * UI surfaces MUST call `standingBadgeClass` below instead.
  */
 export function ownershipBadgeClass(status: OwnershipStatus): string {
   if (status.startsWith("Transferred"))
