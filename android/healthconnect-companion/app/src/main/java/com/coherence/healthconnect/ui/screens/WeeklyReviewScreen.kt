@@ -127,7 +127,7 @@ fun WeeklyReviewScreen(onBack: () -> Unit) {
         item {
           EmptyStateCard(
             title = "No review yet",
-            body = "The first weekly review will land Sunday evening once you have at least 3 days of data this week — sleep, tasks, supplements, habits all flow into it.",
+            body = "The first weekly review lands Sunday evening once you have at least 3 days of data this week. It reads across recovery, HRV, sleep, strain, steps, energy, supplements, habits, completed tasks and your nightly reflections — then compares against last week to surface correlations and patterns.",
             error = loadError,
           )
         }
@@ -159,7 +159,7 @@ fun WeeklyReviewScreen(onBack: () -> Unit) {
             ) {
               Text("Generating…", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
               Text(
-                "Anthropic is summarizing $daysWithData days of data. Check back in a minute.",
+                "Claude is analyzing $daysWithData days of data across health, habits and reflections. The deep review takes up to a minute — check back shortly.",
                 style = MaterialTheme.typography.bodyMedium,
               )
               CircularProgressIndicator(modifier = Modifier.padding(top = 8.dp))

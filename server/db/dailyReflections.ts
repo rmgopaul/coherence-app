@@ -7,7 +7,7 @@
  * evening and the row updates in place.
  */
 
-import { eq, and, desc, getDb, withDbRetry } from "./_core";
+import { eq, and, desc, gte, lte, getDb, withDbRetry } from "./_core";
 import { nanoid } from "nanoid";
 import {
   dailyReflections,
@@ -17,7 +17,7 @@ import {
 
 export async function getReflectionByDate(
   userId: number,
-  dateKey: string,
+  dateKey: string
 ): Promise<DailyReflection | null> {
   const db = await getDb();
   if (!db) return null;
@@ -28,17 +28,17 @@ export async function getReflectionByDate(
       .where(
         and(
           eq(dailyReflections.userId, userId),
-          eq(dailyReflections.dateKey, dateKey),
-        ),
+          eq(dailyReflections.dateKey, dateKey)
+        )
       )
-      .limit(1),
+      .limit(1)
   );
   return rows[0] ?? null;
 }
 
 export async function listRecentReflections(
   userId: number,
-  limit = 14,
+  limit = 14
 ): Promise<DailyReflection[]> {
   const db = await getDb();
   if (!db) return [];
@@ -48,15 +48,42 @@ export async function listRecentReflections(
       .from(dailyReflections)
       .where(eq(dailyReflections.userId, userId))
       .orderBy(desc(dailyReflections.dateKey))
-      .limit(limit),
+      .limit(limit)
+  );
+}
+
+export async function listReflectionsForRange(
+  userId: number,
+  startDateKey: string,
+  endDateKey: string
+): Promise<DailyReflection[]> {
+  const db = await getDb();
+  if (!db) return [];
+  return withDbRetry("list reflections in range", async () =>
+    db
+      .select()
+      .from(dailyReflections)
+      .where(
+        and(
+          eq(dailyReflections.userId, userId),
+          gte(dailyReflections.dateKey, startDateKey),
+          lte(dailyReflections.dateKey, endDateKey)
+        )
+      )
+      .orderBy(dailyReflections.dateKey)
   );
 }
 
 export async function upsertReflection(
   args: Pick<
     InsertDailyReflection,
-    "userId" | "dateKey" | "energyLevel" | "wentWell" | "didntGo" | "tomorrowOneThing"
-  >,
+    | "userId"
+    | "dateKey"
+    | "energyLevel"
+    | "wentWell"
+    | "didntGo"
+    | "tomorrowOneThing"
+  >
 ): Promise<DailyReflection | null> {
   const db = await getDb();
   if (!db) return null;
