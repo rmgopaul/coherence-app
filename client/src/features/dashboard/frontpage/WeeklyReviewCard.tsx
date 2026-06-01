@@ -43,6 +43,13 @@ interface WeeklyReviewMetricsShape {
   sleepSamples?: number;
   supplementsLogged?: number;
   habitsCompleted?: number;
+  whoopHrvAvg?: number | null;
+  whoopStrainAvg?: number | null;
+  whoopRestingHrAvg?: number | null;
+  samsungEnergyAvg?: number | null;
+  reflectionEnergyAvg?: number | null;
+  habitConsistencyPct?: number | null;
+  distinctSupplements?: number;
 }
 
 function parseMetrics(json: string | null): WeeklyReviewMetricsShape {
@@ -57,8 +64,37 @@ function parseMetrics(json: string | null): WeeklyReviewMetricsShape {
   }
 }
 
-/** Tiny markdown rendering — we only need bullets + paragraphs.
- *  Bold/italic/links can wait. */
+/** Render inline `**bold**` (and `*italic*`) markdown to React nodes.
+ *  The Opus weekly review bolds the key metric in each bullet, so we
+ *  need at least this much inline formatting. */
+function renderInline(text: string): React.ReactNode[] {
+  const out: React.ReactNode[] = [];
+  // Split on **bold** and *italic* spans, keeping the delimiters.
+  const parts = text.split(/(\*\*[^*]+\*\*|\*[^*]+\*)/g);
+  parts.forEach((part, i) => {
+    if (!part) return;
+    if (part.startsWith("**") && part.endsWith("**")) {
+      out.push(
+        <strong key={i} className="font-semibold">
+          {part.slice(2, -2)}
+        </strong>
+      );
+    } else if (part.startsWith("*") && part.endsWith("*")) {
+      out.push(
+        <em key={i} className="italic">
+          {part.slice(1, -1)}
+        </em>
+      );
+    } else {
+      out.push(part);
+    }
+  });
+  return out;
+}
+
+/** Lightweight markdown rendering for the weekly review: `##`/`###`
+ *  section headings, `-`/`*` bullets, `---` rules, paragraphs, and
+ *  inline bold/italic. Kept small so we don't pull in a full parser. */
 function renderMarkdown(md: string): React.ReactNode {
   const lines = md.split(/\r?\n/);
   const out: React.ReactNode[] = [];
@@ -66,12 +102,9 @@ function renderMarkdown(md: string): React.ReactNode {
   function flushBullets() {
     if (bulletBuf.length === 0) return;
     out.push(
-      <ul
-        key={`ul-${out.length}`}
-        className="list-disc pl-5 space-y-1 text-sm"
-      >
+      <ul key={`ul-${out.length}`} className="list-disc pl-5 space-y-1 text-sm">
         {bulletBuf.map((b, i) => (
-          <li key={i}>{b}</li>
+          <li key={i}>{renderInline(b)}</li>
         ))}
       </ul>
     );
@@ -83,13 +116,27 @@ function renderMarkdown(md: string): React.ReactNode {
       flushBullets();
       continue;
     }
-    if (/^[-*]\s+/.test(trimmed)) {
+    if (/^#{1,6}\s+/.test(trimmed)) {
+      flushBullets();
+      const text = trimmed.replace(/^#{1,6}\s+/, "");
+      out.push(
+        <p
+          key={`h-${out.length}`}
+          className="text-sm font-semibold mt-2 first:mt-0"
+        >
+          {renderInline(text)}
+        </p>
+      );
+    } else if (/^([-*_])\1{2,}$/.test(trimmed)) {
+      flushBullets();
+      out.push(<hr key={`hr-${out.length}`} className="my-2 border-muted" />);
+    } else if (/^[-*]\s+/.test(trimmed)) {
       bulletBuf.push(trimmed.replace(/^[-*]\s+/, ""));
     } else {
       flushBullets();
       out.push(
         <p key={`p-${out.length}`} className="text-sm">
-          {trimmed}
+          {renderInline(trimmed)}
         </p>
       );
     }
@@ -102,7 +149,7 @@ export function WeeklyReviewCard() {
   const utils = trpc.useUtils();
   const latestQuery = trpc.weeklyReview.getLatest.useQuery();
   const regenerate = trpc.weeklyReview.regenerate.useMutation({
-    onSuccess: (res) => {
+    onSuccess: res => {
       void utils.weeklyReview.getLatest.invalidate();
       toast.success(
         res.status === "ready"
@@ -110,7 +157,7 @@ export function WeeklyReviewCard() {
           : `Regenerate finished with status: ${res.status}`
       );
     },
-    onError: (err) => toast.error(err.message),
+    onError: err => toast.error(err.message),
   });
 
   const review = latestQuery.data;
@@ -148,21 +195,22 @@ export function WeeklyReviewCard() {
               )}
             </CardDescription>
           </div>
-          {review && (review.status === "failed" || review.status === "ready") && (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleRetry}
-              disabled={regenerate.isPending}
-            >
-              {regenerate.isPending ? (
-                <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
-              ) : (
-                <RefreshCcw className="h-3.5 w-3.5 mr-1" />
-              )}
-              {review.status === "failed" ? "Retry" : "Regenerate"}
-            </Button>
-          )}
+          {review &&
+            (review.status === "failed" || review.status === "ready") && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleRetry}
+                disabled={regenerate.isPending}
+              >
+                {regenerate.isPending ? (
+                  <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+                ) : (
+                  <RefreshCcw className="h-3.5 w-3.5 mr-1" />
+                )}
+                {review.status === "failed" ? "Retry" : "Regenerate"}
+              </Button>
+            )}
         </div>
       </CardHeader>
       <CardContent>
@@ -170,8 +218,8 @@ export function WeeklyReviewCard() {
           <p className="text-sm text-muted-foreground">Loading…</p>
         ) : !review ? (
           <p className="text-sm text-muted-foreground">
-            No review yet. The cron generates one each Monday from
-            the prior week's daily snapshots.
+            No review yet. The cron generates one each Monday from the prior
+            week's daily snapshots.
           </p>
         ) : review.status === "pending" ? (
           <p className="text-sm text-muted-foreground">
@@ -179,9 +227,9 @@ export function WeeklyReviewCard() {
           </p>
         ) : review.status === "insufficient" ? (
           <p className="text-sm text-muted-foreground">
-            Only {review.daysWithData} day(s) of data in this week —
-            need at least 3 to write a meaningful review. Keep
-            capturing daily snapshots.
+            Only {review.daysWithData} day(s) of data in this week — need at
+            least 3 to write a meaningful review. Keep capturing daily
+            snapshots.
           </p>
         ) : review.status === "failed" ? (
           <div className="space-y-2">
@@ -189,8 +237,8 @@ export function WeeklyReviewCard() {
               {review.errorMessage ?? "Generation failed."}
             </p>
             <p className="text-xs text-muted-foreground">
-              Click Retry to regenerate this week. Anthropic API key
-              issues fix in Settings → Integrations.
+              Click Retry to regenerate this week. Anthropic API key issues fix
+              in Settings → Integrations.
             </p>
           </div>
         ) : (
@@ -211,19 +259,31 @@ export function WeeklyReviewCard() {
               )}
               {metrics.whoopRecoveryAvg !== null &&
                 metrics.whoopRecoveryAvg !== undefined && (
-                  <span>
-                    Recovery {Math.round(metrics.whoopRecoveryAvg)}
-                  </span>
+                  <span>Recovery {Math.round(metrics.whoopRecoveryAvg)}</span>
                 )}
               {metrics.sleepHoursAvg !== null &&
                 metrics.sleepHoursAvg !== undefined && (
                   <span>Sleep {metrics.sleepHoursAvg.toFixed(1)}h</span>
                 )}
+              {metrics.whoopHrvAvg !== null &&
+                metrics.whoopHrvAvg !== undefined && (
+                  <span>HRV {Math.round(metrics.whoopHrvAvg)}</span>
+                )}
+              {metrics.whoopStrainAvg !== null &&
+                metrics.whoopStrainAvg !== undefined && (
+                  <span>Strain {metrics.whoopStrainAvg.toFixed(1)}</span>
+                )}
+              {metrics.samsungEnergyAvg !== null &&
+                metrics.samsungEnergyAvg !== undefined && (
+                  <span>Energy {metrics.samsungEnergyAvg.toFixed(1)}</span>
+                )}
+              {metrics.habitConsistencyPct !== null &&
+                metrics.habitConsistencyPct !== undefined && (
+                  <span>Habits {Math.round(metrics.habitConsistencyPct)}%</span>
+                )}
               {metrics.todoistCompletedTotal !== null &&
                 metrics.todoistCompletedTotal !== undefined && (
-                  <span>
-                    {metrics.todoistCompletedTotal} Todoist completed
-                  </span>
+                  <span>{metrics.todoistCompletedTotal} Todoist completed</span>
                 )}
               {review.model && (
                 <span className="font-mono">model: {review.model}</span>

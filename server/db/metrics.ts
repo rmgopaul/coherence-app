@@ -1,6 +1,9 @@
 import { nanoid } from "nanoid";
-import { eq, and, desc, getDb, withDbRetry } from "./_core";
-import { dailyHealthMetrics, InsertDailyHealthMetric } from "../../drizzle/schema";
+import { eq, and, desc, gte, lte, getDb, withDbRetry } from "./_core";
+import {
+  dailyHealthMetrics,
+  InsertDailyHealthMetric,
+} from "../../drizzle/schema";
 
 export async function getDailyMetricByDate(userId: number, dateKey: string) {
   const db = await getDb();
@@ -10,7 +13,12 @@ export async function getDailyMetricByDate(userId: number, dateKey: string) {
     db
       .select()
       .from(dailyHealthMetrics)
-      .where(and(eq(dailyHealthMetrics.userId, userId), eq(dailyHealthMetrics.dateKey, dateKey)))
+      .where(
+        and(
+          eq(dailyHealthMetrics.userId, userId),
+          eq(dailyHealthMetrics.dateKey, dateKey)
+        )
+      )
       .limit(1)
   );
 
@@ -22,14 +30,19 @@ export async function upsertDailyMetric(metric: InsertDailyHealthMetric) {
   if (!db) return;
 
   const now = new Date();
-  const existing = await withDbRetry("load daily metric before upsert", async () =>
-    db
-      .select({ id: dailyHealthMetrics.id })
-      .from(dailyHealthMetrics)
-      .where(
-        and(eq(dailyHealthMetrics.userId, metric.userId), eq(dailyHealthMetrics.dateKey, metric.dateKey))
-      )
-      .limit(1)
+  const existing = await withDbRetry(
+    "load daily metric before upsert",
+    async () =>
+      db
+        .select({ id: dailyHealthMetrics.id })
+        .from(dailyHealthMetrics)
+        .where(
+          and(
+            eq(dailyHealthMetrics.userId, metric.userId),
+            eq(dailyHealthMetrics.dateKey, metric.dateKey)
+          )
+        )
+        .limit(1)
   );
 
   if (existing.length > 0) {
@@ -103,18 +116,27 @@ export async function upsertSamsungDailyMetric(args: {
   if (!db) return;
 
   const now = new Date();
-  const existing = await withDbRetry("load daily metric before samsung upsert", async () =>
-    db
-      .select()
-      .from(dailyHealthMetrics)
-      .where(and(eq(dailyHealthMetrics.userId, args.userId), eq(dailyHealthMetrics.dateKey, args.dateKey)))
-      .limit(1)
+  const existing = await withDbRetry(
+    "load daily metric before samsung upsert",
+    async () =>
+      db
+        .select()
+        .from(dailyHealthMetrics)
+        .where(
+          and(
+            eq(dailyHealthMetrics.userId, args.userId),
+            eq(dailyHealthMetrics.dateKey, args.dateKey)
+          )
+        )
+        .limit(1)
   );
 
   const merged = {
     samsungSteps: args.samsungSteps ?? existing[0]?.samsungSteps ?? null,
-    samsungSleepHours: args.samsungSleepHours ?? existing[0]?.samsungSleepHours ?? null,
-    samsungSpo2AvgPercent: args.samsungSpo2AvgPercent ?? existing[0]?.samsungSpo2AvgPercent ?? null,
+    samsungSleepHours:
+      args.samsungSleepHours ?? existing[0]?.samsungSleepHours ?? null,
+    samsungSpo2AvgPercent:
+      args.samsungSpo2AvgPercent ?? existing[0]?.samsungSpo2AvgPercent ?? null,
     // Manual scores: always overwrite with the incoming value (incl.
     // null). See the doc comment above for why preservation is wrong
     // here — historical backfill MUST be able to clear stale scores.
@@ -161,5 +183,35 @@ export async function getDailyMetricsHistory(userId: number, limit = 30) {
       .where(eq(dailyHealthMetrics.userId, userId))
       .orderBy(desc(dailyHealthMetrics.dateKey))
       .limit(limit)
+  );
+}
+
+/**
+ * Read normalized daily health metrics for an inclusive date range,
+ * ordered oldest → newest. This is the canonical numeric source
+ * (clean recovery / strain / HRV / sleep / steps columns) feeding the
+ * weekly review aggregator — far more reliable than re-parsing the
+ * raw `dailySnapshots` payload JSON.
+ */
+export async function listDailyMetricsForRange(
+  userId: number,
+  startDateKey: string,
+  endDateKey: string
+) {
+  const db = await getDb();
+  if (!db) return [];
+
+  return withDbRetry("list daily metrics in range", async () =>
+    db
+      .select()
+      .from(dailyHealthMetrics)
+      .where(
+        and(
+          eq(dailyHealthMetrics.userId, userId),
+          gte(dailyHealthMetrics.dateKey, startDateKey),
+          lte(dailyHealthMetrics.dateKey, endDateKey)
+        )
+      )
+      .orderBy(dailyHealthMetrics.dateKey)
   );
 }

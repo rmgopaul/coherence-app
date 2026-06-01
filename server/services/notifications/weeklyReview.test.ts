@@ -1,152 +1,288 @@
 /**
- * Phase E (2026-04-28) — tests for the AI Weekly Review pure
- * helpers. The Anthropic-calling generator is exercised by manual
- * smoke; these tests pin the behavior of the rollup + prompt +
- * parse helpers so the LLM contract stays stable.
+ * Phase E (2026-04-28), upgraded 2026-06-01 — tests for the AI Weekly
+ * Review pure helpers. The Anthropic-calling generator is exercised by
+ * manual smoke; these tests pin the behavior of the multi-source join
+ * (`buildWeekRecords`), the rollup (`summarizeWeek`), the prompt
+ * builder, and the response parser so the LLM contract stays stable.
  */
 import { describe, expect, it } from "vitest";
 import {
-  summarizeSnapshots,
+  buildWeekRecords,
+  summarizeWeek,
   buildWeeklyReviewPrompts,
   parseWeeklyReviewResponse,
   previousWeekKey,
+  type WeekDayRecord,
 } from "./weeklyReview";
+
+function metricRow(overrides: Record<string, unknown> = {}) {
+  return {
+    dateKey: "2026-04-20",
+    whoopRecoveryScore: null,
+    whoopDayStrain: null,
+    whoopSleepHours: null,
+    whoopHrvMs: null,
+    whoopRestingHr: null,
+    samsungSteps: null,
+    samsungSleepHours: null,
+    samsungSpo2AvgPercent: null,
+    samsungSleepScore: null,
+    samsungEnergyScore: null,
+    todoistCompletedCount: null,
+    ...overrides,
+  } as Parameters<typeof buildWeekRecords>[0][number];
+}
 
 function snap(overrides: Record<string, unknown> = {}) {
   return {
     dateKey: "2026-04-20",
-    whoopPayload: null,
-    samsungPayload: null,
     supplementsPayload: null,
     habitsPayload: null,
     todoistCompletedCount: null,
     ...overrides,
-  } as Parameters<typeof summarizeSnapshots>[0][number];
+  } as Parameters<typeof buildWeekRecords>[1][number];
 }
 
-describe("summarizeSnapshots", () => {
-  it("returns zeros + nulls for empty input", () => {
-    const out = summarizeSnapshots([]);
-    expect(out.daysWithData).toBe(0);
-    expect(out.todoistCompletedTotal).toBeNull();
-    expect(out.whoopRecoveryAvg).toBeNull();
-    expect(out.sleepHoursAvg).toBeNull();
-    expect(out.supplementsLogged).toBe(0);
-    expect(out.habitsCompleted).toBe(0);
+function reflection(overrides: Record<string, unknown> = {}) {
+  return {
+    dateKey: "2026-04-20",
+    energyLevel: null,
+    wentWell: null,
+    didntGo: null,
+    tomorrowOneThing: null,
+    ...overrides,
+  } as Parameters<typeof buildWeekRecords>[2][number];
+}
+
+describe("buildWeekRecords", () => {
+  it("returns an empty array for empty input", () => {
+    expect(buildWeekRecords([], [], [])).toEqual([]);
   });
 
-  it("aggregates todoist completed counts", () => {
-    const out = summarizeSnapshots([
-      snap({ todoistCompletedCount: 3 }),
-      snap({ todoistCompletedCount: 5 }),
-      snap({ todoistCompletedCount: null }),
-    ]);
-    expect(out.todoistCompletedTotal).toBe(8);
-    expect(out.daysWithData).toBe(3);
+  it("joins metrics + supplements + habits + reflections by dateKey", () => {
+    const records = buildWeekRecords(
+      [
+        metricRow({
+          dateKey: "2026-04-20",
+          whoopRecoveryScore: 70,
+          whoopHrvMs: 55,
+          whoopSleepHours: 7.5,
+          todoistCompletedCount: 4,
+        }),
+      ],
+      [
+        snap({
+          dateKey: "2026-04-20",
+          supplementsPayload: JSON.stringify({
+            definitions: [],
+            logs: [{ name: "Magnesium" }, { name: "L-theanine" }],
+          }),
+          habitsPayload: JSON.stringify([
+            { name: "Meditate", completed: true },
+            { name: "Read", completed: false },
+          ]),
+        }),
+      ],
+      [
+        reflection({
+          dateKey: "2026-04-20",
+          energyLevel: 8,
+          wentWell: "Deep work",
+        }),
+      ]
+    );
+    expect(records).toHaveLength(1);
+    const d = records[0];
+    expect(d.recovery).toBe(70);
+    expect(d.hrv).toBe(55);
+    expect(d.sleepHours).toBe(7.5);
+    expect(d.tasksDone).toBe(4);
+    expect(d.supplements).toEqual(["Magnesium", "L-theanine"]);
+    expect(d.habitsDone).toEqual(["Meditate"]);
+    expect(d.habitsTotal).toBe(2);
+    expect(d.reflectionEnergy).toBe(8);
+    expect(d.wentWell).toBe("Deep work");
   });
 
-  it("averages whoop recoveryScore across days where it exists", () => {
-    const out = summarizeSnapshots([
-      snap({ whoopPayload: JSON.stringify({ recoveryScore: 60 }) }),
-      snap({ whoopPayload: JSON.stringify({ recoveryScore: 80 }) }),
-      // Missing field — doesn't drag the average down.
-      snap({ whoopPayload: JSON.stringify({}) }),
-      // Malformed JSON — treated as no data.
-      snap({ whoopPayload: "{not json" }),
-    ]);
-    expect(out.whoopRecoveryAvg).toBe(70);
-    expect(out.whoopRecoverySamples).toBe(2);
+  it("falls back to Samsung sleep hours when WHOOP sleep is missing", () => {
+    const [d] = buildWeekRecords(
+      [metricRow({ whoopSleepHours: null, samsungSleepHours: 6.8 })],
+      [],
+      []
+    );
+    expect(d.sleepHours).toBe(6.8);
   });
 
-  it("converts samsung sleepDurationMs to hours", () => {
-    const out = summarizeSnapshots([
-      snap({
-        samsungPayload: JSON.stringify({ sleepDurationMs: 7 * 3_600_000 }),
-      }),
-      snap({
-        samsungPayload: JSON.stringify({ sleepDurationMs: 8 * 3_600_000 }),
-      }),
-    ]);
-    expect(out.sleepHoursAvg).toBe(7.5);
-    expect(out.sleepSamples).toBe(2);
+  it("drops days that carry no usable signal", () => {
+    const records = buildWeekRecords(
+      [metricRow({ dateKey: "2026-04-21" })], // all-null metric row
+      [],
+      []
+    );
+    expect(records).toEqual([]);
   });
 
-  it("ignores zero/negative sleepDurationMs (data-quality guard)", () => {
-    const out = summarizeSnapshots([
-      snap({ samsungPayload: JSON.stringify({ sleepDurationMs: 0 }) }),
-      snap({
-        samsungPayload: JSON.stringify({ sleepDurationMs: 7 * 3_600_000 }),
-      }),
-    ]);
-    expect(out.sleepHoursAvg).toBe(7);
-    expect(out.sleepSamples).toBe(1);
+  it("sorts joined days ascending by dateKey", () => {
+    const records = buildWeekRecords(
+      [
+        metricRow({ dateKey: "2026-04-22", whoopRecoveryScore: 60 }),
+        metricRow({ dateKey: "2026-04-20", whoopRecoveryScore: 80 }),
+      ],
+      [],
+      []
+    );
+    expect(records.map(r => r.dateKey)).toEqual(["2026-04-20", "2026-04-22"]);
   });
 
-  it("sums supplements logCount + habits completedCount", () => {
-    const out = summarizeSnapshots([
-      snap({ supplementsPayload: JSON.stringify({ logCount: 3 }) }),
-      snap({ supplementsPayload: JSON.stringify({ logCount: 4 }) }),
-      snap({ habitsPayload: JSON.stringify({ completedCount: 2 }) }),
-      snap({ habitsPayload: JSON.stringify({ completedCount: 5 }) }),
+  it("tolerates malformed payload JSON", () => {
+    const [d] = buildWeekRecords(
+      [metricRow({ whoopRecoveryScore: 50 })],
+      [snap({ supplementsPayload: "{not json", habitsPayload: "nope" })],
+      []
+    );
+    expect(d.supplements).toEqual([]);
+    expect(d.habitsTotal).toBe(0);
+  });
+});
+
+describe("summarizeWeek", () => {
+  function rec(overrides: Partial<WeekDayRecord>): WeekDayRecord {
+    return {
+      dateKey: "2026-04-20",
+      recovery: null,
+      hrv: null,
+      strain: null,
+      restingHr: null,
+      sleepHours: null,
+      samsungSleepScore: null,
+      samsungEnergy: null,
+      steps: null,
+      spo2: null,
+      tasksDone: null,
+      supplements: [],
+      habitsDone: [],
+      habitsTotal: 0,
+      reflectionEnergy: null,
+      wentWell: null,
+      didntGo: null,
+      tomorrowOneThing: null,
+      ...overrides,
+    };
+  }
+
+  it("averages recovery only over days where it exists", () => {
+    const m = summarizeWeek([
+      rec({ recovery: 60 }),
+      rec({ recovery: 80 }),
+      rec({ recovery: null }),
     ]);
-    expect(out.supplementsLogged).toBe(7);
-    expect(out.habitsCompleted).toBe(7);
+    expect(m.whoopRecoveryAvg).toBe(70);
+    expect(m.whoopRecoverySamples).toBe(2);
+    expect(m.daysWithData).toBe(3);
+  });
+
+  it("totals task completions and counts distinct supplements", () => {
+    const m = summarizeWeek([
+      rec({ tasksDone: 3, supplements: ["Mag", "Zinc"] }),
+      rec({ tasksDone: 5, supplements: ["mag"] }),
+    ]);
+    expect(m.todoistCompletedTotal).toBe(8);
+    expect(m.supplementsLogged).toBe(3);
+    expect(m.distinctSupplements).toBe(2); // case-insensitive dedupe
+  });
+
+  it("computes habit consistency from completions over opportunities", () => {
+    const m = summarizeWeek([
+      rec({ habitsDone: ["A"], habitsTotal: 2 }),
+      rec({ habitsDone: ["A", "B"], habitsTotal: 2 }),
+    ]);
+    expect(m.habitsCompleted).toBe(3);
+    expect(m.habitOpportunities).toBe(4);
+    expect(m.habitConsistencyPct).toBe(75);
+  });
+
+  it("returns null averages when no samples exist", () => {
+    const m = summarizeWeek([rec({})]);
+    expect(m.whoopRecoveryAvg).toBeNull();
+    expect(m.habitConsistencyPct).toBeNull();
+    expect(m.todoistCompletedTotal).toBeNull();
   });
 });
 
 describe("buildWeeklyReviewPrompts", () => {
   const range = { startDateKey: "2026-04-20", endDateKey: "2026-04-26" };
-  const baseMetrics = {
-    daysWithData: 7,
-    todoistCompletedTotal: 12,
-    whoopRecoveryAvg: 72,
-    whoopRecoverySamples: 7,
-    sleepHoursAvg: 7.6,
-    sleepSamples: 7,
-    supplementsLogged: 14,
-    habitsCompleted: 21,
-  };
+  const records = buildWeekRecords(
+    [
+      metricRow({
+        dateKey: "2026-04-20",
+        whoopRecoveryScore: 72,
+        whoopSleepHours: 7.6,
+      }),
+      metricRow({
+        dateKey: "2026-04-21",
+        whoopRecoveryScore: 68,
+        whoopSleepHours: 7.2,
+      }),
+      metricRow({
+        dateKey: "2026-04-22",
+        whoopRecoveryScore: 75,
+        whoopSleepHours: 7.8,
+      }),
+    ],
+    [
+      snap({
+        dateKey: "2026-04-20",
+        supplementsPayload: JSON.stringify({ logs: [{ name: "Mag" }] }),
+      }),
+    ],
+    [reflection({ dateKey: "2026-04-20", wentWell: "Shipped the review" })]
+  );
+  const metrics = summarizeWeek(records);
 
-  it("includes the schema rules in the system prompt", () => {
+  it("includes the schema + analyst instructions in the system prompt", () => {
     const { system } = buildWeeklyReviewPrompts(
       "2026-W17",
       range,
-      baseMetrics
+      records,
+      metrics,
+      null
     );
     expect(system).toContain('"headline"');
     expect(system).toContain('"contentMarkdown"');
     expect(system).toContain("STRICT JSON ONLY");
+    expect(system).toContain("CORRELATIONS");
   });
 
-  it("includes the week range + metrics in the user prompt", () => {
+  it("includes the week range, metrics, and per-day rows in the user prompt", () => {
     const { user } = buildWeeklyReviewPrompts(
       "2026-W17",
       range,
-      baseMetrics
+      records,
+      metrics,
+      null
     );
     expect(user).toContain("2026-W17");
     expect(user).toContain("2026-04-20 → 2026-04-26");
-    expect(user).toContain("Whoop recovery avg: 72");
-    expect(user).toContain("Sleep avg: 7.6h");
-    expect(user).toContain("Supplements logged: 14");
+    expect(user).toContain("WHOOP recovery avg");
+    expect(user).toContain("Per-day records");
+    expect(user).toContain("Shipped the review"); // reflection surfaced
   });
 
-  it("omits null metrics from the user prompt (tells LLM not to hallucinate)", () => {
-    const { user } = buildWeeklyReviewPrompts("2026-W17", range, {
-      daysWithData: 5,
-      todoistCompletedTotal: null,
-      whoopRecoveryAvg: null,
-      whoopRecoverySamples: 0,
-      sleepHoursAvg: null,
-      sleepSamples: 0,
-      supplementsLogged: 0,
-      habitsCompleted: 0,
-    });
-    expect(user).not.toContain("Whoop recovery avg");
-    expect(user).not.toContain("Sleep avg");
-    expect(user).not.toContain("Supplements logged");
-    expect(user).not.toContain("Todoist completed");
-    expect(user).toContain("Days with snapshots: 5");
+  it("renders week-over-week deltas when prior metrics are supplied", () => {
+    const priorRecords = buildWeekRecords(
+      [metricRow({ dateKey: "2026-04-13", whoopRecoveryScore: 60 })],
+      [],
+      []
+    );
+    const prior = summarizeWeek(priorRecords);
+    const { user } = buildWeeklyReviewPrompts(
+      "2026-W17",
+      range,
+      records,
+      metrics,
+      prior
+    );
+    expect(user).toContain("vs prior 60");
   });
 });
 
@@ -154,13 +290,11 @@ describe("parseWeeklyReviewResponse", () => {
   it("extracts headline + contentMarkdown from raw JSON", () => {
     const raw = JSON.stringify({
       headline: "Sleep crept down 30 min. Recovery followed.",
-      contentMarkdown: "- Sleep avg: 7.0h (down from 7.5h)\n- Recovery: 62 (down from 71)",
+      contentMarkdown: "## Wins\n- Sleep avg **7.0h**",
     });
     const out = parseWeeklyReviewResponse(raw);
-    expect(out?.headline).toBe(
-      "Sleep crept down 30 min. Recovery followed."
-    );
-    expect(out?.contentMarkdown).toContain("Sleep avg");
+    expect(out?.headline).toBe("Sleep crept down 30 min. Recovery followed.");
+    expect(out?.contentMarkdown).toContain("## Wins");
   });
 
   it("strips ```json fences when the model adds them", () => {
@@ -184,10 +318,7 @@ describe("parseWeeklyReviewResponse", () => {
 
   it("clamps headline at 280 chars", () => {
     const long = "a".repeat(400);
-    const raw = JSON.stringify({
-      headline: long,
-      contentMarkdown: "ok",
-    });
+    const raw = JSON.stringify({ headline: long, contentMarkdown: "ok" });
     const out = parseWeeklyReviewResponse(raw);
     expect(out?.headline.length).toBe(280);
   });
